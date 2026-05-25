@@ -203,6 +203,7 @@ async def run_agent3_pipeline(task_id: str):
             await _update(task_id, video_path_output=video_path)
         except Exception as e:
             logger.warning(f"[Pipeline] 视频生成失败（可选）: {e}")
+            await publish(task_id, {"type": "error", "message": f"视频生成失败（可选，其他输出可下载）: {str(e)[:200]}"})
 
         await _update(task_id, status=TaskStatus.COMPLETED.value, current_step=7)
         await publish_status(task_id, TaskStatus.COMPLETED.value, 7)

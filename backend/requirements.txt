@@ -8,10 +8,14 @@ python-multipart
 langgraph
 langchain-core
 langchain-community
+langchain-deepseek
 faster-whisper
 edge-tts
 python-pptx
 ffmpeg-python
+moviepy>=2.0.0
+Pillow>=10.0.0
+numpy
 playwright
 celery[redis]
 redis

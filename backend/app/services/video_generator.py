@@ -6,7 +6,9 @@ Each slide is rendered as a 1920×1080 PIL image, then composed with
 moviepy into an MP4 with subtle Ken Burns zoom and TTS voiceover.
 """
 
+import asyncio
 import logging
+import platform
 import re
 from pathlib import Path
 from typing import Optional
@@ -19,11 +21,43 @@ from app.core.config import DATA_DIR
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Fonts — macOS system fonts for Chinese rendering
+# Fonts — cross-platform Chinese font discovery
 # ---------------------------------------------------------------------------
 
-FONT_REGULAR = "/System/Library/Fonts/Hiragino Sans GB.ttc"
-FONT_MONO = "/System/Library/Fonts/Menlo.ttc"
+_FONT_CANDIDATES = {
+    "regular": {
+        "Darwin":  ["/System/Library/Fonts/Hiragino Sans GB.ttc"],
+        "Linux":   [
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ],
+    },
+    "mono": {
+        "Darwin":  ["/System/Library/Fonts/Menlo.ttc"],
+        "Linux":   [
+            "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        ],
+    },
+}
+
+
+def _resolve_font(kind: str = "regular") -> str:
+    system = platform.system()
+    candidates = _FONT_CANDIDATES.get(kind, {}).get(system, [])
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    # Final fallback — let PIL try any default it can find
+    return candidates[0] if candidates else ""
+
+
+FONT_REGULAR = _resolve_font("regular")
+FONT_MONO = _resolve_font("mono")
+if not FONT_REGULAR or not Path(FONT_REGULAR).exists():
+    logger.warning("No Chinese-capable font found — text rendering may fail")
 
 # ---------------------------------------------------------------------------
 # Theme colours (mirrors ppt_generator.py but without python-pptx dependency)
@@ -396,14 +430,14 @@ class SlideRenderer:
 def _make_slide_clip(pil_img: Image.Image, duration: float):
     """Create a moviepy clip from a PIL image with Ken Burns zoom."""
     from moviepy import ImageClip
-    from moviepy.video.fx import Resize
 
     arr = np.array(pil_img)
-    clip = ImageClip(arr).with_duration(duration)
+    clip = ImageClip(arr, fps=24).with_duration(duration)
 
     # Subtle Ken Burns: zoom from 100% → 108% over the duration
+    # Use resize() method (accepts callable) rather than Resize fx (only scalar/tuple in 2.x)
     zoom_func = lambda t: 1.0 + 0.08 * min(t / duration, 1.0)
-    clip = clip.with_effects([Resize(zoom_func)])
+    clip = clip.resize(zoom_func)
 
     return clip
 
@@ -487,8 +521,7 @@ async def generate_video(
     output_path = str(output_dir / f"{task_id}.mp4")
 
     logger.info(f"[Video] 输出: {output_path}")
-    import asyncio
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None,
         lambda: final_video.write_videofile(
