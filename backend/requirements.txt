@@ -1,0 +1,17 @@
+fastapi>=0.136.0
+uvicorn[standard]
+sqlalchemy>=2.0
+aiosqlite
+pydantic>=2.0
+httpx
+python-multipart
+langgraph
+langchain-core
+langchain-community
+faster-whisper
+edge-tts
+python-pptx
+ffmpeg-python
+playwright
+celery[redis]
+redis

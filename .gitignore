@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+dist/
+
+# IDE
+.idea/
+*.swp
+*.swo
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+backend/data/
+*.mp4
+*.mp3
+*.wav
+*.pptx
+
+# Env
+.env
+.env.local
+
+# Build cache
+backend/.vite/
+
+# Byte-compiled
+*.pyc
