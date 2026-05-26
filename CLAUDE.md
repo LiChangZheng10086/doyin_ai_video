@@ -14,6 +14,11 @@ douyin_ppt/
 │   │   ├── services/         # 下载、ASR、TTS、事件总线、Pipeline
 │   │   ├── agents/           # Cleaner、Writer、PPT Generator
 │   │   └── templates/        # PPT 模板 (.pptx)
+│   ├── remotion/             # Remotion 视频渲染项目
+│   │   └── src/
+│   │       ├── slides/       # 幻灯片 React 组件
+│   │       ├── Root.tsx      # Composition 注册
+│   │       └── VideoComposition.tsx
 │   ├── data/                 # DB + 输出文件（gitignored）
 │   ├── main.py               # 入口
 │   └── requirements.txt
@@ -35,6 +40,7 @@ douyin_ppt/
 - **Agent**: cleaner（清洗+大纲）、writer（内容+演讲稿）、ppt_generator
 - **ASR**: faster-whisper (medium, int8)
 - **TTS**: edge-tts
+- **视频渲染**: Remotion 4.x (React/TS, CSS 动画, 1080×1920 竖屏)
 - **前端**: Vue 3, Vite, Pinia, Element Plus, Axios
 - **流式**: SSE (Server-Sent Events) 实时推送 agent token
 
@@ -52,6 +58,12 @@ waiting → downloading → transcribing → cleaning → confirm_1（人工确�
 cd backend
 source .venv/bin/activate
 uvicorn main:app --reload   # 开发（默认 8000）
+```
+
+### 视频渲染（Remotion）
+```bash
+cd backend/remotion
+REMOTION_CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npx remotion render src/index.ts TechVideo output/test.mp4 --props=<(echo '{"slides":[...]}')
 ```
 
 ### 前端

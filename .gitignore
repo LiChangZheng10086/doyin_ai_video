@@ -23,6 +23,12 @@ Thumbs.db
 
 # Data
 backend/data/
+backend/remotion/output/
+
+# Remotion
+backend/remotion/node_modules/
+backend/remotion/dist/
+backend/remotion/.cache/
 *.mp4
 *.mp3
 *.wav

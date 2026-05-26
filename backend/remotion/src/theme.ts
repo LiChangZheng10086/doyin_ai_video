@@ -1,0 +1,52 @@
+export const THEMES: Record<string, Record<string, string>> = {
+  tech_blue: {
+    bg: "#080D20",
+    bgAccent: "#0F173A",
+    primary: "#1A56DB",
+    cyan: "#00D4FF",
+    accent: "#7C3AED",
+    title: "#FFFFFF",
+    subtitle: "#8AB4FF",
+    heading: "#00D4FF",
+    body: "#E0E8F5",
+    muted: "#5A6A8A",
+    bullet: "#00D4FF",
+    codeBg: "#121A33",
+    codeBorder: "#1A56DB",
+    glow: "#00B4D8",
+  },
+  clean_white: {
+    bg: "#1A1A2E",
+    bgAccent: "#222238",
+    primary: "#2D343E",
+    cyan: "#E06D06",
+    accent: "#F59E0B",
+    title: "#FFFFFF",
+    subtitle: "#BBC1CC",
+    heading: "#E06D06",
+    body: "#E0E4EA",
+    muted: "#7A8496",
+    bullet: "#E06D06",
+    codeBg: "#2A2A3E",
+    glow: "#E06D06",
+  },
+  warm_orange: {
+    bg: "#120A08",
+    bgAccent: "#22120A",
+    primary: "#FF6B35",
+    cyan: "#FF8A50",
+    accent: "#FFCC80",
+    title: "#FFFFFF",
+    subtitle: "#FFC0A0",
+    heading: "#FF8A50",
+    body: "#F0E8E0",
+    muted: "#907060",
+    bullet: "#FF6B35",
+    codeBg: "#1E1410",
+    glow: "#FF8A50",
+  },
+};
+
+export function getTheme(themeId: string) {
+  return THEMES[themeId] || THEMES.tech_blue;
+}

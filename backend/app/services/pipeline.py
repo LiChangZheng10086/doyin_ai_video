@@ -16,7 +16,7 @@ from app.agents.cleaner import run_stream as run_cleaner_stream
 from app.agents.writer import run_stream as run_writer_stream
 from app.agents.ppt_generator import generate as generate_ppt
 from app.services.tts import synthesize_speech
-from app.services.video_generator import generate_video
+from app.services.remotion_service import generate_video as generate_remotion_video
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ async def run_agent3_pipeline(task_id: str):
         await publish_status(task_id, TaskStatus.GENERATING_VIDEO.value, 6)
         await _update(task_id, status=TaskStatus.GENERATING_VIDEO.value, current_step=6)
         try:
-            video_path = await generate_video(
+            video_path = await generate_remotion_video(
                 slides_content=slides_content,
                 theme_id=template_id,
                 task_id=task_id,
