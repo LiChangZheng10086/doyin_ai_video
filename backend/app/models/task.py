@@ -22,7 +22,6 @@ class TaskStatus(str, enum.Enum):
 
 class DownloadMethod(str, enum.Enum):
     API = "api"
-    PLAYWRIGHT = "playwright"
     UPLOAD = "upload"
 
 
