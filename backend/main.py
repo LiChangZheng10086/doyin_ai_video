@@ -7,7 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.config import HOST, PORT
+from app.core.config import HOST, PORT, DEEPSEEK_API_KEY
 from app.core.database import init_db
 from app.api.tasks import router as tasks_router
 from app.api.events import router as events_router
@@ -27,6 +27,9 @@ async def lifespan(app: FastAPI):
     logger.info("启动中...")
     await init_db()
     logger.info("数据库初始化完成")
+
+    if not DEEPSEEK_API_KEY.strip():
+        logger.warning("DEEPSEEK_API_KEY 未配置 — AI 清洗/写作阶段将失败")
 
     # 后台预加载 Whisper 模型
     from app.services.asr import _load_model
@@ -60,18 +63,24 @@ app.include_router(events_router)
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {
+        "status": "ok",
+        "version": "0.1.0",
+        "deepseek_configured": bool(DEEPSEEK_API_KEY.strip()),
+    }
 
 
 @app.get("/api/files/{filename}")
 async def download_file(filename: str):
-    """文件下载（PPT / 音频）"""
+    """文件下载（PPT / 音频 / 视频）"""
     from fastapi.responses import FileResponse
     from app.core.config import DATA_DIR
+    from app.core.utils import resolve_data_file
+
     for subdir in ["ppts", "audios", "videos"]:
-        f = DATA_DIR / subdir / filename
-        if f.exists():
-            return FileResponse(str(f), filename=filename)
+        f = resolve_data_file(DATA_DIR, subdir, filename)
+        if f:
+            return FileResponse(str(f), filename=f.name)
     raise HTTPException(404, "文件不存在")
 
 

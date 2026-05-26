@@ -1,5 +1,10 @@
 # AI 视频二创工具 — 项目方案
 
+> **实现状态（2026-05）**：当前代码以 `pipeline.py` 直接编排 Agent 为主（未使用 LangGraph Graph）。
+> 下载为 **双层 Fallback**（页面解析 + 用户上传）。PPT 为 **python-pptx 程序化生成**（非 .pptx 模板填充）。
+> 视频输出使用 **Remotion**。后台任务在 FastAPI 进程内 `asyncio.create_task` 执行。
+> 详细以 `README.md` 和代码为准。
+
 ## 项目定位
 
 输入抖音视频链接，自动提取文案，通过 AI Agent 流水线清洗整理，生成 PPT + 演讲稿 + 配音，辅助快速产出 AI 教程类视频。
@@ -127,16 +132,17 @@ flowchart TB
 | 组件 | 技术 | 说明 |
 |------|------|------|
 | Web 框架 | FastAPI | 异步后端 |
-| Agent 编排 | LangGraph | 多 Agent 流水线核心 |
+| Agent 编排 | pipeline.py + LangChain | 三阶段流水线（人工确认节点） |
 | LLM | DeepSeek API | 文案清洗/内容生成 |
-| API 解析库 | Evil0ctal/Douyin_TikTok_Download_API | 第一优先下载方案 |
-| 浏览器 | Playwright | 第二优先下载方案（兜底） |
+| 下载 | api_parser.py | 解析抖音分享页获取无水印视频 |
+| 上传兜底 | POST upload_video | 用户手动上传 |
 | 音视频 | ffmpeg | 音频提取 |
 | ASR | faster-whisper | 语音转文字 |
-| PPT | python-pptx + 预置模板 | 基于模板填充内容 |
-| TTS | edge-tts | 语音合成（免费、中文好）|
-| 任务队列 | Celery / ARQ | 异步处理耗时任务 |
-| 数据库 | SQLite + SQLAlchemy | 任务/配置/历史 |
+| PPT | python-pptx 程序化 | 三套主题（tech_blue 等） |
+| 视频 | Remotion 4.x | 竖屏 1080×1920 |
+| TTS | edge-tts | 语音合成 |
+| 任务执行 | asyncio.create_task | 进程内异步（队列待后续） |
+| 数据库 | SQLite + SQLAlchemy | 任务/历史 |
 
 ### 前端
 
@@ -149,15 +155,14 @@ flowchart TB
 
 ---
 
-## 四、下载层 · 三重 Fallback
+## 四、下载层 · 双层 Fallback（当前实现）
 
-| 层级 | 方案 | 适用场景 | 预期成功率 |
-|------|------|---------|-----------|
-| Layer 1 | 社区 API 解析库（Evil0ctal / jiji262）| 普通公开视频 | ~80% |
-| Layer 2 | Playwright 浏览器模拟（stealth 插件）| Layer 1 失效时 | ~15% |
-| Layer 3 | 用户手动上传视频文件 | 前两层都失败 | 100%（用户提供）|
+| 层级 | 方案 | 说明 |
+|------|------|------|
+| Layer 1 | api_parser.py | 解析抖音分享页 `_ROUTER_DATA`，下载无水印视频 |
+| Layer 2 | 用户上传 | 自动下载失败后，前端提示上传，调用 `upload_video` |
 
-**第一版开发顺序**：先做 Layer 1 + 3，Layer 2 作为后续加强。
+~~Layer 2 Playwright~~ 已移除，未纳入当前版本。
 
 ---
 
@@ -204,25 +209,18 @@ class VideoProcessState(TypedDict):
 
 ---
 
-## 六、PPT 模板体系
+## 六、PPT / 视频主题（当前实现）
 
-**核心理念**：不靠 Agent 从零写 PPT，而是 Agent 往设计师做好的模板里填内容。
+**当前方案**：使用 python-pptx **程序化构建**幻灯片（深色科幻风），非预置 .pptx 占位符填充。
+Remotion 视频组件与 PPT 共用三套主题 ID：
 
-```
-预置 3-5 套专业 PPT 模板（.pptx 格式）
-  ├── 科技蓝  → 适合 AI 工具介绍、技术教程
-  ├── 简约白  → 适合通用教程、知识分享
-  ├── 活力橙  → 适合入门科普、轻松话题
-  └── (后续扩展)
+| ID | 名称 | 适用 |
+|----|------|------|
+| tech_blue | 科技蓝 | AI 教程 |
+| clean_white | 简约白 | 通用知识 |
+| warm_orange | 活力橙 | 轻松科普 |
 
-模板包含:
-  ├── Slide Master（统一配色/字体/间距）
-  ├── 预置布局（标题页、内容页、代码页、总结页）
-  ├── 占位符标记（Agent 通过 python-pptx 定位填充）
-  └── 动画效果（保留模板原有动画）
-```
-
-**模板来源**：从 Canva / 稿定设计 / Slidesgo 等下载免费模板，转为 .pptx 作为基底。
+~~原 .pptx 模板库方案~~ 保留在设计文档中，后续可恢复。
 
 ---
 
@@ -269,52 +267,24 @@ status_flow = {
 douyin_ppt/
 ├── backend/
 │   ├── app/
-│   │   ├── api/                   # FastAPI 路由
-│   │   │   ├── tasks.py           # 任务创建/查询/下载/重试
-│   │   │   └── config.py          # 模板/配置接口
-│   │   ├── core/
-│   │   │   ├── database.py        # SQLite 连接
-│   │   │   └── config.py          # 全局配置
+│   │   ├── api/                   # tasks.py, events.py
+│   │   ├── core/                  # config, database, utils
 │   │   ├── models/
-│   │   │   ├── task.py            # 任务模型
-│   │   │   └── schemas.py         # Pydantic schema
 │   │   ├── services/
-│   │   │   ├── downloader/
-│   │   │   │   ├── __init__.py    # 统一入口
-│   │   │   │   ├── api_parser.py  # Layer 1: API 解析库
-│   │   │   │   ├── playwright.py  # Layer 2: Playwright
-│   │   │   │   └── upload.py      # Layer 3: 用户上传
-│   │   │   ├── asr.py             # Whisper 转录
-│   │   │   └── tts.py             # Edge-TTS 合成
-│   │   ├── agents/
-│   │   │   ├── graph.py           # Graph 组装
-│   │   │   ├── cleaner.py         # Agent 1: 清洗+规划
-│   │   │   ├── writer.py          # Agent 2: 内容+演讲稿
-│   │   │   └── ppt_generator.py   # Agent 3: PPT 生成
-│   │   └── templates/             # PPT 模板文件 (.pptx)
-│   │       ├── tech_blue.pptx
-│   │       ├── clean_white.pptx
-│   │       └── warm_orange.pptx
-│   ├── requirements.txt
+│   │   │   ├── downloader/api_parser.py
+│   │   │   ├── pipeline.py
+│   │   │   ├── remotion_service.py
+│   │   │   └── asr.py, tts.py, audio.py, events.py
+│   │   └── agents/                # cleaner, writer, ppt_generator
+│   ├── remotion/                  # Remotion 竖屏视频
+│   ├── data/                      # 运行时输出（gitignored）
 │   └── main.py
 ├── frontend/
-│   ├── src/
-│   │   ├── views/
-│   │   │   ├── Home.vue           # 新建任务
-│   │   │   └── History.vue        # 历史记录
-│   │   ├── components/
-│   │   │   ├── TaskCard.vue       # 任务卡片
-│   │   │   ├── ProgressBar.vue    # 进度条
-│   │   │   ├── TextReview.vue     # 文案预览/编辑
-│   │   │   └── SlidePreview.vue   # PPT 预览
-│   │   ├── api/
-│   │   │   └── index.ts           # 后端 API 封装
-│   │   └── stores/
-│   │       └── task.ts            # Pinia 状态
-│   ├── package.json
-│   └── vite.config.ts
-├── docker-compose.yml
-└── PROJECT_PLAN.md
+│   ├── src/views/Home.vue, History.vue
+│   ├── src/stores/task.ts
+│   ├── nginx.conf
+│   └── Dockerfile
+└── docker-compose.yml
 ```
 
 ---
@@ -407,10 +377,12 @@ douyin_ppt/
 
 ## 十一、后续扩展方向
 
-- 支持更多平台（B站、小红书、YouTube）
-- Token 用量看板（每日/每任务消耗统计）
-- PPT 模板自定义上传
-- 多语言输出（翻译 Agent）
-- 批量处理（批量链接输入）
-- 封面图生成（Image Generation Agent）
-- 纯文案模式（不下载视频，直接粘贴文案开始）
+- [ ] 任务队列（Celery/ARQ）与并发控制
+- [ ] 支持更多平台（B站、小红书、YouTube）
+- [ ] Token 用量看板
+- [ ] PPT .pptx 模板库（替代程序化生成）
+- [ ] 多语言输出（翻译 Agent）
+- [ ] 批量处理
+- [ ] 封面图生成
+
+已实现：纯文案模式、上传视频模式、Remotion 竖屏视频、失败断点重试、主题选择。

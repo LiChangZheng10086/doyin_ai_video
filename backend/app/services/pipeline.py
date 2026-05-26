@@ -3,10 +3,10 @@ Task processing pipeline orchestrator with SSE events.
 """
 
 import asyncio
-import json
 import logging
 from sqlalchemy import select
 from app.core.database import async_session
+from app.core.utils import parse_json_field
 from app.models.task import Task, TaskStatus
 from app.services.downloader import download_video
 from app.services.audio import extract_audio
@@ -18,10 +18,9 @@ from app.agents.ppt_generator import generate as generate_ppt
 from app.services.tts import synthesize_speech
 from app.services.remotion_service import generate_video as generate_remotion_video
 
+from app.core.config import require_deepseek_key
+
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -53,7 +52,7 @@ async def run_download_pipeline(task_id: str):
             return
 
         # -- 纯文本模式，跳过下载和转录 --
-        if not task.douyin_url and task.text_input:
+        if not task.douyin_url and task.text_input and not task.video_path:
             logger.info(f"[Pipeline] 纯文本模式 task={task_id}")
             raw_text = task.text_input
             await _update(task_id, raw_text=raw_text)
@@ -92,6 +91,7 @@ async def run_download_pipeline(task_id: str):
             await _update(task_id, raw_text=raw_text)
 
         # Step 4: Agent 1 — clean + structure (streaming)
+        require_deepseek_key()
         await publish_status(task_id, TaskStatus.CLEANING.value, 3)
         await _update(task_id, status=TaskStatus.CLEANING.value, current_step=3)
         result = await run_cleaner_stream(task_id, raw_text)
@@ -102,7 +102,7 @@ async def run_download_pipeline(task_id: str):
         await _update(
             task_id,
             cleaned_text=cleaned_text,
-            slide_outline=json.dumps(outline, ensure_ascii=False) if outline else None,
+            slide_outline=outline or None,
             status=TaskStatus.CONFIRM_1.value,
             current_step=3,
         )
@@ -129,7 +129,8 @@ async def run_agent2_pipeline(task_id: str):
         await publish_status(task_id, TaskStatus.WRITING.value, 4)
         await _update(task_id, status=TaskStatus.WRITING.value, current_step=4)
 
-        outline = json.loads(task.slide_outline) if task.slide_outline else []
+        require_deepseek_key()
+        outline = parse_json_field(task.slide_outline) or []
         result = await run_writer_stream(task_id, outline)
 
         slides = result.get("slides", [])
@@ -137,7 +138,7 @@ async def run_agent2_pipeline(task_id: str):
 
         await _update(
             task_id,
-            slide_content=json.dumps(slides, ensure_ascii=False),
+            slide_content=slides,
             speech_text=speech_text,
             status=TaskStatus.CONFIRM_2.value,
             current_step=4,
@@ -165,7 +166,7 @@ async def run_agent3_pipeline(task_id: str):
         await publish_status(task_id, TaskStatus.GENERATING.value, 5)
         await _update(task_id, status=TaskStatus.GENERATING.value, current_step=5)
 
-        slides_content = json.loads(task.slide_content) if task.slide_content else []
+        slides_content = parse_json_field(task.slide_content) or []
         template_id = task.ppt_template or "tech_blue"
         speech_text = task.speech_text or ""
 
@@ -216,6 +217,44 @@ async def run_agent3_pipeline(task_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Re-run Agent 1 only (user rejected clean result)
+# ---------------------------------------------------------------------------
+
+async def run_cleaner_pipeline(task_id: str):
+    """Re-run Agent 1 from existing raw_text."""
+    try:
+        task = await _get_task(task_id)
+        if not task or not task.raw_text:
+            await _update(task_id, status=TaskStatus.FAILED.value,
+                          error_message="缺少原始文案，无法重新清洗")
+            return
+
+        await publish_status(task_id, TaskStatus.CLEANING.value, 3)
+        await _update(task_id, status=TaskStatus.CLEANING.value, current_step=3,
+                      cleaned_text=None, slide_outline=None)
+
+        require_deepseek_key()
+        result = await run_cleaner_stream(task_id, task.raw_text)
+        cleaned_text = result.get("cleaned_text", task.raw_text[:500])
+        outline = result.get("outline", [])
+
+        await _update(
+            task_id,
+            cleaned_text=cleaned_text,
+            slide_outline=outline or None,
+            status=TaskStatus.CONFIRM_1.value,
+            current_step=3,
+        )
+        await publish_status(task_id, TaskStatus.CONFIRM_1.value, 3)
+        logger.info(f"[Pipeline] Agent 1 重新完成 → confirm_1: {task_id}")
+
+    except Exception as e:
+        logger.error(f"[Pipeline] 重新清洗失败: {e}", exc_info=True)
+        await _update(task_id, status=TaskStatus.FAILED.value, error_message=str(e)[:500])
+        await publish(task_id, {"type": "error", "message": str(e)[:500]})
+
+
+# ---------------------------------------------------------------------------
 # Entry points for API layer
 # ---------------------------------------------------------------------------
 
@@ -229,3 +268,17 @@ def start_agent2_pipeline(task_id: str):
 
 def start_agent3_pipeline(task_id: str):
     asyncio.create_task(run_agent3_pipeline(task_id))
+
+
+def start_cleaner_pipeline(task_id: str):
+    asyncio.create_task(run_cleaner_pipeline(task_id))
+
+
+def restart_failed_pipeline(task_id: str, current_step: int, slide_content=None, slide_outline=None):
+    """Resume from the failed stage."""
+    if current_step >= 5 and slide_content:
+        start_agent3_pipeline(task_id)
+    elif current_step >= 4 and slide_outline:
+        start_agent2_pipeline(task_id)
+    else:
+        start_download_pipeline(task_id)

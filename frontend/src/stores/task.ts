@@ -38,6 +38,22 @@ export const useTaskStore = defineStore('task', () => {
           } else if (data.agent === 'writer') {
             streamingWriterText.value = ''
           }
+        } else if (data.type === 'stage_change' && data.status) {
+          if (currentTask.value && currentTask.value.id === taskId) {
+            currentTask.value = {
+              ...currentTask.value,
+              status: data.status,
+              current_step: data.current_step ?? currentTask.value.current_step,
+            }
+          }
+        } else if (data.type === 'error' && data.message) {
+          if (currentTask.value && currentTask.value.id === taskId) {
+            currentTask.value = {
+              ...currentTask.value,
+              status: 'failed',
+              error_message: data.message,
+            }
+          }
         }
       } catch { /* ignore parse errors */ }
     }
@@ -92,7 +108,11 @@ export const useTaskStore = defineStore('task', () => {
     currentTask.value = await api.getTask(id)
   }
 
-  async function createTask(data: { text_input?: string; ppt_template?: string }) {
+  async function createTask(data: {
+    text_input?: string
+    ppt_template?: string
+    upload_only?: boolean
+  }) {
     const task = await api.createTask(data)
     currentTask.value = task
     if (task.id) {
@@ -112,6 +132,13 @@ export const useTaskStore = defineStore('task', () => {
   async function confirmContent(taskId: string, slides: SlideContent[], speech: string) {
     streamingWriterText.value = ''
     currentTask.value = await api.confirmContent(taskId, slides, speech)
+    startPolling(taskId)
+  }
+
+  async function rejectClean(taskId: string) {
+    streamingCleanerText.value = ''
+    currentTask.value = await api.rejectClean(taskId)
+    connectEvents(taskId)
     startPolling(taskId)
   }
 
@@ -160,10 +187,12 @@ export const useTaskStore = defineStore('task', () => {
     createTask,
     confirmClean,
     confirmContent,
+    rejectClean,
     connectEvents,
     disconnectEvents,
     statusText,
     statusPercent,
     stopPolling,
+    startPolling,
   }
 })

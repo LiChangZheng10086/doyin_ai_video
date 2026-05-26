@@ -26,7 +26,7 @@
             <el-button v-if="row.status === 'failed'" size="small" type="warning" @click="retryTask(row.id)">
               重试
             </el-button>
-            <el-button v-if="row.status === 'completed'" size="small" type="success">
+            <el-button v-if="row.status === 'completed'" size="small" type="success" @click="downloadTask(row)">
               下载
             </el-button>
           </template>
@@ -44,7 +44,7 @@
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useTaskStore } from '@/stores/task'
-import api from '@/api'
+import api, { fileUrl, type Task } from '@/api'
 
 const store = useTaskStore()
 const router = useRouter()
@@ -70,7 +70,18 @@ function statusTag(status: string) {
 }
 
 function viewTask(id: string) {
-  router.push('/')
+  router.push({ path: '/', query: { task: id } })
+}
+
+function downloadTask(task: Task) {
+  for (const path of [task.ppt_path, task.audio_path_output, task.video_path_output]) {
+    const url = fileUrl(path)
+    if (!url) continue
+    const a = document.createElement('a')
+    a.href = url
+    a.download = ''
+    a.click()
+  }
 }
 
 async function retryTask(id: string) {

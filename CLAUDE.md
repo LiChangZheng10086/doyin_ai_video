@@ -1,99 +1,109 @@
 # AI 视频二创工具 — douyin_ppt
 
 ## 项目概述
-输入抖音视频链接或纯文案，自动提取文案 → AI Agent 清洗整理 → 生成 PPT + 演讲稿 + 配音。
+
+输入抖音分享链接、上传视频或纯文案，自动提取/接收文案 → AI Agent 清洗整理 → 生成 PPT + 演讲稿 + 配音 + Remotion 竖屏视频。
 
 ## 项目结构
+
 ```
 douyin_ppt/
 ├── backend/                  # FastAPI 后端
 │   ├── app/
-│   │   ├── api/              # 路由（tasks.py, events.py）
-│   │   ├── core/             # 配置 + 数据库
+│   │   ├── api/              # tasks.py, events.py
+│   │   ├── core/             # config, database, utils
 │   │   ├── models/           # Task ORM + Pydantic schemas
-│   │   ├── services/         # 下载、ASR、TTS、事件总线、Pipeline
-│   │   ├── agents/           # Cleaner、Writer、PPT Generator
-│   │   └── templates/        # PPT 模板 (.pptx)
-│   ├── remotion/             # Remotion 视频渲染项目
-│   │   └── src/
-│   │       ├── slides/       # 幻灯片 React 组件
-│   │       ├── Root.tsx      # Composition 注册
-│   │       └── VideoComposition.tsx
-│   ├── data/                 # DB + 输出文件（gitignored）
-│   ├── main.py               # 入口
+│   │   ├── services/         # pipeline, downloader, asr, tts, remotion
+│   │   └── agents/           # cleaner, writer, ppt_generator
+│   ├── remotion/             # Remotion 视频渲染（1080×1920）
+│   ├── data/                 # DB + 输出（gitignored）
+│   ├── main.py
 │   └── requirements.txt
 ├── frontend/                 # Vue 3 + Vite
 │   ├── src/
-│   │   ├── api/index.ts      # Axios API 封装
-│   │   ├── stores/task.ts    # Pinia 状态（含 SSE）
-│   │   ├── views/Home.vue    # 新建任务 + 实时进度
-│   │   └── views/History.vue # 历史记录
-│   ├── vite.config.ts
-│   └── package.json
+│   │   ├── api/index.ts
+│   │   ├── stores/task.ts    # Pinia + SSE
+│   │   └── views/            # Home.vue, History.vue
+│   ├── nginx.conf            # Docker 生产 /api 反代
+│   └── vite.config.ts
 ├── docker-compose.yml
 ├── .env.example
-└── PROJECT_PLAN.md           # 详细设计文档
+└── PROJECT_PLAN.md
 ```
 
 ## 技术栈
+
 - **后端**: Python 3.13, FastAPI, SQLAlchemy + aiosqlite, LangChain, DeepSeek API
-- **Agent**: cleaner（清洗+大纲）、writer（内容+演讲稿）、ppt_generator
+- **Agent**: cleaner（清洗+大纲）、writer（内容+演讲稿）、ppt_generator（程序化 PPT）
 - **ASR**: faster-whisper (medium, int8)
 - **TTS**: edge-tts
-- **视频渲染**: Remotion 4.x (React/TS, CSS 动画, 1080×1920 竖屏)
-- **前端**: Vue 3, Vite, Pinia, Element Plus, Axios
-- **流式**: SSE (Server-Sent Events) 实时推送 agent token
+- **视频**: Remotion 4.x（React/TS，竖屏 1080×1920）
+- **前端**: Vue 3, Vite, Pinia, Element Plus
+- **流式**: SSE（agent_token, stage_change, error）
 
 ## 任务状态流转
+
 ```
-waiting → downloading → transcribing → cleaning → confirm_1（人工确认）
-→ writing → confirm_2（人工确认）→ generating → completed
+waiting → downloading → transcribing → cleaning → confirm_1
+→ writing → confirm_2 → generating → generating_video → completed
 任何阶段可 → failed
 ```
 
 ## 常用命令
 
 ### 后端
+
 ```bash
 cd backend
 source .venv/bin/activate
-uvicorn main:app --reload   # 开发（默认 8000）
+uvicorn main:app --reload   # 默认 8000
 ```
 
-### 视频渲染（Remotion）
+### Remotion（本地调试渲染）
+
 ```bash
 cd backend/remotion
-REMOTION_CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" npx remotion render src/index.ts TechVideo output/test.mp4 --props=<(echo '{"slides":[...]}')
+npm install   # 首次
+REMOTION_CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  npx remotion render src/index.ts TechVideo output/test.mp4 --props=props.json
 ```
 
 ### 前端
+
 ```bash
 cd frontend
-npm run dev       # 开发（默认 3000）
-npm run build     # 生产构建
+npm run dev       # 默认 3000，/api 代理到后端
+npm run build     # vue-tsc + vite build
 ```
 
-### 启动前后端
-后端先起，前端开发服务器通过 Vite proxy 将 `/api` 转发到后端。
+### Docker
+
+```bash
+docker compose up --build
+```
 
 ## 关键模式
 
 ### SSE 流式
-- 前端通过 `EventSource` 连接 `/api/tasks/{taskId}/events`
-- Agent 使用 `astream()` 逐 token 推送到事件总线
-- 事件类型: `agent_token`, `agent_done`, `stage_change`, `error`
 
-### API 封装
-- `frontend/src/api/index.ts` — 所有后端接口集中定义
-- Pinia store `task.ts` — 管理当前任务状态 + SSE + 轮询
+- 前端 `EventSource` → `/api/tasks/{taskId}/events`
+- Agent `astream()` 推送 `agent_token`
+- 流水线推送 `stage_change`；前端 store 实时更新状态
 
-### 视频下载
-三重 fallback: API 解析 → Playwright → 用户上传
+### 下载 Fallback
 
-### DEEPSEEK_API_KEY
-环境变量，从 `backend/.env` 加载。需自行配置。
+Layer 1: `api_parser.py` 解析抖音页面 → Layer 2: 用户上传视频
+
+### 环境变量
+
+`DEEPSEEK_API_KEY` 从 `backend/.env` 加载（见 `.env.example`）。未配置时 AI 阶段失败，启动日志会警告。
+
+### 主题
+
+三套主题 ID：`tech_blue` / `clean_white` / `warm_orange`，PPT 与 Remotion 视频共用。
 
 ## 目录说明
-- `.claude/` — Claude Code 配置文件、MCP、skills 存放位置
-- `backend/data/` — 运行时数据（gitignored），包含 videos/ audios/ ppts/ uploads/
-- `backend/app/templates/` — PPT 模板文件
+
+- `backend/data/` — 运行时 videos/ audios/ ppts/ uploads/
+- `backend/remotion/` — 独立 Node 项目，后端通过 subprocess 调用
+- `.claude/` — Claude Code 配置与 skills

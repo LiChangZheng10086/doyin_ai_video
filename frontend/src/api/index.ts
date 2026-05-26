@@ -17,6 +17,10 @@ export interface Task {
   slide_content: any[] | null
   speech_text: string | null
   ppt_path: string | null
+  ppt_template: string | null
+  video_path: string | null
+  audio_path_output: string | null
+  video_path_output: string | null
   error_message: string | null
   created_at: string
 }
@@ -32,33 +36,42 @@ export interface SlideContent {
   notes: string
 }
 
+/** Build a download URL for a server-side file path. */
+export function fileUrl(filePath: string | null | undefined): string {
+  if (!filePath) return ''
+  const filename = filePath.split('/').pop() || filePath.split('\\').pop() || ''
+  return `/api/files/${encodeURIComponent(filename)}`
+}
+
 export default {
-  // 创建任务：直接粘贴抖音分享文本或纯文案
-  createTask(data: { text_input: string; ppt_template?: string }): Promise<Task> {
+  createTask(data: {
+    text_input?: string
+    ppt_template?: string
+    upload_only?: boolean
+  }): Promise<Task> {
     return api.post('/tasks', data).then(r => r.data)
   },
 
-  // 任务列表
   listTasks(page = 1, size = 20): Promise<TaskList> {
     return api.get('/tasks', { params: { page, size } }).then(r => r.data)
   },
 
-  // 任务详情
   getTask(taskId: string): Promise<Task> {
     return api.get(`/tasks/${taskId}`).then(r => r.data)
   },
 
-  // 开始任务
   startTask(taskId: string): Promise<any> {
     return api.post(`/tasks/${taskId}/start`).then(r => r.data)
   },
 
-  // 确认清洗结果
   confirmClean(taskId: string, cleanedText: string): Promise<Task> {
     return api.post('/tasks/confirm_clean', { task_id: taskId, cleaned_text: cleanedText }).then(r => r.data)
   },
 
-  // 确认内容
+  rejectClean(taskId: string): Promise<Task> {
+    return api.post('/tasks/reject_clean', { task_id: taskId }).then(r => r.data)
+  },
+
   confirmContent(taskId: string, slideContent: SlideContent[], speechText: string): Promise<Task> {
     return api.post('/tasks/confirm_content', {
       task_id: taskId,
@@ -67,29 +80,24 @@ export default {
     }).then(r => r.data)
   },
 
-  // 选择模板
   selectTemplate(taskId: string, template: string): Promise<Task> {
     return api.post('/tasks/select_template', { task_id: taskId, ppt_template: template }).then(r => r.data)
   },
 
-  // 重试任务
   retryTask(taskId: string): Promise<any> {
     return api.post(`/tasks/${taskId}/retry`).then(r => r.data)
   },
 
-  // 获取模板列表
   listTemplates(): Promise<{ templates: any[] }> {
     return api.get('/templates').then(r => r.data)
   },
 
-  // 上传视频
   uploadVideo(taskId: string, file: File): Promise<any> {
     const form = new FormData()
     form.append('file', file)
     return api.post(`/tasks/upload_video/${taskId}`, form).then(r => r.data)
   },
 
-  // 健康检查
   health(): Promise<any> {
     return api.get('/health').then(r => r.data)
   },

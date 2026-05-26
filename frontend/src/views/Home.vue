@@ -37,6 +37,13 @@
         </template>
 
         <div style="margin-top: 16px;">
+          <div style="margin-bottom: 8px; font-size: 14px; font-weight: 600;">PPT / 视频主题</div>
+          <el-radio-group v-model="selectedTemplate">
+            <el-radio v-for="tpl in templates" :key="tpl.id" :value="tpl.id">{{ tpl.name }}</el-radio>
+          </el-radio-group>
+        </div>
+
+        <div style="margin-top: 16px;">
           <el-button type="primary" size="large" @click="handleCreate" :loading="loading">
             🎯 开始处理
           </el-button>
@@ -69,7 +76,7 @@
             :class="{ active: step.key === currentStepKey, done: step.done }">
             <el-icon v-if="step.done" color="#67c23a"><CircleCheckFilled /></el-icon>
             <el-icon v-else-if="step.key === currentStepKey" color="#409eff" class="is-loading"><Loading /></el-icon>
-            <el-icon v-else color="#c0c4cc"><Ongoing /></el-icon>
+            <el-icon v-else color="#c0c4cc"><MoreFilled /></el-icon>
             <span style="margin-left: 8px;">{{ step.label }}</span>
           </div>
         </div>
@@ -114,7 +121,13 @@
         </div>
 
         <div v-if="showConfirmContent" style="margin-top: 16px;">
-          <h4>✏️ 确认 PPT 内容</h4>
+          <h4>✅ 确认 PPT 内容</h4>
+          <div style="margin-bottom: 16px;">
+            <span style="font-size: 13px; color: #606266; margin-right: 12px;">主题风格</span>
+            <el-radio-group v-model="selectedTemplate" size="small">
+              <el-radio v-for="tpl in templates" :key="tpl.id" :value="tpl.id">{{ tpl.name }}</el-radio>
+            </el-radio-group>
+          </div>
           <div v-for="(slide, idx) in editSlides" :key="idx" style="margin-bottom: 16px; padding: 12px; border: 1px solid #e4e7ed; border-radius: 8px;">
             <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
               <strong>{{ slide.title }}</strong>
@@ -165,18 +178,27 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { UploadFilled, CircleCheckFilled, Loading } from '@element-plus/icons-vue'
+import { ref, computed, watch, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { UploadFilled, CircleCheckFilled, Loading, MoreFilled } from '@element-plus/icons-vue'
 import { useTaskStore } from '@/stores/task'
 import type { SlideContent } from '@/api'
-import api from '@/api'
+import api, { fileUrl } from '@/api'
 
 const store = useTaskStore()
+const route = useRoute()
 const loading = ref(false)
 
 const inputMode = ref<'url' | 'upload' | 'text'>('url')
 const textInput = ref('')
 const selectedFile = ref<File | null>(null)
+const selectedTemplate = ref('tech_blue')
+const templates = ref<{ id: string; name: string }[]>([
+  { id: 'tech_blue', name: '科技蓝' },
+  { id: 'clean_white', name: '简约白' },
+  { id: 'warm_orange', name: '活力橙' },
+])
 
 // 编辑态
 const editCleanedText = ref('')
@@ -217,6 +239,9 @@ const showStreamingWriter = computed(() =>
 
 // 预填充编辑字段
 watch(() => store.currentTask, (task) => {
+  if (task?.ppt_template) {
+    selectedTemplate.value = task.ppt_template
+  }
   if (task?.cleaned_text && task.status === 'confirm_1') {
     editCleanedText.value = task.cleaned_text
   }
@@ -238,11 +263,7 @@ function statusTagType(status: string) {
   return 'warning'
 }
 
-const videoUrl = computed(() => {
-  if (!store.currentTask?.video_path_output) return ''
-  const filename = store.currentTask.video_path_output.split('/').pop()
-  return `http://localhost:8000/api/files/${filename}`
-})
+const videoUrl = computed(() => fileUrl(store.currentTask?.video_path_output))
 
 function handleFileChange(file: any) {
   selectedFile.value = file.raw
@@ -251,17 +272,32 @@ function handleFileChange(file: any) {
 async function handleCreate() {
   loading.value = true
   try {
-    const task = await store.createTask({
-      text_input: textInput.value,
-      ppt_template: 'tech_blue',
-    })
-
-    // 上传模式
-    if (inputMode.value === 'upload' && selectedFile.value) {
+    if (inputMode.value === 'upload') {
+      if (!selectedFile.value) {
+        throw new Error('请先选择视频文件')
+      }
+      const task = await store.createTask({
+        upload_only: true,
+        ppt_template: selectedTemplate.value,
+      })
       await api.uploadVideo(task.id, selectedFile.value)
-      // 刷新任务获取最新状态
       await store.fetchTask(task.id)
+      store.connectEvents(task.id)
+      store.startPolling(task.id)
+      return
     }
+
+    if (!textInput.value.trim()) {
+      throw new Error('请输入内容')
+    }
+
+    await store.createTask({
+      text_input: textInput.value,
+      ppt_template: selectedTemplate.value,
+    })
+  } catch (e: any) {
+    const msg = e?.message || e?.response?.data?.detail || '创建任务失败'
+    ElMessage.error(typeof msg === 'string' ? msg : '创建任务失败')
   } finally {
     loading.value = false
   }
@@ -272,15 +308,14 @@ async function handleConfirmClean() {
   await store.confirmClean(store.currentTask.id, editCleanedText.value)
 }
 
-function handleRejectClean() {
-  // 退回让 AI 重新清洗
+async function handleRejectClean() {
   if (!store.currentTask) return
-  store.currentTask.status = 'cleaning'
-  store.currentTask.current_step = 2
+  await store.rejectClean(store.currentTask.id)
 }
 
 async function handleConfirmContent() {
   if (!store.currentTask) return
+  await api.selectTemplate(store.currentTask.id, selectedTemplate.value)
   await store.confirmContent(store.currentTask.id, editSlides.value, store.currentTask.speech_text || '')
 }
 
@@ -288,26 +323,11 @@ function handleDownload() {
   const task = store.currentTask
   if (!task) return
 
-  // Download PPT
-  if (task.ppt_path) {
+  for (const path of [task.ppt_path, task.audio_path_output, task.video_path_output]) {
+    const url = fileUrl(path)
+    if (!url) continue
     const a = document.createElement('a')
-    a.href = `http://localhost:8000/api/files/${task.ppt_path.split('/').pop()}`
-    a.download = ''
-    a.click()
-  }
-
-  // Download audio
-  if (task.audio_path_output) {
-    const a = document.createElement('a')
-    a.href = `http://localhost:8000/api/files/${task.audio_path_output.split('/').pop()}`
-    a.download = ''
-    a.click()
-  }
-
-  // Download video
-  if (task.video_path_output) {
-    const a = document.createElement('a')
-    a.href = `http://localhost:8000/api/files/${task.video_path_output.split('/').pop()}`
+    a.href = url
     a.download = ''
     a.click()
   }
@@ -317,13 +337,36 @@ async function handleRetry() {
   if (!store.currentTask) return
   await api.retryTask(store.currentTask.id)
   await store.fetchTask(store.currentTask.id)
+  store.connectEvents(store.currentTask.id)
+  store.startPolling(store.currentTask.id)
 }
 
 async function handleManualUpload(file: any) {
   if (!store.currentTask) return
   await api.uploadVideo(store.currentTask.id, file.raw)
   await store.fetchTask(store.currentTask.id)
+  store.connectEvents(store.currentTask.id)
+  store.startPolling(store.currentTask.id)
 }
+
+onMounted(async () => {
+  try {
+    const res = await api.listTemplates()
+    if (res.templates?.length) {
+      templates.value = res.templates.map((t: any) => ({ id: t.id, name: t.name }))
+    }
+  } catch { /* use defaults */ }
+
+  const taskId = route.query.task as string | undefined
+  if (taskId) {
+    await store.fetchTask(taskId)
+    if (store.currentTask?.ppt_template) {
+      selectedTemplate.value = store.currentTask.ppt_template
+    }
+    store.connectEvents(taskId)
+    store.startPolling(taskId)
+  }
+})
 </script>
 
 <style scoped>

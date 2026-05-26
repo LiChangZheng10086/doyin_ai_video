@@ -15,8 +15,9 @@ class SlideContent(BaseModel):
 
 
 class TaskCreate(BaseModel):
-    text_input: str = Field(description="抖音分享文本（含链接+文字）或纯文案内容")
+    text_input: str = Field(default="", description="抖音分享文本（含链接+文字）或纯文案内容")
     ppt_template: str = Field(default="tech_blue", description="PPT 模板名称")
+    upload_only: bool = Field(default=False, description="仅上传视频模式，创建后等待用户上传")
 
 
 class TaskResponse(BaseModel):
@@ -34,11 +35,18 @@ class TaskResponse(BaseModel):
     slide_content: Optional[list[SlideContent]]
     speech_text: Optional[str]
     ppt_path: Optional[str]
+    ppt_template: Optional[str]
+    video_path: Optional[str]
+    audio_path_output: Optional[str]
     video_path_output: Optional[str]
     error_message: Optional[str]
     created_at: str
 
     model_config = {"from_attributes": True}
+
+
+class TaskIdBody(BaseModel):
+    task_id: str
 
 
 class ConfirmCleanBody(BaseModel):
