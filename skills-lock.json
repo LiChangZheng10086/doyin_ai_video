@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "PPT Generator Skill": {
+      "source": "xuanxuan1983/baoyu-xuanyi-skills",
+      "sourceType": "github",
+      "skillPath": "skills/baoyu-ppt-generator/SKILL.md",
+      "computedHash": "c0e825d27cf298169e3d0180965fbc5504cb8ce6d6951347a97619ec59d6d46a"
+    },
+    "video-master": {
+      "source": "huangserva/skill-prompt-generator",
+      "sourceType": "github",
+      "skillPath": ".claude/skills/video-master/SKILL.md",
+      "computedHash": "30e1137be6155c6062d69026cb4547534e6ef97b4a76bff61e86597a17e87af8"
+    }
+  }
+}

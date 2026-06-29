@@ -1,0 +1,892 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Douyin AI Video Studio</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0e1a;
+      --bg-2: #0f172a;
+      --panel: rgba(15, 23, 42, 0.75);
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --line: rgba(148, 163, 184, 0.12);
+      --accent: #3b82f6;
+      --accent-glow: rgba(59, 130, 246, 0.25);
+      --accent-dim: rgba(59, 130, 246, 0.08);
+      --good: #10b981;
+      --warn: #f59e0b;
+      --bad: #ef4444;
+      --shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.4);
+      --max: 1400px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+      color: var(--text);
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      font-weight: 400;
+      letter-spacing: -0.01em;
+      line-height: 1.6;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 1200px;
+      height: 600px;
+      background: radial-gradient(circle at center, var(--accent-glow), transparent 70%);
+      opacity: 0.4;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .shell {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 28px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.4fr 0.9fr;
+      gap: 20px;
+      align-items: stretch;
+      margin-bottom: 20px;
+    }
+
+    .hero-card, .panel, .field, .artifact, .job-card, .stat {
+      backdrop-filter: blur(24px);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-card {
+      border-radius: 24px;
+      padding: 32px;
+      overflow: hidden;
+      position: relative;
+      min-height: 220px;
+    }
+
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      top: -100px;
+      right: -100px;
+      width: 300px;
+      height: 300px;
+      border-radius: 50%;
+      background: radial-gradient(circle, var(--accent-glow), transparent 60%);
+      filter: blur(40px);
+      pointer-events: none;
+      opacity: 0.6;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid rgba(59, 130, 246, 0.2);
+    }
+
+    .hero h1 {
+      margin: 20px 0 12px;
+      font-size: clamp(32px, 4.5vw, 56px);
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      font-weight: 600;
+      max-width: 16ch;
+    }
+
+    .hero p {
+      max-width: 56ch;
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.65;
+      font-weight: 400;
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 22px;
+    }
+
+    .btn, .tab, .icon-btn {
+      border: 1px solid var(--line);
+      background: rgba(15, 23, 42, 0.5);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 10px 18px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .btn:hover, .tab:hover, .icon-btn:hover {
+      transform: translateY(-1px);
+      border-color: var(--accent);
+      background: rgba(59, 130, 246, 0.1);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+    }
+
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+      font-weight: 600;
+    }
+
+    .btn.primary:hover {
+      background: #2563eb;
+      border-color: #2563eb;
+      box-shadow: 0 4px 16px rgba(59, 130, 246, 0.4);
+    }
+
+    .hero-side {
+      display: grid;
+      gap: 14px;
+      grid-template-columns: 1fr;
+    }
+
+    .stat {
+      border-radius: 20px;
+      padding: 20px;
+      min-height: 100px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .stat-value {
+      font-size: 24px;
+      font-weight: 600;
+      margin-top: 8px;
+      color: var(--text);
+    }
+
+    .stat-note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 0.95fr 1.05fr;
+      gap: 20px;
+      align-items: start;
+    }
+
+    .panel {
+      border-radius: 24px;
+      padding: 24px;
+    }
+
+    .panel h2 {
+      margin: 0 0 6px;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .panel .sub {
+      margin: 0 0 20px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .field {
+      border-radius: 16px;
+      padding: 16px;
+      margin-bottom: 16px;
+      transition: border-color 200ms ease;
+    }
+
+    .field:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-dim);
+    }
+
+    .field label {
+      display: block;
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 10px;
+    }
+
+    input, textarea {
+      width: 100%;
+      border: 0;
+      outline: none;
+      resize: vertical;
+      color: var(--text);
+      background: transparent;
+      font: inherit;
+    }
+
+    textarea {
+      min-height: 190px;
+      line-height: 1.7;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      align-items: center;
+    }
+
+    .job-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .job-card {
+      border-radius: 16px;
+      padding: 18px;
+      display: grid;
+      gap: 10px;
+      transition: all 200ms ease;
+    }
+
+    .job-card:hover {
+      border-color: var(--accent);
+      box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
+    }
+
+    .job-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .job-id {
+      font-size: 13px;
+      color: var(--muted);
+      word-break: break-all;
+    }
+
+    .job-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .pill {
+      padding: 4px 12px;
+      border-radius: 999px;
+      background: var(--accent-dim);
+      color: var(--accent);
+      border: 1px solid rgba(59, 130, 246, 0.2);
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .pill.good { color: var(--good); background: rgba(16, 185, 129, 0.08); border-color: rgba(16, 185, 129, 0.2); }
+    .pill.warn { color: var(--warn); background: rgba(245, 158, 11, 0.08); border-color: rgba(245, 158, 11, 0.2); }
+    .pill.bad { color: var(--bad); background: rgba(239, 68, 68, 0.08); border-color: rgba(239, 68, 68, 0.2); }
+
+    .artifact {
+      border-radius: 24px;
+      overflow: hidden;
+      margin-top: 18px;
+    }
+
+    .artifact-header {
+      padding: 18px 18px 0;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 16px 18px 0;
+    }
+
+    .tab.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+      box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+    }
+
+    .artifact-body {
+      padding: 18px;
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #dbe7ff;
+      font-family: "SFMono-Regular", "JetBrains Mono", "Menlo", monospace;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--line);
+      margin: 18px 0;
+    }
+
+    .empty {
+      padding: 20px;
+      border: 1px dashed rgba(148, 163, 184, 0.2);
+      border-radius: 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+      text-align: center;
+    }
+
+    .footer-note {
+      margin: 20px 4px 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 1100px) {
+      .hero, .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="hero-card">
+        <div class="eyebrow">Douyin AI Video Studio · 本地工作台</div>
+        <h1>把抖音技术分享链接，变成可编辑的脚本资产。</h1>
+        <p>
+          这个页面就是你的桌面控制台：贴链接、创建任务、看下载和转写状态、查看原始数据，
+          再把结果喂给 AI 清洗。后面要做成电脑软件时，也可以直接把这一层包成 Electron。
+        </p>
+        <div class="hero-actions">
+          <button class="btn primary" id="btnScrollForm">开始新任务</button>
+          <button class="btn" id="btnRefreshAll">刷新状态</button>
+          <button class="btn" id="btnSeedDemo">填入示例文案</button>
+        </div>
+      </div>
+      <div class="hero-side">
+        <div class="stat">
+          <div class="stat-label">Task Flow</div>
+          <div class="stat-value">Download → ASR → Clean</div>
+          <div class="stat-note">页面直链优先，<code>yt-dlp</code> 兜底，音频抽取后自动转写。</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Mode</div>
+          <div class="stat-value">Local-first</div>
+          <div class="stat-note">数据都落在 <code>storage/</code>，适合本地联调和后续打包成桌面程序。</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <div class="panel">
+        <h2>创建任务</h2>
+        <p class="sub">支持直接填分享链接，也支持把整段分享文案粘进来。创建后会自动进入下载与转写流程。</p>
+        <form id="createForm">
+          <div class="field">
+            <label for="sourceUrl">抖音链接</label>
+            <input id="sourceUrl" name="sourceUrl" placeholder="https://v.douyin.com/..." />
+          </div>
+          <div class="field">
+            <label for="topic">主题</label>
+            <input id="topic" name="topic" placeholder="skills分享 / agent 指令 / AI 工具" />
+          </div>
+          <div class="field">
+            <label for="shareText">分享文案</label>
+            <textarea id="shareText" name="shareText" placeholder="把抖音分享文本贴在这里，系统会自动提取链接和简介。"></textarea>
+          </div>
+          <div class="actions">
+            <button class="btn primary" type="submit">创建任务</button>
+            <button class="btn" type="button" id="btnCopyLast">复制最近任务 ID</button>
+            <span class="muted" id="createHint">还没有任务，先试试右上角的示例文案。</span>
+          </div>
+        </form>
+
+        <div class="divider"></div>
+        <h2>最近任务</h2>
+        <p class="sub">会自动记住你在这台机器上最近打开过的任务，方便像桌面软件一样继续看。</p>
+        <div class="job-list" id="jobList">
+          <div class="empty">还没有历史任务。创建一个任务后，这里会显示任务卡片和实时状态。</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>任务详情</h2>
+        <p class="sub">选中任务后，可以直接看脚本、清洗结果、分享文案、页面信息和转写原文。</p>
+        <div id="detailMeta" class="empty">先在左侧创建一个任务，或者从最近任务里点开一条记录。</div>
+
+        <div class="artifact" id="artifactShell" style="display:none;">
+          <div class="artifact-header">
+            <div class="job-meta" id="artifactMeta"></div>
+          </div>
+          <div class="tabs">
+            <button class="tab active" data-tab="script">脚本</button>
+            <button class="tab" data-tab="cleaned">清洗</button>
+            <button class="tab" data-tab="video-prompts">视频提示词</button>
+            <button class="tab" data-tab="ppt-content">PPT预览</button>
+            <button class="tab" data-tab="raw-share">分享文案</button>
+            <button class="tab" data-tab="raw-page">页面信息</button>
+            <button class="tab" data-tab="raw-transcript">转写</button>
+          </div>
+          <div class="artifact-body">
+            <pre id="artifactPre"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer-note">
+      小提示：这页面已经可以直接当“本地软件界面”用了。后面如果你想真正生成桌面应用，我们再把这个页面包一层 Electron 就行。
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "douyin-ai-video.recent-jobs";
+    const state = {
+      recentJobs: loadRecentJobs(),
+      activeJobId: null,
+      activeTab: "script",
+      jobCache: new Map()
+    };
+
+    const jobList = document.getElementById("jobList");
+    const detailMeta = document.getElementById("detailMeta");
+    const artifactShell = document.getElementById("artifactShell");
+    const artifactMeta = document.getElementById("artifactMeta");
+    const artifactPre = document.getElementById("artifactPre");
+    const createHint = document.getElementById("createHint");
+
+    document.getElementById("btnScrollForm").addEventListener("click", () => {
+      document.getElementById("sourceUrl").focus();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+
+    document.getElementById("btnRefreshAll").addEventListener("click", async () => {
+      await refreshAllJobs();
+      if (state.activeJobId) {
+        await loadJobDetails(state.activeJobId, state.activeTab);
+      }
+    });
+
+    document.getElementById("btnSeedDemo").addEventListener("click", () => {
+      document.getElementById("sourceUrl").value = "https://v.douyin.com/MtrrFe2Vtyo/";
+      document.getElementById("topic").value = "skills分享";
+      document.getElementById("shareText").value = "6.41 03/19 z@g.Ok MWm:/ :2pm 这是一个 Anthropic 官方出品的 Skills 技能包，专门解决一个问题：让 AI 会干文档活。 它覆盖了我们最常用最耗时间的文档操作：自动生成 Word 报告、提取 PDF 文档内容、创建 PPT 幻灯片、清洗整理 Excel 表格数据。一句话概括：你原来要自己点半天的办公操作，现在可以直接交给 AI。 # AI工具 # Skills # AI教程 # 办公提效  https://v.douyin.com/MtrrFe2Vtyo/ 复制此链接，打开Dou音搜索，直接观看视频！";
+      createHint.textContent = "示例已填入，可以直接提交。";
+    });
+
+    document.getElementById("btnCopyLast").addEventListener("click", async () => {
+      const id = state.recentJobs[0];
+      if (!id) {
+        createHint.textContent = "还没有最近任务可复制。";
+        return;
+      }
+      await navigator.clipboard.writeText(id);
+      createHint.textContent = "已复制最近任务 ID。";
+    });
+
+    document.getElementById("createForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const sourceUrl = document.getElementById("sourceUrl").value.trim();
+      const shareText = document.getElementById("shareText").value.trim();
+      const topic = document.getElementById("topic").value.trim();
+
+      if (!sourceUrl && !shareText) {
+        createHint.textContent = "至少输入链接或分享文案中的一种。";
+        return;
+      }
+
+      // 创建进度显示容器
+      createHint.innerHTML = `
+        <div style="padding: 8px; background: var(--accent-dim); border-radius: 8px; border: 1px solid var(--accent);">
+          <div id="progressStatus" style="font-weight: 600; color: var(--accent); margin-bottom: 4px;">⏳ 正在创建任务...</div>
+          <div id="progressDetail" style="font-size: 12px; color: var(--muted);"></div>
+        </div>
+      `;
+
+      const progressStatus = document.getElementById("progressStatus");
+      const progressDetail = document.getElementById("progressDetail");
+
+      try {
+        progressStatus.textContent = "📡 正在提交任务...";
+        progressDetail.textContent = "连接到服务器";
+
+        const response = await fetch("/api/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sourceUrl, shareText, topic })
+        });
+
+        const payload = await response.json();
+
+        if (!response.ok) {
+          createHint.innerHTML = `<span style="color: var(--bad);">❌ 创建失败：${payload.message || "未知错误"}</span>`;
+          return;
+        }
+
+        const job = payload.job;
+        state.recentJobs = [job.id, ...state.recentJobs.filter((id) => id !== job.id)].slice(0, 8);
+        persistRecentJobs(state.recentJobs);
+        state.activeJobId = job.id;
+        state.activeTab = "script";
+
+        // 开始轮询任务进度
+        progressStatus.textContent = "✅ 任务已创建";
+        progressDetail.textContent = `任务 ID: ${job.id.slice(0, 8)}...`;
+
+        renderJobList();
+        await pollJobProgress(job.id, progressStatus, progressDetail);
+
+      } catch (error) {
+        createHint.innerHTML = `<span style="color: var(--bad);">❌ 网络错误：${error.message}</span>`;
+      }
+    });
+
+    // 轮询任务进度
+    async function pollJobProgress(jobId, statusEl, detailEl) {
+      const stageMessages = {
+        "submitted": "📝 已提交",
+        "parsed": "✅ 解析完成",
+        "downloading": "⬇️ 正在下载视频...",
+        "downloaded": "✅ 视频下载完成",
+        "audio_extracted": "🎵 音频提取完成",
+        "transcribing": "🎤 正在转写语音...",
+        "cleaned": "🤖 AI 正在清洗内容...",
+        "scripted": "📄 脚本生成完成",
+        "rendered": "🎬 已完成渲染",
+        "failed": "❌ 任务失败"
+      };
+
+      const detailMessages = {
+        "submitted": "任务队列中",
+        "parsed": "已解析分享文案",
+        "downloading": "下载中，请耐心等待...",
+        "downloaded": "视频文件已保存",
+        "audio_extracted": "音频已分离",
+        "transcribing": "ASR 转写中...",
+        "cleaned": "使用 DeepSeek AI 优化脚本",
+        "scripted": "正在生成视频提示词和 PPT...",
+        "rendered": "所有内容已生成完毕",
+        "failed": "查看任务详情了解错误信息"
+      };
+
+      let attempts = 0;
+      const maxAttempts = 60; // 最多轮询 60 次（约 60 秒）
+
+      const poll = async () => {
+        if (attempts >= maxAttempts) {
+          statusEl.textContent = "⏱️ 任务仍在处理中";
+          detailEl.textContent = "刷新页面查看最新状态";
+          return;
+        }
+
+        attempts++;
+
+        try {
+          const response = await fetch(`/api/jobs/${jobId}`);
+          if (!response.ok) {
+            throw new Error("无法获取任务状态");
+          }
+
+          const data = await response.json();
+          const job = data.job;
+
+          statusEl.textContent = stageMessages[job.stage] || job.stage;
+          detailEl.textContent = detailMessages[job.stage] || `当前阶段: ${job.stage}`;
+
+          // 显示错误信息
+          if (job.downloadErrorMessage) {
+            detailEl.textContent += ` | 下载提示: ${job.downloadErrorMessage.slice(0, 50)}...`;
+          }
+          if (job.transcriptErrorMessage) {
+            detailEl.textContent += ` | 转写提示: ${job.transcriptErrorMessage.slice(0, 50)}...`;
+          }
+
+          // 更新任务列表
+          state.jobCache.set(jobId, job);
+          renderJobList();
+
+          // 任务完成或失败时停止轮询
+          if (job.status === "done" || job.status === "failed") {
+            if (job.status === "done") {
+              statusEl.textContent = "🎉 任务完成！";
+              detailEl.textContent = "点击右侧查看生成的脚本、视频提示词和 PPT";
+            } else {
+              statusEl.textContent = "❌ 任务失败";
+              detailEl.textContent = job.errorMessage || "查看任务详情了解详情";
+            }
+            await loadJobDetails(jobId, state.activeTab);
+            return;
+          }
+
+          // 继续轮询
+          setTimeout(poll, 1000);
+        } catch (error) {
+          statusEl.textContent = "⚠️ 状态查询失败";
+          detailEl.textContent = error.message;
+        }
+      };
+
+      poll();
+    }
+
+    async function refreshAllJobs() {
+      const ids = [...state.recentJobs];
+      await Promise.all(ids.map((id) => loadJobSummary(id).catch(() => null)));
+      renderJobList();
+    }
+
+    async function loadJobSummary(id) {
+      const response = await fetch("/api/jobs/" + id);
+      if (!response.ok) {
+        throw new Error("job not found");
+      }
+      const payload = await response.json();
+      state.jobCache.set(id, payload.job);
+    }
+
+    async function loadJobDetails(id, tab = state.activeTab) {
+      state.activeJobId = id;
+      state.activeTab = tab;
+
+      const job = await loadJobSummary(id).then(() => state.jobCache.get(id));
+      if (!job) {
+        detailMeta.className = "empty";
+        detailMeta.textContent = "任务不存在或已被删除。";
+        return;
+      }
+
+      detailMeta.className = "";
+      artifactShell.style.display = "block";
+      detailMeta.innerHTML = renderJobMeta(job);
+      const reloadBtn = document.getElementById("btnReloadActive");
+      if (reloadBtn) {
+        reloadBtn.addEventListener("click", () => loadJobDetails(id, state.activeTab));
+      }
+
+      updateActiveTabs();
+      await loadArtifact(tab, id);
+      renderJobList();
+    }
+
+    async function loadArtifact(tab, id) {
+      artifactPre.textContent = "加载中...";
+      const routeMap = {
+        script: "/api/jobs/" + id + "/script",
+        cleaned: "/api/jobs/" + id + "/cleaned",
+        "video-prompts": "/api/jobs/" + id + "/video-prompts",
+        "ppt-content": "/api/jobs/" + id + "/ppt-content",
+        "raw-share": "/api/jobs/" + id + "/raw-share",
+        "raw-page": "/api/jobs/" + id + "/raw-page",
+        "raw-transcript": "/api/jobs/" + id + "/raw-transcript"
+      };
+
+      try {
+        const response = await fetch(routeMap[tab]);
+        const text = await response.text();
+        if (!response.ok) {
+          artifactPre.textContent = text;
+          return;
+        }
+
+        // 特殊处理 PPT 内容，添加下载按钮
+        if (tab === "ppt-content") {
+          const data = JSON.parse(text);
+          if (data.pptPath) {
+            const downloadBtn = document.createElement("div");
+            downloadBtn.style.cssText = "margin-bottom: 16px; padding: 12px; background: var(--accent-dim); border-radius: 12px; border: 1px solid var(--accent);";
+            downloadBtn.innerHTML = `
+              <a href="/api/jobs/${id}/ppt/download"
+                 download
+                 style="color: var(--accent); text-decoration: none; font-weight: 600;">
+                📥 下载 PPT 文件 (${data.pptStyle})
+              </a>
+            `;
+            artifactPre.parentElement.insertBefore(downloadBtn, artifactPre);
+          }
+        }
+
+        artifactPre.textContent = formatPrettyJson(text);
+      } catch (error) {
+        artifactPre.textContent = String(error);
+      }
+    }
+
+    function formatPrettyJson(text) {
+      try {
+        return JSON.stringify(JSON.parse(text), null, 2);
+      } catch {
+        return text;
+      }
+    }
+
+    function updateActiveTabs() {
+      document.querySelectorAll(".tab").forEach((button) => {
+        button.classList.toggle("active", button.dataset.tab === state.activeTab);
+      });
+    }
+
+    document.querySelectorAll(".tab").forEach((button) => {
+      button.addEventListener("click", async () => {
+        if (!state.activeJobId) return;
+        state.activeTab = button.dataset.tab;
+        updateActiveTabs();
+        await loadArtifact(state.activeTab, state.activeJobId);
+      });
+    });
+
+    function renderJobMeta(job) {
+      const chips = [];
+      chips.push('<span class="pill">' + escapeHtml(job.status) + '</span>');
+      chips.push('<span class="pill">' + escapeHtml(job.stage) + '</span>');
+      if (job.downloadErrorMessage) chips.push('<span class="pill bad">下载有提示</span>');
+      if (job.transcriptPath) chips.push('<span class="pill good">已转写</span>');
+      if (job.audioPath) chips.push('<span class="pill">有音频</span>');
+      return [
+        '<div class="job-head">',
+        '<div>',
+        '<div class="job-id">' + escapeHtml(job.id) + '</div>',
+        '<div class="job-meta">' + chips.join('') + '</div>',
+        '</div>',
+        '<button class="icon-btn" id="btnReloadActive">重新加载</button>',
+        '</div>',
+        '<div class="divider"></div>',
+        '<div class="job-meta">',
+        '<span>topic: ' + escapeHtml(job.topic || '未填写') + '</span>',
+        '<span>source: ' + escapeHtml(job.sourceUrl) + '</span>',
+        '</div>',
+        job.downloadErrorMessage ? '<div class="empty" style="margin-top:12px;">下载提示：' + escapeHtml(job.downloadErrorMessage) + '</div>' : '',
+        job.audioErrorMessage ? '<div class="empty" style="margin-top:12px;">音频提示：' + escapeHtml(job.audioErrorMessage) + '</div>' : '',
+        job.transcriptErrorMessage ? '<div class="empty" style="margin-top:12px;">转写提示：' + escapeHtml(job.transcriptErrorMessage) + '</div>' : ''
+      ].join('');
+    }
+
+    function renderJobList() {
+      if (!state.recentJobs.length) {
+        jobList.innerHTML = '<div class="empty">还没有历史任务。创建一个任务后，这里会显示任务卡片和实时状态。</div>';
+        return;
+      }
+
+      jobList.innerHTML = state.recentJobs.map((id) => {
+        const job = state.jobCache.get(id);
+        if (!job) {
+          return `
+            <div class="job-card">
+              <div class="job-head">
+                <div>
+                  <div class="job-id">${escapeHtml(id)}</div>
+                  <div class="job-meta"><span class="pill warn">点击加载</span></div>
+                </div>
+                <button class="icon-btn" data-open-job="${escapeHtml(id)}">打开</button>
+              </div>
+            </div>`;
+        }
+
+        return `
+          <div class="job-card">
+            <div class="job-head">
+              <div>
+                <div class="job-id">${escapeHtml(job.id)}</div>
+                <div class="job-meta">
+                  <span class="pill">${escapeHtml(job.status)}</span>
+                  <span class="pill">${escapeHtml(job.stage)}</span>
+                  ${job.transcriptPath ? '<span class="pill good">转写已完成</span>' : ''}
+                </div>
+              </div>
+              <button class="icon-btn" data-open-job="${escapeHtml(job.id)}">打开</button>
+            </div>
+            <div class="muted">${escapeHtml(job.topic || "未填写主题")}</div>
+            <div class="muted" style="font-size:12px;">${escapeHtml(job.sourceUrl || "")}</div>
+          </div>`;
+      }).join('');
+
+      document.querySelectorAll("[data-open-job]").forEach((button) => {
+        button.addEventListener("click", () => loadJobDetails(button.dataset.openJob, state.activeTab));
+      });
+    }
+
+    function persistRecentJobs(ids) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(ids));
+    }
+
+    function loadRecentJobs() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    renderJobList();
+    refreshAllJobs();
+    if (state.recentJobs[0]) {
+      loadJobDetails(state.recentJobs[0]).catch(() => null);
+    }
+  </script>
+</body>
+</html>

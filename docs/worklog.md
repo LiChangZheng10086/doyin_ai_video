@@ -1,0 +1,56 @@
+# 工作日志
+
+> 规则：每次完成一轮操作后，只追加简短记录；下次开始新任务前，先看这份文件，再决定是否需要补充上下文。
+
+## 当前状态
+
+- 项目：AI 技术分享短视频生成器
+- 当前形态：TypeScript + Express 的本地开发骨架
+- 已有能力：本地存储、任务模型、抖音分享文本解析、网页工作台、AI 清洗层（支持 DeepSeek / fallback）、脚本草稿生成、视频下载与音频抽取基础设施（页面直链优先，yt-dlp 兜底）、ASR 转写基础设施、**视频场景增强（video-master）**、**PPT 自动生成（ppt-generator-skill）**
+- 当前接口：
+  - `GET /health`
+  - `POST /api/jobs`
+  - `GET /api/jobs/:id`
+  - `GET /api/jobs/:id/script`
+  - `GET /api/jobs/:id/raw-share`
+  - `GET /api/jobs/:id/raw-page`
+  - `GET /api/jobs/:id/raw-transcript`
+  - **`GET /api/jobs/:id/video-prompts`** (新增)
+  - **`GET /api/jobs/:id/ppt-content`** (新增)
+  - **`GET /api/jobs/:id/ppt/download`** (新增)
+- 本地存储目录：`storage/`
+- 当前待办：测试双路增强功能、优化 AI 提示词质量、视频渲染、桌面打包壳
+
+## 最近操作
+
+- 2026-06-29：集成 video-master 和 ppt-generator-skill，实现双路输出：AI 清洗后并行生成视频场景提示词和 PPT 内容；新增 `video-enhancer.ts`、`ppt-generator.ts` 模块；扩展 `ScriptAsset` 类型支持 `videoPrompts`、`enhancedScenes`、`pptContent`、`pptPath` 字段；新增 3 个 API 接口；前端工作台新增「视频提示词」和「PPT预览」标签页。
+- 2026-05-28：修复前端打开后服务崩溃的问题，缺失的历史任务 JSON 现在返回 404，不再导致 Express 进程退出；服务已改用 `screen` 后台会话 `douyin-dev` 启动并验证首页 200。
+- 2026-05-28：排查前端页面无法打开，确认原因是 `localhost:3100` 服务已停止；已重新执行 `npm run dev` 启动，`/health` 和首页 `/` 均验证通过。
+- 2026-05-28：用抖音样本 `xKR5ata208I` 完成端到端测试，视频下载、音频抽取、DeepSeek 清洗和脚本生成均成功；当前未配置 ASR key，因此未生成转写。
+- 2026-05-28：修正 AI 清洗产物的 `cleaningMode` 命名，DeepSeek 调用会记录为 `deepseek`，避免误显示为 `openai`。
+- 2026-05-28：新增本地 `.env` 并配置 DeepSeek provider/key（不记录密钥内容）；服务入口已支持启动时加载 `.env`，`npm run check` 和 `/health` 验证通过。
+- 2026-05-28：完成 DeepSeek/API key 安全检查，当前项目未发现真实 `sk-*` 密钥；`.env.example` 仅保留占位符，运行中的本项目开发服务也未检测到相关 key 环境变量。
+- 2026-05-28：检查本机浏览器和自动化进程，未发现内部打开的抖音窗口；Chrome 中也没有 `douyin.com` / `iesdouyin.com` 标签页需要关闭。
+- 2026-05-28：排查前端 `Failed to fetch` 报错，确认根因是本地后端当时未在 `http://localhost:3100` 监听；重新启动后 `POST /api/jobs` 已可正常返回 201。
+- 2026-05-28：完成本地网页工作台验证，主页可直接返回 200，并能作为任务控制台使用。
+- 2026-05-28：新增本地网页工作台，主页可直接创建任务并查看脚本、清洗、分享文案、页面信息和转写结果。
+- 2026-05-28：自测确认在未配置 ASR key 的情况下，音频抽取后会跳过转写但不阻塞，任务仍能完成到 `scripted`。
+- 2026-05-28：补齐 ASR 转写层，新增 `raw/transcripts`、任务转写字段和 `raw-transcript` 接口；无 ASR key 时会跳过转写，不阻塞后续流程。
+- 2026-05-28：接入 `yt-dlp` 视频下载与 `ffmpeg` 音频抽取基础设施，新增媒体路径和失败提示字段，后续可直接接 ASR。
+- 2026-05-28：把下载策略改成和 `douyin_ppt` 一致的“页面直链优先 + `yt-dlp` 兜底”，并修正了页面元数据的落盘路径。
+- 2026-05-28：用同一条抖音样本重新自测，页面直链下载成功，`raw/videos/*.page.json` 也正常落盘。
+- 2026-05-28：用你提供的抖音样本做了自测，确认在缺少 cookies 时会返回明确的下载提示，但任务仍可按分享文本 fallback 完成并记录 `downloadErrorMessage`。
+- 2026-05-28：新增本地工作日志文件，作为后续任务的优先上下文入口。
+- 2026-05-28：完成分享文本解析层，支持从抖音分享文案中提取链接、简介、标签和内容类型。
+- 2026-05-28：完成脚本草稿生成层，能把解析结果整理成口播稿、封面标题和分镜结构。
+- 2026-05-28：完成 AI 清洗层，先接入 OpenAI 兼容接口，后改为支持 DeepSeek provider；未配置 key 时自动回退规则版生成。
+- 2026-05-28：将 AI 清洗层改为可配置 provider，默认支持 DeepSeek OpenAI-compatible 接口，缺少 key 时自动回退规则版生成。
+- 2026-05-28：将 AI provider 默认切到 DeepSeek，并补充了 `.env.example`，方便直接填 key 调试。
+- 2026-05-28：新增抖音网页提取层，记录重定向链、视频 ID 和页面挑战状态，并写入 `raw/page`；后续会让位给“视频下载 + ASR”主链路。
+- 2026-05-28：搭建项目骨架，包含本地存储、任务模型、基础接口和 README 使用说明。
+
+## 记录方式
+
+- 只写结果，不写长过程。
+- 每次新增一条或两条即可，优先写“改了什么”和“影响什么”。
+- 如果某一步有风险或未完成，单独补一条“待确认”。

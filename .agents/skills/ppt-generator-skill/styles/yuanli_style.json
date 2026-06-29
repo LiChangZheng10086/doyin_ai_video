@@ -1,0 +1,84 @@
+{
+    "name": "Minimalist Beauty White Style",
+    "description": "极简美妆/医美风格：纯白背景配黑色粗体中文标题，金色标签点缀，适合产品发布、品牌宣传等高端场景",
+    "version": "1.0",
+    "colors": {
+        "background": {
+            "primary": "#ffffff",
+            "secondary": "#f5f5f5",
+            "gradient": "none"
+        },
+        "text": {
+            "title": "#1a1a1a",
+            "subtitle": "#333333",
+            "body": "#666666",
+            "muted": "#999999"
+        },
+        "accent": {
+            "primary": "#e8c547",
+            "secondary": "#d4af37",
+            "tag_bg": "#e8c547",
+            "tag_text": "#000000"
+        },
+        "block": {
+            "background": "#1a1a1a",
+            "text": "#ffffff"
+        }
+    },
+    "typography": {
+        "title": {
+            "font_family": "PingFang SC, Microsoft YaHei, sans-serif",
+            "font_size_pt": 72,
+            "font_weight": "bold",
+            "text_transform": "none",
+            "letter_spacing": 0
+        },
+        "subtitle": {
+            "font_family": "PingFang SC, Microsoft YaHei, sans-serif",
+            "font_size_pt": 24,
+            "font_weight": "normal"
+        },
+        "body": {
+            "font_family": "PingFang SC, Microsoft YaHei, sans-serif",
+            "font_size_pt": 16,
+            "line_height": 1.8
+        },
+        "tag": {
+            "font_family": "Arial, sans-serif",
+            "font_size_pt": 12,
+            "font_weight": "bold",
+            "text_transform": "uppercase"
+        }
+    },
+    "layouts": {
+        "cover": {
+            "title_position": "center",
+            "background_type": "solid-white",
+            "accent_shape": "circle-bottom-right",
+            "brand_tag": "top-left"
+        },
+        "toc": {
+            "columns": 2,
+            "icon_style": "arrow-bullets",
+            "section_headers": true
+        },
+        "content": {
+            "image_position": "right",
+            "text_position": "left",
+            "image_ratio": 0.5
+        },
+        "product": {
+            "image_focus": true,
+            "overlay_block": "top-left",
+            "model_photos": true
+        }
+    },
+    "elements": {
+        "icons": "minimal-arrows",
+        "borders": "none",
+        "shadows": "subtle",
+        "rounded_corners": false,
+        "brand_tag": "yellow-rectangle-top-left",
+        "navigation": "arrow-bottom-right"
+    }
+}

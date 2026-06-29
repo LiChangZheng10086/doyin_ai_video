@@ -1,0 +1,94 @@
+{
+    "name": "Academic Blue White Style",
+    "description": "学术商业风格：纯白背景配深蓝标题，红色强调，适合专业报告、学术分享、商业策略演示",
+    "version": "1.0",
+    "colors": {
+        "background": {
+            "primary": "#ffffff",
+            "secondary": "#f8f9fa",
+            "card": "#f0f4f8"
+        },
+        "text": {
+            "title": "#1e3a5f",
+            "subtitle": "#2c5282",
+            "body": "#4a5568",
+            "muted": "#718096"
+        },
+        "accent": {
+            "primary": "#c53030",
+            "secondary": "#e53e3e",
+            "highlight": "#c53030",
+            "link": "#2b6cb0"
+        },
+        "diagram": {
+            "box_border": "#2c5282",
+            "box_fill": "#edf2f7",
+            "arrow": "#4a5568",
+            "highlight_box": "#c53030"
+        }
+    },
+    "typography": {
+        "title": {
+            "font_family": "PingFang SC, Microsoft YaHei, Arial, sans-serif",
+            "font_size_pt": 36,
+            "font_weight": "bold",
+            "color": "#1e3a5f"
+        },
+        "subtitle": {
+            "font_family": "PingFang SC, Microsoft YaHei, Arial, sans-serif",
+            "font_size_pt": 18,
+            "font_weight": "normal",
+            "color": "#4a5568"
+        },
+        "body": {
+            "font_family": "PingFang SC, Microsoft YaHei, Arial, sans-serif",
+            "font_size_pt": 14,
+            "line_height": 1.6
+        },
+        "english": {
+            "font_family": "Arial, Helvetica, sans-serif",
+            "font_size_pt": 12,
+            "font_style": "italic"
+        },
+        "highlight": {
+            "font_weight": "bold",
+            "color": "#c53030",
+            "underline": true
+        }
+    },
+    "layouts": {
+        "cover": {
+            "title_position": "center-top",
+            "illustration": "center",
+            "credits": "bottom-center"
+        },
+        "comparison": {
+            "columns": 2,
+            "separator": "vertical-line",
+            "diagram_style": "flowchart"
+        },
+        "data": {
+            "chart_style": "bar-horizontal",
+            "color_scheme": [
+                "#2c5282",
+                "#c53030"
+            ],
+            "labels": "bilingual"
+        },
+        "framework": {
+            "diagram_type": "nested-boxes",
+            "arrow_style": "right-pointing"
+        }
+    },
+    "elements": {
+        "diagrams": true,
+        "flowcharts": true,
+        "bilingual_labels": true,
+        "key_insight_box": {
+            "border": "#c53030",
+            "background": "#fff5f5",
+            "prefix": "关键洞察："
+        },
+        "source_citation": "bottom-right"
+    }
+}
