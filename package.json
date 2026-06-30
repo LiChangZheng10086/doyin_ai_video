@@ -2,21 +2,40 @@
   "name": "douyin-ai-video",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
+  "main": "dist-electron/main.js",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.json",
+    "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:electron\"",
+    "dev:renderer": "vite",
+    "dev:electron": "tsc -p tsconfig.electron.json && cross-env NODE_ENV=development electron .",
+    "build": "npm run build:renderer && npm run build:electron && npm run build:backend",
+    "build:renderer": "vite build",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:backend": "tsc -p tsconfig.json",
+    "package": "npm run build && electron-builder",
+    "package:mac": "npm run build && electron-builder --mac",
+    "package:win": "npm run build && electron-builder --win",
     "start": "node dist/server.js",
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "express": "^4.21.2",
-    "openai": "^4.104.0"
+    "openai": "^4.104.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",
     "@types/node": "^22.15.21",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "concurrently": "^10.0.3",
+    "cross-env": "^10.1.0",
+    "electron": "^42.5.1",
+    "electron-builder": "^26.15.3",
     "tsx": "^4.20.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vite": "^8.1.0",
+    "wait-on": "^9.0.10"
   }
 }
