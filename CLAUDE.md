@@ -1,109 +1,345 @@
-# AI 视频二创工具 — douyin_ppt
+# 抖音 AI 视频助手
 
-## 项目概述
+一个基于 Electron + React 的桌面应用，用于从抖音视频链接或分享文本生成 AI 洗稿内容、视频提示词和 PPT。
 
-输入抖音分享链接、上传视频或纯文案，自动提取/接收文案 → AI Agent 清洗整理 → 生成 PPT + 演讲稿 + 配音 + Remotion 竖屏视频。
-
-## 项目结构
+## 项目架构
 
 ```
-douyin_ppt/
-├── backend/                  # FastAPI 后端
-│   ├── app/
-│   │   ├── api/              # tasks.py, events.py
-│   │   ├── core/             # config, database, utils
-│   │   ├── models/           # Task ORM + Pydantic schemas
-│   │   ├── services/         # pipeline, downloader, asr, tts, remotion
-│   │   └── agents/           # cleaner, writer, ppt_generator
-│   ├── remotion/             # Remotion 视频渲染（1080×1920）
-│   ├── data/                 # DB + 输出（gitignored）
-│   ├── main.py
-│   └── requirements.txt
-├── frontend/                 # Vue 3 + Vite
+douyin/
+├── src/                      # 后端服务（Node.js + Express）
+│   ├── app.ts               # Express 应用配置
+│   ├── server.ts            # HTTP 服务器入口
+│   ├── lib/                 # 核心业务逻辑
+│   │   ├── jobs.ts          # 任务管理器
+│   │   ├── cleaner.ts       # 内容清洗
+│   │   ├── storage.ts       # 文件存储
+│   │   ├── media.ts         # 视频/音频处理
+│   │   └── asr.ts           # 语音识别（ASR）
+│   └── types.ts             # TypeScript 类型定义
+│
+├── renderer/                 # 前端界面（React + Vite）
 │   ├── src/
-│   │   ├── api/index.ts
-│   │   ├── stores/task.ts    # Pinia + SSE
-│   │   └── views/            # Home.vue, History.vue
-│   ├── nginx.conf            # Docker 生产 /api 反代
+│   │   ├── main.tsx         # React 入口
+│   │   ├── App.tsx          # 应用路由
+│   │   ├── pages/           # 页面组件
+│   │   │   ├── HomePage.tsx        # 首页（任务列表）
+│   │   │   ├── JobDetailPage.tsx   # 任务详情
+│   │   │   └── SettingsPage.tsx    # 设置页面
+│   │   ├── components/      # 通用组件
+│   │   │   ├── Layout.tsx
+│   │   │   ├── JobCard.tsx
+│   │   │   └── CreateJobDialog.tsx
+│   │   ├── services/        # API 服务层
+│   │   │   └── api.ts
+│   │   ├── store/           # 状态管理（Zustand）
+│   │   │   └── useAppStore.ts
+│   │   └── types/           # 前端类型定义
+│   │       └── index.ts
 │   └── vite.config.ts
-├── docker-compose.yml
-├── .env.example
-└── PROJECT_PLAN.md
+│
+├── electron/                 # Electron 主进程
+│   └── main.ts              # 主进程入口
+│
+└── dist/                     # 编译输出
+    ├── server.js            # 后端编译产物
+    └── renderer/            # 前端编译产物
 ```
 
 ## 技术栈
 
-- **后端**: Python 3.13, FastAPI, SQLAlchemy + aiosqlite, LangChain, DeepSeek API
-- **Agent**: cleaner（清洗+大纲）、writer（内容+演讲稿）、ppt_generator（程序化 PPT）
-- **ASR**: faster-whisper (medium, int8)
-- **TTS**: edge-tts
-- **视频**: Remotion 4.x（React/TS，竖屏 1080×1920）
-- **前端**: Vue 3, Vite, Pinia, Element Plus
-- **流式**: SSE（agent_token, stage_change, error）
-
-## 任务状态流转
-
-```
-waiting → downloading → transcribing → cleaning → confirm_1
-→ writing → confirm_2 → generating → generating_video → completed
-任何阶段可 → failed
-```
-
-## 常用命令
-
 ### 后端
-
-```bash
-cd backend
-source .venv/bin/activate
-uvicorn main:app --reload   # 默认 8000
-```
-
-### Remotion（本地调试渲染）
-
-```bash
-cd backend/remotion
-npm install   # 首次
-REMOTION_CHROME_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  npx remotion render src/index.ts TechVideo output/test.mp4 --props=props.json
-```
+- **运行时**: Node.js 18+
+- **框架**: Express 4
+- **语言**: TypeScript
+- **依赖**:
+  - `axios` - HTTP 客户端
+  - `openai` - OpenAI API SDK（用于 AI 和 ASR）
+  - `yt-dlp` - 视频下载（外部二进制）
+  - `ffmpeg` - 音视频处理（外部二进制）
 
 ### 前端
+- **框架**: React 19
+- **构建工具**: Vite 6
+- **路由**: React Router DOM 7
+- **状态管理**: Zustand 5
+- **样式**: Tailwind CSS（自定义设计系统）
+- **HTTP 客户端**: Axios
 
-```bash
-cd frontend
-npm run dev       # 默认 3000，/api 代理到后端
-npm run build     # vue-tsc + vite build
+### 桌面端
+- **框架**: Electron 34
+- **构建工具**: electron-builder
+
+## 核心功能流程
+
+### 1. 任务创建与处理
+
+```
+用户输入（URL 或分享文本）
+    ↓
+前端 → POST /api/jobs → 后端
+    ↓
+任务队列（Jobs Manager）
+    ↓
+处理流程：
+    1. 下载视频（yt-dlp）
+    2. 提取音频（ffmpeg）
+    3. 语音转录（Whisper API，可选）
+    4. 内容清洗（AI 洗稿）
+    5. 生成视频提示词（AI）
+    6. 生成 PPT 内容（AI，可选）
+    ↓
+存储结果到文件系统
+    ↓
+前端轮询 → GET /api/jobs/:id → 获取状态更新
 ```
 
-### Docker
+### 2. 数据存储结构
 
-```bash
-docker compose up --build
+所有数据存储在：`~/Documents/抖音AI视频/`
+
+```
+抖音AI视频/
+├── raw/                      # 原始数据
+│   ├── videos/              # 下载的视频文件
+│   ├── audio/               # 提取的音频文件
+│   ├── transcripts/         # 转录文本（JSON）
+│   ├── page/                # 页面元数据
+│   └── text/                # 分享文本
+│
+├── processed/               # 处理后的数据
+│   ├── scripts/             # 脚本资产（JSON）
+│   ├── cleaned/             # 清洗后的内容（JSON）
+│   ├── scenes/              # 场景数据
+│   └── subtitles/           # 字幕文件
+│
+├── output/                  # 输出产物
+│   └── ppt/                 # 生成的 PPT 文件
+│
+└── logs/                    # 日志文件
 ```
 
-## 关键模式
+### 3. 任务状态流转
 
-### SSE 流式
+```
+queued          # 排队中
+    ↓
+processing      # 处理中
+    ↓ (各个阶段)
+    - downloading        # 下载视频
+    - extracting        # 提取音频
+    - transcribing      # 语音转录
+    - cleaning          # 内容清洗
+    - generating-video-prompts  # 生成视频提示词
+    - generating-ppt    # 生成 PPT
+    ↓
+done / failed   # 完成 / 失败
+```
 
-- 前端 `EventSource` → `/api/tasks/{taskId}/events`
-- Agent `astream()` 推送 `agent_token`
-- 流水线推送 `stage_change`；前端 store 实时更新状态
+## API 接口
 
-### 下载 Fallback
+### 任务管理
+- `POST /api/jobs` - 创建任务
+- `GET /api/jobs` - 获取任务列表
+- `GET /api/jobs/:id` - 获取任务详情
 
-Layer 1: `api_parser.py` 解析抖音页面 → Layer 2: 用户上传视频
+### 内容获取
+- `GET /api/jobs/:id/script` - 获取脚本资产
+- `GET /api/jobs/:id/cleaned` - 获取清洗后的内容
+- `GET /api/jobs/:id/raw-transcript` - 获取原始转录
+- `GET /api/jobs/:id/video-prompts` - 获取视频提示词
+- `GET /api/jobs/:id/ppt-content` - 获取 PPT 内容
+- `GET /api/jobs/:id/download-ppt` - 下载 PPT 文件
 
-### 环境变量
+## 数据类型定义
 
-`DEEPSEEK_API_KEY` 从 `backend/.env` 加载（见 `.env.example`）。未配置时 AI 阶段失败，启动日志会警告。
+### Job（任务）
+```typescript
+{
+  id: string;
+  sourceUrl?: string;        // 视频链接
+  shareText?: string;        // 分享文本
+  topic?: string;            // 主题
+  status: 'queued' | 'processing' | 'done' | 'failed';
+  stage: JobStage;           // 当前处理阶段
+  progress?: number;         // 进度百分比
+  error?: string;            // 错误信息
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  storagePath?: string;      // 存储路径
+}
+```
 
-### 主题
+### CleanedScript（清洗后的内容）
+```typescript
+{
+  jobId: string;
+  sourceUrl: string;
+  topic?: string;
+  transcriptText?: string;   // 转录文本（从 raw-transcript）
+  output: {
+    title: string;           // 标题
+    rawText: string;         // 原始文本（分享文本）
+    cleanScript: string;     // 清洗后的脚本
+    tags: string[];          // 标签
+    videoPrompts: string[];  // 视频提示词数组
+    pptContent?: any;        // PPT 内容
+    enhancedScenes?: any[];  // 增强场景
+    voiceoverScript?: string;// 配音脚本
+  };
+}
+```
 
-三套主题 ID：`tech_blue` / `clean_white` / `warm_orange`，PPT 与 Remotion 视频共用。
+## 配置管理
 
-## 目录说明
+配置文件位置：`~/.douyin-ai-video/config.json`
 
-- `backend/data/` — 运行时 videos/ audios/ ppts/ uploads/
-- `backend/remotion/` — 独立 Node 项目，后端通过 subprocess 调用
-- `.claude/` — Claude Code 配置与 skills
+### AI 配置
+```json
+{
+  "aiKeys": [
+    {
+      "id": "uuid",
+      "name": "DeepSeek",
+      "provider": "deepseek",
+      "apiKey": "sk-...",
+      "baseURL": "https://api.deepseek.com",
+      "model": "deepseek-chat",
+      "isActive": true
+    }
+  ]
+}
+```
+
+### ASR（语音识别）配置
+```json
+{
+  "asrProvider": "openai",
+  "asrApiKey": "sk-...",
+  "asrBaseURL": "https://api.openai.com/v1",
+  "asrModel": "whisper-1"
+}
+```
+
+## 开发规范
+
+### 1. 代码风格
+- 使用 TypeScript 严格模式
+- 遵循 ESLint 规则
+- 使用 2 空格缩进
+- 优先使用函数式组件（React）
+
+### 2. 提交规范
+遵循 Conventional Commits：
+- `feat:` - 新功能
+- `fix:` - Bug 修复
+- `refactor:` - 重构
+- `docs:` - 文档更新
+- `style:` - 代码格式调整
+- `test:` - 测试相关
+
+### 3. 类型安全
+- 前后端共享类型定义在 `src/types.ts`
+- 前端有独立的扩展类型在 `renderer/src/types/index.ts`
+- API 响应必须有明确的类型定义
+
+### 4. 错误处理
+- 后端：统一返回 `{ message: string }` 错误格式
+- 前端：显示用户友好的错误提示
+- 区分"加载失败"和"内容不存在"
+
+## 构建与运行
+
+### 开发模式
+```bash
+# 安装依赖
+npm install
+
+# 启动后端服务（监听 59380 端口）
+npm run dev:server
+
+# 启动前端开发服务器
+npm run dev:renderer
+
+# 启动 Electron
+npm run dev:electron
+```
+
+### 生产构建
+```bash
+# 构建后端
+npm run build:server
+
+# 构建前端
+npm run build:renderer
+
+# 打包 Electron 应用
+npm run package        # 当前平台
+npm run package:mac    # macOS
+npm run package:win    # Windows
+```
+
+### 类型检查
+```bash
+npm run check
+```
+
+## 关键注意事项
+
+### 1. 数据来源区分
+- **视频转录**：从视频音频提取的真实内容（需要配置 ASR）
+- **分享文本**：用户输入的分享文本（后备方案）
+- 前端必须清晰区分这两种数据来源
+
+### 2. 状态类型一致性
+- 前后端统一使用 `'done'` 表示完成状态（不是 `'completed'`）
+- JobStage 的 `'done'` 和 JobStatus 的 `'done'` 是不同的概念
+
+### 3. 内容加载策略
+- 优先加载 `cleaned` 数据（包含所有处理结果）
+- `script` 数据已废弃，不再使用
+- 转录文本通过专用端点 `/raw-transcript` 获取
+
+### 4. UI/UX 原则
+- 明确区分"未配置"、"加载失败"、"内容不存在"三种状态
+- 错误提示要包含解决方案或后续步骤
+- 避免截断内容显示（移除不必要的 max-height）
+
+## 已知问题与改进方向
+
+### 待优化
+1. PPT 生成功能尚未完全实现
+2. 本地 Whisper 支持需要进一步测试
+3. 任务队列没有持久化（重启后丢失）
+4. 缺少任务重试机制
+
+### 计划功能
+1. 批量导入任务
+2. 导出为 Markdown/Word
+3. 自定义 AI 提示词模板
+4. 任务历史记录搜索
+
+## 故障排查
+
+### 转录功能不工作
+1. 检查 ASR 配置是否正确（设置页面）
+2. 验证 API Key 是否有效
+3. 查看 `raw/transcripts/` 目录是否生成文件
+4. 检查后端日志中的错误信息
+
+### 视频下载失败
+1. 确认 yt-dlp 二进制文件存在
+2. 检查网络连接和代理设置
+3. 验证抖音链接格式是否正确
+4. 查看 cookies 配置（可能需要登录态）
+
+### 前端无法连接后端
+1. 确认后端服务运行在端口 59380
+2. 检查防火墙设置
+3. 验证 `window.electron.getServerPort()` 返回正确端口
+
+---
+
+**最后更新**: 2026-06-30  
+**维护者**: Claude Code  
+**仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git
