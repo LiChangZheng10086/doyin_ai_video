@@ -16,6 +16,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
   const [error, setError] = useState('');
 
   const addJob = useAppStore((state) => state.addJob);
+  const setJobs = useAppStore((state) => state.setJobs);
 
   if (!isOpen) return null;
 
@@ -43,8 +44,17 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
         params.shareText = shareText.trim();
       }
 
-      const job = await apiClient.createJob(params);
-      addJob(job);
+      await apiClient.createJob(params);
+
+      // 立即刷新任务列表，确保新任务显示
+      try {
+        const response = await apiClient.get('/jobs');
+        if (response.data?.jobs) {
+          setJobs(response.data.jobs);
+        }
+      } catch (refreshError) {
+        console.error('Failed to refresh jobs:', refreshError);
+      }
 
       // 重置表单
       setSourceUrl('');
