@@ -9,6 +9,7 @@ interface JobCardProps {
 const statusConfig = {
   queued: { label: '排队中', color: 'bg-blue-50 text-blue-700 border-blue-200' },
   processing: { label: '处理中', color: 'bg-amber-50 text-amber-700 border-amber-200' },
+  done: { label: '已完成', color: 'bg-green-50 text-green-700 border-green-200' },
   completed: { label: '已完成', color: 'bg-green-50 text-green-700 border-green-200' },
   failed: { label: '失败', color: 'bg-red-50 text-red-700 border-red-200' },
 };
@@ -27,7 +28,10 @@ const stageConfig: Record<string, string> = {
 };
 
 export function JobCard({ job, onClick }: JobCardProps) {
-  const statusInfo = statusConfig[job.status];
+  const statusInfo = statusConfig[job.status as keyof typeof statusConfig] || {
+    label: job.status,
+    color: 'bg-gray-50 text-gray-700 border-gray-200'
+  };
   const stageLabel = stageConfig[job.stage] || job.stage;
 
   const formatDate = (dateString: string) => {
