@@ -61,6 +61,13 @@ class ApiClient {
     return response.data.cleaned!;
   }
 
+  // 获取原始转录文本
+  async getJobRawTranscript(id: string): Promise<any> {
+    const client = await this.getClient();
+    const response = await client.get<ApiResponse>(`/api/jobs/${id}/raw-transcript`);
+    return response.data;
+  }
+
   // 获取视频提示词
   async getJobVideoPrompts(id: string): Promise<any> {
     const client = await this.getClient();
