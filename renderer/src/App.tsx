@@ -1,48 +1,79 @@
-import { useEffect, useState } from 'react';
+import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { JobListPage } from './pages/JobListPage';
+import { SettingsPage } from './pages/SettingsPage';
+import { ApiKeyStatusIndicator } from './components/ApiKeyStatusIndicator';
 
-function App() {
-  const [serverPort, setServerPort] = useState<number | null>(null);
-  const [version, setVersion] = useState<string>('');
-
-  useEffect(() => {
-    // 测试 Electron API
-    const loadInfo = async () => {
-      try {
-        const port = await window.electron.getServerPort();
-        const ver = await window.electron.getVersion();
-        setServerPort(port);
-        setVersion(ver);
-      } catch (error) {
-        console.error('Failed to load info:', error);
-      }
-    };
-
-    loadInfo();
-  }, []);
+function Navigation() {
+  const location = useLocation();
 
   return (
-    <div style={{ padding: '20px', fontFamily: 'sans-serif' }}>
-      <h1>🎬 抖音 AI 视频生成器</h1>
-      <p>欢迎使用 Electron 桌面应用！</p>
+    <div className="min-h-screen bg-tech-bg">
+      {/* Header */}
+      <header className="bg-tech-surface border-b border-tech-border shadow-sm">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-8">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-tech-blue to-tech-blue-light rounded-lg flex items-center justify-center text-white text-xl">
+                🎬
+              </div>
+              <div>
+                <h1 className="text-lg font-semibold text-tech-text">
+                  抖音 AI 视频生成器
+                </h1>
+                <p className="text-xs text-tech-muted">智能内容创作平台</p>
+              </div>
+            </div>
 
-      <div style={{ marginTop: '20px', padding: '15px', background: '#f0f0f0', borderRadius: '8px' }}>
-        <h3>系统信息</h3>
-        <p><strong>应用版本：</strong> {version || '加载中...'}</p>
-        <p><strong>后端服务端口：</strong> {serverPort || '加载中...'}</p>
-        <p><strong>后端地址：</strong> {serverPort ? `http://localhost:${serverPort}` : '加载中...'}</p>
-      </div>
+            {/* Navigation */}
+            <nav className="flex items-center gap-1">
+              <Link
+                to="/"
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  location.pathname === '/'
+                    ? 'bg-tech-bg text-tech-text'
+                    : 'text-tech-muted hover:text-tech-text hover:bg-tech-bg'
+                }`}
+              >
+                任务列表
+              </Link>
+              <Link
+                to="/settings"
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  location.pathname === '/settings'
+                    ? 'bg-tech-bg text-tech-text'
+                    : 'text-tech-muted hover:text-tech-text hover:bg-tech-bg'
+                }`}
+              >
+                ⚙️ 设置
+              </Link>
+            </nav>
+          </div>
 
-      <div style={{ marginTop: '20px' }}>
-        <h3>✅ 基础架构已完成</h3>
-        <ul>
-          <li>✅ Electron 主进程</li>
-          <li>✅ React 渲染进程</li>
-          <li>✅ IPC 通信桥接</li>
-          <li>✅ 配置管理系统</li>
-          <li>✅ 嵌入式 Express 服务器（待完善）</li>
-        </ul>
-      </div>
+          <div className="flex items-center gap-4">
+            <ApiKeyStatusIndicator />
+            <span className="text-xs text-tech-muted bg-tech-bg px-3 py-1 rounded-full">
+              v0.1.0
+            </span>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main>
+        <Routes>
+          <Route path="/" element={<JobListPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Routes>
+      </main>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Navigation />
+    </BrowserRouter>
   );
 }
 

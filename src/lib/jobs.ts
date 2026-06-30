@@ -253,6 +253,13 @@ export class JobStore {
     return index[id] ?? null;
   }
 
+  async list() {
+    const index = await this.readIndex();
+    return Object.values(index).sort((a, b) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
   async update(id: string, patch: Partial<Omit<JobRecord, "id" | "createdAt">>) {
     const index = await this.readIndex();
     const current = index[id];

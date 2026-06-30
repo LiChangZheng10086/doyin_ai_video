@@ -9,6 +9,10 @@ export interface ElectronAPI {
   // 配置管理
   getConfig: () => Promise<AppConfig>;
   saveConfig: (config: Partial<AppConfig>) => Promise<void>;
+  testApiKey: (keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) => Promise<{ valid: boolean; error?: string }>;
+  addApiKey: (keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) => Promise<string>;
+  removeApiKey: (keyId: string) => Promise<void>;
+  setActiveApiKey: (keyId: string) => Promise<void>;
 
   // 应用信息
   getVersion: () => Promise<string>;
@@ -22,13 +26,21 @@ export interface ElectronAPI {
   showNotification: (title: string, body: string) => Promise<void>;
 }
 
+export interface AIKeyConfig {
+  id: string;
+  name: string; // 用户自定义名称，如 "我的 DeepSeek"
+  provider: 'deepseek' | 'openai' | 'custom';
+  apiKey: string;
+  baseURL?: string;
+  model: string;
+  isActive: boolean; // 当前使用的 Key
+  isValid?: boolean; // API Key 是否有效
+  lastTested?: string; // 最后测试时间
+}
+
 export interface AppConfig {
   storagePath: string;
-  ai: {
-    provider: 'deepseek' | 'openai';
-    apiKey: string;
-    model: string;
-  };
+  aiKeys: AIKeyConfig[]; // 支持多个 API Key
   app: {
     firstRun: boolean;
     theme: 'light' | 'dark' | 'system';
@@ -45,6 +57,14 @@ contextBridge.exposeInMainWorld('electron', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config: Partial<AppConfig>) =>
     ipcRenderer.invoke('save-config', config),
+  testApiKey: (keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) =>
+    ipcRenderer.invoke('test-api-key', keyConfig),
+  addApiKey: (keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) =>
+    ipcRenderer.invoke('add-api-key', keyConfig),
+  removeApiKey: (keyId: string) =>
+    ipcRenderer.invoke('remove-api-key', keyId),
+  setActiveApiKey: (keyId: string) =>
+    ipcRenderer.invoke('set-active-api-key', keyId),
 
   // 应用信息
   getVersion: () => ipcRenderer.invoke('get-version'),

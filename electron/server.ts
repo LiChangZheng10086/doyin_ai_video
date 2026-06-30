@@ -15,6 +15,9 @@ export async function startServer(): Promise<number> {
       // 加载配置
       const config = await loadConfig();
 
+      // 获取当前活跃的 API Key
+      const activeKey = config.aiKeys.find(key => key.isActive);
+
       // 确定后端模块路径
       const isDev = !electronApp.isPackaged;
       const appModulePath = isDev
@@ -33,10 +36,10 @@ export async function startServer(): Promise<number> {
       const expressApp = await createExpressApp({
         storagePath: config.storagePath,
         rootDir: isDev ? path.join(__dirname, '../..') : electronApp.getAppPath(),
-        aiProvider: config.ai.provider,
-        aiModel: config.ai.model,
-        aiApiKey: config.ai.apiKey,
-        aiBaseURL: config.ai.provider === 'deepseek' ? 'https://api.deepseek.com' : undefined,
+        aiProvider: activeKey?.provider || 'deepseek',
+        aiModel: activeKey?.model || 'deepseek-chat',
+        aiApiKey: activeKey?.apiKey || '',
+        aiBaseURL: activeKey?.baseURL || (activeKey?.provider === 'deepseek' ? 'https://api.deepseek.com' : undefined),
         ytDlpBinary: binaryPaths.ytdlp,
         ffmpegBinary: binaryPaths.ffmpeg,
         asrPythonBinary: binaryPaths.python,

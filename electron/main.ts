@@ -17,11 +17,19 @@ let mainWindow: BrowserWindow | null = null;
 let serverPort: number | null = null;
 
 async function createWindow() {
+  console.log('[Main] Starting createWindow...');
+
   // 启动嵌入式 Express 服务器
-  serverPort = await startServer();
-  console.log(`Express server started on port ${serverPort}`);
+  try {
+    serverPort = await startServer();
+    console.log(`[Main] Express server started on port ${serverPort}`);
+  } catch (error) {
+    console.error('[Main] Failed to start server:', error);
+    throw error;
+  }
 
   // 创建主窗口
+  console.log('[Main] Creating BrowserWindow...');
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -36,25 +44,65 @@ async function createWindow() {
     titleBarStyle: 'default',
     show: false, // 等待加载完成后再显示
   });
+  console.log('[Main] BrowserWindow created');
 
   // 开发环境：加载 Vite 开发服务器
   // 生产环境：加载构建后的文件
-  if (process.env.NODE_ENV === 'development') {
-    await mainWindow.loadURL('http://localhost:5173');
-    mainWindow.webContents.openDevTools();
-  } else {
-    await mainWindow.loadFile(path.join(__dirname, '../dist-renderer/index.html'));
+  const url = process.env.NODE_ENV === 'development'
+    ? 'http://localhost:5173'
+    : path.join(__dirname, '../dist-renderer/index.html');
+
+  console.log('[Main] Loading URL:', url);
+
+  try {
+    if (process.env.NODE_ENV === 'development') {
+      await mainWindow.loadURL('http://localhost:5173');
+      console.log('[Main] URL loaded, opening DevTools...');
+      mainWindow.webContents.openDevTools();
+    } else {
+      await mainWindow.loadFile(path.join(__dirname, '../dist-renderer/index.html'));
+      console.log('[Main] File loaded');
+    }
+  } catch (error) {
+    console.error('[Main] Failed to load window content:', error);
+    throw error;
   }
 
   // 窗口准备好后显示
   mainWindow.once('ready-to-show', () => {
+    console.log('[Main] Window ready-to-show event fired');
     mainWindow?.show();
+    mainWindow?.focus();
+    console.log('[Main] Window should be visible now');
+
+    // 发送系统通知确认
+    const { Notification } = require('electron');
+    new Notification({
+      title: '抖音 AI 视频生成器',
+      body: 'Electron 应用已启动！',
+    }).show();
+  });
+
+  // 超时后强制显示窗口（调试用）
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isVisible()) {
+      console.log('[Main] Timeout: forcing window to show');
+      mainWindow.show();
+    }
+  }, 3000);
+
+  // 监听加载失败
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('[Main] Window failed to load:', errorCode, errorDescription);
   });
 
   // 窗口关闭时清理
   mainWindow.on('closed', () => {
+    console.log('[Main] Window closed');
     mainWindow = null;
   });
+
+  console.log('[Main] createWindow completed');
 }
 
 // 应用准备就绪

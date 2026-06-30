@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+@theme {
+  /* 科技蓝主题 */
+  --color-tech-blue: #2563EB;
+  --color-tech-blue-light: #3B82F6;
+  --color-tech-blue-dark: #1E40AF;
+  --color-tech-bg: #F8FAFC;
+  --color-tech-surface: #FFFFFF;
+  --color-tech-border: #E2E8F0;
+  --color-tech-text: #1E293B;
+  --color-tech-muted: #64748B;
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
