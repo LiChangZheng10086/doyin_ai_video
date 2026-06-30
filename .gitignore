@@ -10,6 +10,8 @@ env/
 # Node
 node_modules/
 dist/
+dist-electron/
+dist-renderer/
 
 # IDE
 .idea/
@@ -24,6 +26,7 @@ Thumbs.db
 # Data
 backend/data/
 backend/remotion/output/
+storage/
 
 # Remotion
 backend/remotion/node_modules/
@@ -43,3 +46,6 @@ backend/.vite/
 
 # Byte-compiled
 *.pyc
+
+# Scripts
+push-to-github.sh
