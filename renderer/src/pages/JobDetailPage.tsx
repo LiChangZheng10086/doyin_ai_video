@@ -92,8 +92,8 @@ export function JobDetailPage() {
 
   const tabs = [
     { id: 'overview' as TabType, label: '概览', icon: '📋' },
-    { id: 'transcript' as TabType, label: '原始文案', icon: '🎤', disabled: !cleaned?.transcriptText },
-    { id: 'script' as TabType, label: 'AI 洗稿', icon: '✨', disabled: !cleaned?.output },
+    { id: 'transcript' as TabType, label: '原始文案', icon: '🎤', disabled: !cleaned?.output?.rawText },
+    { id: 'script' as TabType, label: 'AI 洗稿', icon: '✨', disabled: !cleaned?.output?.cleanScript },
     { id: 'video' as TabType, label: '视频提示词', icon: '🎬', disabled: !cleaned?.output?.videoPrompts },
     { id: 'ppt' as TabType, label: 'PPT 内容', icon: '📊', disabled: !cleaned?.output?.pptContent },
   ];
@@ -184,8 +184,8 @@ export function JobDetailPage() {
                   </div>
                   <p className="text-sm">{cleanedError}</p>
                 </div>
-              ) : cleaned?.transcriptText ? (
-                <TranscriptTab transcript={cleaned.transcriptText} />
+              ) : cleaned?.output?.rawText ? (
+                <TranscriptTab transcript={cleaned.output.rawText} />
               ) : (
                 <div className="text-center py-8 text-tech-muted">暂无内容</div>
               )}
@@ -303,8 +303,8 @@ function OverviewTab({ job }: { job: Job }) {
 function TranscriptTab({ transcript }: { transcript: string }) {
   return (
     <div>
-      <h3 className="text-lg font-semibold text-tech-text mb-3">视频原始文案（转录内容）</h3>
-      <div className="bg-tech-bg rounded-lg p-4 max-h-96 overflow-y-auto">
+      <h3 className="text-lg font-semibold text-tech-text mb-3">视频原始文案</h3>
+      <div className="bg-tech-bg rounded-lg p-4">
         <p className="text-tech-text whitespace-pre-wrap leading-relaxed">
           {transcript}
         </p>
@@ -316,6 +316,10 @@ function TranscriptTab({ transcript }: { transcript: string }) {
 // Script Tab
 function ScriptTab({ cleaned }: { cleaned: CleanedScript }) {
   const output = cleaned.output;
+
+  if (!output) {
+    return <div className="text-center py-8 text-tech-muted">暂无内容</div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -332,21 +336,11 @@ function ScriptTab({ cleaned }: { cleaned: CleanedScript }) {
           </div>
         )}
 
-        {/* Summary */}
-        {output.summary && (
-          <div className="mb-4">
-            <label className="text-xs text-tech-muted block mb-1">摘要</label>
-            <p className="text-tech-text bg-tech-bg px-4 py-3 rounded-lg leading-relaxed">
-              {output.summary}
-            </p>
-          </div>
-        )}
-
-        {/* Content */}
+        {/* Clean Script */}
         {output.cleanScript && (
-          <div>
+          <div className="mb-4">
             <label className="text-xs text-tech-muted block mb-1">清洗后的脚本</label>
-            <div className="bg-tech-bg rounded-lg p-4 max-h-96 overflow-y-auto">
+            <div className="bg-tech-bg rounded-lg p-4">
               <p className="text-tech-text whitespace-pre-wrap leading-relaxed">
                 {output.cleanScript}
               </p>
@@ -384,9 +378,11 @@ function VideoPromptsTab({ prompts }: { prompts: any[] }) {
         {prompts.map((prompt, index) => (
           <div key={index} className="bg-tech-bg rounded-lg p-4 border border-tech-border">
             <div className="flex items-start gap-3">
-              <span className="text-2xl font-bold text-tech-blue">#{index + 1}</span>
-              <div className="flex-1">
-                <p className="text-tech-text leading-relaxed whitespace-pre-wrap">
+              <span className="flex-shrink-0 w-8 h-8 flex items-center justify-center bg-tech-blue text-white rounded-full text-sm font-bold">
+                {index + 1}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-tech-text leading-relaxed break-words">
                   {typeof prompt === 'string' ? prompt : prompt.prompt || JSON.stringify(prompt, null, 2)}
                 </p>
               </div>
