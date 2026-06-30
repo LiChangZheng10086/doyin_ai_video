@@ -23,6 +23,12 @@ class ApiClient {
     return this.client!;
   }
 
+  // 通用 GET 请求
+  async get(url: string): Promise<any> {
+    const client = await this.getClient();
+    return client.get(url);
+  }
+
   // 创建任务
   async createJob(params: {
     sourceUrl?: string;
