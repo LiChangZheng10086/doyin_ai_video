@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { JobCard } from '../components/JobCard';
 import { CreateJobDialog } from '../components/CreateJobDialog';
@@ -13,6 +14,7 @@ export function JobListPage() {
   const [showApiWarning, setShowApiWarning] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
+  const navigate = useNavigate();
   const jobs = useAppStore((state) => state.jobs);
   const setJobs = useAppStore((state) => state.setJobs);
   const serverPort = useAppStore((state) => state.serverPort);
@@ -48,8 +50,7 @@ export function JobListPage() {
   }, [setServerPort, setJobs]);
 
   const handleJobClick = (jobId: string) => {
-    // TODO: 导航到任务详情页
-    console.log('Job clicked:', jobId);
+    navigate(`/jobs/${jobId}`);
   };
 
   const handleCreateClick = async () => {

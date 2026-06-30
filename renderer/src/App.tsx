@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { JobListPage } from './pages/JobListPage';
+import { JobDetailPage } from './pages/JobDetailPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ApiKeyStatusIndicator } from './components/ApiKeyStatusIndicator';
 
@@ -62,6 +63,7 @@ function Navigation() {
       <main>
         <Routes>
           <Route path="/" element={<JobListPage />} />
+          <Route path="/jobs/:id" element={<JobDetailPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
