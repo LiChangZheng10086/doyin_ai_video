@@ -14,6 +14,8 @@ export function JobDetailPage() {
   const [cleaned, setCleaned] = useState<CleanedScript | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [scriptError, setScriptError] = useState<string | null>(null);
+  const [cleanedError, setCleanedError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('overview');
 
   useEffect(() => {
@@ -31,6 +33,8 @@ export function JobDetailPage() {
             const scriptData = await apiClient.getJobScript(id);
             setScript(scriptData);
           } catch (err) {
+            const errMsg = err instanceof Error ? err.message : '未知错误';
+            setScriptError(`脚本内容加载失败: ${errMsg}`);
             console.error('Failed to load script:', err);
           }
 
@@ -38,6 +42,8 @@ export function JobDetailPage() {
             const cleanedData = await apiClient.getJobCleaned(id);
             setCleaned(cleanedData);
           } catch (err) {
+            const errMsg = err instanceof Error ? err.message : '未知错误';
+            setCleanedError(`清洗内容加载失败: ${errMsg}`);
             console.error('Failed to load cleaned content:', err);
           }
         }
@@ -179,12 +185,40 @@ export function JobDetailPage() {
             <OverviewTab job={job} />
           )}
 
-          {activeTab === 'transcript' && script && (
-            <TranscriptTab transcript={script.transcriptText || ''} />
+          {activeTab === 'transcript' && (
+            <>
+              {scriptError ? (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xl">⚠️</span>
+                    <span className="font-semibold">加载失败</span>
+                  </div>
+                  <p className="text-sm">{scriptError}</p>
+                </div>
+              ) : script ? (
+                <TranscriptTab transcript={script.transcriptText || ''} />
+              ) : (
+                <div className="text-center py-8 text-tech-muted">暂无内容</div>
+              )}
+            </>
           )}
 
-          {activeTab === 'script' && cleaned && (
-            <ScriptTab cleaned={cleaned} />
+          {activeTab === 'script' && (
+            <>
+              {cleanedError ? (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xl">⚠️</span>
+                    <span className="font-semibold">加载失败</span>
+                  </div>
+                  <p className="text-sm">{cleanedError}</p>
+                </div>
+              ) : cleaned ? (
+                <ScriptTab cleaned={cleaned} />
+              ) : (
+                <div className="text-center py-8 text-tech-muted">暂无内容</div>
+              )}
+            </>
           )}
 
           {activeTab === 'video' && cleaned?.output?.videoPrompts && (

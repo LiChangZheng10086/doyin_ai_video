@@ -1,5 +1,5 @@
 // 任务状态
-export type JobStatus = 'queued' | 'processing' | 'completed' | 'failed';
+export type JobStatus = 'queued' | 'processing' | 'done' | 'failed';
 
 // 任务阶段
 export type JobStage =

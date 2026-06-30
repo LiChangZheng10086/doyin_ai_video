@@ -54,6 +54,9 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
         }
       } catch (refreshError) {
         console.error('Failed to refresh jobs:', refreshError);
+        setError('任务已创建，但列表刷新失败。请手动刷新页面查看。');
+        setIsSubmitting(false);
+        return; // 不关闭对话框，让用户看到提示
       }
 
       // 重置表单
