@@ -33,7 +33,7 @@ export function JobListPage() {
         await apiClient.initialize();
 
         // 从后端获取任务列表
-        const response = await apiClient.get('/jobs');
+        const response = await apiClient.get('/api/jobs');
         if (response.data && response.data.jobs) {
           setJobs(response.data.jobs);
         }

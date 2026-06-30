@@ -44,7 +44,7 @@ export function useJobPolling(enabled: boolean) {
 
     const fetchJobs = async () => {
       try {
-        const response = await apiClient.get('/jobs');
+        const response = await apiClient.get('/api/jobs');
         if (response.data?.jobs) {
           setJobs(response.data.jobs);
         }

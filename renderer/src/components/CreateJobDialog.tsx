@@ -48,7 +48,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
 
       // 立即刷新任务列表，确保新任务显示
       try {
-        const response = await apiClient.get('/jobs');
+        const response = await apiClient.get('/api/jobs');
         if (response.data?.jobs) {
           setJobs(response.data.jobs);
         }
