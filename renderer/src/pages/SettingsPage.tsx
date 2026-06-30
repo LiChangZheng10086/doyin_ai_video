@@ -13,8 +13,16 @@ interface AIKeyConfig {
   lastTested?: string;
 }
 
+interface ASRConfig {
+  asrApiKey?: string;
+  asrBaseURL?: string;
+  asrModel?: string;
+  asrProvider?: string;
+}
+
 export function SettingsPage() {
   const [apiKeys, setApiKeys] = useState<AIKeyConfig[]>([]);
+  const [asrConfig, setAsrConfig] = useState<ASRConfig>({});
   const [isAdding, setIsAdding] = useState(false);
   const [newKey, setNewKey] = useState({
     name: '',
@@ -26,6 +34,8 @@ export function SettingsPage() {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ valid: boolean; error?: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [asrSaving, setAsrSaving] = useState(false);
+  const [asrSaved, setAsrSaved] = useState(false);
 
   // 加载 API Keys
   useEffect(() => {
@@ -36,6 +46,12 @@ export function SettingsPage() {
     try {
       const config = await window.electron.getConfig();
       setApiKeys(config.aiKeys || []);
+      setAsrConfig({
+        asrApiKey: config.asrApiKey,
+        asrBaseURL: config.asrBaseURL,
+        asrModel: config.asrModel,
+        asrProvider: config.asrProvider,
+      });
     } catch (error) {
       console.error('Failed to load API keys:', error);
     }
@@ -135,6 +151,21 @@ export function SettingsPage() {
       await loadApiKeys();
     } catch (error) {
       alert('切换失败：' + (error instanceof Error ? error.message : '未知错误'));
+    }
+  };
+
+  const handleSaveAsrConfig = async () => {
+    setAsrSaving(true);
+    setAsrSaved(false);
+
+    try {
+      await window.electron.updateConfig(asrConfig);
+      setAsrSaved(true);
+      setTimeout(() => setAsrSaved(false), 3000);
+    } catch (error) {
+      alert('保存失败：' + (error instanceof Error ? error.message : '未知错误'));
+    } finally {
+      setAsrSaving(false);
     }
   };
 
@@ -378,6 +409,112 @@ export function SettingsPage() {
             </div>
           </div>
         )}
+
+        {/* ASR Configuration Section */}
+        <div className="mt-12">
+          <div className="mb-6">
+            <h2 className="text-2xl font-semibold text-tech-text mb-1">语音识别配置</h2>
+            <p className="text-sm text-tech-muted">配置视频转录所需的语音识别服务（ASR）</p>
+          </div>
+
+          <div className="bg-tech-surface rounded-lg border border-tech-border p-6">
+            <div className="space-y-5">
+              {/* Provider Selection */}
+              <div>
+                <label className="block text-sm font-medium text-tech-text mb-2">
+                  服务提供商
+                </label>
+                <select
+                  value={asrConfig.asrProvider || 'openai'}
+                  onChange={(e) => setAsrConfig({ ...asrConfig, asrProvider: e.target.value })}
+                  className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all"
+                >
+                  <option value="openai">OpenAI Whisper API</option>
+                  <option value="local">本地 Whisper（需要 Python）</option>
+                </select>
+              </div>
+
+              {asrConfig.asrProvider !== 'local' && (
+                <>
+                  {/* API Key */}
+                  <div>
+                    <label className="block text-sm font-medium text-tech-text mb-2">
+                      API Key
+                    </label>
+                    <input
+                      type="password"
+                      value={asrConfig.asrApiKey || ''}
+                      onChange={(e) => setAsrConfig({ ...asrConfig, asrApiKey: e.target.value })}
+                      placeholder="sk-..."
+                      className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all font-mono text-sm"
+                    />
+                  </div>
+
+                  {/* Base URL */}
+                  <div>
+                    <label className="block text-sm font-medium text-tech-text mb-2">
+                      Base URL（可选）
+                    </label>
+                    <input
+                      type="text"
+                      value={asrConfig.asrBaseURL || ''}
+                      onChange={(e) => setAsrConfig({ ...asrConfig, asrBaseURL: e.target.value })}
+                      placeholder="https://api.openai.com/v1"
+                      className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all font-mono text-sm"
+                    />
+                    <p className="mt-1 text-xs text-tech-muted">留空使用默认地址</p>
+                  </div>
+
+                  {/* Model */}
+                  <div>
+                    <label className="block text-sm font-medium text-tech-text mb-2">
+                      模型
+                    </label>
+                    <input
+                      type="text"
+                      value={asrConfig.asrModel || 'whisper-1'}
+                      onChange={(e) => setAsrConfig({ ...asrConfig, asrModel: e.target.value })}
+                      placeholder="whisper-1"
+                      className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all font-mono text-sm"
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Info Box */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <span className="text-xl">ℹ️</span>
+                  <div className="flex-1 text-sm text-blue-700">
+                    <p className="font-medium mb-2">关于语音识别</p>
+                    <ul className="space-y-1">
+                      <li>• 用于将视频音频转换为文字（转录）</li>
+                      <li>• 推荐使用 OpenAI Whisper API，准确度高</li>
+                      <li>• 未配置时，系统将使用分享文本作为后备</li>
+                      <li>• 配置后需要重新处理任务才会生效</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              {/* Save Button */}
+              <div className="flex items-center justify-end gap-3 pt-2">
+                {asrSaved && (
+                  <span className="text-sm text-green-600 font-medium">
+                    ✓ 已保存
+                  </span>
+                )}
+                <button
+                  onClick={handleSaveAsrConfig}
+                  disabled={asrSaving}
+                  className="px-6 py-2.5 rounded-lg bg-tech-blue text-white hover:bg-tech-blue-dark transition-all shadow-sm hover:shadow font-medium disabled:opacity-50"
+                >
+                  {asrSaving ? '保存中...' : '保存配置'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
 
         {/* Info */}
         <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
