@@ -31,14 +31,30 @@ export interface Job {
 
 // 清洗后的脚本
 export interface CleanedScript {
-  rawText: string;
-  cleanedSentences: Array<{
-    text: string;
-    startTime?: number;
-    endTime?: number;
-  }>;
-  summary?: string;
-  keyPoints?: string[];
+  jobId: string;
+  sourceUrl: string;
+  topic?: string;
+  transcriptText?: string;
+  cleaningMode?: string;
+  createdAt?: string;
+  output?: {
+    title?: string;
+    rawText?: string;
+    cleanScript?: string;
+    summary?: string;
+    content?: string;
+    tags?: string[];
+    videoPrompts?: any[];
+    pptContent?: any;
+    enhancedScenes?: any[];
+    sceneList?: any[];
+    voiceoverScript?: string;
+    hashtags?: string[];
+    introText?: string;
+    coverTitle?: string;
+  };
+  parsed?: any;
+  pageInfo?: any;
 }
 
 // 脚本资产

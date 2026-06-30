@@ -10,11 +10,9 @@ export function JobDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [job, setJob] = useState<Job | null>(null);
-  const [script, setScript] = useState<ScriptAsset | null>(null);
   const [cleaned, setCleaned] = useState<CleanedScript | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [scriptError, setScriptError] = useState<string | null>(null);
   const [cleanedError, setCleanedError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('overview');
 
@@ -27,23 +25,14 @@ export function JobDetailPage() {
         const jobData = await apiClient.getJob(id);
         setJob(jobData);
 
-        // 如果任务已完成，加载脚本和清洗内容
+        // 如果任务已完成，加载清洗内容
         if (jobData.status === 'done') {
-          try {
-            const scriptData = await apiClient.getJobScript(id);
-            setScript(scriptData);
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : '未知错误';
-            setScriptError(`脚本内容加载失败: ${errMsg}`);
-            console.error('Failed to load script:', err);
-          }
-
           try {
             const cleanedData = await apiClient.getJobCleaned(id);
             setCleaned(cleanedData);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : '未知错误';
-            setCleanedError(`清洗内容加载失败: ${errMsg}`);
+            setCleanedError(`内容加载失败: ${errMsg}`);
             console.error('Failed to load cleaned content:', err);
           }
         }
@@ -103,7 +92,7 @@ export function JobDetailPage() {
 
   const tabs = [
     { id: 'overview' as TabType, label: '概览', icon: '📋' },
-    { id: 'transcript' as TabType, label: '原始文案', icon: '🎤', disabled: !script?.transcriptText },
+    { id: 'transcript' as TabType, label: '原始文案', icon: '🎤', disabled: !cleaned?.transcriptText },
     { id: 'script' as TabType, label: 'AI 洗稿', icon: '✨', disabled: !cleaned?.output },
     { id: 'video' as TabType, label: '视频提示词', icon: '🎬', disabled: !cleaned?.output?.videoPrompts },
     { id: 'ppt' as TabType, label: 'PPT 内容', icon: '📊', disabled: !cleaned?.output?.pptContent },
@@ -187,16 +176,16 @@ export function JobDetailPage() {
 
           {activeTab === 'transcript' && (
             <>
-              {scriptError ? (
+              {cleanedError ? (
                 <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-xl">⚠️</span>
                     <span className="font-semibold">加载失败</span>
                   </div>
-                  <p className="text-sm">{scriptError}</p>
+                  <p className="text-sm">{cleanedError}</p>
                 </div>
-              ) : script ? (
-                <TranscriptTab transcript={script.transcriptText || ''} />
+              ) : cleaned?.transcriptText ? (
+                <TranscriptTab transcript={cleaned.transcriptText} />
               ) : (
                 <div className="text-center py-8 text-tech-muted">暂无内容</div>
               )}
@@ -354,12 +343,12 @@ function ScriptTab({ cleaned }: { cleaned: CleanedScript }) {
         )}
 
         {/* Content */}
-        {output.content && (
+        {output.cleanScript && (
           <div>
-            <label className="text-xs text-tech-muted block mb-1">正文内容</label>
+            <label className="text-xs text-tech-muted block mb-1">清洗后的脚本</label>
             <div className="bg-tech-bg rounded-lg p-4 max-h-96 overflow-y-auto">
               <p className="text-tech-text whitespace-pre-wrap leading-relaxed">
-                {output.content}
+                {output.cleanScript}
               </p>
             </div>
           </div>
