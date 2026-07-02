@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:renderer\" \"npm run dev:electron\"",
     "dev:renderer": "vite",
-    "dev:electron": "npm run build:electron && npm run mark-cjs && cross-env NODE_ENV=development electron .",
+    "dev:electron": "npm run build:electron && npm run mark-cjs && wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .",
     "build": "npm run build:renderer && npm run build:electron && npm run build:backend && npm run mark-cjs",
     "build:renderer": "vite build",
     "build:electron": "tsc -p tsconfig.electron.json",
@@ -23,6 +23,7 @@
     "@types/react-router-dom": "^5.3.3",
     "axios": "^1.18.1",
     "express": "^4.21.2",
+    "lucide-react": "^1.23.0",
     "openai": "^4.104.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

@@ -9,6 +9,7 @@ import type { LocalStorage } from "./storage.js";
 export interface MediaServiceConfig {
   ytDlpBinary?: string;
   ffmpegBinary?: string;
+  ffprobeBinary?: string;
   cookiesFile?: string;
   cookiesFromBrowser?: string;
 }
@@ -23,6 +24,7 @@ export interface DownloadResult {
 export interface AudioExtractionResult {
   audioPath: string;
   manifestPath: string;
+  duration?: number;
 }
 
 type DouyinPageVideoInfo = {
@@ -74,6 +76,7 @@ export class MediaService {
 
   async extractAudio(videoPath: string, jobId: string): Promise<AudioExtractionResult> {
     const ffmpeg = this.config.ffmpegBinary ?? "ffmpeg";
+    const ffprobe = this.config.ffprobeBinary ?? this.inferFfprobeBinary(ffmpeg);
     const audioPath = this.storage.resolve("raw/audio", `${jobId}.mp3`);
     const manifestPath = this.storage.resolve("raw/audio", `${jobId}.json`);
     const args = [
@@ -83,31 +86,101 @@ export class MediaService {
       "-vn",
       "-acodec",
       "libmp3lame",
+      "-ar",
+      "16000",
+      "-ac",
+      "1",
       "-q:a",
       "2",
       audioPath
     ];
+    const sourceProbe = await this.probeMedia(ffprobe, videoPath);
+    const manifestBase = {
+      jobId,
+      sourceVideoPath: videoPath,
+      audioPath,
+      extractedAt: new Date().toISOString(),
+      method: "ffmpeg",
+      ffmpeg,
+      ffprobe,
+      args,
+      source: sourceProbe
+    };
 
     try {
       await runCommand(ffmpeg, args, {
         captureStderr: true
       });
     } catch (error) {
+      await this.storage.writeJson(path.join("raw", "audio", `${jobId}.json`), {
+        ...manifestBase,
+        status: "failed",
+        errorMessage: error instanceof Error ? error.message : "audio extraction failed"
+      });
       throw this.decorateAudioError(error);
     }
 
+    const audioProbe = await this.probeMedia(ffprobe, audioPath);
     await this.storage.writeJson(path.join("raw", "audio", `${jobId}.json`), {
-      jobId,
-      sourceVideoPath: videoPath,
-      audioPath,
-      extractedAt: new Date().toISOString(),
-      method: "ffmpeg"
+      ...manifestBase,
+      status: "ready",
+      audio: audioProbe
     });
 
     return {
       audioPath,
-      manifestPath
+      manifestPath,
+      duration: audioProbe.duration ?? sourceProbe.duration
     };
+  }
+
+  private inferFfprobeBinary(ffmpeg: string) {
+    const binaryName = path.basename(ffmpeg);
+    if (binaryName === "ffmpeg") {
+      return path.join(path.dirname(ffmpeg), "ffprobe");
+    }
+    return "ffprobe";
+  }
+
+  private async probeMedia(
+    ffprobe: string,
+    filePath: string
+  ): Promise<{
+    duration?: number;
+    streams?: Array<Record<string, unknown>>;
+    errorMessage?: string;
+  }> {
+    try {
+      const { stdout } = await runCommand(
+        ffprobe,
+        [
+          "-v",
+          "error",
+          "-show_entries",
+          "format=duration:stream=codec_type,codec_name,channels,sample_rate",
+          "-of",
+          "json",
+          filePath
+        ],
+        {
+          captureStdout: true,
+          captureStderr: true
+        }
+      );
+      const payload = JSON.parse(stdout) as {
+        format?: { duration?: string };
+        streams?: Array<Record<string, unknown>>;
+      };
+      const duration = Number(payload.format?.duration);
+      return {
+        duration: Number.isFinite(duration) ? duration : undefined,
+        streams: payload.streams ?? []
+      };
+    } catch (error) {
+      return {
+        errorMessage: error instanceof Error ? error.message : "ffprobe failed"
+      };
+    }
   }
 
   private async downloadViaPageParser(sourceUrl: string, jobId: string): Promise<DownloadResult> {

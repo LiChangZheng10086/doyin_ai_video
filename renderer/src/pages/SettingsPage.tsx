@@ -1,4 +1,20 @@
 import { useState, useEffect } from 'react';
+import type { ReactNode } from 'react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Database,
+  HardDrive,
+  KeyRound,
+  Mic,
+  Plus,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sparkles,
+  Trash2,
+  X,
+  XCircle,
+} from 'lucide-react';
 import { Layout } from '../components/Layout';
 
 interface AIKeyConfig {
@@ -20,9 +36,21 @@ interface ASRConfig {
   asrProvider?: string;
 }
 
+const CLOUD_ASR_PROVIDERS = new Set(['openai', 'openai-compatible']);
+
+type SettingsSection = 'models' | 'asr' | 'storage' | 'advanced';
+
+const sections: Array<{ id: SettingsSection; label: string; description: string; icon: typeof KeyRound }> = [
+  { id: 'models', label: 'Models / API Keys', description: 'AI 服务与密钥', icon: KeyRound },
+  { id: 'asr', label: 'ASR', description: '视频转录服务', icon: Mic },
+  { id: 'storage', label: 'Storage', description: '本地文件位置', icon: HardDrive },
+  { id: 'advanced', label: 'Advanced', description: '安全与提示', icon: SlidersHorizontal },
+];
+
 export function SettingsPage() {
   const [apiKeys, setApiKeys] = useState<AIKeyConfig[]>([]);
   const [asrConfig, setAsrConfig] = useState<ASRConfig>({});
+  const [activeSection, setActiveSection] = useState<SettingsSection>('models');
   const [isAdding, setIsAdding] = useState(false);
   const [newKey, setNewKey] = useState({
     name: '',
@@ -37,7 +65,6 @@ export function SettingsPage() {
   const [asrSaving, setAsrSaving] = useState(false);
   const [asrSaved, setAsrSaved] = useState(false);
 
-  // 加载 API Keys
   useEffect(() => {
     loadApiKeys();
   }, []);
@@ -159,7 +186,7 @@ export function SettingsPage() {
     setAsrSaved(false);
 
     try {
-      await window.electron.updateConfig(asrConfig);
+      await window.electron.saveConfig(asrConfig);
       setAsrSaved(true);
       setTimeout(() => setAsrSaved(false), 3000);
     } catch (error) {
@@ -171,367 +198,554 @@ export function SettingsPage() {
 
   return (
     <Layout>
-      <div className="max-w-4xl mx-auto">
-        {/* Header */}
-        <div className="mb-8 flex items-center justify-between">
-          <div>
-            <h2 className="text-2xl font-semibold text-tech-text mb-1">API 密钥管理</h2>
-            <p className="text-sm text-tech-muted">管理您的 AI 服务 API 密钥</p>
-          </div>
-          <button
-            onClick={() => setIsAdding(true)}
-            className="px-4 py-2 rounded-lg bg-tech-blue text-white hover:bg-tech-blue-dark transition-all shadow-sm hover:shadow font-medium text-sm"
-          >
-            + 添加密钥
-          </button>
-        </div>
+      <div className="mb-8">
+        <p className="mb-2 inline-flex items-center gap-2 rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-tech-purple">
+          <Sparkles size={14} />
+          Creator settings
+        </p>
+        <h2 className="text-2xl font-semibold text-tech-text">设置</h2>
+        <p className="mt-1 text-sm text-tech-muted">配置 AI 模型、视频转录和本地创作资产。</p>
+      </div>
 
-        {/* API Keys List */}
-        {apiKeys.length === 0 && !isAdding ? (
-          <div className="text-center py-16 bg-tech-surface rounded-lg border border-tech-border">
-            <div className="text-5xl mb-4">🔑</div>
-            <h3 className="text-lg font-medium text-tech-text mb-2">还没有 API 密钥</h3>
-            <p className="text-tech-muted mb-6">添加第一个 API 密钥开始使用</p>
-            <button
-              onClick={() => setIsAdding(true)}
-              className="px-6 py-3 rounded-lg bg-tech-blue text-white hover:bg-tech-blue-dark transition-all shadow-sm hover:shadow font-medium"
-            >
-              立即添加
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {apiKeys.map((key) => (
-              <div
-                key={key.id}
-                className={`bg-tech-surface rounded-lg border p-5 transition-all ${
-                  key.isActive
-                    ? 'border-tech-blue shadow-md'
-                    : 'border-tech-border hover:border-tech-blue'
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+        <aside className="rounded-lg border border-tech-border bg-tech-surface p-2">
+          {sections.map((section) => {
+            const Icon = section.icon;
+            const active = activeSection === section.id;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => setActiveSection(section.id)}
+                className={`mb-1 flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left transition-all ${
+                  active ? 'bg-blue-50 text-tech-blue' : 'text-tech-muted hover:bg-tech-bg hover:text-tech-text'
                 }`}
               >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <h3 className="font-semibold text-tech-text">{key.name}</h3>
-                      {key.isActive && (
-                        <span className="px-2 py-1 bg-green-50 text-green-700 border border-green-200 rounded text-xs font-medium">
-                          当前使用
-                        </span>
-                      )}
-                      <span className="px-2 py-1 bg-tech-bg text-tech-muted rounded text-xs">
-                        {key.provider === 'deepseek'
-                          ? 'DeepSeek'
-                          : key.provider === 'openai'
-                          ? 'OpenAI'
-                          : '第三方'}
-                      </span>
-                    </div>
-                    <p className="text-sm text-tech-muted mb-1">
-                      模型：<code className="text-tech-text bg-tech-bg px-2 py-0.5 rounded">{key.model}</code>
-                    </p>
-                    <p className="text-xs text-tech-muted font-mono">
-                      密钥：{key.apiKey.slice(0, 8)}...{key.apiKey.slice(-4)}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {!key.isActive && (
-                      <button
-                        onClick={() => handleSetActive(key.id)}
-                        className="px-3 py-1.5 rounded-lg border border-tech-border text-tech-text hover:border-tech-blue hover:text-tech-blue transition-all text-sm"
-                      >
-                        设为当前
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleRemove(key.id)}
-                      className="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition-all text-sm"
-                    >
-                      删除
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Add New Key Form */}
-        {isAdding && (
-          <div className="mt-6 bg-tech-surface rounded-lg border border-tech-border p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-semibold text-tech-text">添加新密钥</h3>
-              <button
-                onClick={() => {
-                  setIsAdding(false);
-                  setTestResult(null);
-                }}
-                className="text-tech-muted hover:text-tech-text"
-              >
-                ✕
+                <Icon size={18} className="mt-0.5 shrink-0" />
+                <span>
+                  <span className="block text-sm font-semibold">{section.label}</span>
+                  <span className="mt-0.5 block text-xs opacity-80">{section.description}</span>
+                </span>
               </button>
-            </div>
+            );
+          })}
+        </aside>
 
-            <div className="space-y-5">
-              {/* Name */}
-              <div>
-                <label className="block text-sm font-medium text-tech-text mb-2">
-                  密钥名称 <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={newKey.name}
-                  onChange={(e) => setNewKey({ ...newKey, name: e.target.value })}
-                  placeholder="例如：我的 DeepSeek 密钥"
-                  className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all"
-                />
-              </div>
-
-              {/* Provider */}
-              <div>
-                <label className="block text-sm font-medium text-tech-text mb-3">
-                  服务商
-                </label>
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => handleProviderChange('deepseek')}
-                    className={`flex-1 px-4 py-3 rounded-lg border text-sm font-medium transition-all ${
-                      newKey.provider === 'deepseek'
-                        ? 'border-tech-blue bg-blue-50 text-tech-blue'
-                        : 'border-tech-border text-tech-muted hover:border-tech-blue'
-                    }`}
-                  >
-                    DeepSeek
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleProviderChange('openai')}
-                    className={`flex-1 px-4 py-3 rounded-lg border text-sm font-medium transition-all ${
-                      newKey.provider === 'openai'
-                        ? 'border-tech-blue bg-blue-50 text-tech-blue'
-                        : 'border-tech-border text-tech-muted hover:border-tech-blue'
-                    }`}
-                  >
-                    OpenAI
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleProviderChange('custom')}
-                    className={`flex-1 px-4 py-3 rounded-lg border text-sm font-medium transition-all ${
-                      newKey.provider === 'custom'
-                        ? 'border-tech-blue bg-blue-50 text-tech-blue'
-                        : 'border-tech-border text-tech-muted hover:border-tech-blue'
-                    }`}
-                  >
-                    第三方
-                  </button>
-                </div>
-              </div>
-
-              {/* API Key */}
-              <div>
-                <label className="block text-sm font-medium text-tech-text mb-2">
-                  API Key <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="password"
-                  value={newKey.apiKey}
-                  onChange={(e) => {
-                    setNewKey({ ...newKey, apiKey: e.target.value });
-                    setTestResult(null);
-                  }}
-                  placeholder="sk-..."
-                  className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all font-mono text-sm"
-                />
-              </div>
-
-              {/* Base URL (for custom) */}
-              {newKey.provider === 'custom' && (
-                <div>
-                  <label className="block text-sm font-medium text-tech-text mb-2">
-                    API 地址
-                  </label>
-                  <input
-                    type="text"
-                    value={newKey.baseURL}
-                    onChange={(e) => setNewKey({ ...newKey, baseURL: e.target.value })}
-                    placeholder="https://api.example.com/v1"
-                    className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all font-mono text-sm"
-                  />
-                </div>
-              )}
-
-              {/* Model */}
-              <div>
-                <label className="block text-sm font-medium text-tech-text mb-2">
-                  模型
-                </label>
-                <input
-                  type="text"
-                  value={newKey.model}
-                  onChange={(e) => setNewKey({ ...newKey, model: e.target.value })}
-                  placeholder="模型 ID"
-                  className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all font-mono text-sm"
-                />
-              </div>
-
-              {/* Test Result */}
-              {testResult && (
-                <div
-                  className={`p-3 rounded-lg text-sm ${
-                    testResult.valid
-                      ? 'bg-green-50 border border-green-200 text-green-700'
-                      : 'bg-red-50 border border-red-200 text-red-700'
-                  }`}
-                >
-                  {testResult.valid ? '✅ API Key 有效' : `❌ ${testResult.error}`}
-                </div>
-              )}
-
-              {/* Buttons */}
-              <div className="flex gap-3 justify-end pt-2">
-                <button
-                  onClick={handleTest}
-                  disabled={isTesting || !newKey.apiKey}
-                  className="px-5 py-2.5 rounded-lg border border-tech-border text-tech-text hover:bg-tech-bg transition-all disabled:opacity-50 font-medium"
-                >
-                  {isTesting ? '测试中...' : '测试连接'}
-                </button>
-                <button
-                  onClick={handleAdd}
-                  disabled={isSaving || !testResult?.valid}
-                  className="px-5 py-2.5 rounded-lg bg-tech-blue text-white hover:bg-tech-blue-dark shadow-sm hover:shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed font-medium"
-                >
-                  {isSaving ? '保存中...' : '保存密钥'}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ASR Configuration Section */}
-        <div className="mt-12">
-          <div className="mb-6">
-            <h2 className="text-2xl font-semibold text-tech-text mb-1">语音识别配置</h2>
-            <p className="text-sm text-tech-muted">配置视频转录所需的语音识别服务（ASR）</p>
-          </div>
-
-          <div className="bg-tech-surface rounded-lg border border-tech-border p-6">
-            <div className="space-y-5">
-              {/* Provider Selection */}
-              <div>
-                <label className="block text-sm font-medium text-tech-text mb-2">
-                  服务提供商
-                </label>
-                <select
-                  value={asrConfig.asrProvider || 'openai'}
-                  onChange={(e) => setAsrConfig({ ...asrConfig, asrProvider: e.target.value })}
-                  className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all"
-                >
-                  <option value="openai">OpenAI Whisper API</option>
-                  <option value="local">本地 Whisper（需要 Python）</option>
-                </select>
-              </div>
-
-              {asrConfig.asrProvider !== 'local' && (
-                <>
-                  {/* API Key */}
-                  <div>
-                    <label className="block text-sm font-medium text-tech-text mb-2">
-                      API Key
-                    </label>
-                    <input
-                      type="password"
-                      value={asrConfig.asrApiKey || ''}
-                      onChange={(e) => setAsrConfig({ ...asrConfig, asrApiKey: e.target.value })}
-                      placeholder="sk-..."
-                      className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all font-mono text-sm"
-                    />
-                  </div>
-
-                  {/* Base URL */}
-                  <div>
-                    <label className="block text-sm font-medium text-tech-text mb-2">
-                      Base URL（可选）
-                    </label>
-                    <input
-                      type="text"
-                      value={asrConfig.asrBaseURL || ''}
-                      onChange={(e) => setAsrConfig({ ...asrConfig, asrBaseURL: e.target.value })}
-                      placeholder="https://api.openai.com/v1"
-                      className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all font-mono text-sm"
-                    />
-                    <p className="mt-1 text-xs text-tech-muted">留空使用默认地址</p>
-                  </div>
-
-                  {/* Model */}
-                  <div>
-                    <label className="block text-sm font-medium text-tech-text mb-2">
-                      模型
-                    </label>
-                    <input
-                      type="text"
-                      value={asrConfig.asrModel || 'whisper-1'}
-                      onChange={(e) => setAsrConfig({ ...asrConfig, asrModel: e.target.value })}
-                      placeholder="whisper-1"
-                      className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all font-mono text-sm"
-                    />
-                  </div>
-                </>
-              )}
-
-              {/* Info Box */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <div className="flex items-start gap-3">
-                  <span className="text-xl">ℹ️</span>
-                  <div className="flex-1 text-sm text-blue-700">
-                    <p className="font-medium mb-2">关于语音识别</p>
-                    <ul className="space-y-1">
-                      <li>• 用于将视频音频转换为文字（转录）</li>
-                      <li>• 推荐使用 OpenAI Whisper API，准确度高</li>
-                      <li>• 未配置时，系统将使用分享文本作为后备</li>
-                      <li>• 配置后需要重新处理任务才会生效</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
-
-              {/* Save Button */}
-              <div className="flex items-center justify-end gap-3 pt-2">
-                {asrSaved && (
-                  <span className="text-sm text-green-600 font-medium">
-                    ✓ 已保存
-                  </span>
-                )}
-                <button
-                  onClick={handleSaveAsrConfig}
-                  disabled={asrSaving}
-                  className="px-6 py-2.5 rounded-lg bg-tech-blue text-white hover:bg-tech-blue-dark transition-all shadow-sm hover:shadow font-medium disabled:opacity-50"
-                >
-                  {asrSaving ? '保存中...' : '保存配置'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Info */}
-        <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-          <div className="flex items-start gap-3">
-            <span className="text-2xl">💡</span>
-            <div className="flex-1 text-sm">
-              <p className="font-medium text-tech-text mb-1">提示</p>
-              <ul className="space-y-1 text-tech-muted">
-                <li>• 添加前会先测试 API Key 是否有效</li>
-                <li>• 可以添加多个 API Key 并随时切换</li>
-                <li>• API Key 使用加密存储，仅保存在本地</li>
-                <li>• 切换 API Key 后会立即生效</li>
-              </ul>
-            </div>
-          </div>
-        </div>
+        <main className="min-w-0">
+          {activeSection === 'models' && (
+            <ModelsSection
+              apiKeys={apiKeys}
+              isAdding={isAdding}
+              setIsAdding={setIsAdding}
+              newKey={newKey}
+              setNewKey={setNewKey}
+              testResult={testResult}
+              setTestResult={setTestResult}
+              isTesting={isTesting}
+              isSaving={isSaving}
+              onProviderChange={handleProviderChange}
+              onTest={handleTest}
+              onAdd={handleAdd}
+              onRemove={handleRemove}
+              onSetActive={handleSetActive}
+            />
+          )}
+          {activeSection === 'asr' && (
+            <AsrSection
+              asrConfig={asrConfig}
+              setAsrConfig={setAsrConfig}
+              asrSaving={asrSaving}
+              asrSaved={asrSaved}
+              onSave={handleSaveAsrConfig}
+            />
+          )}
+          {activeSection === 'storage' && <StorageSection />}
+          {activeSection === 'advanced' && <AdvancedSection />}
+        </main>
       </div>
     </Layout>
   );
 }
+
+function ModelsSection({
+  apiKeys,
+  isAdding,
+  setIsAdding,
+  newKey,
+  setNewKey,
+  testResult,
+  setTestResult,
+  isTesting,
+  isSaving,
+  onProviderChange,
+  onTest,
+  onAdd,
+  onRemove,
+  onSetActive,
+}: {
+  apiKeys: AIKeyConfig[];
+  isAdding: boolean;
+  setIsAdding: (value: boolean) => void;
+  newKey: {
+    name: string;
+    provider: 'deepseek' | 'openai' | 'custom';
+    apiKey: string;
+    baseURL: string;
+    model: string;
+  };
+  setNewKey: (value: {
+    name: string;
+    provider: 'deepseek' | 'openai' | 'custom';
+    apiKey: string;
+    baseURL: string;
+    model: string;
+  }) => void;
+  testResult: { valid: boolean; error?: string } | null;
+  setTestResult: (value: { valid: boolean; error?: string } | null) => void;
+  isTesting: boolean;
+  isSaving: boolean;
+  onProviderChange: (provider: 'deepseek' | 'openai' | 'custom') => void;
+  onTest: () => void;
+  onAdd: () => void;
+  onRemove: (keyId: string) => void;
+  onSetActive: (keyId: string) => void;
+}) {
+  return (
+    <section className="space-y-6">
+      <SectionHeader
+        icon={KeyRound}
+        title="Models / API Keys"
+        description="管理 AI 洗稿和 PPT 生成使用的模型密钥。"
+        action={
+          <button
+            onClick={() => setIsAdding(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition-all hover:bg-tech-blue-dark"
+          >
+            <Plus size={16} />
+            添加密钥
+          </button>
+        }
+      />
+
+      {apiKeys.length === 0 && !isAdding ? (
+        <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface py-16 text-center">
+          <KeyRound className="mx-auto mb-4 h-11 w-11 text-tech-purple" />
+          <h3 className="text-lg font-semibold text-tech-text">还没有 API 密钥</h3>
+          <p className="mt-2 text-tech-muted">添加第一个密钥后即可创建视频作品。</p>
+          <button
+            onClick={() => setIsAdding(true)}
+            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-tech-blue px-5 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
+          >
+            <Plus size={17} />
+            立即添加
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {apiKeys.map((key) => (
+            <div
+              key={key.id}
+              className={`rounded-lg border bg-tech-surface p-5 transition-all ${
+                key.isActive ? 'border-tech-blue shadow-sm' : 'border-tech-border'
+              }`}
+            >
+              <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div className="min-w-0">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <h3 className="font-semibold text-tech-text">{key.name}</h3>
+                    {key.isActive && (
+                      <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                        <CheckCircle2 size={13} />
+                        当前使用
+                      </span>
+                    )}
+                    <span className="rounded bg-tech-bg px-2 py-1 text-xs text-tech-muted">
+                      {getProviderLabel(key.provider)}
+                    </span>
+                  </div>
+                  <p className="text-sm text-tech-muted">
+                    模型：<code className="rounded bg-tech-bg px-2 py-0.5 text-tech-text">{key.model}</code>
+                  </p>
+                  <p className="mt-1 font-mono text-xs text-tech-muted">
+                    密钥：{key.apiKey.slice(0, 8)}...{key.apiKey.slice(-4)}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {!key.isActive && (
+                    <button
+                      onClick={() => onSetActive(key.id)}
+                      className="rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text transition-all hover:border-tech-blue hover:text-tech-blue"
+                    >
+                      设为当前
+                    </button>
+                  )}
+                  <button
+                    onClick={() => onRemove(key.id)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition-all hover:bg-red-50"
+                  >
+                    <Trash2 size={15} />
+                    删除
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {isAdding && (
+        <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
+          <div className="mb-6 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-tech-text">添加新密钥</h3>
+            <button
+              onClick={() => {
+                setIsAdding(false);
+                setTestResult(null);
+              }}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-tech-muted transition-all hover:bg-tech-bg hover:text-tech-text"
+              aria-label="关闭添加密钥"
+            >
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="space-y-5">
+            <FormField label="密钥名称" required>
+              <input
+                type="text"
+                value={newKey.name}
+                onChange={(event) => setNewKey({ ...newKey, name: event.target.value })}
+                placeholder="例如：我的 DeepSeek 密钥"
+                className={inputClassName}
+              />
+            </FormField>
+
+            <div>
+              <label className="mb-3 block text-sm font-medium text-tech-text">服务商</label>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                {(['deepseek', 'openai', 'custom'] as const).map((provider) => (
+                  <button
+                    key={provider}
+                    type="button"
+                    onClick={() => onProviderChange(provider)}
+                    className={`rounded-lg border px-4 py-3 text-sm font-medium transition-all ${
+                      newKey.provider === provider
+                        ? 'border-tech-purple bg-purple-50 text-tech-purple'
+                        : 'border-tech-border text-tech-muted hover:border-tech-blue'
+                    }`}
+                  >
+                    {getProviderLabel(provider)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <FormField label="API Key" required>
+              <input
+                type="password"
+                value={newKey.apiKey}
+                onChange={(event) => {
+                  setNewKey({ ...newKey, apiKey: event.target.value });
+                  setTestResult(null);
+                }}
+                placeholder="sk-..."
+                className={`${inputClassName} font-mono text-sm`}
+              />
+            </FormField>
+
+            {newKey.provider === 'custom' && (
+              <FormField label="API 地址">
+                <input
+                  type="text"
+                  value={newKey.baseURL}
+                  onChange={(event) => setNewKey({ ...newKey, baseURL: event.target.value })}
+                  placeholder="https://api.example.com/v1"
+                  className={`${inputClassName} font-mono text-sm`}
+                />
+              </FormField>
+            )}
+
+            <FormField label="模型">
+              <input
+                type="text"
+                value={newKey.model}
+                onChange={(event) => setNewKey({ ...newKey, model: event.target.value })}
+                placeholder="模型 ID"
+                className={`${inputClassName} font-mono text-sm`}
+              />
+            </FormField>
+
+            {testResult && (
+              <ResultBanner valid={testResult.valid} message={testResult.valid ? 'API Key 有效' : testResult.error || '测试失败'} />
+            )}
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={onTest}
+                disabled={isTesting || !newKey.apiKey}
+                className="rounded-lg border border-tech-border px-5 py-2.5 font-medium text-tech-text transition-all hover:bg-tech-bg disabled:opacity-50"
+              >
+                {isTesting ? '测试中...' : '测试连接'}
+              </button>
+              <button
+                onClick={onAdd}
+                disabled={isSaving || !testResult?.valid}
+                className="rounded-lg bg-tech-blue px-5 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSaving ? '保存中...' : '保存密钥'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AsrSection({
+  asrConfig,
+  setAsrConfig,
+  asrSaving,
+  asrSaved,
+  onSave,
+}: {
+  asrConfig: ASRConfig;
+  setAsrConfig: (value: ASRConfig) => void;
+  asrSaving: boolean;
+  asrSaved: boolean;
+  onSave: () => void;
+}) {
+  const selectedProvider = asrConfig.asrProvider || 'openai';
+  const isCloudProvider = CLOUD_ASR_PROVIDERS.has(selectedProvider);
+  const isFunAsr = selectedProvider === 'funasr';
+  const handleAsrProviderChange = (provider: string) => {
+    const currentModel = asrConfig.asrModel;
+    const nextModel =
+      provider === 'funasr' && (!currentModel || currentModel === 'whisper-1')
+        ? 'paraformer-zh'
+        : provider === 'openai' && (!currentModel || currentModel === 'paraformer-zh')
+        ? 'whisper-1'
+        : currentModel;
+    setAsrConfig({ ...asrConfig, asrProvider: provider, asrModel: nextModel });
+  };
+
+  return (
+    <section className="space-y-6">
+      <SectionHeader
+        icon={Mic}
+        title="ASR"
+        description="配置视频转录所需的语音识别服务。"
+      />
+
+      <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
+        <div className="space-y-5">
+          <FormField label="服务提供商">
+            <select
+              value={selectedProvider}
+              onChange={(event) => handleAsrProviderChange(event.target.value)}
+              className={inputClassName}
+            >
+              <option value="openai">OpenAI Whisper API</option>
+              <option value="local">本地 Whisper（需要 Python）</option>
+              <option value="funasr">本地 FunASR（中文推荐，无需 API Key）</option>
+            </select>
+          </FormField>
+
+          {isCloudProvider && (
+            <>
+              <FormField label="API Key">
+                <input
+                  type="password"
+                  value={asrConfig.asrApiKey || ''}
+                  onChange={(event) => setAsrConfig({ ...asrConfig, asrApiKey: event.target.value })}
+                  placeholder="sk-..."
+                  className={`${inputClassName} font-mono text-sm`}
+                />
+              </FormField>
+            </>
+          )}
+
+          {isCloudProvider && (
+            <>
+              <FormField label="Base URL（可选）" hint="留空使用默认地址">
+                <input
+                  type="text"
+                  value={asrConfig.asrBaseURL || ''}
+                  onChange={(event) => setAsrConfig({ ...asrConfig, asrBaseURL: event.target.value })}
+                  placeholder="https://api.openai.com/v1"
+                  className={`${inputClassName} font-mono text-sm`}
+                />
+              </FormField>
+            </>
+          )}
+
+          {(isCloudProvider || isFunAsr) && (
+            <>
+              <FormField label="模型">
+                <input
+                  type="text"
+                  value={asrConfig.asrModel || (isFunAsr ? 'paraformer-zh' : 'whisper-1')}
+                  onChange={(event) => setAsrConfig({ ...asrConfig, asrModel: event.target.value })}
+                  placeholder={isFunAsr ? 'paraformer-zh' : 'whisper-1'}
+                  className={`${inputClassName} font-mono text-sm`}
+                />
+              </FormField>
+            </>
+          )}
+
+          <div className={`rounded-lg border p-4 text-sm ${
+            isFunAsr ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-blue-200 bg-blue-50 text-blue-700'
+          }`}>
+            <div className="flex items-start gap-3">
+              <AlertCircle size={18} className="mt-0.5 shrink-0" />
+              <div>
+                <p className="font-semibold">{isFunAsr ? '关于本地 FunASR' : '关于语音识别'}</p>
+                <p className="mt-1 leading-6">
+                  {isFunAsr
+                    ? 'FunASR 在本机执行中文语音识别，不需要 ASR API Key。首次使用可能需要下载模型；请确保当前 Python 环境已安装 torch、torchaudio 和 funasr。'
+                    : '用于将视频音频转换为文字。未配置时，系统会使用分享文本作为后备；配置后需要重新处理任务才会生效。'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-2">
+            {asrSaved && (
+              <span className="inline-flex items-center gap-1 text-sm font-medium text-emerald-600">
+                <CheckCircle2 size={15} />
+                已保存
+              </span>
+            )}
+            <button
+              onClick={onSave}
+              disabled={asrSaving}
+              className="rounded-lg bg-tech-blue px-6 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark disabled:opacity-50"
+            >
+              {asrSaving ? '保存中...' : '保存配置'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function StorageSection() {
+  return (
+    <section className="space-y-6">
+      <SectionHeader
+        icon={HardDrive}
+        title="Storage"
+        description="本地作品、素材和输出文件会保存到用户文档目录。"
+      />
+      <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <StorageCard title="Raw assets" value="~/Documents/抖音AI视频/raw" />
+          <StorageCard title="Processed scripts" value="~/Documents/抖音AI视频/processed" />
+          <StorageCard title="PPT output" value="~/Documents/抖音AI视频/output/ppt" />
+          <StorageCard title="Logs" value="~/Documents/抖音AI视频/logs" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AdvancedSection() {
+  return (
+    <section className="space-y-6">
+      <SectionHeader
+        icon={SlidersHorizontal}
+        title="Advanced"
+        description="安全策略和本地运行提示。"
+      />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <InfoCard
+          icon={ShieldCheck}
+          title="本地密钥存储"
+          description="API Key 仅保存在本机配置中，切换当前密钥后会立即影响后续任务。"
+        />
+        <InfoCard
+          icon={Database}
+          title="处理链路"
+          description="视频、音频、转录、洗稿和 PPT 产物按任务 ID 保存，删除后会先进入垃圾桶。"
+        />
+      </div>
+    </section>
+  );
+}
+
+function SectionHeader({
+  icon: Icon,
+  title,
+  description,
+  action,
+}: {
+  icon: typeof KeyRound;
+  title: string;
+  description: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-4 rounded-lg border border-tech-border bg-tech-surface p-5 md:flex-row md:items-center md:justify-between">
+      <div className="flex items-start gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-purple-50 text-tech-purple">
+          <Icon size={20} />
+        </span>
+        <div>
+          <h3 className="text-lg font-semibold text-tech-text">{title}</h3>
+          <p className="mt-1 text-sm text-tech-muted">{description}</p>
+        </div>
+      </div>
+      {action}
+    </div>
+  );
+}
+
+function FormField({ label, required, hint, children }: { label: string; required?: boolean; hint?: string; children: ReactNode }) {
+  return (
+    <div>
+      <label className="mb-2 block text-sm font-medium text-tech-text">
+        {label} {required && <span className="text-red-500">*</span>}
+      </label>
+      {children}
+      {hint && <p className="mt-1 text-xs text-tech-muted">{hint}</p>}
+    </div>
+  );
+}
+
+function ResultBanner({ valid, message }: { valid: boolean; message: string }) {
+  return (
+    <div className={`flex items-center gap-2 rounded-lg border p-3 text-sm ${valid ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+      {valid ? <CheckCircle2 size={17} /> : <XCircle size={17} />}
+      {message}
+    </div>
+  );
+}
+
+function StorageCard({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-tech-bg p-4">
+      <p className="text-sm font-semibold text-tech-text">{title}</p>
+      <p className="mt-2 break-all font-mono text-xs text-tech-muted">{value}</p>
+    </div>
+  );
+}
+
+function InfoCard({ icon: Icon, title, description }: { icon: typeof ShieldCheck; title: string; description: string }) {
+  return (
+    <div className="rounded-lg border border-tech-border bg-tech-surface p-5">
+      <Icon className="mb-4 h-8 w-8 text-tech-purple" />
+      <h3 className="font-semibold text-tech-text">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-tech-muted">{description}</p>
+    </div>
+  );
+}
+
+function getProviderLabel(provider: AIKeyConfig['provider']) {
+  if (provider === 'deepseek') return 'DeepSeek';
+  if (provider === 'openai') return 'OpenAI';
+  return '第三方';
+}
+
+const inputClassName =
+  'w-full rounded-lg border border-tech-border bg-tech-surface px-4 py-3 text-tech-text placeholder-tech-muted outline-none transition-all focus:border-tech-blue focus:ring-2 focus:ring-blue-100';

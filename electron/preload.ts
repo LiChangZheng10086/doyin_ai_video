@@ -41,6 +41,10 @@ export interface AIKeyConfig {
 export interface AppConfig {
   storagePath: string;
   aiKeys: AIKeyConfig[]; // 支持多个 API Key
+  asrProvider?: string;
+  asrApiKey?: string;
+  asrBaseURL?: string;
+  asrModel?: string;
   app: {
     firstRun: boolean;
     theme: 'light' | 'dark' | 'system';

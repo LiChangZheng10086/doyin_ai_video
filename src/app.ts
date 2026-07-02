@@ -5,8 +5,9 @@ import { AsrService } from "./lib/asr.js";
 import { OpenAiScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
-import { JobStore } from "./lib/jobs.js";
-import type { ScriptAsset } from "./types.js";
+import { JobStepError, JobStore } from "./lib/jobs.js";
+import { createPPTGenerator } from "./lib/ppt-generator.js";
+import type { PipelineStep, ScriptAsset } from "./types.js";
 
 export interface ServerConfig {
   storagePath: string;
@@ -17,6 +18,7 @@ export interface ServerConfig {
   aiBaseURL?: string;
   ytDlpBinary?: string;
   ffmpegBinary?: string;
+  ffprobeBinary?: string;
   cookiesFile?: string;
   cookiesFromBrowser?: string;
   asrApiKey?: string;
@@ -54,6 +56,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   const media = new MediaService(storage, {
     ytDlpBinary: config.ytDlpBinary,
     ffmpegBinary: config.ffmpegBinary,
+    ffprobeBinary: config.ffprobeBinary,
     cookiesFile: config.cookiesFile,
     cookiesFromBrowser: config.cookiesFromBrowser
   });
@@ -69,7 +72,15 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     whisperComputeType: config.whisperComputeType
   });
 
-  const jobs = new JobStore(storage, cleaner, media, asr);
+  const pptGenerator = createPPTGenerator({
+    apiKey: aiApiKey,
+    model: aiModel,
+    baseURL: aiBaseURL,
+    provider: aiProvider === "deepseek" ? "deepseek" : "openai",
+    storageRoot: config.storagePath
+  });
+
+  const jobs = new JobStore(storage, cleaner, media, asr, pptGenerator);
   await jobs.init();
 
   const app = express();
@@ -110,6 +121,16 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
   });
 
+  app.get("/api/jobs/overview", async (_req, res) => {
+    try {
+      const jobList = await jobs.listOverview();
+      res.json({ jobs: jobList });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to list job overview";
+      res.status(500).json({ message });
+    }
+  });
+
   app.post("/api/jobs", async (req, res) => {
     const { sourceUrl, shareText, topic } = req.body as {
       sourceUrl?: string;
@@ -132,6 +153,107 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       const message = error instanceof Error ? error.message : "job create failed";
       res.status(500).json({ message });
     }
+  });
+
+  app.get("/api/jobs/trash", async (_req, res) => {
+    try {
+      const jobList = await jobs.listTrash();
+      res.json({ jobs: jobList });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to list trash";
+      res.status(500).json({ message });
+    }
+  });
+
+  app.delete("/api/jobs/:id", async (req, res) => {
+    const record = await jobs.trash(req.params.id);
+    if (!record) {
+      res.status(404).json({ message: "job not found" });
+      return;
+    }
+
+    res.json({ job: record, message: "job moved to trash" });
+  });
+
+  app.post("/api/jobs/:id/restore", async (req, res) => {
+    const record = await jobs.restore(req.params.id);
+    if (!record) {
+      res.status(404).json({ message: "job not found" });
+      return;
+    }
+
+    res.json({ job: record, message: "job restored" });
+  });
+
+  app.delete("/api/jobs/:id/permanent", async (req, res) => {
+    const result = await jobs.permanentlyDelete(req.params.id);
+    if (result === "not_found") {
+      res.status(404).json({ message: "job not found" });
+      return;
+    }
+    if (result === "not_in_trash") {
+      res.status(409).json({ message: "job is not in trash" });
+      return;
+    }
+    if (result === "active") {
+      res.status(409).json({ message: "active job cannot be permanently deleted" });
+      return;
+    }
+
+    res.json({ message: "job permanently deleted" });
+  });
+
+  const runStepRoute = async (id: string, step: PipelineStep) => {
+    try {
+      const record = await jobs.runStep(id, step);
+      return {
+        status: 200,
+        body: {
+          job: record,
+          message: "step completed"
+        }
+      };
+    } catch (error) {
+      if (error instanceof JobStepError) {
+        return {
+          status: error.statusCode,
+          body: {
+            message: error.message,
+            job: error.job
+          }
+        };
+      }
+      const message = error instanceof Error ? error.message : "step failed";
+      return {
+        status: 500,
+        body: { message }
+      };
+    }
+  };
+
+  app.post("/api/jobs/:id/steps/download", async (req, res) => {
+    const result = await runStepRoute(req.params.id, "download");
+    res.status(result.status).json(result.body);
+  });
+
+  app.post("/api/jobs/:id/steps/extract-audio", async (req, res) => {
+    const result = await runStepRoute(req.params.id, "extract_audio");
+    res.status(result.status).json(result.body);
+  });
+
+  app.post("/api/jobs/:id/steps/transcribe", async (req, res) => {
+    const result = await runStepRoute(req.params.id, "transcribe");
+    res.status(result.status).json(result.body);
+  });
+
+  app.post("/api/jobs/:id/steps/clean", async (req, res) => {
+    const result = await runStepRoute(req.params.id, "clean");
+    res.status(result.status).json(result.body);
+  });
+
+  app.post("/api/jobs/:id/steps/generate-ppt", async (req, res) => {
+    const result = await runStepRoute(req.params.id, "generate_ppt");
+    res.status(result.status).json(result.body);
   });
 
   app.get("/api/jobs/:id", async (req, res) => {
@@ -306,7 +428,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
         return;
       }
 
-      const pptFullPath = path.join(config.storagePath, script.pptPath.replace(/^storage\//, ""));
+      const pptFullPath = resolveOutputPath(config.storagePath, script.pptPath);
       if (!existsSync(pptFullPath)) {
         res.status(404).json({ message: "PPT file not found on disk" });
         return;
@@ -323,4 +445,11 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   });
 
   return app;
+}
+
+function resolveOutputPath(storagePath: string, outputPath: string) {
+  if (path.isAbsolute(outputPath)) {
+    return outputPath;
+  }
+  return path.join(storagePath, outputPath.replace(/^storage\//, ""));
 }

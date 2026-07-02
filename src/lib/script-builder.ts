@@ -45,6 +45,9 @@ export function buildScriptDraft(
     voiceoverScript: [hook, benefits, summary].join(" "),
     coverTitle,
     tags,
+    summary,
+    keyPoints: [subject, benefits, summary].filter(Boolean).slice(0, 3),
+    pptOutline: buildFallbackPptOutline(subject, benefits, summary),
     sceneList: [
       {
         scene: 1,
@@ -74,6 +77,7 @@ export function buildTranscriptDraft(input: TranscriptDraftInput): ScriptAsset {
   const coverTitle = buildTranscriptCoverTitle(input.pageInfo, transcript, input.topic);
   const tags = dedupeTags(["AI", "技术分享", normalizeTag(input.topic)]);
   const summary = transcript.slice(0, 160) || "这里是视频转写内容";
+  const keyPoints = buildTranscriptKeyPoints(transcript);
 
   return {
     sourceUrl: input.sourceUrl,
@@ -89,6 +93,9 @@ export function buildTranscriptDraft(input: TranscriptDraftInput): ScriptAsset {
     voiceoverScript: transcript,
     coverTitle,
     tags,
+    summary,
+    keyPoints,
+    pptOutline: buildFallbackPptOutline(coverTitle, ...keyPoints),
     sceneList: [
       {
         scene: 1,
@@ -201,4 +208,30 @@ function dedupeTags(tags: string[]) {
 
 function normalizeTranscript(text: string) {
   return text.replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
+}
+
+function buildTranscriptKeyPoints(transcript: string) {
+  const sentences = transcript
+    .split(/[。！？!?；;\n]+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+  return sentences.slice(0, 4).map((sentence) => sentence.slice(0, 80));
+}
+
+function buildFallbackPptOutline(title: string, ...points: string[]) {
+  const cleanPoints = points.map((point) => point.trim()).filter(Boolean);
+  return [
+    {
+      title: "封面",
+      bullets: [title].filter(Boolean)
+    },
+    {
+      title: "核心内容",
+      bullets: cleanPoints.slice(0, 4).length ? cleanPoints.slice(0, 4) : ["内容清洗", "要点提炼"]
+    },
+    {
+      title: "总结",
+      bullets: cleanPoints.slice(-3).length ? cleanPoints.slice(-3) : ["回顾重点", "行动建议"]
+    }
+  ];
 }

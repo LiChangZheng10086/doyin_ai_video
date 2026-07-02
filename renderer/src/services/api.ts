@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import type { Job, ApiResponse, ScriptAsset, CleanedScript } from '../types';
+import type { Job, ApiResponse, ScriptAsset, CleanedScript, RawTranscript, PipelineStep, JobOverview } from '../types';
 
 class ApiClient {
   private client: AxiosInstance | null = null;
@@ -10,7 +10,7 @@ class ApiClient {
       this.serverPort = await window.electron.getServerPort();
       this.client = axios.create({
         baseURL: `http://localhost:${this.serverPort}`,
-        timeout: 30000,
+        timeout: 600000,
       });
     }
     return this.client!;
@@ -47,6 +47,53 @@ class ApiClient {
     return response.data.job!;
   }
 
+  async getJobOverviews(): Promise<JobOverview[]> {
+    const client = await this.getClient();
+    const response = await client.get<{ jobs: JobOverview[] }>('/api/jobs/overview');
+    return response.data.jobs || [];
+  }
+
+  // 执行一个手动步骤
+  async runJobStep(id: string, step: PipelineStep): Promise<Job> {
+    const client = await this.getClient();
+    const routeMap: Record<PipelineStep, string> = {
+      download: 'download',
+      extract_audio: 'extract-audio',
+      transcribe: 'transcribe',
+      clean: 'clean',
+      generate_ppt: 'generate-ppt',
+    };
+    const response = await client.post<ApiResponse>(`/api/jobs/${id}/steps/${routeMap[step]}`);
+    return response.data.job!;
+  }
+
+  // 获取垃圾桶任务
+  async getTrashJobs(): Promise<Job[]> {
+    const client = await this.getClient();
+    const response = await client.get<ApiResponse>('/api/jobs/trash');
+    return response.data.jobs || [];
+  }
+
+  // 移入垃圾桶
+  async deleteJob(id: string): Promise<Job> {
+    const client = await this.getClient();
+    const response = await client.delete<ApiResponse>(`/api/jobs/${id}`);
+    return response.data.job!;
+  }
+
+  // 恢复垃圾桶任务
+  async restoreJob(id: string): Promise<Job> {
+    const client = await this.getClient();
+    const response = await client.post<ApiResponse>(`/api/jobs/${id}/restore`);
+    return response.data.job!;
+  }
+
+  // 永久删除垃圾桶任务
+  async permanentlyDeleteJob(id: string): Promise<void> {
+    const client = await this.getClient();
+    await client.delete<ApiResponse>(`/api/jobs/${id}/permanent`);
+  }
+
   // 获取任务脚本
   async getJobScript(id: string): Promise<ScriptAsset> {
     const client = await this.getClient();
@@ -62,10 +109,10 @@ class ApiClient {
   }
 
   // 获取原始转录文本
-  async getJobRawTranscript(id: string): Promise<any> {
+  async getJobRawTranscript(id: string): Promise<RawTranscript> {
     const client = await this.getClient();
     const response = await client.get<ApiResponse>(`/api/jobs/${id}/raw-transcript`);
-    return response.data;
+    return response.data.rawTranscript!;
   }
 
   // 获取视频提示词

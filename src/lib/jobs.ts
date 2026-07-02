@@ -1,28 +1,88 @@
 import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { fetchDouyinPageInfo } from "./douyin-page.js";
 import type { DouyinPageInfo } from "./douyin-page.js";
 import { buildScriptDraft } from "./script-builder.js";
 import type { ScriptCleaner } from "./ai-cleaner.js";
-import type { DownloadResult, MediaService } from "./media.js";
+import type { MediaService } from "./media.js";
 import type { AsrService } from "./asr.js";
 import { LocalStorage } from "./storage.js";
 import { parseDouyinShare } from "./douyin.js";
-import { createVideoEnhancer } from "./video-enhancer.js";
-import { createPPTGenerator } from "./ppt-generator.js";
-import type { JobRecord, JobStatus, JobStage, ScriptAsset } from "../types.js";
+import type { PPTGenerator } from "./ppt-generator.js";
+import type {
+  JobOverview,
+  JobPreview,
+  JobRecord,
+  JobStatus,
+  JobStage,
+  PipelineStep,
+  PipelineStepState,
+  PipelineSteps,
+  ScriptAsset,
+  TranscriptAsset
+} from "../types.js";
 
 const JOBS_INDEX = "cache/jobs-index.json";
+const TRASH_RETENTION_DAYS = 30;
+const TRASH_RETENTION_MS = TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const MAX_STEP_ATTEMPTS = 3;
+const PIPELINE_STEPS: PipelineStep[] = ["download", "extract_audio", "transcribe", "clean", "generate_ppt"];
+const STEP_LABELS: Record<PipelineStep, string> = {
+  download: "下载视频",
+  extract_audio: "提取音频",
+  transcribe: "视频转录",
+  clean: "AI 洗稿",
+  generate_ppt: "生成 PPT"
+};
+const STEP_STAGE: Record<PipelineStep, { running: JobStage; succeeded: JobStage }> = {
+  download: { running: "downloading", succeeded: "downloaded" },
+  extract_audio: { running: "extracting", succeeded: "audio_extracted" },
+  transcribe: { running: "transcribing", succeeded: "transcribed" },
+  clean: { running: "cleaning", succeeded: "cleaned" },
+  generate_ppt: { running: "generating-ppt", succeeded: "scripted" }
+};
+const STEP_PREVIOUS: Partial<Record<PipelineStep, PipelineStep>> = {
+  extract_audio: "download",
+  transcribe: "extract_audio",
+  clean: "transcribe",
+  generate_ppt: "clean"
+};
 
 type JobsIndex = Record<string, JobRecord>;
+type ParsedShare = NonNullable<ReturnType<typeof parseDouyinShare>>;
 type PageInfoRecord = DouyinPageInfo & { errorMessage?: string };
+type PermanentDeleteResult = "deleted" | "not_found" | "active" | "not_in_trash";
+
+export class JobStepError extends Error {
+  constructor(message: string, readonly statusCode = 400, readonly job?: JobRecord) {
+    super(message);
+    this.name = "JobStepError";
+  }
+}
+
+function firstText(...values: Array<unknown>) {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const text = value.trim();
+    if (text) {
+      return text;
+    }
+  }
+  return undefined;
+}
 
 export class JobStore {
+  private readonly runningSteps = new Set<string>();
+
   constructor(
     private readonly storage: LocalStorage,
     private readonly cleaner: ScriptCleaner,
     private readonly media: MediaService,
-    private readonly asr: AsrService
+    private readonly asr: AsrService,
+    private readonly pptGenerator: PPTGenerator
   ) {}
 
   async init() {
@@ -32,6 +92,7 @@ export class JobStore {
     } catch {
       await this.storage.writeJson(JOBS_INDEX, {});
     }
+    await this.purgeExpiredTrash();
   }
 
   async create(input: { sourceUrl?: string; shareText?: string; topic?: string }) {
@@ -50,7 +111,9 @@ export class JobStore {
       sourceUrl,
       topic,
       status: "queued",
-      stage: "submitted",
+      stage: parsed ? "parsed" : "submitted",
+      workflowMode: "manual",
+      steps: this.createInitialSteps(),
       createdAt: now,
       updatedAt: now,
       storagePath
@@ -58,206 +121,560 @@ export class JobStore {
     const index = await this.readIndex();
     index[id] = record;
     await this.writeIndex(index);
-
-    // 🔥 异步处理任务，不阻塞响应
-    this.processJob(id, parsed, sourceUrl, topic, now).catch((error) => {
-      console.error(`Job ${id} processing failed:`, error);
-      this.setStage(id, "failed", "failed").catch(console.error);
-    });
+    if (parsed) {
+      await this.storage.writeJson(path.join("raw", "text", `${id}.json`), parsed);
+    }
 
     return record;
   }
 
+  async runStep(id: string, step: PipelineStep) {
+    if (this.runningSteps.has(id)) {
+      throw new JobStepError("another step is already running for this job", 409);
+    }
 
-  private async processJob(
-    id: string,
-    parsed: ReturnType<typeof parseDouyinShare> | null,
-    sourceUrl: string,
-    topic: string,
-    createdAt: string
-  ) {
-    const storagePath = path.join("processed", "scripts", `${id}.json`);
-
+    this.runningSteps.add(id);
     try {
-      if (parsed) {
-        await this.setStage(id, "parsed");
-        await this.storage.writeJson(path.join("raw", "text", `${id}.json`), parsed);
-      }
+      const record = await this.getStepRunnableRecord(id, step);
+      await this.markStepRunning(record, step);
 
-      await this.setStage(id, "downloading");
-      let downloadResult: DownloadResult | null = null;
-      try {
-        downloadResult = await this.media.downloadVideo(sourceUrl, id);
-        await this.update(id, {
-          videoPath: downloadResult.videoPath,
-          videoMetadataPath: downloadResult.metadataPath
-        });
-        await this.setStage(id, "downloaded");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "video download failed";
-        await this.update(id, {
-          downloadErrorMessage: message
-        });
-      }
-
-      let pageInfo: PageInfoRecord | null = null;
-      try {
-        pageInfo = await fetchDouyinPageInfo(sourceUrl);
-        await this.storage.writeJson(path.join("raw", "page", `${id}.json`), pageInfo);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "page extraction failed";
-        pageInfo = {
-          requestedUrl: sourceUrl,
-          finalUrl: sourceUrl,
-          canonicalUrl: sourceUrl,
-          videoId: undefined,
-          pageTitle: undefined,
-          pageDescription: undefined,
-          authorName: undefined,
-          publishTime: undefined,
-          isChallengePage: false,
-          redirectChain: [],
-          errorMessage: message
-        };
-        await this.storage.writeJson(path.join("raw", "page", `${id}.json`), pageInfo);
-      }
-
-      if (downloadResult) {
-        await this.setStage(id, "audio_extracted");
-        let transcriptText: string | null = null;
+      let lastError = "";
+      for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt += 1) {
+        await this.updateStep(id, step, { attempts: attempt });
         try {
-          const audioResult = await this.media.extractAudio(downloadResult.videoPath, id);
-          await this.update(id, {
-            audioPath: audioResult.audioPath,
-            audioManifestPath: audioResult.manifestPath
-          });
-          await this.setStage(id, "transcribing");
-          try {
-            const transcriptResult = await this.asr.transcribe(audioResult.audioPath);
-            transcriptText = transcriptResult?.text?.trim() || null;
-            if (transcriptResult?.text) {
-              const transcriptPath = path.join("raw", "transcripts", `${id}.json`);
-              await this.storage.writeJson(transcriptPath, {
-                jobId: id,
-                sourceUrl,
-                audioPath: audioResult.audioPath,
-                transcript: transcriptResult.text,
-                model: transcriptResult.model,
-                provider: transcriptResult.provider,
-                createdAt: new Date().toISOString()
-              });
-              await this.update(id, {
-                transcriptPath,
-                transcriptModel: transcriptResult.model
-              });
-            }
-          } catch (error) {
-            if (error instanceof Error && !this.isMissingAsrKeyError(error)) {
-              await this.update(id, {
-                transcriptErrorMessage: error.message || "transcription failed"
-              });
-            }
-          }
+          await this.executeStepAction(id, step);
+          return await this.markStepSucceeded(id, step);
         } catch (error) {
-          const message = error instanceof Error ? error.message : "audio extraction failed";
-          await this.update(id, {
-            audioErrorMessage: message
-          });
-        }
-
-        if (!parsed && !transcriptText) {
-          throw new Error("transcription failed and no share text was provided");
-        }
-
-        const draft = this.defaultScriptAsset(sourceUrl, topic, parsed, pageInfo, transcriptText);
-        await this.storage.writeJson(storagePath, draft);
-
-        if (parsed || transcriptText) {
-          await this.setStage(id, "cleaned");
-          const cleaned = await this.cleaner.clean({
-            parsed,
-            transcriptText,
-            topic,
-            draft,
-            pageInfo
-          });
-
-          // 🎯 双路增强：并行生成视频提示词和 PPT
-          let enhanced = cleaned;
-          try {
-            const videoEnhancer = createVideoEnhancer();
-            const pptGenerator = createPPTGenerator();
-
-            const [videoResult, pptResult] = await Promise.allSettled([
-              videoEnhancer.enhanceScenes(cleaned.sceneList, topic),
-              pptGenerator.generatePPT(cleaned, id)
-            ]);
-
-            // 合并视频增强结果
-            if (videoResult.status === "fulfilled") {
-              enhanced = {
-                ...enhanced,
-                videoPrompts: videoResult.value.videoPrompts,
-                enhancedScenes: videoResult.value.enhancedScenes,
-                videoEnhancedAt: new Date().toISOString()
-              };
-            } else {
-              console.error("Video enhancement failed:", videoResult.reason);
-            }
-
-            // 合并 PPT 生成结果
-            if (pptResult.status === "fulfilled") {
-              enhanced = {
-                ...enhanced,
-                pptContent: pptResult.value.pptContent,
-                pptPath: pptResult.value.pptPath,
-                pptStyle: pptResult.value.style,
-                pptGeneratedAt: new Date().toISOString()
-              };
-            } else {
-              console.error("PPT generation failed:", pptResult.reason);
-            }
-          } catch (error) {
-            console.error("Enhancement pipeline failed:", error);
-            // 增强失败不影响主流程，继续使用 cleaned 结果
-          }
-
-          await this.storage.writeJson(path.join("processed", "cleaned", `${id}.json`), {
-            jobId: id,
-            sourceUrl,
-            topic,
-            createdAt,
-            aiModel: enhanced.aiModel,
-            cleaningMode: enhanced.cleaningMode,
-            pageInfo,
-            parsed,
-            transcriptText,
-            output: enhanced
-          });
-          await this.storage.writeJson(storagePath, enhanced);
-          await this.setStage(id, "scripted", "done");
-        } else {
-          await this.setStage(id, "scripted", "done");
+          lastError = error instanceof Error ? error.message : String(error);
+          await this.updateStep(id, step, { attempts: attempt, lastError });
         }
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "job processing failed";
-      console.error(`Job ${id} failed:`, message);
-      await this.update(id, { errorMessage: message });
-      await this.setStage(id, "failed", "failed");
+
+      const failed = await this.markStepFailed(id, step, lastError || "step failed");
+      throw new JobStepError(lastError || "step failed", 500, failed);
+    } finally {
+      this.runningSteps.delete(id);
     }
   }
 
+  private async getStepRunnableRecord(id: string, step: PipelineStep) {
+    const record = await this.get(id);
+    if (!record) {
+      throw new JobStepError("job not found", 404);
+    }
+    if (record.deletedAt) {
+      throw new JobStepError("deleted job cannot run steps", 409, record);
+    }
+    if (record.workflowMode !== "manual" || !record.steps) {
+      throw new JobStepError("manual workflow steps are not available for this job", 409, record);
+    }
+
+    const steps = this.ensurePipelineSteps(record.steps);
+    const current = steps[step];
+    if (current.status === "running") {
+      throw new JobStepError("step is already running", 409, record);
+    }
+    if (current.status === "succeeded") {
+      throw new JobStepError("step has already succeeded", 409, record);
+    }
+    const previous = STEP_PREVIOUS[step];
+    if (previous && steps[previous].status !== "succeeded") {
+      throw new JobStepError("previous step has not succeeded", 409, record);
+    }
+    if (PIPELINE_STEPS.some((candidate) => steps[candidate].status === "running")) {
+      throw new JobStepError("another step is already running for this job", 409, record);
+    }
+
+    return {
+      ...record,
+      steps
+    };
+  }
+
+  private async executeStepAction(id: string, step: PipelineStep) {
+    if (step === "download") {
+      await this.runDownloadStep(id);
+      return;
+    }
+    if (step === "extract_audio") {
+      await this.runExtractAudioStep(id);
+      return;
+    }
+    if (step === "transcribe") {
+      await this.runTranscribeStep(id);
+      return;
+    }
+    if (step === "clean") {
+      await this.runCleanStep(id);
+      return;
+    }
+    await this.runGeneratePptStep(id);
+  }
+
+  private async runDownloadStep(id: string) {
+    const record = await this.requireRecord(id);
+    const downloadResult = await this.media.downloadVideo(record.sourceUrl, id);
+    await this.update(id, {
+      videoPath: downloadResult.videoPath,
+      videoMetadataPath: downloadResult.metadataPath,
+      downloadErrorMessage: undefined
+    });
+    await this.writePageInfoBestEffort(id, record.sourceUrl);
+  }
+
+  private async runExtractAudioStep(id: string) {
+    const record = await this.requireRecord(id);
+    if (!record.videoPath) {
+      throw new Error("video file is missing; run download first");
+    }
+
+    const audioResult = await this.media.extractAudio(record.videoPath, id);
+    await this.update(id, {
+      audioPath: audioResult.audioPath,
+      audioManifestPath: audioResult.manifestPath,
+      audioErrorMessage: undefined
+    });
+  }
+
+  private async runTranscribeStep(id: string) {
+    const record = await this.requireRecord(id);
+    if (!record.audioPath) {
+      throw new Error("audio file is missing; run audio extraction first");
+    }
+
+    const transcriptResult = await this.asr.transcribe(record.audioPath);
+    const transcriptText = transcriptResult?.text?.trim();
+    if (!transcriptResult || !transcriptText) {
+      throw new Error("ASR returned no transcript; check ASR configuration and retry");
+    }
+
+    const audioManifest = await this.readOptionalJson<{ duration?: number }>(
+      path.join("raw", "audio", `${id}.json`)
+    );
+    const transcriptPath = path.join("raw", "transcripts", `${id}.json`);
+    const transcriptAsset: TranscriptAsset = {
+      jobId: id,
+      sourceUrl: record.sourceUrl,
+      audioPath: record.audioPath,
+      transcript: transcriptResult.text,
+      text: transcriptResult.text,
+      segments: transcriptResult.segments,
+      words: transcriptResult.words,
+      duration: transcriptResult.duration ?? audioManifest?.duration,
+      language: transcriptResult.language,
+      model: transcriptResult.model,
+      provider: transcriptResult.provider,
+      createdAt: new Date().toISOString()
+    };
+    await this.storage.writeJson(transcriptPath, transcriptAsset);
+    await this.update(id, {
+      transcriptPath,
+      transcriptModel: transcriptResult.model,
+      transcriptErrorMessage: undefined
+    });
+  }
+
+  private async runCleanStep(id: string) {
+    const record = await this.requireRecord(id);
+    const parsed = await this.readParsedShare(id);
+    const pageInfo = await this.readPageInfo(id);
+    const transcript = await this.readTranscript(id);
+    const transcriptText = transcript?.transcript?.trim() || transcript?.text?.trim() || "";
+    if (!transcriptText) {
+      throw new Error("transcript is missing; run ASR transcription first");
+    }
+
+    const draft = this.defaultScriptAsset(record.sourceUrl, record.topic, parsed, pageInfo, transcriptText);
+    await this.storage.writeJson(record.storagePath, draft);
+    const cleaned = await this.cleaner.clean({
+      parsed,
+      transcriptText,
+      topic: record.topic,
+      draft,
+      pageInfo
+    });
+    await this.storage.writeJson(path.join("processed", "cleaned", `${id}.json`), {
+      jobId: id,
+      sourceUrl: record.sourceUrl,
+      topic: record.topic,
+      createdAt: record.createdAt,
+      aiModel: cleaned.aiModel,
+      cleaningMode: cleaned.cleaningMode,
+      pageInfo,
+      parsed,
+      transcriptText,
+      output: cleaned
+    });
+    await this.storage.writeJson(record.storagePath, cleaned);
+    await this.update(id, { errorMessage: undefined });
+  }
+
+  private async runGeneratePptStep(id: string) {
+    const record = await this.requireRecord(id);
+    const script = await this.storage.readJson<ScriptAsset>(record.storagePath);
+    const pptResult = await this.pptGenerator.generatePPT(script, id);
+    const enhanced: ScriptAsset = {
+      ...script,
+      pptContent: pptResult.pptContent,
+      pptPath: pptResult.pptPath,
+      pptStyle: pptResult.style,
+      pptGeneratedAt: new Date().toISOString()
+    };
+
+    await this.storage.writeJson(record.storagePath, enhanced);
+    const cleanedPath = path.join("processed", "cleaned", `${id}.json`);
+    const cleaned = await this.readOptionalJson<Record<string, unknown>>(cleanedPath);
+    if (cleaned) {
+      await this.storage.writeJson(cleanedPath, {
+        ...cleaned,
+        output: enhanced
+      });
+    }
+    await this.update(id, { errorMessage: undefined });
+  }
+
+  private createInitialSteps(): PipelineSteps {
+    return PIPELINE_STEPS.reduce((steps, step) => {
+      steps[step] = {
+        status: "pending",
+        attempts: 0
+      };
+      return steps;
+    }, {} as PipelineSteps);
+  }
+
+  private ensurePipelineSteps(steps?: Partial<PipelineSteps>): PipelineSteps {
+    const initial = this.createInitialSteps();
+    for (const step of PIPELINE_STEPS) {
+      initial[step] = {
+        ...initial[step],
+        ...(steps?.[step] ?? {})
+      };
+    }
+    return initial;
+  }
+
+  private async updateStep(
+    id: string,
+    step: PipelineStep,
+    patch: Partial<PipelineStepState>,
+    recordPatch: Partial<Omit<JobRecord, "id" | "createdAt" | "steps">> = {}
+  ) {
+    const index = await this.readIndex();
+    const current = index[id];
+    if (!current) {
+      throw new JobStepError("job not found", 404);
+    }
+
+    const steps = this.ensurePipelineSteps(current.steps);
+    steps[step] = {
+      ...steps[step],
+      ...patch
+    };
+
+    const next: JobRecord = {
+      ...current,
+      ...recordPatch,
+      steps,
+      updatedAt: new Date().toISOString()
+    };
+    index[id] = next;
+    await this.writeIndex(index);
+    return next;
+  }
+
+  private async markStepRunning(record: JobRecord, step: PipelineStep) {
+    const now = new Date().toISOString();
+    await this.updateStep(
+      record.id,
+      step,
+      {
+        status: "running",
+        attempts: 0,
+        lastError: undefined,
+        startedAt: now,
+        finishedAt: undefined
+      },
+      {
+        status: "processing",
+        stage: STEP_STAGE[step].running,
+        errorMessage: undefined
+      }
+    );
+  }
+
+  private async markStepSucceeded(id: string, step: PipelineStep) {
+    const now = new Date().toISOString();
+    return this.updateStep(
+      id,
+      step,
+      {
+        status: "succeeded",
+        lastError: undefined,
+        finishedAt: now
+      },
+      {
+        status: step === "generate_ppt" ? "done" : "queued",
+        stage: STEP_STAGE[step].succeeded,
+        errorMessage: undefined
+      }
+    );
+  }
+
+  private async markStepFailed(id: string, step: PipelineStep, message: string) {
+    const now = new Date().toISOString();
+    return this.updateStep(
+      id,
+      step,
+      {
+        status: "failed",
+        lastError: message,
+        finishedAt: now
+      },
+      {
+        status: "failed",
+        stage: "failed",
+        ...this.stepErrorPatch(step, message)
+      }
+    );
+  }
+
+  private stepErrorPatch(step: PipelineStep, message: string): Partial<JobRecord> {
+    if (step === "download") {
+      return { downloadErrorMessage: message };
+    }
+    if (step === "extract_audio") {
+      return { audioErrorMessage: message };
+    }
+    if (step === "transcribe") {
+      return { transcriptErrorMessage: message };
+    }
+    return { errorMessage: message };
+  }
+
+  private async requireRecord(id: string) {
+    const record = await this.get(id);
+    if (!record) {
+      throw new Error("job not found");
+    }
+    return record;
+  }
+
+  private async writePageInfoBestEffort(id: string, sourceUrl: string) {
+    let pageInfo: PageInfoRecord;
+    try {
+      pageInfo = await fetchDouyinPageInfo(sourceUrl);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "page extraction failed";
+      pageInfo = {
+        requestedUrl: sourceUrl,
+        finalUrl: sourceUrl,
+        canonicalUrl: sourceUrl,
+        videoId: undefined,
+        pageTitle: undefined,
+        pageDescription: undefined,
+        authorName: undefined,
+        publishTime: undefined,
+        isChallengePage: false,
+        redirectChain: [],
+        errorMessage: message
+      };
+    }
+    await this.storage.writeJson(path.join("raw", "page", `${id}.json`), pageInfo);
+  }
+
+  private async readParsedShare(id: string) {
+    return this.readOptionalJson<ParsedShare>(path.join("raw", "text", `${id}.json`));
+  }
+
+  private async readPageInfo(id: string) {
+    return this.readOptionalJson<PageInfoRecord>(path.join("raw", "page", `${id}.json`));
+  }
+
+  private async readTranscript(id: string) {
+    return this.readOptionalJson<TranscriptAsset>(path.join("raw", "transcripts", `${id}.json`));
+  }
+
+  private async readOptionalJson<T>(relativePath: string) {
+    try {
+      return await this.storage.readJson<T>(relativePath);
+    } catch {
+      return null;
+    }
+  }
+
+  private async buildPreview(record: JobRecord): Promise<JobPreview> {
+    const [pageInfo, cleaned, transcript] = await Promise.all([
+      this.readPageInfo(record.id),
+      this.readOptionalJson<{
+        output?: Partial<ScriptAsset>;
+        pageInfo?: PageInfoRecord | null;
+        transcriptText?: string;
+      }>(path.join("processed", "cleaned", `${record.id}.json`)),
+      this.readTranscript(record.id)
+    ]);
+    const output = cleaned?.output;
+    const displayTitle =
+      firstText(output?.title, output?.coverTitle, output?.pageTitle, pageInfo?.pageTitle, record.topic) ||
+      "未命名作品";
+    const authorName = firstText(pageInfo?.authorName, output?.authorName);
+    const summary = firstText(output?.summary, pageInfo?.pageDescription, output?.rawText)?.slice(0, 140);
+    const subtitle = firstText(authorName, pageInfo?.pageDescription, record.sourceUrl) || "等待内容生成";
+    const hasTranscript = Boolean(transcript?.transcript?.trim() || cleaned?.transcriptText?.trim());
+    const hasRewrite = Boolean(output?.cleanScript?.trim() || output?.voiceoverScript?.trim());
+    const hasPpt = Boolean(output?.pptContent || output?.pptPath);
+    const currentStep = this.getCurrentStep(record);
+    const nextStep = this.getNextStep(record);
+
+    return {
+      displayTitle,
+      subtitle,
+      sourcePlatform: this.getSourcePlatform(record.sourceUrl),
+      authorName,
+      summary,
+      coverTitle: firstText(output?.coverTitle, output?.title, pageInfo?.pageTitle, record.topic),
+      hasTranscript,
+      hasRewrite,
+      hasPpt,
+      currentStep,
+      nextStep,
+      nextActionLabel: this.getNextActionLabel(record, currentStep, nextStep)
+    };
+  }
+
+  private getCurrentStep(record: JobRecord) {
+    const steps = record.steps ? this.ensurePipelineSteps(record.steps) : null;
+    return steps ? PIPELINE_STEPS.find((step) => steps[step].status === "running") : undefined;
+  }
+
+  private getNextStep(record: JobRecord) {
+    const steps = record.steps ? this.ensurePipelineSteps(record.steps) : null;
+    if (!steps) {
+      return undefined;
+    }
+    const failed = PIPELINE_STEPS.find((step) => steps[step].status === "failed");
+    if (failed) {
+      return failed;
+    }
+    return PIPELINE_STEPS.find((step) => steps[step].status !== "succeeded");
+  }
+
+  private getNextActionLabel(record: JobRecord, currentStep?: PipelineStep, nextStep?: PipelineStep) {
+    if (record.deletedAt) {
+      return "已移入垃圾桶";
+    }
+    if (currentStep) {
+      return `正在${STEP_LABELS[currentStep]}`;
+    }
+    if (record.status === "done") {
+      return "查看成果";
+    }
+    if (record.status === "failed" && nextStep) {
+      return `重试${STEP_LABELS[nextStep]}`;
+    }
+    if (nextStep) {
+      return `开始${STEP_LABELS[nextStep]}`;
+    }
+    return "查看详情";
+  }
+
+  private getSourcePlatform(sourceUrl: string) {
+    if (/douyin\.com|iesdouyin\.com/i.test(sourceUrl)) {
+      return "抖音";
+    }
+    return "视频链接";
+  }
+
   async get(id: string) {
+    await this.purgeExpiredTrash();
     const index = await this.readIndex();
     return index[id] ?? null;
   }
 
   async list() {
+    await this.purgeExpiredTrash();
     const index = await this.readIndex();
-    return Object.values(index).sort((a, b) =>
+    return Object.values(index).filter((job) => !job.deletedAt).sort((a, b) =>
       new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
+  }
+
+  async listOverview(): Promise<JobOverview[]> {
+    const records = await this.list();
+    return Promise.all(records.map(async (record) => ({
+      ...record,
+      preview: await this.buildPreview(record)
+    })));
+  }
+
+  async listTrash() {
+    await this.purgeExpiredTrash();
+    const index = await this.readIndex();
+    return Object.values(index).filter((job) => job.deletedAt).sort((a, b) =>
+      new Date(b.deletedAt ?? b.updatedAt).getTime() - new Date(a.deletedAt ?? a.updatedAt).getTime()
+    );
+  }
+
+  async trash(id: string) {
+    await this.purgeExpiredTrash();
+    const index = await this.readIndex();
+    const current = index[id];
+    if (!current) {
+      return null;
+    }
+    if (current.deletedAt) {
+      return current;
+    }
+
+    const deletedAt = new Date();
+    const next: JobRecord = {
+      ...current,
+      deletedAt: deletedAt.toISOString(),
+      trashExpiresAt: new Date(deletedAt.getTime() + TRASH_RETENTION_MS).toISOString(),
+      updatedAt: deletedAt.toISOString()
+    };
+    index[id] = next;
+    await this.writeIndex(index);
+    return next;
+  }
+
+  async restore(id: string) {
+    await this.purgeExpiredTrash();
+    const index = await this.readIndex();
+    const current = index[id];
+    if (!current) {
+      return null;
+    }
+
+    const next: JobRecord = {
+      ...current,
+      deletedAt: undefined,
+      trashExpiresAt: undefined,
+      updatedAt: new Date().toISOString()
+    };
+    index[id] = next;
+    await this.writeIndex(index);
+    return next;
+  }
+
+  async permanentlyDelete(id: string): Promise<PermanentDeleteResult> {
+    await this.purgeExpiredTrash();
+    const index = await this.readIndex();
+    const current = index[id];
+    if (!current) {
+      return "not_found";
+    }
+    if (!current.deletedAt) {
+      return "not_in_trash";
+    }
+    if (this.isActive(current)) {
+      return "active";
+    }
+
+    await this.removeJobArtifacts(current);
+    delete index[id];
+    await this.writeIndex(index);
+    return "deleted";
   }
 
   async update(id: string, patch: Partial<Omit<JobRecord, "id" | "createdAt">>) {
@@ -309,18 +726,26 @@ export class JobStore {
     if (parsed) {
       const draft = buildScriptDraft(parsed, topic, pageInfo);
       if (transcriptText?.trim()) {
+        const summary = transcriptText.trim().slice(0, 160);
+        const keyPoints = this.buildTranscriptKeyPoints(transcriptText);
         return {
           ...draft,
           rawText: transcriptText,
           transcriptText: transcriptText.trim(),
           cleanScript: transcriptText.trim(),
-          voiceoverScript: transcriptText.trim()
+          voiceoverScript: transcriptText.trim(),
+          summary,
+          keyPoints,
+          pptOutline: this.buildFallbackPptOutline(draft.coverTitle, keyPoints)
         };
       }
       return draft;
     }
 
     if (transcriptText) {
+      const coverTitle = pageInfo?.pageTitle?.slice(0, 24) ?? transcriptText.slice(0, 24) ?? "AI 技术分享";
+      const summary = transcriptText.slice(0, 160);
+      const keyPoints = this.buildTranscriptKeyPoints(transcriptText);
       return {
         sourceUrl,
         videoId: pageInfo?.videoId,
@@ -334,8 +759,11 @@ export class JobStore {
         transcriptText,
         cleanScript: transcriptText,
         voiceoverScript: transcriptText,
-        coverTitle: pageInfo?.pageTitle?.slice(0, 24) ?? transcriptText.slice(0, 24) ?? "AI 技术分享",
+        coverTitle,
         tags: ["AI", "技术分享"],
+        summary,
+        keyPoints,
+        pptOutline: this.buildFallbackPptOutline(coverTitle, keyPoints),
         sceneList: [
           {
             scene: 1,
@@ -375,5 +803,133 @@ export class JobStore {
 
   private isMissingAsrKeyError(error: Error) {
     return /api key|OPENAI_API_KEY|ASR_API_KEY/i.test(error.message);
+  }
+
+  private isActive(record: JobRecord) {
+    return record.status === "processing" ||
+      Boolean(record.steps && PIPELINE_STEPS.some((step) => record.steps?.[step]?.status === "running"));
+  }
+
+  private async purgeExpiredTrash() {
+    const index = await this.readIndex();
+    const now = Date.now();
+    let changed = false;
+
+    for (const [id, record] of Object.entries(index)) {
+      if (!record.deletedAt || !record.trashExpiresAt || this.isActive(record)) {
+        continue;
+      }
+      if (new Date(record.trashExpiresAt).getTime() > now) {
+        continue;
+      }
+
+      await this.removeJobArtifacts(record);
+      delete index[id];
+      changed = true;
+    }
+
+    if (changed) {
+      await this.writeIndex(index);
+    }
+  }
+
+  private async removeJobArtifacts(record: JobRecord) {
+    const candidates = new Set<string>();
+    const addPath = (value?: string) => {
+      if (!value) return;
+      const fullPath = this.toStorageFilePath(value);
+      if (fullPath) {
+        candidates.add(fullPath);
+      }
+    };
+    const addRelative = (...segments: string[]) => addPath(path.join(...segments));
+
+    addPath(record.storagePath);
+    addPath(record.videoPath);
+    addPath(record.videoMetadataPath);
+    addPath(record.audioPath);
+    addPath(record.audioManifestPath);
+    addPath(record.transcriptPath);
+
+    addRelative("raw", "text", `${record.id}.json`);
+    addRelative("raw", "page", `${record.id}.json`);
+    addRelative("raw", "transcripts", `${record.id}.json`);
+    addRelative("raw", "videos", `${record.id}.mp4`);
+    addRelative("raw", "videos", `${record.id}.page.json`);
+    addRelative("raw", "audio", `${record.id}.mp3`);
+    addRelative("raw", "audio", `${record.id}.json`);
+    addRelative("processed", "scripts", `${record.id}.json`);
+    addRelative("processed", "cleaned", `${record.id}.json`);
+    addRelative("processed", "scenes", `${record.id}.json`);
+    addRelative("processed", "subtitles", `${record.id}.srt`);
+    addRelative("output", "ppt", `${record.id}.ppt.json`);
+    addRelative("output", "ppt", `${record.id}.pptx`);
+
+    const script = await this.readScriptForDeletion(record);
+    addPath(script?.pptPath);
+
+    for (const filePath of candidates) {
+      await this.removeFileIfExists(filePath);
+    }
+  }
+
+  private async readScriptForDeletion(record: JobRecord) {
+    const scriptPaths = [record.storagePath, path.join("processed", "scripts", `${record.id}.json`)].filter(Boolean);
+    for (const scriptPath of scriptPaths) {
+      try {
+        return await this.storage.readJson<ScriptAsset>(scriptPath);
+      } catch {
+        // Best effort: script may not exist for failed or partially processed jobs.
+      }
+    }
+    return null;
+  }
+
+  private toStorageFilePath(filePath: string) {
+    const storageRoot = path.resolve(this.storage.resolve(""));
+    const normalized = filePath.replace(/^storage[\\/]/, "");
+    const absolutePath = path.isAbsolute(normalized)
+      ? path.resolve(normalized)
+      : path.resolve(storageRoot, normalized);
+    const relative = path.relative(storageRoot, absolutePath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      return null;
+    }
+    return absolutePath;
+  }
+
+  private async removeFileIfExists(filePath: string) {
+    try {
+      await rm(filePath, { force: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`Failed to remove job artifact ${filePath}: ${message}`);
+    }
+  }
+
+  private buildTranscriptKeyPoints(text: string) {
+    return text
+      .split(/[。！？!?；;\n]+/)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean)
+      .slice(0, 4)
+      .map((sentence) => sentence.slice(0, 80));
+  }
+
+  private buildFallbackPptOutline(title: string, keyPoints: string[]) {
+    return [
+      {
+        title: "封面",
+        bullets: [title].filter(Boolean)
+      },
+      {
+        title: "核心要点",
+        bullets: keyPoints.length ? keyPoints : ["内容清洗", "要点提炼"]
+      },
+      {
+        title: "总结",
+        bullets: keyPoints.slice(-3).length ? keyPoints.slice(-3) : ["回顾重点", "行动建议"]
+      }
+    ];
   }
 }

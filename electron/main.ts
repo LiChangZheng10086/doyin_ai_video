@@ -57,8 +57,12 @@ async function createWindow() {
   try {
     if (process.env.NODE_ENV === 'development') {
       await mainWindow.loadURL('http://localhost:5173');
-      console.log('[Main] URL loaded, opening DevTools...');
-      mainWindow.webContents.openDevTools();
+      console.log('[Main] URL loaded');
+
+      if (process.env.OPEN_DEVTOOLS === '1') {
+        console.log('[Main] Opening DevTools...');
+        mainWindow.webContents.openDevTools();
+      }
     } else {
       await mainWindow.loadFile(path.join(__dirname, '../dist-renderer/index.html'));
       console.log('[Main] File loaded');

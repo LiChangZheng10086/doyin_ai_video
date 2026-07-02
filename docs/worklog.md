@@ -4,9 +4,9 @@
 
 ## 当前状态
 
-- 项目：AI 技术分享短视频生成器
-- 当前形态：TypeScript + Express 的本地开发骨架
-- 已有能力：本地存储、任务模型、抖音分享文本解析、网页工作台、AI 清洗层（支持 DeepSeek / fallback）、脚本草稿生成、视频下载与音频抽取基础设施（页面直链优先，yt-dlp 兜底）、ASR 转写基础设施、**视频场景增强（video-master）**、**PPT 自动生成（ppt-generator-skill）**
+- 项目：抖音 AI 视频助手
+- 当前形态：Electron + React + Express 的桌面应用
+- 已有能力：本地存储、任务模型、抖音分享文本解析、视频下载、音频抽取、结构化 ASR 转写（OpenAI Whisper / 本地 Whisper / 本地 FunASR）、AI 洗稿、PPT 内容和 PPTX 生成、手动分步执行、步骤级 3 次自动重试、任务垃圾桶
 - 当前接口：
   - `GET /health`
   - `POST /api/jobs`
@@ -15,14 +15,23 @@
   - `GET /api/jobs/:id/raw-share`
   - `GET /api/jobs/:id/raw-page`
   - `GET /api/jobs/:id/raw-transcript`
-  - **`GET /api/jobs/:id/video-prompts`** (新增)
-  - **`GET /api/jobs/:id/ppt-content`** (新增)
-  - **`GET /api/jobs/:id/ppt/download`** (新增)
+  - `POST /api/jobs/:id/steps/download`
+  - `POST /api/jobs/:id/steps/extract-audio`
+  - `POST /api/jobs/:id/steps/transcribe`
+  - `POST /api/jobs/:id/steps/clean`
+  - `POST /api/jobs/:id/steps/generate-ppt`
+  - `GET /api/jobs/trash`
+  - `POST /api/jobs/:id/restore`
+  - `DELETE /api/jobs/:id/permanent`
+  - `GET /api/jobs/:id/ppt-content`
+  - `GET /api/jobs/:id/ppt/download`
 - 本地存储目录：`storage/`
-- 当前待办：测试双路增强功能、优化 AI 提示词质量、视频渲染、桌面打包壳
+- 当前待办：本地 ASR 依赖安装体验优化、PPT 模板和视觉样式优化、端到端样本回归测试
 
 ## 最近操作
 
+- 2026-07-02：接入本地 FunASR 作为第三种 ASR provider，设置页新增“本地 FunASR（中文推荐，无需 API Key）”；缺依赖时会在转录步骤返回明确安装提示。
+- 2026-07-02：更新 README、AGENTS、CLAUDE 和工作日志，将项目文档同步到“手动分步执行 → 视频转录 → AI 洗稿 → PPT”主链路。
 - 2026-06-29：集成 video-master 和 ppt-generator-skill，实现双路输出：AI 清洗后并行生成视频场景提示词和 PPT 内容；新增 `video-enhancer.ts`、`ppt-generator.ts` 模块；扩展 `ScriptAsset` 类型支持 `videoPrompts`、`enhancedScenes`、`pptContent`、`pptPath` 字段；新增 3 个 API 接口；前端工作台新增「视频提示词」和「PPT预览」标签页。
 - 2026-05-28：修复前端打开后服务崩溃的问题，缺失的历史任务 JSON 现在返回 404，不再导致 Express 进程退出；服务已改用 `screen` 后台会话 `douyin-dev` 启动并验证首页 200。
 - 2026-05-28：排查前端页面无法打开，确认原因是 `localhost:3100` 服务已停止；已重新执行 `npm run dev` 启动，`/health` 和首页 `/` 均验证通过。

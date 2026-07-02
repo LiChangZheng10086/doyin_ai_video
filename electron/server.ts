@@ -42,6 +42,10 @@ export async function startServer(): Promise<number> {
         aiBaseURL: activeKey?.baseURL || (activeKey?.provider === 'deepseek' ? 'https://api.deepseek.com' : undefined),
         ytDlpBinary: binaryPaths.ytdlp,
         ffmpegBinary: binaryPaths.ffmpeg,
+        asrApiKey: config.asrApiKey || activeKey?.apiKey || '',
+        asrBaseURL: config.asrBaseURL,
+        asrModel: config.asrModel,
+        asrProvider: config.asrProvider,
         asrPythonBinary: binaryPaths.python,
       });
 

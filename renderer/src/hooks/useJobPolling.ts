@@ -21,9 +21,12 @@ export function useJobPolling(enabled: boolean) {
   const getInterval = useCallback(() => {
     if (jobs.length === 0) return null; // 停止轮询
 
-    const hasActive = jobs.some(j =>
-      j.status === 'queued' || j.status === 'processing'
-    );
+    const hasActive = jobs.some(j => {
+      if (j.workflowMode === 'manual') {
+        return Object.values(j.steps || {}).some(step => step.status === 'running');
+      }
+      return j.status === 'queued' || j.status === 'processing';
+    });
 
     return hasActive ? 3000 : 15000; // 3秒 或 15秒
   }, [jobs]);

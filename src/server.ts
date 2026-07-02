@@ -7,8 +7,9 @@ import { AsrService } from "./lib/asr.js";
 import { OpenAiScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
-import { JobStore } from "./lib/jobs.js";
-import type { ScriptAsset } from "./types.js";
+import { JobStepError, JobStore } from "./lib/jobs.js";
+import { createPPTGenerator } from "./lib/ppt-generator.js";
+import type { PipelineStep, ScriptAsset } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,6 +38,7 @@ const cleaner = new OpenAiScriptCleaner({
 const media = new MediaService(storage, {
   ytDlpBinary: process.env.YTDLP_BINARY,
   ffmpegBinary: process.env.FFMPEG_BINARY,
+  ffprobeBinary: process.env.FFPROBE_BINARY,
   cookiesFile: process.env.YTDLP_COOKIES_FILE,
   cookiesFromBrowser: process.env.YTDLP_COOKIES_FROM_BROWSER
 });
@@ -50,7 +52,15 @@ const asr = new AsrService({
   whisperDevice: process.env.WHISPER_DEVICE,
   whisperComputeType: process.env.WHISPER_COMPUTE_TYPE
 });
-const jobs = new JobStore(storage, cleaner, media, asr);
+const pptGenerator = createPPTGenerator({
+  apiKey: aiApiKey,
+  model: aiModel,
+  baseURL: aiBaseURL,
+  provider: aiProvider === "deepseek" ? "deepseek" : "openai",
+  pythonBinary: process.env.PYTHON_BINARY,
+  storageRoot: storage.resolve("")
+});
+const jobs = new JobStore(storage, cleaner, media, asr, pptGenerator);
 
 await jobs.init();
 
@@ -87,6 +97,107 @@ app.post("/api/jobs", async (req, res) => {
     const message = error instanceof Error ? error.message : "job create failed";
     res.status(500).json({ message });
   }
+});
+
+app.get("/api/jobs/trash", async (_req, res) => {
+  try {
+    const jobList = await jobs.listTrash();
+    res.json({ jobs: jobList });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "failed to list trash";
+    res.status(500).json({ message });
+  }
+});
+
+app.delete("/api/jobs/:id", async (req, res) => {
+  const record = await jobs.trash(req.params.id);
+  if (!record) {
+    res.status(404).json({ message: "job not found" });
+    return;
+  }
+
+  res.json({ job: record, message: "job moved to trash" });
+});
+
+app.post("/api/jobs/:id/restore", async (req, res) => {
+  const record = await jobs.restore(req.params.id);
+  if (!record) {
+    res.status(404).json({ message: "job not found" });
+    return;
+  }
+
+  res.json({ job: record, message: "job restored" });
+});
+
+app.delete("/api/jobs/:id/permanent", async (req, res) => {
+  const result = await jobs.permanentlyDelete(req.params.id);
+  if (result === "not_found") {
+    res.status(404).json({ message: "job not found" });
+    return;
+  }
+  if (result === "not_in_trash") {
+    res.status(409).json({ message: "job is not in trash" });
+    return;
+  }
+  if (result === "active") {
+    res.status(409).json({ message: "active job cannot be permanently deleted" });
+    return;
+  }
+
+  res.json({ message: "job permanently deleted" });
+});
+
+async function runStepRoute(id: string, step: PipelineStep) {
+  try {
+    const record = await jobs.runStep(id, step);
+    return {
+      status: 200,
+      body: {
+        job: record,
+        message: "step completed"
+      }
+    };
+  } catch (error) {
+    if (error instanceof JobStepError) {
+      return {
+        status: error.statusCode,
+        body: {
+          message: error.message,
+          job: error.job
+        }
+      };
+    }
+    const message = error instanceof Error ? error.message : "step failed";
+    return {
+      status: 500,
+      body: { message }
+    };
+  }
+}
+
+app.post("/api/jobs/:id/steps/download", async (req, res) => {
+  const result = await runStepRoute(req.params.id, "download");
+  res.status(result.status).json(result.body);
+});
+
+app.post("/api/jobs/:id/steps/extract-audio", async (req, res) => {
+  const result = await runStepRoute(req.params.id, "extract_audio");
+  res.status(result.status).json(result.body);
+});
+
+app.post("/api/jobs/:id/steps/transcribe", async (req, res) => {
+  const result = await runStepRoute(req.params.id, "transcribe");
+  res.status(result.status).json(result.body);
+});
+
+app.post("/api/jobs/:id/steps/clean", async (req, res) => {
+  const result = await runStepRoute(req.params.id, "clean");
+  res.status(result.status).json(result.body);
+});
+
+app.post("/api/jobs/:id/steps/generate-ppt", async (req, res) => {
+  const result = await runStepRoute(req.params.id, "generate_ppt");
+  res.status(result.status).json(result.body);
 });
 
 app.get("/api/jobs/:id", async (req, res) => {
@@ -261,7 +372,7 @@ app.get("/api/jobs/:id/ppt/download", async (req, res) => {
       return;
     }
 
-    const pptFullPath = path.join(rootDir, "storage", script.pptPath.replace(/^storage\//, ""));
+    const pptFullPath = resolveOutputPath(storage.resolve(""), script.pptPath);
     if (!existsSync(pptFullPath)) {
       res.status(404).json({ message: "PPT file not found on disk" });
       return;
@@ -285,4 +396,11 @@ app.listen(port, () => {
 
 function isMissingFileError(error: unknown) {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function resolveOutputPath(storagePath: string, outputPath: string) {
+  if (path.isAbsolute(outputPath)) {
+    return outputPath;
+  }
+  return path.join(storagePath, outputPath.replace(/^storage\//, ""));
 }

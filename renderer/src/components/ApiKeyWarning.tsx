@@ -1,4 +1,5 @@
 import { useNavigate } from 'react-router-dom';
+import { AlertTriangle } from 'lucide-react';
 
 interface ApiKeyWarningProps {
   isOpen: boolean;
@@ -19,7 +20,9 @@ export function ApiKeyWarning({ isOpen, onClose }: ApiKeyWarningProps) {
     <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50">
       <div className="bg-tech-surface rounded-xl shadow-2xl w-full max-w-md mx-4 border border-tech-border p-6">
         <div className="text-center mb-4">
-          <div className="text-5xl mb-3">⚠️</div>
+          <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
+            <AlertTriangle size={30} />
+          </div>
           <h3 className="text-xl font-semibold text-tech-text mb-2">
             需要配置 API Key
           </h3>

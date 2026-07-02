@@ -33,7 +33,7 @@ export class PPTGenerator {
   private readonly provider: "deepseek" | "openai";
   private readonly pythonBinary: string;
   private readonly storageRoot: string;
-  private readonly skillPath: string;
+  private readonly skillPaths: string[];
 
   constructor(options: PPTGeneratorOptions = {}) {
     const apiKey = options.apiKey || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
@@ -44,9 +44,12 @@ export class PPTGenerator {
     this.pythonBinary = options.pythonBinary || process.env.PYTHON_BINARY || "python3";
     this.storageRoot = options.storageRoot || path.join(process.cwd(), "storage");
 
-    // 获取 ppt-generator-skill 的路径
     const homeDir = process.env.HOME || process.env.USERPROFILE || "";
-    this.skillPath = path.join(homeDir, ".claude/skills/ppt-generator-skill");
+    this.skillPaths = [
+      path.join(process.cwd(), ".agents", "skills", "ppt-generator-skill"),
+      path.join(homeDir, ".claude", "skills", "ppt-generator-skill"),
+      path.join(homeDir, ".codex", "skills", "ppt-generator-skill")
+    ];
 
     if (apiKey) {
       this.client = new OpenAI({
@@ -135,18 +138,24 @@ export class PPTGenerator {
 
 内容概要：
 标题：${scriptAsset.coverTitle}
+摘要：${scriptAsset.summary ?? "无"}
 关键要点：
 ${scriptAsset.keyPoints?.map((p, i) => `${i + 1}. ${p}`).join("\n") || "无"}
+PPT 大纲建议：
+${scriptAsset.pptOutline?.map((item, i) => `${i + 1}. ${item.title}：${item.bullets.join("、")}`).join("\n") || "无"}
 
-完整脚本：
+清洗后的完整脚本：
 ${scriptAsset.cleanScript}
 
-请生成 8-12 页的 PPT，包括：
+配音/讲稿参考：
+${scriptAsset.voiceoverScript}
+
+请生成 6-10 页的 PPT，包括：
 1. 封面页（标题 + 副标题）
-2. 目录页（3-4 个章节）
-3. 内容页（每个章节 2-3 页）
+2. 目录或核心观点页
+3. 内容页（围绕清洗稿和大纲展开）
 4. 总结页
-5. 行动建议页
+5. 行动建议页（如果原文有明确建议）
 
 每一页输出格式：
 {
@@ -156,7 +165,7 @@ ${scriptAsset.cleanScript}
   "imagePrompt": "配图提示词（描述场景、元素、氛围）"
 }
 
-请以 JSON 数组格式输出所有页面。`;
+请以 JSON 数组格式输出所有页面，不要加入清洗稿中不存在的事实、产品能力或数据。`;
 
     const response = await this.client!.chat.completions.create({
       model: this.model,
@@ -248,11 +257,9 @@ ${scriptAsset.cleanScript}
   ): Promise<void> {
     try {
       // 检查 Python 脚本是否存在
-      const scriptPath = path.join(this.skillPath, "scripts", "generate_styled_ppt.py");
+      const scriptPath = await this.findPptScriptPath();
 
-      try {
-        await fs.access(scriptPath);
-      } catch {
+      if (!scriptPath) {
         console.warn("PPT generator script not found, skipping PPTX generation");
         return;
       }
@@ -272,6 +279,19 @@ ${scriptAsset.cleanScript}
       console.error("Failed to generate PPTX file:", error);
       // 不抛出错误，只记录日志，因为 JSON 内容已经生成
     }
+  }
+
+  private async findPptScriptPath() {
+    for (const skillPath of this.skillPaths) {
+      const scriptPath = path.join(skillPath, "scripts", "generate_styled_ppt.py");
+      try {
+        await fs.access(scriptPath);
+        return scriptPath;
+      } catch {
+        // Try the next known skill location.
+      }
+    }
+    return null;
   }
 }
 

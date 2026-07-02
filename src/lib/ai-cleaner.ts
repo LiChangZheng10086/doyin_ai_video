@@ -18,12 +18,17 @@ export interface ScriptCleaner {
 
 type CleanScriptPayload = {
   title: string;
+  summary: string;
   hook: string;
   key_points: string[];
   clean_script: string;
   voiceover_script: string;
   cover_title: string;
   tags: string[];
+  ppt_outline: Array<{
+    title: string;
+    bullets: string[];
+  }>;
   scene_list: Array<{
     scene: number;
     duration: number;
@@ -38,6 +43,7 @@ const CLEAN_SCRIPT_SCHEMA = {
   additionalProperties: false,
   properties: {
     title: { type: "string" },
+    summary: { type: "string" },
     hook: { type: "string" },
     key_points: {
       type: "array",
@@ -49,6 +55,21 @@ const CLEAN_SCRIPT_SCHEMA = {
     tags: {
       type: "array",
       items: { type: "string" }
+    },
+    ppt_outline: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          title: { type: "string" },
+          bullets: {
+            type: "array",
+            items: { type: "string" }
+          }
+        },
+        required: ["title", "bullets"]
+      }
     },
     scene_list: {
       type: "array",
@@ -71,12 +92,14 @@ const CLEAN_SCRIPT_SCHEMA = {
   },
   required: [
     "title",
+    "summary",
     "hook",
     "key_points",
     "clean_script",
     "voiceover_script",
     "cover_title",
     "tags",
+    "ppt_outline",
     "scene_list",
     "quality_notes"
   ]
@@ -167,10 +190,12 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
               "3. 用“你”拉近距离，复杂概念要翻译成普通人能听懂的话。",
               "4. 重点是技术分享，不要扩写不存在的能力、数据、模型或产品功能。",
               "5. 口播稿要自然、短句化，适合直接配音，去掉“嗯、啊、这个、那个、就是说”等废词。",
-              "6. 分镜控制在 3 到 5 段，每段给出字幕和画面建议。",
-              "7. 封面标题要适合抖音短视频，tags 尽量保留原始标签，并补充少量技术相关标签。",
-              "8. quality_notes 里写 2 到 4 条本次脚本的注意点。",
-              "9. 你必须只输出合法 JSON。"
+              "6. summary 用 80 字以内概括内容，key_points 提炼 3 到 6 条核心要点。",
+              "7. ppt_outline 给出 6 到 10 页 PPT 结构，每页包含 title 和 2 到 4 条 bullets。",
+              "8. scene_list 只作为文案段落结构参考，控制在 3 到 5 段，不生成视频提示词。",
+              "9. 封面标题要适合抖音短视频，tags 尽量保留原始标签，并补充少量技术相关标签。",
+              "10. quality_notes 里写 2 到 4 条本次脚本的注意点。",
+              "11. 你必须只输出合法 JSON。"
             ].join("\n")
           }
         ],
@@ -204,11 +229,13 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
     return {
       ...draft,
       title: payload.title || draft.title,
+      summary: payload.summary || draft.summary,
       cleanScript: payload.clean_script || draft.cleanScript,
       voiceoverScript: payload.voiceover_script || draft.voiceoverScript,
       coverTitle: payload.cover_title || draft.coverTitle,
       tags: dedupeTags([...(payload.tags ?? []), ...(draft.tags ?? [])]),
       keyPoints: payload.key_points ?? draft.keyPoints,
+      pptOutline: normalizePptOutline(payload.ppt_outline, draft.pptOutline),
       qualityNotes: payload.quality_notes,
       sceneList: normalizeScenes(payload.scene_list, draft.sceneList),
       aiModel: model,
@@ -291,4 +318,22 @@ function dedupeTags(tags: string[]) {
     result.push(normalized);
   }
   return result;
+}
+
+function normalizePptOutline(
+  outline: CleanScriptPayload["ppt_outline"],
+  fallback: ScriptAsset["pptOutline"]
+) {
+  if (!Array.isArray(outline) || outline.length === 0) {
+    return fallback;
+  }
+
+  return outline
+    .map((item) => ({
+      title: item.title?.trim(),
+      bullets: Array.isArray(item.bullets)
+        ? item.bullets.map((bullet) => bullet.trim()).filter(Boolean)
+        : []
+    }))
+    .filter((item) => item.title && item.bullets.length > 0);
 }

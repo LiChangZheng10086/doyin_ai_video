@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { AlertTriangle, FileText, Link as LinkIcon } from 'lucide-react';
 import { apiClient } from '../services/api';
 import { useAppStore } from '../store';
 
@@ -14,8 +16,8 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
   const [inputMode, setInputMode] = useState<'url' | 'text'>('url');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const navigate = useNavigate();
 
-  const addJob = useAppStore((state) => state.addJob);
   const setJobs = useAppStore((state) => state.setJobs);
 
   if (!isOpen) return null;
@@ -44,7 +46,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
         params.shareText = shareText.trim();
       }
 
-      await apiClient.createJob(params);
+      const createdJob = await apiClient.createJob(params);
 
       // 立即刷新任务列表，确保新任务显示
       try {
@@ -64,6 +66,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
       setShareText('');
       setTopic('');
       onClose();
+      navigate(`/jobs/${createdJob.id}`);
     } catch (err: any) {
       setError(err.response?.data?.message || err.message || '创建任务失败');
     } finally {
@@ -93,22 +96,24 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
               onClick={() => setInputMode('url')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 inputMode === 'url'
-                  ? 'bg-tech-blue text-white shadow-sm'
-                  : 'bg-tech-bg text-tech-muted hover:bg-tech-border'
+                  ? 'bg-tech-blue text-white shadow-sm inline-flex items-center gap-2'
+                  : 'bg-tech-bg text-tech-muted hover:bg-tech-border inline-flex items-center gap-2'
               }`}
             >
-              🔗 抖音链接
+              <LinkIcon size={16} />
+              抖音链接
             </button>
             <button
               type="button"
               onClick={() => setInputMode('text')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 inputMode === 'text'
-                  ? 'bg-tech-blue text-white shadow-sm'
-                  : 'bg-tech-bg text-tech-muted hover:bg-tech-border'
+                  ? 'bg-tech-blue text-white shadow-sm inline-flex items-center gap-2'
+                  : 'bg-tech-bg text-tech-muted hover:bg-tech-border inline-flex items-center gap-2'
               }`}
             >
-              📝 分享文本
+              <FileText size={16} />
+              分享文本
             </button>
           </div>
 
@@ -161,7 +166,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
           {/* 错误信息 */}
           {error && (
             <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm flex items-start gap-2">
-              <span>⚠️</span>
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
               <span>{error}</span>
             </div>
           )}

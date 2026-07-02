@@ -1,22 +1,80 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import {
+  ArrowLeft,
+  Check,
+  CheckCircle2,
+  Clock,
+  Download,
+  FileText,
+  FolderOpen,
+  Loader2,
+  Mic,
+  Play,
+  RotateCcw,
+  Sparkles,
+  Trash2,
+  Video,
+  Wand2,
+  XCircle,
+} from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { apiClient } from '../services/api';
-import type { Job, ScriptAsset, CleanedScript } from '../types';
+import type { Job, CleanedScript, RawTranscript, PipelineStep, PipelineStepState } from '../types';
 
-type TabType = 'overview' | 'transcript' | 'script' | 'video' | 'ppt';
+type OutcomeTab = 'transcript' | 'script' | 'ppt' | 'assets';
+type OutcomeStatus = 'ready' | 'processing' | 'waiting' | 'failed';
+
+const pipelineSteps: Array<{ id: PipelineStep; label: string; description: string; icon: typeof Video }> = [
+  { id: 'download', label: '下载视频', description: '获取原始视频和页面信息', icon: Video },
+  { id: 'extract_audio', label: '提取音频', description: '抽取标准音频', icon: FileText },
+  { id: 'transcribe', label: '视频转录', description: '音频转换为文案', icon: Mic },
+  { id: 'clean', label: 'AI 洗稿', description: '生成创作文稿', icon: Sparkles },
+  { id: 'generate_ppt', label: '生成 PPT', description: '生成演示内容', icon: FolderOpen },
+];
 
 export function JobDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [job, setJob] = useState<Job | null>(null);
   const [cleaned, setCleaned] = useState<CleanedScript | null>(null);
-  const [rawTranscript, setRawTranscript] = useState<string | null>(null);
+  const [rawTranscript, setRawTranscript] = useState<RawTranscript | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cleanedError, setCleanedError] = useState<string | null>(null);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<TabType>('overview');
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [runningStep, setRunningStep] = useState<PipelineStep | null>(null);
+  const [activeTab, setActiveTab] = useState<OutcomeTab>('script');
+
+  const loadJobArtifacts = async (jobData: Job) => {
+    setCleanedError(null);
+    setTranscriptError(null);
+
+    try {
+      const transcriptData = await apiClient.getJobRawTranscript(jobData.id);
+      if (transcriptData && transcriptData.transcript) {
+        setRawTranscript(transcriptData);
+      }
+    } catch {
+      setRawTranscript(null);
+      if (jobData.steps?.transcribe?.status === 'failed') {
+        setTranscriptError('视频转录失败，可在当前步骤重试');
+      }
+    }
+
+    try {
+      const cleanedData = await apiClient.getJobCleaned(jobData.id);
+      setCleaned(cleanedData);
+    } catch (err) {
+      setCleaned(null);
+      if (jobData.steps?.clean?.status === 'failed' || jobData.status === 'done') {
+        const errMsg = err instanceof Error ? err.message : '未知错误';
+        setCleanedError(`内容加载失败: ${errMsg}`);
+      }
+    }
+  };
 
   useEffect(() => {
     const fetchJob = async () => {
@@ -26,30 +84,7 @@ export function JobDetailPage() {
         setIsLoading(true);
         const jobData = await apiClient.getJob(id);
         setJob(jobData);
-
-        // 如果任务已完成，加载内容
-        if (jobData.status === 'done') {
-          // 加载清洗内容
-          try {
-            const cleanedData = await apiClient.getJobCleaned(id);
-            setCleaned(cleanedData);
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : '未知错误';
-            setCleanedError(`内容加载失败: ${errMsg}`);
-            console.error('Failed to load cleaned content:', err);
-          }
-
-          // 加载原始转录（视频音频转文本）
-          try {
-            const transcriptData = await apiClient.getJobRawTranscript(id);
-            if (transcriptData && transcriptData.transcript) {
-              setRawTranscript(transcriptData.transcript);
-            }
-          } catch (err) {
-            console.log('No raw transcript available (possibly no ASR configured)');
-            setTranscriptError('视频转录功能未配置或转录失败');
-          }
-        }
+        await loadJobArtifacts(jobData);
       } catch (err: any) {
         setError(err.response?.data?.message || '加载任务失败');
       } finally {
@@ -60,13 +95,15 @@ export function JobDetailPage() {
     fetchJob();
   }, [id]);
 
+  const focus = useMemo(() => job ? getFocusStep(job, runningStep) : null, [job, runningStep]);
+
   if (isLoading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center py-20">
+        <div className="flex items-center justify-center py-24">
           <div className="text-center">
-            <div className="w-16 h-16 border-4 border-tech-blue border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-tech-muted">加载中...</p>
+            <Loader2 className="mx-auto h-12 w-12 animate-spin text-tech-blue" />
+            <p className="mt-4 text-tech-muted">正在打开作品...</p>
           </div>
         </div>
       </Layout>
@@ -76,382 +113,319 @@ export function JobDetailPage() {
   if (error || !job) {
     return (
       <Layout>
-        <div className="text-center py-20">
-          <div className="text-6xl mb-4">⚠️</div>
-          <h3 className="text-xl font-semibold text-tech-text mb-2">
-            {error || '任务不存在'}
-          </h3>
+        <div className="rounded-lg border border-tech-border bg-tech-surface py-20 text-center">
+          <XCircle className="mx-auto mb-4 h-12 w-12 text-red-500" />
+          <h3 className="text-xl font-semibold text-tech-text">{error || '作品不存在'}</h3>
           <button
             onClick={() => navigate('/')}
-            className="mt-4 px-6 py-2 bg-tech-blue text-white rounded-lg hover:bg-tech-blue-dark transition-all"
+            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-tech-blue px-5 py-2.5 text-white transition-all hover:bg-tech-blue-dark"
           >
-            返回任务列表
+            <ArrowLeft size={16} />
+            返回创作中心
           </button>
         </div>
       </Layout>
     );
   }
 
-  const statusConfig: Record<string, { label: string; color: string }> = {
-    queued: { label: '排队中', color: 'bg-blue-50 text-blue-700 border-blue-200' },
-    processing: { label: '处理中', color: 'bg-amber-50 text-amber-700 border-amber-200' },
-    done: { label: '已完成', color: 'bg-green-50 text-green-700 border-green-200' },
-    failed: { label: '失败', color: 'bg-red-50 text-red-700 border-red-200' },
+  const handleDeleteJob = async () => {
+    const ok = window.confirm('确定删除这个作品吗？删除后会进入垃圾桶，30 天内可恢复。');
+    if (!ok) return;
+
+    try {
+      setActionError(null);
+      await apiClient.deleteJob(job.id);
+      navigate('/');
+    } catch (err: any) {
+      setActionError(err.response?.data?.message || '删除作品失败');
+    }
   };
 
-  const statusInfo = statusConfig[job.status] || {
-    label: job.status,
-    color: 'bg-gray-50 text-gray-700 border-gray-200'
+  const handleRestoreJob = async () => {
+    try {
+      setActionError(null);
+      const restored = await apiClient.restoreJob(job.id);
+      setJob(restored);
+    } catch (err: any) {
+      setActionError(err.response?.data?.message || '恢复作品失败');
+    }
   };
 
-  const tabs = [
-    { id: 'overview' as TabType, label: '概览', icon: '📋' },
-    { id: 'transcript' as TabType, label: '视频转录', icon: '🎤', disabled: !rawTranscript && !cleaned?.output?.rawText },
-    { id: 'script' as TabType, label: 'AI 洗稿', icon: '✨', disabled: !cleaned?.output?.cleanScript },
-    { id: 'video' as TabType, label: '视频提示词', icon: '🎬', disabled: !cleaned?.output?.videoPrompts },
-    { id: 'ppt' as TabType, label: 'PPT 内容', icon: '📊', disabled: !cleaned?.output?.pptContent },
-  ];
+  const handleRunStep = async (step: PipelineStep) => {
+    try {
+      setActionError(null);
+      setRunningStep(step);
+      const updated = await apiClient.runJobStep(job.id, step);
+      setJob(updated);
+      await loadJobArtifacts(updated);
+    } catch (err: any) {
+      const responseJob = err.response?.data?.job as Job | undefined;
+      if (responseJob) {
+        setJob(responseJob);
+        await loadJobArtifacts(responseJob);
+      }
+      setActionError(err.response?.data?.message || '步骤执行失败');
+    } finally {
+      setRunningStep(null);
+    }
+  };
+
+  const outcomes = buildOutcomes(job, cleaned, rawTranscript, cleanedError, transcriptError);
+  const activeOutcome = outcomes.find((item) => item.id === activeTab) ?? outcomes[0];
 
   return (
     <Layout>
-      {/* Header */}
-      <div className="mb-6 flex items-center gap-4">
-        <button
-          onClick={() => navigate('/')}
-          className="text-tech-muted hover:text-tech-text transition-colors"
-        >
-          ← 返回
-        </button>
-        <h1 className="text-2xl font-bold text-tech-text">
-          任务详情
-        </h1>
+      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate('/')}
+            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-tech-border text-tech-muted transition-colors hover:bg-tech-surface hover:text-tech-text"
+            aria-label="返回创作中心"
+          >
+            <ArrowLeft size={18} />
+          </button>
+          <div>
+            <h1 className="text-2xl font-semibold text-tech-text">{cleaned?.output?.title || job.topic || '未命名作品'}</h1>
+            <p className="mt-1 text-sm text-tech-muted">更新于 {new Date(job.updatedAt).toLocaleString('zh-CN')}</p>
+          </div>
+        </div>
+        {job.deletedAt ? (
+          <button
+            onClick={handleRestoreJob}
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
+          >
+            <RotateCcw size={16} />
+            恢复作品
+          </button>
+        ) : (
+          <button
+            onClick={handleDeleteJob}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-200 px-4 py-2.5 font-medium text-red-600 transition-all hover:bg-red-50"
+          >
+            <Trash2 size={16} />
+            删除作品
+          </button>
+        )}
       </div>
 
-      {/* Status Card */}
-      <div className="bg-tech-surface rounded-xl border border-tech-border p-6 mb-6">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <h2 className="text-xl font-semibold text-tech-text mb-2">
-              {job.topic || '无主题'}
-            </h2>
-            <p className="text-sm text-tech-muted">
-              任务 ID: {job.id}
-            </p>
+      {actionError && (
+        <div className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
+          {actionError}
+        </div>
+      )}
+
+      {job.deletedAt && (
+        <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-700">
+          此作品已在垃圾桶中，{formatTrashRetention(job.trashExpiresAt)}
+        </div>
+      )}
+
+      <CurrentStepHero
+        job={job}
+        focus={focus}
+        runningStep={runningStep}
+        onRunStep={handleRunStep}
+      />
+
+      <WorkflowStepper job={job} runningStep={runningStep} />
+
+      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="overflow-hidden rounded-lg border border-tech-border bg-tech-surface">
+          <div className="flex overflow-x-auto border-b border-tech-border bg-tech-bg p-2">
+            {outcomes.map((tab) => {
+              const Icon = tab.icon;
+              const active = activeOutcome.id === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`mr-2 flex min-w-[154px] items-center justify-between gap-3 rounded-lg px-4 py-3 text-left transition-all ${
+                    active ? 'bg-white text-tech-text shadow-sm' : 'text-tech-muted hover:bg-white/70'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 text-sm font-semibold">
+                    <Icon size={17} className={active ? 'text-tech-purple' : ''} />
+                    {tab.label}
+                  </span>
+                  <OutcomeStatusBadge status={tab.status} />
+                </button>
+              );
+            })}
           </div>
-          <span className={`px-4 py-2 rounded-lg text-sm font-medium border ${statusInfo.color}`}>
-            {statusInfo.label}
-          </span>
-        </div>
-
-        {/* Basic Info */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-tech-border">
-          <div>
-            <label className="text-xs text-tech-muted block mb-1">创建时间</label>
-            <p className="text-sm text-tech-text">
-              {new Date(job.createdAt).toLocaleString('zh-CN')}
-            </p>
+          <div className="p-6">
+            {activeOutcome.id === 'transcript' && (
+              <TranscriptContent
+                rawTranscript={rawTranscript}
+                cleaned={cleaned}
+                transcriptError={transcriptError}
+              />
+            )}
+            {activeOutcome.id === 'script' && (
+              <ScriptContent cleaned={cleaned} cleanedError={cleanedError} />
+            )}
+            {activeOutcome.id === 'ppt' && (
+              <PPTContentView content={cleaned?.output?.pptContent} jobId={job.id} />
+            )}
+            {activeOutcome.id === 'assets' && (
+              <AssetsContent job={job} cleaned={cleaned} rawTranscript={rawTranscript} />
+            )}
           </div>
-          <div>
-            <label className="text-xs text-tech-muted block mb-1">更新时间</label>
-            <p className="text-sm text-tech-text">
-              {new Date(job.updatedAt).toLocaleString('zh-CN')}
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div className="bg-tech-surface rounded-xl border border-tech-border overflow-hidden">
-        <div className="flex border-b border-tech-border overflow-x-auto">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => !tab.disabled && setActiveTab(tab.id)}
-              disabled={tab.disabled}
-              className={`px-6 py-4 text-sm font-medium whitespace-nowrap transition-all ${
-                activeTab === tab.id
-                  ? 'bg-tech-blue text-white'
-                  : tab.disabled
-                  ? 'text-tech-muted cursor-not-allowed opacity-50'
-                  : 'text-tech-text hover:bg-tech-bg'
-              }`}
-            >
-              <span className="mr-2">{tab.icon}</span>
-              {tab.label}
-            </button>
-          ))}
         </div>
 
-        {/* Tab Content */}
-        <div className="p-6">
-          {activeTab === 'overview' && (
-            <OverviewTab job={job} />
-          )}
-
-          {activeTab === 'transcript' && (
-            <>
-              {rawTranscript ? (
-                <TranscriptTab
-                  transcript={rawTranscript}
-                  source="视频音频转录"
-                />
-              ) : transcriptError ? (
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-6">
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="text-2xl">⚠️</span>
-                    <span className="font-semibold text-amber-700">视频转录不可用</span>
-                  </div>
-                  <p className="text-sm text-amber-700 mb-4">
-                    系统未配置语音识别 API（如 OpenAI Whisper），因此无法将视频音频转换为文字。
-                  </p>
-                  {cleaned?.output?.rawText && (
-                    <div className="mt-4 pt-4 border-t border-amber-200">
-                      <p className="text-sm text-amber-700 mb-2">
-                        <strong>后备方案：</strong>使用了您输入的分享文本
-                      </p>
-                      <div className="bg-white rounded-lg p-4 mt-2">
-                        <p className="text-tech-text whitespace-pre-wrap leading-relaxed">
-                          {cleaned.output.rawText}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ) : cleaned?.output?.rawText ? (
-                <div>
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">ℹ️</span>
-                      <span className="text-sm text-blue-700">
-                        注意：这是您输入的分享文本，不是视频的实际转录内容
-                      </span>
-                    </div>
-                  </div>
-                  <TranscriptTab
-                    transcript={cleaned.output.rawText}
-                    source="分享文本（非转录）"
-                  />
-                </div>
-              ) : (
-                <div className="text-center py-8 text-tech-muted">暂无内容</div>
-              )}
-            </>
-          )}
-
-          {activeTab === 'script' && (
-            <>
-              {cleanedError ? (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xl">⚠️</span>
-                    <span className="font-semibold">加载失败</span>
-                  </div>
-                  <p className="text-sm">{cleanedError}</p>
-                </div>
-              ) : cleaned ? (
-                <ScriptTab cleaned={cleaned} />
-              ) : (
-                <div className="text-center py-8 text-tech-muted">暂无内容</div>
-              )}
-            </>
-          )}
-
-          {activeTab === 'video' && cleaned?.output?.videoPrompts && (
-            <VideoPromptsTab prompts={cleaned.output.videoPrompts} />
-          )}
-
-          {activeTab === 'ppt' && cleaned?.output?.pptContent && (
-            <PPTTab content={cleaned.output.pptContent} jobId={job.id} />
-          )}
-        </div>
+        <aside className="space-y-6">
+          <TimelinePanel job={job} />
+          <AdvancedInfo job={job} />
+        </aside>
       </div>
     </Layout>
   );
 }
 
-// Overview Tab
-function OverviewTab({ job }: { job: Job }) {
+function CurrentStepHero({
+  job,
+  focus,
+  runningStep,
+  onRunStep,
+}: {
+  job: Job;
+  focus: FocusStep | null;
+  runningStep: PipelineStep | null;
+  onRunStep: (step: PipelineStep) => void;
+}) {
+  const completed = getCompletedCount(job);
+  const total = pipelineSteps.length;
+  const percent = Math.round((completed / total) * 100);
+  const hero = getHeroCopy(job, focus);
+  const actionDisabled = !focus || focus.disabled || Boolean(job.deletedAt);
+
   return (
-    <div className="space-y-6">
-      {/* Processing Stage */}
-      {job.stage && (
-        <div>
-          <h3 className="text-lg font-semibold text-tech-text mb-3">处理进度</h3>
-          <div className="flex items-center gap-3 p-4 bg-tech-bg rounded-lg">
-            <div className="text-2xl">
-              {job.status === 'done' ? '✅' :
-               job.status === 'failed' ? '❌' :
-               job.status === 'processing' ? '⏳' : '⏸️'}
+    <section className="overflow-hidden rounded-lg border border-blue-100 bg-gradient-to-br from-blue-50 via-white to-purple-50 p-6 shadow-sm">
+      <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <p className="mb-3 inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-medium text-tech-purple shadow-sm">
+            <Sparkles size={14} />
+            当前步骤
+          </p>
+          <h2 className="text-2xl font-semibold text-tech-text">{hero.title}</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-tech-muted">{hero.description}</p>
+          <div className="mt-5 max-w-lg">
+            <div className="mb-2 flex items-center justify-between text-xs font-medium text-tech-muted">
+              <span>主链路进度</span>
+              <span>{completed}/{total} · {percent}%</span>
             </div>
-            <div>
-              <p className="text-tech-text font-medium">{job.stage}</p>
-              {job.status === 'processing' && (
-                <p className="text-sm text-tech-muted">正在处理中...</p>
-              )}
+            <div className="h-2 overflow-hidden rounded-full bg-white">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-tech-blue to-tech-purple transition-all"
+                style={{ width: `${percent}%` }}
+              />
             </div>
           </div>
         </div>
-      )}
-
-      {/* Source URL */}
-      <div>
-        <h3 className="text-lg font-semibold text-tech-text mb-3">源链接</h3>
-        <p className="text-sm text-tech-blue break-all bg-tech-bg px-4 py-3 rounded-lg">
-          {job.sourceUrl}
-        </p>
-      </div>
-
-      {/* Error Message */}
-      {job.errorMessage && (
-        <div>
-          <h3 className="text-lg font-semibold text-red-700 mb-3">错误信息</h3>
-          <pre className="text-sm text-red-600 whitespace-pre-wrap font-mono bg-red-50 border border-red-200 px-4 py-3 rounded-lg">
-            {job.errorMessage}
-          </pre>
-        </div>
-      )}
-
-      {/* File Paths */}
-      <div>
-        <h3 className="text-lg font-semibold text-tech-text mb-3">文件路径</h3>
-        <div className="space-y-3">
-          {job.videoPath && (
-            <div>
-              <label className="text-xs text-tech-muted block mb-1">视频文件</label>
-              <p className="text-sm text-tech-text font-mono break-all bg-tech-bg px-3 py-2 rounded">
-                {job.videoPath}
-              </p>
-            </div>
+        <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
+          {focus?.step && (
+            <button
+              type="button"
+              disabled={actionDisabled}
+              onClick={() => onRunStep(focus.step)}
+              className={`inline-flex min-w-40 items-center justify-center gap-2 rounded-lg px-5 py-3 font-medium transition-all ${
+                focus.status === 'failed'
+                  ? 'border border-red-200 bg-white text-red-600 hover:bg-red-50'
+                  : 'bg-tech-blue text-white shadow-sm hover:bg-tech-blue-dark hover:shadow'
+              } disabled:cursor-not-allowed disabled:opacity-50`}
+            >
+              {runningStep === focus.step ? <Loader2 className="animate-spin" size={18} /> : getActionIcon(focus)}
+              {runningStep === focus.step ? '执行中...' : focus.actionLabel}
+            </button>
           )}
-          {job.audioPath && (
-            <div>
-              <label className="text-xs text-tech-muted block mb-1">音频文件</label>
-              <p className="text-sm text-tech-text font-mono break-all bg-tech-bg px-3 py-2 rounded">
-                {job.audioPath}
-              </p>
-            </div>
-          )}
-          {job.storagePath && (
-            <div>
-              <label className="text-xs text-tech-muted block mb-1">存储路径</label>
-              <p className="text-sm text-tech-text font-mono break-all bg-tech-bg px-3 py-2 rounded">
-                {job.storagePath}
-              </p>
-            </div>
-          )}
+          <StatusChip job={job} />
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
-// Transcript Tab
-function TranscriptTab({ transcript, source }: { transcript: string; source: string }) {
+function WorkflowStepper({ job, runningStep }: { job: Job; runningStep: PipelineStep | null }) {
   return (
-    <div>
-      <h3 className="text-lg font-semibold text-tech-text mb-1">
-        {source}
-      </h3>
-      <p className="text-xs text-tech-muted mb-3">
-        {source === '视频音频转录'
-          ? '这是从视频音频提取并转录的真实内容'
-          : '这是从分享文本解析的内容，非实际音频转录'}
-      </p>
-      <div className="bg-tech-bg rounded-lg p-4">
-        <p className="text-tech-text whitespace-pre-wrap leading-relaxed">
-          {transcript}
-        </p>
+    <section className="mt-6 rounded-lg border border-tech-border bg-tech-surface p-5">
+      <div className="mb-5 flex items-center justify-between gap-4">
+        <div>
+          <h3 className="font-semibold text-tech-text">Workflow</h3>
+          <p className="mt-1 text-sm text-tech-muted">从视频素材到创作成果的主链路</p>
+        </div>
       </div>
-    </div>
-  );
-}
-
-// Script Tab
-function ScriptTab({ cleaned }: { cleaned: CleanedScript }) {
-  const output = cleaned.output;
-
-  if (!output) {
-    return <div className="text-center py-8 text-tech-muted">暂无内容</div>;
-  }
-
-  return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold text-tech-text mb-3">AI 洗稿结果</h3>
-
-        {/* Title */}
-        {output.title && (
-          <div className="mb-4">
-            <label className="text-xs text-tech-muted block mb-1">标题</label>
-            <p className="text-xl font-bold text-tech-text bg-tech-bg px-4 py-3 rounded-lg">
-              {output.title}
-            </p>
-          </div>
-        )}
-
-        {/* Clean Script */}
-        {output.cleanScript && (
-          <div className="mb-4">
-            <label className="text-xs text-tech-muted block mb-1">清洗后的脚本</label>
-            <div className="bg-tech-bg rounded-lg p-4">
-              <p className="text-tech-text whitespace-pre-wrap leading-relaxed">
-                {output.cleanScript}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Tags */}
-        {output.tags && output.tags.length > 0 && (
-          <div className="mt-4">
-            <label className="text-xs text-tech-muted block mb-2">标签</label>
-            <div className="flex flex-wrap gap-2">
-              {output.tags.map((tag, index) => (
-                <span
-                  key={index}
-                  className="px-3 py-1 bg-tech-blue bg-opacity-10 text-tech-blue rounded-full text-sm"
-                >
-                  #{tag}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+        {pipelineSteps.map((step, index) => {
+          const state = getStepState(job, step.id, runningStep);
+          const Icon = step.icon;
+          return (
+            <div key={step.id} className={`rounded-lg border p-4 ${getStepCardClass(state.status)}`}>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <span className={`flex h-8 w-8 items-center justify-center rounded-full ${getStepIconClass(state.status)}`}>
+                  {state.status === 'succeeded' ? <Check size={16} /> : <Icon size={16} />}
                 </span>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Video Prompts Tab
-function VideoPromptsTab({ prompts }: { prompts: any[] }) {
-  return (
-    <div>
-      <h3 className="text-lg font-semibold text-tech-text mb-3">AI 生成的视频提示词</h3>
-      <div className="space-y-4">
-        {prompts.map((prompt, index) => (
-          <div key={index} className="bg-tech-bg rounded-lg p-4 border border-tech-border">
-            <div className="flex items-start gap-3">
-              <span className="flex-shrink-0 w-8 h-8 flex items-center justify-center bg-tech-blue text-white rounded-full text-sm font-bold">
-                {index + 1}
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className="text-tech-text leading-relaxed break-words">
-                  {typeof prompt === 'string' ? prompt : prompt.prompt || JSON.stringify(prompt, null, 2)}
-                </p>
+                <span className="text-xs font-medium text-tech-muted">0{index + 1}</span>
               </div>
+              <h4 className="font-semibold text-tech-text">{step.label}</h4>
+              <p className="mt-1 text-xs leading-5 text-tech-muted">{step.description}</p>
+              <p className="mt-3 text-xs font-medium">{getStepStatusLabel(state.status)}</p>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
-    </div>
+    </section>
   );
 }
 
-// PPT Tab
-function PPTTab({ content, jobId }: { content: any; jobId: string }) {
+function TranscriptContent({
+  rawTranscript,
+  cleaned,
+  transcriptError,
+}: {
+  rawTranscript: RawTranscript | null;
+  cleaned: CleanedScript | null;
+  transcriptError: string | null;
+}) {
+  if (rawTranscript) {
+    return <TranscriptTab transcriptData={rawTranscript} source="视频音频转录" />;
+  }
+  if (transcriptError) {
+    return (
+      <Notice tone="warning" title="视频转录不可用">
+        {transcriptError}
+      </Notice>
+    );
+  }
+  if (cleaned?.output?.rawText) {
+    return (
+      <div className="space-y-4">
+        <Notice tone="info" title="使用分享文本作为后备">
+          这是您输入的分享文本，不是视频的实际音频转录。
+        </Notice>
+        <TranscriptTab transcriptData={{ transcript: cleaned.output.rawText }} source="分享文本（非转录）" />
+      </div>
+    );
+  }
+  return <EmptyContent title="暂无转录内容" description="完成视频转录后，这里会显示原始文案和分段。" />;
+}
+
+function ScriptContent({ cleaned, cleanedError }: { cleaned: CleanedScript | null; cleanedError: string | null }) {
+  if (cleanedError) {
+    return <Notice tone="danger" title="AI 洗稿加载失败">{cleanedError}</Notice>;
+  }
+  if (!cleaned?.output?.cleanScript && !cleaned?.output?.summary) {
+    return <EmptyContent title="AI 成果还没生成" description="完成 AI 洗稿后，这里会展示标题、摘要、核心要点和成稿。" />;
+  }
+  return <ScriptTab cleaned={cleaned} />;
+}
+
+function PPTContentView({ content, jobId }: { content: any; jobId: string }) {
   const [pptUrl, setPptUrl] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!content) {
+      return;
+    }
     const loadPPTUrl = async () => {
       try {
         const url = await apiClient.downloadPPT(jobId);
@@ -461,33 +435,559 @@ function PPTTab({ content, jobId }: { content: any; jobId: string }) {
       }
     };
     loadPPTUrl();
-  }, [jobId]);
+  }, [content, jobId]);
+
+  if (!content) {
+    return <EmptyContent title="PPT 还没生成" description="完成生成 PPT 后，这里会显示内容结构和下载入口。" />;
+  }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold text-tech-text mb-3">PPT 内容</h3>
-
-        {pptUrl && (
-          <div className="mb-4">
-            <a
-              href={pptUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2 px-6 py-3 bg-tech-blue text-white rounded-lg hover:bg-tech-blue-dark transition-all"
-            >
-              <span>📥</span>
-              下载 PPT
-            </a>
-          </div>
-        )}
-
-        <div className="bg-tech-bg rounded-lg p-4 max-h-96 overflow-y-auto">
-          <pre className="text-sm text-tech-text whitespace-pre-wrap">
-            {typeof content === 'string' ? content : JSON.stringify(content, null, 2)}
-          </pre>
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-lg font-semibold text-tech-text">PPT 内容</h3>
+          <p className="mt-1 text-sm text-tech-muted">根据 AI 洗稿结果生成的演示内容。</p>
         </div>
+        {pptUrl && (
+          <a
+            href={pptUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
+          >
+            <Download size={17} />
+            下载 PPT
+          </a>
+        )}
+      </div>
+      <div className="max-h-[420px] overflow-y-auto rounded-lg bg-tech-bg p-4">
+        <pre className="whitespace-pre-wrap text-sm text-tech-text">
+          {typeof content === 'string' ? content : JSON.stringify(content, null, 2)}
+        </pre>
       </div>
     </div>
   );
+}
+
+function AssetsContent({ job, cleaned, rawTranscript }: { job: Job; cleaned: CleanedScript | null; rawTranscript: RawTranscript | null }) {
+  const output = cleaned?.output;
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="text-lg font-semibold text-tech-text">作品资产</h3>
+        <p className="mt-1 text-sm text-tech-muted">当前作品已经产出的创作素材和文件状态。</p>
+      </div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <AssetState title="Transcript" ready={Boolean(rawTranscript?.transcript || output?.rawText)} />
+        <AssetState title="AI Rewrite" ready={Boolean(output?.cleanScript)} />
+        <AssetState title="PPT" ready={Boolean(output?.pptContent)} />
+      </div>
+      <div className="rounded-lg bg-tech-bg p-4">
+        <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">源链接</label>
+        <p className="break-all text-sm text-tech-blue">{job.sourceUrl || '未记录'}</p>
+      </div>
+      {output?.tags && output.tags.length > 0 && (
+        <div>
+          <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">标签</label>
+          <div className="flex flex-wrap gap-2">
+            {output.tags.map((tag, index) => (
+              <span key={index} className="rounded-full bg-purple-50 px-3 py-1 text-sm text-tech-purple">
+                #{tag}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TimelinePanel({ job }: { job: Job }) {
+  const events = buildTimeline(job);
+  return (
+    <div className="rounded-lg border border-tech-border bg-tech-surface p-5">
+      <h3 className="font-semibold text-tech-text">Timeline</h3>
+      <p className="mt-1 text-sm text-tech-muted">关键步骤时间线</p>
+      <div className="mt-5 space-y-4">
+        {events.length === 0 ? (
+          <p className="text-sm text-tech-muted">等待第一步开始。</p>
+        ) : events.map((event, index) => (
+          <div key={`${event.label}-${index}`} className="flex gap-3">
+            <span className={`mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${event.failed ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-tech-blue'}`}>
+              {event.failed ? <XCircle size={14} /> : <CheckCircle2 size={14} />}
+            </span>
+            <div>
+              <p className="text-sm font-medium text-tech-text">{event.label}</p>
+              <p className="text-xs text-tech-muted">{formatDateTime(event.time)}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AdvancedInfo({ job }: { job: Job }) {
+  return (
+    <details className="rounded-lg border border-tech-border bg-tech-surface p-5">
+      <summary className="cursor-pointer font-semibold text-tech-text">高级信息</summary>
+      <div className="mt-4 space-y-4">
+        <Field label="任务 ID" value={job.id} />
+        <Field label="创建时间" value={new Date(job.createdAt).toLocaleString('zh-CN')} />
+        <Field label="更新时间" value={new Date(job.updatedAt).toLocaleString('zh-CN')} />
+        <Field label="视频文件" value={job.videoPath} />
+        <Field label="音频文件" value={job.audioPath} />
+        <Field label="存储路径" value={job.storagePath} />
+        {(job.errorMessage || job.error || job.downloadErrorMessage || job.audioErrorMessage || job.transcriptErrorMessage) && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <p className="mb-2 font-semibold">错误详情</p>
+            <pre className="whitespace-pre-wrap font-mono text-xs">
+              {job.errorMessage || job.error || job.downloadErrorMessage || job.audioErrorMessage || job.transcriptErrorMessage}
+            </pre>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function TranscriptTab({ transcriptData, source }: { transcriptData: RawTranscript; source: string }) {
+  const segments = transcriptData.segments ?? [];
+
+  return (
+    <div>
+      <h3 className="text-lg font-semibold text-tech-text">{source}</h3>
+      <p className="mt-1 text-xs text-tech-muted">
+        {source === '视频音频转录'
+          ? '这是从视频音频提取并转录的真实内容'
+          : '这是从分享文本解析的内容，非实际音频转录'}
+      </p>
+      {(transcriptData.provider || transcriptData.model || transcriptData.duration) && (
+        <div className="my-4 grid grid-cols-1 gap-3 md:grid-cols-3">
+          {transcriptData.provider && <Metric label="服务" value={transcriptData.provider} />}
+          {transcriptData.model && <Metric label="模型" value={transcriptData.model} />}
+          {transcriptData.duration && <Metric label="时长" value={formatSeconds(transcriptData.duration)} />}
+        </div>
+      )}
+      <div className="mt-4 rounded-lg bg-tech-bg p-4">
+        <p className="whitespace-pre-wrap leading-relaxed text-tech-text">{transcriptData.transcript}</p>
+      </div>
+      {segments.length > 0 && (
+        <div className="mt-5">
+          <h4 className="mb-3 text-base font-semibold text-tech-text">转录分段</h4>
+          <div className="space-y-2">
+            {segments.map((segment, index) => (
+              <div key={index} className="rounded-lg border border-tech-border bg-tech-bg p-3">
+                <p className="mb-1 font-mono text-xs text-tech-muted">{formatRange(segment.start, segment.end)}</p>
+                <p className="text-sm leading-relaxed text-tech-text">{segment.text}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScriptTab({ cleaned }: { cleaned: CleanedScript }) {
+  const output = cleaned.output;
+
+  if (!output) {
+    return <EmptyContent title="暂无内容" description="AI 洗稿完成后会显示在这里。" />;
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="text-lg font-semibold text-tech-text">AI Rewrite</h3>
+        <p className="mt-1 text-sm text-tech-muted">面向二次创作的标题、摘要、要点和成稿。</p>
+      </div>
+      {output.title && <ContentBlock label="标题" value={output.title} strong />}
+      {output.summary && <ContentBlock label="摘要" value={output.summary} />}
+      {output.keyPoints && output.keyPoints.length > 0 && (
+        <div>
+          <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">核心要点</label>
+          <div className="space-y-2">
+            {output.keyPoints.map((point, index) => (
+              <p key={index} className="rounded-lg bg-tech-bg px-4 py-3 text-sm text-tech-text">{point}</p>
+            ))}
+          </div>
+        </div>
+      )}
+      {output.cleanScript && <ContentBlock label="清洗后的脚本" value={output.cleanScript} multiline />}
+      {output.pptOutline && output.pptOutline.length > 0 && (
+        <div>
+          <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">PPT 大纲</label>
+          <div className="space-y-3">
+            {output.pptOutline.map((item, index) => (
+              <div key={index} className="rounded-lg border border-tech-border bg-tech-bg p-4">
+                <p className="mb-2 font-semibold text-tech-text">{index + 1}. {item.title}</p>
+                <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
+                  {item.bullets.map((bullet, bulletIndex) => (
+                    <li key={bulletIndex}>{bullet}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {output.qualityNotes && output.qualityNotes.length > 0 && (
+        <div className="space-y-2">
+          {output.qualityNotes.map((note, index) => (
+            <p key={index} className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">{note}</p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function buildOutcomes(
+  job: Job,
+  cleaned: CleanedScript | null,
+  rawTranscript: RawTranscript | null,
+  cleanedError: string | null,
+  transcriptError: string | null
+) {
+  return [
+    {
+      id: 'script' as OutcomeTab,
+      label: 'AI Rewrite',
+      icon: Sparkles,
+      status: getOutcomeStatus(Boolean(cleaned?.output?.cleanScript), job.steps?.clean?.status, cleanedError),
+    },
+    {
+      id: 'transcript' as OutcomeTab,
+      label: 'Transcript',
+      icon: Mic,
+      status: getOutcomeStatus(Boolean(rawTranscript?.transcript || cleaned?.output?.rawText), job.steps?.transcribe?.status, transcriptError),
+    },
+    {
+      id: 'ppt' as OutcomeTab,
+      label: 'PPT',
+      icon: FolderOpen,
+      status: getOutcomeStatus(Boolean(cleaned?.output?.pptContent), job.steps?.generate_ppt?.status, null),
+    },
+    {
+      id: 'assets' as OutcomeTab,
+      label: 'Assets',
+      icon: FileText,
+      status: 'ready' as OutcomeStatus,
+    },
+  ];
+}
+
+function getOutcomeStatus(ready: boolean, stepStatus?: PipelineStepState['status'], error?: string | null): OutcomeStatus {
+  if (ready) return 'ready';
+  if (error || stepStatus === 'failed') return 'failed';
+  if (stepStatus === 'running') return 'processing';
+  return 'waiting';
+}
+
+type FocusStep = {
+  step: PipelineStep;
+  status: PipelineStepState['status'];
+  blocked: boolean;
+  disabled: boolean;
+  actionLabel: string;
+};
+
+function getFocusStep(job: Job, runningStep: PipelineStep | null): FocusStep | null {
+  if (job.workflowMode !== 'manual' || !job.steps) {
+    return null;
+  }
+  const failed = pipelineSteps.find((step) => job.steps?.[step.id]?.status === 'failed')?.id;
+  const running = pipelineSteps.find((step) => job.steps?.[step.id]?.status === 'running')?.id;
+  const next = failed || running || pipelineSteps.find((step) => job.steps?.[step.id]?.status !== 'succeeded')?.id;
+  if (!next) {
+    return null;
+  }
+  const index = pipelineSteps.findIndex((step) => step.id === next);
+  const previous = index > 0 ? job.steps[pipelineSteps[index - 1].id] : null;
+  const state = job.steps[next];
+  const blocked = Boolean(previous && previous.status !== 'succeeded');
+  const disabled =
+    Boolean(runningStep) ||
+    blocked ||
+    state.status === 'running' ||
+    state.status === 'succeeded';
+  return {
+    step: next,
+    status: state.status,
+    blocked,
+    disabled,
+    actionLabel: getStepActionLabel(state, blocked),
+  };
+}
+
+function getHeroCopy(job: Job, focus: FocusStep | null) {
+  if (job.status === 'done') {
+    return {
+      title: '作品资产已生成',
+      description: '可以查看 AI 洗稿、转录和 PPT 内容，也可以回到创作中心继续处理其他作品。',
+    };
+  }
+  if (job.status === 'failed') {
+    return {
+      title: focus ? `${getPipelineStepLabel(focus.step)}遇到问题` : '作品处理失败',
+      description: '查看错误摘要后可以重试当前步骤，或在高级信息中检查更详细的错误。',
+    };
+  }
+  if (focus?.blocked) {
+    return {
+      title: `等待上一步完成`,
+      description: `${getPipelineStepLabel(focus.step)}需要前置步骤成功后才能执行。`,
+    };
+  }
+  if (focus?.status === 'running') {
+    return {
+      title: `正在${getPipelineStepLabel(focus.step)}`,
+      description: '系统正在处理当前步骤，完成后会刷新对应的创作成果。',
+    };
+  }
+  if (focus) {
+    return {
+      title: `下一步：${getPipelineStepLabel(focus.step)}`,
+      description: '点击主按钮执行当前步骤。失败时系统会自动尝试 3 次。',
+    };
+  }
+  return {
+    title: '历史作品',
+    description: '这个作品来自旧流程，仍可查看已有结果。',
+  };
+}
+
+function getActionIcon(focus: FocusStep) {
+  if (focus.status === 'failed') return <RotateCcw size={18} />;
+  if (focus.status === 'running') return <Loader2 className="animate-spin" size={18} />;
+  return <Play size={18} />;
+}
+
+function getCompletedCount(job: Job) {
+  if (!job.steps) {
+    return job.status === 'done' ? pipelineSteps.length : 0;
+  }
+  return pipelineSteps.filter((step) => job.steps?.[step.id]?.status === 'succeeded').length;
+}
+
+function getStepState(job: Job, step: PipelineStep, runningStep: PipelineStep | null) {
+  const state = job.steps?.[step] ?? { status: 'pending' as PipelineStepState['status'], attempts: 0 };
+  if (runningStep === step) {
+    return { ...state, status: 'running' as PipelineStepState['status'] };
+  }
+  return state;
+}
+
+function StatusChip({ job }: { job: Job }) {
+  const config = {
+    queued: 'border-blue-200 bg-blue-50 text-blue-700',
+    processing: 'border-cyan-200 bg-cyan-50 text-cyan-700',
+    done: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    failed: 'border-red-200 bg-red-50 text-red-700',
+  }[job.status] ?? 'border-tech-border bg-tech-bg text-tech-muted';
+  return (
+    <span className={`inline-flex items-center justify-center rounded-lg border px-4 py-2 text-sm font-medium ${config}`}>
+      {getJobStatusLabel(job.status)}
+    </span>
+  );
+}
+
+function OutcomeStatusBadge({ status }: { status: OutcomeStatus }) {
+  const config: Record<OutcomeStatus, string> = {
+    ready: 'bg-emerald-50 text-emerald-700',
+    processing: 'bg-cyan-50 text-cyan-700',
+    waiting: 'bg-tech-bg text-tech-muted',
+    failed: 'bg-red-50 text-red-700',
+  };
+  return <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${config[status]}`}>{getOutcomeStatusLabel(status)}</span>;
+}
+
+function AssetState({ title, ready }: { title: string; ready: boolean }) {
+  return (
+    <div className={`rounded-lg border p-4 ${ready ? 'border-purple-200 bg-purple-50' : 'border-tech-border bg-tech-bg'}`}>
+      <p className={`text-sm font-semibold ${ready ? 'text-tech-purple' : 'text-tech-muted'}`}>{title}</p>
+      <p className="mt-1 text-xs text-tech-muted">{ready ? '已生成' : '等待生成'}</p>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-tech-bg px-4 py-3">
+      <label className="mb-1 block text-xs text-tech-muted">{label}</label>
+      <p className="text-sm text-tech-text">{value}</p>
+    </div>
+  );
+}
+
+function ContentBlock({ label, value, strong = false, multiline = false }: { label: string; value: string; strong?: boolean; multiline?: boolean }) {
+  return (
+    <div>
+      <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">{label}</label>
+      <div className="rounded-lg bg-tech-bg px-4 py-3">
+        <p className={`${strong ? 'text-xl font-semibold' : 'text-sm'} ${multiline ? 'whitespace-pre-wrap leading-7' : ''} text-tech-text`}>
+          {value}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function Notice({ tone, title, children }: { tone: 'info' | 'warning' | 'danger'; title: string; children: ReactNode }) {
+  const config = {
+    info: 'border-blue-200 bg-blue-50 text-blue-700',
+    warning: 'border-amber-200 bg-amber-50 text-amber-700',
+    danger: 'border-red-200 bg-red-50 text-red-700',
+  }[tone];
+  return (
+    <div className={`rounded-lg border p-4 ${config}`}>
+      <p className="font-semibold">{title}</p>
+      <p className="mt-1 text-sm">{children}</p>
+    </div>
+  );
+}
+
+function EmptyContent({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="rounded-lg border border-dashed border-tech-border bg-tech-bg py-14 text-center">
+      <Clock className="mx-auto mb-4 h-9 w-9 text-tech-muted" />
+      <h3 className="font-semibold text-tech-text">{title}</h3>
+      <p className="mt-2 text-sm text-tech-muted">{description}</p>
+    </div>
+  );
+}
+
+function Field({ label, value }: { label: string; value?: string }) {
+  if (!value) {
+    return null;
+  }
+  return (
+    <div>
+      <label className="mb-1 block text-xs font-medium uppercase text-tech-muted">{label}</label>
+      <p className="break-all rounded bg-tech-bg px-3 py-2 font-mono text-xs text-tech-text">{value}</p>
+    </div>
+  );
+}
+
+function buildTimeline(job: Job) {
+  if (!job.steps) {
+    return [];
+  }
+  return pipelineSteps.flatMap((step) => {
+    const state = job.steps?.[step.id];
+    if (!state) {
+      return [];
+    }
+    const events: Array<{ label: string; time: string; failed?: boolean }> = [];
+    if (state.startedAt) {
+      events.push({ label: `开始${step.label}`, time: state.startedAt });
+    }
+    if (state.finishedAt) {
+      events.push({
+        label: state.status === 'failed' ? `${step.label}失败` : `${step.label}完成`,
+        time: state.finishedAt,
+        failed: state.status === 'failed',
+      });
+    }
+    return events;
+  });
+}
+
+function getPipelineStepLabel(step: PipelineStep) {
+  return pipelineSteps.find((item) => item.id === step)?.label || step;
+}
+
+function getStepActionLabel(state: PipelineStepState, blocked: boolean) {
+  if (blocked) return '等待上一步';
+  if (state.status === 'failed') return '重试';
+  if (state.status === 'succeeded') return '已完成';
+  if (state.status === 'running') return '执行中...';
+  return '执行';
+}
+
+function getStepStatusLabel(status: PipelineStepState['status']) {
+  const labels: Record<PipelineStepState['status'], string> = {
+    pending: '待执行',
+    running: '执行中',
+    succeeded: '已完成',
+    failed: '失败',
+  };
+  return labels[status];
+}
+
+function getStepCardClass(status: PipelineStepState['status']) {
+  const classes: Record<PipelineStepState['status'], string> = {
+    pending: 'border-tech-border bg-white',
+    running: 'border-cyan-200 bg-cyan-50',
+    succeeded: 'border-emerald-200 bg-emerald-50',
+    failed: 'border-red-200 bg-red-50',
+  };
+  return classes[status];
+}
+
+function getStepIconClass(status: PipelineStepState['status']) {
+  const classes: Record<PipelineStepState['status'], string> = {
+    pending: 'bg-tech-bg text-tech-muted',
+    running: 'bg-cyan-100 text-cyan-700',
+    succeeded: 'bg-emerald-100 text-emerald-700',
+    failed: 'bg-red-100 text-red-700',
+  };
+  return classes[status];
+}
+
+function getOutcomeStatusLabel(status: OutcomeStatus) {
+  const labels: Record<OutcomeStatus, string> = {
+    ready: 'Ready',
+    processing: 'Processing',
+    waiting: 'Waiting',
+    failed: 'Failed',
+  };
+  return labels[status];
+}
+
+function getJobStatusLabel(status: Job['status']) {
+  const labels: Record<Job['status'], string> = {
+    queued: '待执行',
+    processing: '处理中',
+    done: '已完成',
+    failed: '失败',
+  };
+  return labels[status];
+}
+
+function formatSeconds(seconds: number) {
+  const safeSeconds = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainder = safeSeconds % 60;
+  return `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
+function formatRange(start?: number, end?: number) {
+  if (typeof start !== 'number' && typeof end !== 'number') {
+    return '时间未标记';
+  }
+  return `${typeof start === 'number' ? formatSeconds(start) : '--'} - ${
+    typeof end === 'number' ? formatSeconds(end) : '--'
+  }`;
+}
+
+function formatTrashRetention(value?: string) {
+  if (!value) {
+    return '保留期未知';
+  }
+  const days = Math.ceil((new Date(value).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+  if (days <= 0) {
+    return '即将自动清理';
+  }
+  return `剩余 ${days} 天自动清理`;
+}
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString('zh-CN', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }

@@ -1,11 +1,18 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { LayoutDashboard, Settings, Sparkles, Trash2, Video } from 'lucide-react';
 import { JobListPage } from './pages/JobListPage';
 import { JobDetailPage } from './pages/JobDetailPage';
+import { TrashPage } from './pages/TrashPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { ApiKeyStatusIndicator } from './components/ApiKeyStatusIndicator';
 
 function Navigation() {
   const location = useLocation();
+  const navItems = [
+    { to: '/', label: '创作中心', icon: LayoutDashboard },
+    { to: '/settings', label: '设置', icon: Settings },
+    { to: '/trash', label: '垃圾桶', icon: Trash2 },
+  ];
 
   return (
     <div className="min-h-screen bg-tech-bg">
@@ -14,39 +21,42 @@ function Navigation() {
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-8">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-tech-blue to-tech-blue-light rounded-lg flex items-center justify-center text-white text-xl">
-                🎬
+              <div className="w-10 h-10 bg-gradient-to-br from-tech-blue to-tech-purple rounded-lg flex items-center justify-center text-white shadow-sm">
+                <Video size={22} />
               </div>
               <div>
                 <h1 className="text-lg font-semibold text-tech-text">
-                  抖音 AI 视频生成器
+                  AI 视频创作中心
                 </h1>
-                <p className="text-xs text-tech-muted">智能内容创作平台</p>
+                <p className="text-xs text-tech-muted flex items-center gap-1">
+                  <Sparkles size={12} className="text-tech-purple" />
+                  从视频到文稿、PPT 与创作资产
+                </p>
               </div>
             </div>
 
             {/* Navigation */}
             <nav className="flex items-center gap-1">
-              <Link
-                to="/"
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  location.pathname === '/'
-                    ? 'bg-tech-bg text-tech-text'
-                    : 'text-tech-muted hover:text-tech-text hover:bg-tech-bg'
-                }`}
-              >
-                任务列表
-              </Link>
-              <Link
-                to="/settings"
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                  location.pathname === '/settings'
-                    ? 'bg-tech-bg text-tech-text'
-                    : 'text-tech-muted hover:text-tech-text hover:bg-tech-bg'
-                }`}
-              >
-                ⚙️ 设置
-              </Link>
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                const active = item.to === '/'
+                  ? location.pathname === '/' || location.pathname.startsWith('/jobs/')
+                  : location.pathname === item.to;
+                return (
+                  <Link
+                    key={item.to}
+                    to={item.to}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-all inline-flex items-center gap-2 ${
+                      active
+                        ? 'bg-blue-50 text-tech-blue'
+                        : 'text-tech-muted hover:text-tech-text hover:bg-tech-bg'
+                    }`}
+                  >
+                    <Icon size={16} />
+                    {item.label}
+                  </Link>
+                );
+              })}
             </nav>
           </div>
 
@@ -64,6 +74,7 @@ function Navigation() {
         <Routes>
           <Route path="/" element={<JobListPage />} />
           <Route path="/jobs/:id" element={<JobDetailPage />} />
+          <Route path="/trash" element={<TrashPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </main>
