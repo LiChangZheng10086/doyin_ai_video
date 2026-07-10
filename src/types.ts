@@ -11,19 +11,19 @@ export type JobStage =
   | "transcribed"
   | "cleaning"
   | "cleaned"
-  | "generating-ppt"
+  | "generating-video-prompts"
   | "scripted"
+  | "generating-video"
   | "rendered"
   | "failed";
 
 export type WorkflowMode = "manual" | "auto";
 
 export type PipelineStep =
-  | "download"
-  | "extract_audio"
   | "transcribe"
   | "clean"
-  | "generate_ppt";
+  | "generate_video_prompts"
+  | "generate_video";
 
 export type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 
@@ -59,6 +59,9 @@ export interface JobRecord {
   audioManifestPath?: string;
   transcriptPath?: string;
   transcriptModel?: string;
+  videoProjectPath?: string;
+  videoOutputPath?: string;
+  videoGeneratedAt?: string;
   storagePath: string;
 }
 
@@ -71,7 +74,8 @@ export interface JobPreview {
   coverTitle?: string;
   hasTranscript: boolean;
   hasRewrite: boolean;
-  hasPpt: boolean;
+  hasVideoPrompts: boolean;
+  hasVideo: boolean;
   currentStep?: PipelineStep;
   nextStep?: PipelineStep;
   nextActionLabel: string;
@@ -118,17 +122,26 @@ export interface EnhancedScene {
   lightingStyle?: string;
 }
 
-export interface PPTSlide {
+export interface HyperframesVideoScene {
+  index: number;
   title: string;
   bullets: string[];
-  speakerNotes: string;
-  imagePrompt: string;
+  narration: string;
+  duration: number;
+  accent: string;
 }
 
-export interface PPTContent {
-  slides: PPTSlide[];
-  style: string;
-  theme: string;
+export interface HyperframesVideoOutput {
+  provider: "hyperframes";
+  projectPath: string;
+  videoPath: string;
+  manifestPath: string;
+  createdAt: string;
+  duration: number;
+  aspectRatio: "9:16";
+  width: 1080;
+  height: 1920;
+  scenes: HyperframesVideoScene[];
 }
 
 export interface ScriptAsset {
@@ -154,9 +167,10 @@ export interface ScriptAsset {
   summary?: string;
   keyPoints?: string[];
   qualityNotes?: string[];
-  pptOutline?: Array<{
+  videoOutline?: Array<{
     title: string;
     bullets: string[];
+    visualPrompt?: string;
   }>;
   aiModel?: string;
   cleaningMode?: "deepseek" | "openai" | "fallback";
@@ -174,9 +188,5 @@ export interface ScriptAsset {
   enhancedScenes?: EnhancedScene[];
   videoEnhancedAt?: string;
 
-  // PPT 生成字段
-  pptContent?: PPTContent;
-  pptPath?: string;
-  pptStyle?: string;
-  pptGeneratedAt?: string;
+  hyperframesVideo?: HyperframesVideoOutput;
 }

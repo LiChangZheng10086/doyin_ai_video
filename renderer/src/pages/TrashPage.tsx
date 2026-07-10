@@ -42,7 +42,7 @@ export function TrashPage() {
   };
 
   const handlePermanentDelete = async (job: Job) => {
-    const ok = window.confirm('确定永久删除这个任务吗？相关视频、音频、转录、洗稿和 PPT 文件会被清理，无法恢复。');
+    const ok = window.confirm('确定永久删除这个任务吗？相关视频、音频、转录、洗稿、提示词和成片会被清理，无法恢复。');
     if (!ok) return;
 
     try {

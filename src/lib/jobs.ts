@@ -9,13 +9,14 @@ import type { MediaService } from "./media.js";
 import type { AsrService } from "./asr.js";
 import { LocalStorage } from "./storage.js";
 import { parseDouyinShare } from "./douyin.js";
-import type { PPTGenerator } from "./ppt-generator.js";
+import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import type {
   JobOverview,
   JobPreview,
   JobRecord,
   JobStatus,
   JobStage,
+  EnhancedScene,
   PipelineStep,
   PipelineStepState,
   PipelineSteps,
@@ -27,26 +28,28 @@ const JOBS_INDEX = "cache/jobs-index.json";
 const TRASH_RETENTION_DAYS = 30;
 const TRASH_RETENTION_MS = TRASH_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const MAX_STEP_ATTEMPTS = 3;
-const PIPELINE_STEPS: PipelineStep[] = ["download", "extract_audio", "transcribe", "clean", "generate_ppt"];
+const PIPELINE_STEPS: PipelineStep[] = [
+  "transcribe",
+  "clean",
+  "generate_video_prompts",
+  "generate_video"
+];
 const STEP_LABELS: Record<PipelineStep, string> = {
-  download: "下载视频",
-  extract_audio: "提取音频",
   transcribe: "视频转录",
   clean: "AI 洗稿",
-  generate_ppt: "生成 PPT"
+  generate_video_prompts: "生成视频提示词",
+  generate_video: "生成视频"
 };
 const STEP_STAGE: Record<PipelineStep, { running: JobStage; succeeded: JobStage }> = {
-  download: { running: "downloading", succeeded: "downloaded" },
-  extract_audio: { running: "extracting", succeeded: "audio_extracted" },
   transcribe: { running: "transcribing", succeeded: "transcribed" },
   clean: { running: "cleaning", succeeded: "cleaned" },
-  generate_ppt: { running: "generating-ppt", succeeded: "scripted" }
+  generate_video_prompts: { running: "generating-video-prompts", succeeded: "scripted" },
+  generate_video: { running: "generating-video", succeeded: "rendered" }
 };
 const STEP_PREVIOUS: Partial<Record<PipelineStep, PipelineStep>> = {
-  extract_audio: "download",
-  transcribe: "extract_audio",
   clean: "transcribe",
-  generate_ppt: "clean"
+  generate_video_prompts: "clean",
+  generate_video: "generate_video_prompts"
 };
 
 type JobsIndex = Record<string, JobRecord>;
@@ -82,7 +85,7 @@ export class JobStore {
     private readonly cleaner: ScriptCleaner,
     private readonly media: MediaService,
     private readonly asr: AsrService,
-    private readonly pptGenerator: PPTGenerator
+    private readonly videoGenerator?: HyperframesVideoGenerator
   ) {}
 
   async init() {
@@ -192,14 +195,6 @@ export class JobStore {
   }
 
   private async executeStepAction(id: string, step: PipelineStep) {
-    if (step === "download") {
-      await this.runDownloadStep(id);
-      return;
-    }
-    if (step === "extract_audio") {
-      await this.runExtractAudioStep(id);
-      return;
-    }
     if (step === "transcribe") {
       await this.runTranscribeStep(id);
       return;
@@ -208,7 +203,11 @@ export class JobStore {
       await this.runCleanStep(id);
       return;
     }
-    await this.runGeneratePptStep(id);
+    if (step === "generate_video_prompts") {
+      await this.runGenerateVideoPromptsStep(id);
+      return;
+    }
+    await this.runGenerateVideoStep(id);
   }
 
   private async runDownloadStep(id: string) {
@@ -225,7 +224,7 @@ export class JobStore {
   private async runExtractAudioStep(id: string) {
     const record = await this.requireRecord(id);
     if (!record.videoPath) {
-      throw new Error("video file is missing; run download first");
+      throw new Error("video file is missing; transcription could not download the source video");
     }
 
     const audioResult = await this.media.extractAudio(record.videoPath, id);
@@ -237,12 +236,24 @@ export class JobStore {
   }
 
   private async runTranscribeStep(id: string) {
-    const record = await this.requireRecord(id);
+    let record = await this.requireRecord(id);
+    if (!record.videoPath) {
+      await this.update(id, { status: "processing", stage: "downloading" });
+      await this.runDownloadStep(id);
+      record = await this.requireRecord(id);
+    }
     if (!record.audioPath) {
-      throw new Error("audio file is missing; run audio extraction first");
+      await this.update(id, { status: "processing", stage: "extracting" });
+      await this.runExtractAudioStep(id);
+      record = await this.requireRecord(id);
+    }
+    await this.update(id, { status: "processing", stage: "transcribing" });
+    const audioPath = record.audioPath;
+    if (!audioPath) {
+      throw new Error("audio file is missing; transcription could not extract audio from the source video");
     }
 
-    const transcriptResult = await this.asr.transcribe(record.audioPath);
+    const transcriptResult = await this.asr.transcribe(audioPath);
     const transcriptText = transcriptResult?.text?.trim();
     if (!transcriptResult || !transcriptText) {
       throw new Error("ASR returned no transcript; check ASR configuration and retry");
@@ -255,7 +266,7 @@ export class JobStore {
     const transcriptAsset: TranscriptAsset = {
       jobId: id,
       sourceUrl: record.sourceUrl,
-      audioPath: record.audioPath,
+      audioPath,
       transcript: transcriptResult.text,
       text: transcriptResult.text,
       segments: transcriptResult.segments,
@@ -309,16 +320,18 @@ export class JobStore {
     await this.update(id, { errorMessage: undefined });
   }
 
-  private async runGeneratePptStep(id: string) {
+  private async runGenerateVideoPromptsStep(id: string) {
     const record = await this.requireRecord(id);
     const script = await this.storage.readJson<ScriptAsset>(record.storagePath);
-    const pptResult = await this.pptGenerator.generatePPT(script, id);
+    if (!script.cleanScript?.trim() && !script.voiceoverScript?.trim()) {
+      throw new Error("clean script is missing; run AI rewrite first");
+    }
+    const promptScenes = this.buildVideoPromptScenes(script);
     const enhanced: ScriptAsset = {
       ...script,
-      pptContent: pptResult.pptContent,
-      pptPath: pptResult.pptPath,
-      pptStyle: pptResult.style,
-      pptGeneratedAt: new Date().toISOString()
+      videoPrompts: promptScenes.map((scene) => scene.videoPrompt),
+      enhancedScenes: promptScenes,
+      videoEnhancedAt: new Date().toISOString()
     };
 
     await this.storage.writeJson(record.storagePath, enhanced);
@@ -331,6 +344,41 @@ export class JobStore {
       });
     }
     await this.update(id, { errorMessage: undefined });
+  }
+
+  private async runGenerateVideoStep(id: string) {
+    if (!this.videoGenerator) {
+      throw new Error("HyperFrames video generator is not configured");
+    }
+
+    const record = await this.requireRecord(id);
+    const script = await this.storage.readJson<ScriptAsset>(record.storagePath);
+    if (!script.videoPrompts?.length && !script.enhancedScenes?.length) {
+      throw new Error("video prompts are missing; run generate video prompts first");
+    }
+
+    const videoResult = await this.videoGenerator.generate(script, id);
+    const enhanced: ScriptAsset = {
+      ...script,
+      hyperframesVideo: videoResult,
+      status: "rendered"
+    };
+
+    await this.storage.writeJson(record.storagePath, enhanced);
+    const cleanedPath = path.join("processed", "cleaned", `${id}.json`);
+    const cleaned = await this.readOptionalJson<Record<string, unknown>>(cleanedPath);
+    if (cleaned) {
+      await this.storage.writeJson(cleanedPath, {
+        ...cleaned,
+        output: enhanced
+      });
+    }
+    await this.update(id, {
+      videoProjectPath: videoResult.projectPath,
+      videoOutputPath: videoResult.videoPath,
+      videoGeneratedAt: videoResult.createdAt,
+      errorMessage: undefined
+    });
   }
 
   private createInitialSteps(): PipelineSteps {
@@ -414,7 +462,7 @@ export class JobStore {
         finishedAt: now
       },
       {
-        status: step === "generate_ppt" ? "done" : "queued",
+        status: step === "generate_video" ? "done" : "queued",
         stage: STEP_STAGE[step].succeeded,
         errorMessage: undefined
       }
@@ -440,12 +488,6 @@ export class JobStore {
   }
 
   private stepErrorPatch(step: PipelineStep, message: string): Partial<JobRecord> {
-    if (step === "download") {
-      return { downloadErrorMessage: message };
-    }
-    if (step === "extract_audio") {
-      return { audioErrorMessage: message };
-    }
     if (step === "transcribe") {
       return { transcriptErrorMessage: message };
     }
@@ -503,6 +545,100 @@ export class JobStore {
     }
   }
 
+  private buildVideoPromptScenes(script: ScriptAsset): EnhancedScene[] {
+    const candidates: Array<{ caption: string; visual: string; duration?: number }> = [];
+    for (const scene of script.sceneList ?? []) {
+      candidates.push({
+        caption: scene.caption,
+        visual: scene.visual,
+        duration: scene.duration
+      });
+    }
+    for (const item of script.videoOutline ?? []) {
+      candidates.push({
+        caption: [item.title, ...item.bullets].join("。"),
+        visual: item.visualPrompt || item.bullets.join("，")
+      });
+    }
+    for (const point of script.keyPoints ?? []) {
+      candidates.push({
+        caption: point,
+        visual: "关键词高亮、流程卡片、信息图转场"
+      });
+    }
+    for (const sentence of this.splitSentences(script.voiceoverScript || script.cleanScript || script.rawText)) {
+      candidates.push({
+        caption: sentence,
+        visual: "竖屏解释视频字幕卡、重点词放大、抽象信息图"
+      });
+    }
+
+    const title = firstText(script.coverTitle, script.title, script.topic) || "视频成片";
+    const summary = firstText(script.summary, script.cleanScript, script.voiceoverScript) || title;
+    const unique = this.dedupePromptCandidates([
+      { caption: title, visual: "开场标题卡、主题关键词、强对比排版", duration: 4 },
+      { caption: summary, visual: "核心摘要卡、三段式信息图、节奏化字幕", duration: 6 },
+      ...candidates
+    ]);
+
+    while (unique.length < 6) {
+      unique.push({
+        caption: `${title} - 补充视角 ${unique.length + 1}`,
+        visual: "竖屏科技感说明卡、图标矩阵、重点词描边",
+        duration: 5
+      });
+    }
+
+    const camera = ["slow push-in", "vertical slide", "soft zoom", "panel reveal"];
+    const motion = ["kinetic subtitles", "card stack transition", "number counter", "highlight sweep"];
+    const lighting = ["clean dark canvas", "high contrast neon accent", "soft gradient rim light"];
+
+    return unique.slice(0, 10).map((item, index) => ({
+      scene: index + 1,
+      originalVisual: this.cleanText(item.visual),
+      videoPrompt: [
+        `9:16 竖屏中文图文解释视频，第 ${index + 1} 幕。`,
+        `字幕/口播：${this.cleanText(item.caption).slice(0, 120)}。`,
+        `画面：${this.cleanText(item.visual).slice(0, 160)}。`,
+        "风格：深色科技画布、高对比中文动效字幕、信息图卡片、无真人无数字人。"
+      ].join(""),
+      cameraMovement: camera[index % camera.length],
+      motionEffect: motion[index % motion.length],
+      lightingStyle: lighting[index % lighting.length]
+    }));
+  }
+
+  private dedupePromptCandidates(items: Array<{ caption: string; visual: string; duration?: number }>) {
+    const seen = new Set<string>();
+    return items.filter((item) => {
+      const caption = this.cleanText(item.caption);
+      const visual = this.cleanText(item.visual);
+      if (!caption && !visual) {
+        return false;
+      }
+      const key = `${caption}:${visual}`.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      item.caption = caption;
+      item.visual = visual;
+      return true;
+    });
+  }
+
+  private splitSentences(text?: string) {
+    return (text ?? "")
+      .split(/[。！？!?；;\n]+/)
+      .map((sentence) => this.cleanText(sentence))
+      .filter((sentence) => sentence.length >= 8)
+      .slice(0, 8);
+  }
+
+  private cleanText(value?: string) {
+    return (value ?? "").replace(/\s+/g, " ").trim();
+  }
+
   private async buildPreview(record: JobRecord): Promise<JobPreview> {
     const [pageInfo, cleaned, transcript] = await Promise.all([
       this.readPageInfo(record.id),
@@ -522,7 +658,8 @@ export class JobStore {
     const subtitle = firstText(authorName, pageInfo?.pageDescription, record.sourceUrl) || "等待内容生成";
     const hasTranscript = Boolean(transcript?.transcript?.trim() || cleaned?.transcriptText?.trim());
     const hasRewrite = Boolean(output?.cleanScript?.trim() || output?.voiceoverScript?.trim());
-    const hasPpt = Boolean(output?.pptContent || output?.pptPath);
+    const hasVideoPrompts = Boolean(output?.videoPrompts?.length || output?.enhancedScenes?.length);
+    const hasVideo = Boolean(output?.hyperframesVideo?.videoPath || record.videoOutputPath);
     const currentStep = this.getCurrentStep(record);
     const nextStep = this.getNextStep(record);
 
@@ -535,7 +672,8 @@ export class JobStore {
       coverTitle: firstText(output?.coverTitle, output?.title, pageInfo?.pageTitle, record.topic),
       hasTranscript,
       hasRewrite,
-      hasPpt,
+      hasVideoPrompts,
+      hasVideo,
       currentStep,
       nextStep,
       nextActionLabel: this.getNextActionLabel(record, currentStep, nextStep)
@@ -736,7 +874,7 @@ export class JobStore {
           voiceoverScript: transcriptText.trim(),
           summary,
           keyPoints,
-          pptOutline: this.buildFallbackPptOutline(draft.coverTitle, keyPoints)
+          videoOutline: this.buildFallbackVideoOutline(draft.coverTitle, keyPoints)
         };
       }
       return draft;
@@ -763,7 +901,7 @@ export class JobStore {
         tags: ["AI", "技术分享"],
         summary,
         keyPoints,
-        pptOutline: this.buildFallbackPptOutline(coverTitle, keyPoints),
+        videoOutline: this.buildFallbackVideoOutline(coverTitle, keyPoints),
         sceneList: [
           {
             scene: 1,
@@ -799,10 +937,6 @@ export class JobStore {
       sceneList: [],
       status: "draft"
     };
-  }
-
-  private isMissingAsrKeyError(error: Error) {
-    return /api key|OPENAI_API_KEY|ASR_API_KEY/i.test(error.message);
   }
 
   private isActive(record: JobRecord) {
@@ -850,6 +984,8 @@ export class JobStore {
     addPath(record.audioPath);
     addPath(record.audioManifestPath);
     addPath(record.transcriptPath);
+    addPath(record.videoProjectPath);
+    addPath(record.videoOutputPath);
 
     addRelative("raw", "text", `${record.id}.json`);
     addRelative("raw", "page", `${record.id}.json`);
@@ -862,11 +998,12 @@ export class JobStore {
     addRelative("processed", "cleaned", `${record.id}.json`);
     addRelative("processed", "scenes", `${record.id}.json`);
     addRelative("processed", "subtitles", `${record.id}.srt`);
-    addRelative("output", "ppt", `${record.id}.ppt.json`);
-    addRelative("output", "ppt", `${record.id}.pptx`);
+    addRelative("output", "videos", record.id);
 
     const script = await this.readScriptForDeletion(record);
-    addPath(script?.pptPath);
+    addPath(script?.hyperframesVideo?.projectPath);
+    addPath(script?.hyperframesVideo?.videoPath);
+    addPath(script?.hyperframesVideo?.manifestPath);
 
     for (const filePath of candidates) {
       await this.removeFileIfExists(filePath);
@@ -900,7 +1037,7 @@ export class JobStore {
 
   private async removeFileIfExists(filePath: string) {
     try {
-      await rm(filePath, { force: true });
+      await rm(filePath, { force: true, recursive: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`Failed to remove job artifact ${filePath}: ${message}`);
@@ -916,19 +1053,22 @@ export class JobStore {
       .map((sentence) => sentence.slice(0, 80));
   }
 
-  private buildFallbackPptOutline(title: string, keyPoints: string[]) {
+  private buildFallbackVideoOutline(title: string, keyPoints: string[]) {
     return [
       {
-        title: "封面",
-        bullets: [title].filter(Boolean)
+        title: "开场钩子",
+        bullets: [title].filter(Boolean),
+        visualPrompt: "竖屏标题卡、主题关键词放大、强对比字幕"
       },
       {
         title: "核心要点",
-        bullets: keyPoints.length ? keyPoints : ["内容清洗", "要点提炼"]
+        bullets: keyPoints.length ? keyPoints : ["内容清洗", "要点提炼"],
+        visualPrompt: "要点卡片依次入场、关键词高亮、信息图标"
       },
       {
         title: "总结",
-        bullets: keyPoints.slice(-3).length ? keyPoints.slice(-3) : ["回顾重点", "行动建议"]
+        bullets: keyPoints.slice(-3).length ? keyPoints.slice(-3) : ["回顾重点", "行动建议"],
+        visualPrompt: "总结卡、行动建议、字幕扫光动效"
       }
     ];
   }

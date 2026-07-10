@@ -47,7 +47,7 @@ export function buildScriptDraft(
     tags,
     summary,
     keyPoints: [subject, benefits, summary].filter(Boolean).slice(0, 3),
-    pptOutline: buildFallbackPptOutline(subject, benefits, summary),
+    videoOutline: buildFallbackVideoOutline(subject, benefits, summary),
     sceneList: [
       {
         scene: 1,
@@ -95,7 +95,7 @@ export function buildTranscriptDraft(input: TranscriptDraftInput): ScriptAsset {
     tags,
     summary,
     keyPoints,
-    pptOutline: buildFallbackPptOutline(coverTitle, ...keyPoints),
+    videoOutline: buildFallbackVideoOutline(coverTitle, ...keyPoints),
     sceneList: [
       {
         scene: 1,
@@ -122,7 +122,6 @@ function buildBenefits(parsed: DouyinShareParseResult) {
   const abilities = [
     parsed.normalizedText.includes("Word") ? "自动生成 Word 报告" : "",
     parsed.normalizedText.includes("PDF") ? "提取 PDF 文档内容" : "",
-    parsed.normalizedText.includes("PPT") ? "创建 PPT 幻灯片" : "",
     parsed.normalizedText.includes("Excel") ? "清洗整理 Excel 数据" : ""
   ].filter(Boolean);
 
@@ -218,20 +217,23 @@ function buildTranscriptKeyPoints(transcript: string) {
   return sentences.slice(0, 4).map((sentence) => sentence.slice(0, 80));
 }
 
-function buildFallbackPptOutline(title: string, ...points: string[]) {
+function buildFallbackVideoOutline(title: string, ...points: string[]) {
   const cleanPoints = points.map((point) => point.trim()).filter(Boolean);
   return [
     {
-      title: "封面",
-      bullets: [title].filter(Boolean)
+      title: "开场钩子",
+      bullets: [title].filter(Boolean),
+      visualPrompt: "竖屏标题卡、主题关键词放大、强对比字幕"
     },
     {
       title: "核心内容",
-      bullets: cleanPoints.slice(0, 4).length ? cleanPoints.slice(0, 4) : ["内容清洗", "要点提炼"]
+      bullets: cleanPoints.slice(0, 4).length ? cleanPoints.slice(0, 4) : ["内容清洗", "要点提炼"],
+      visualPrompt: "信息图卡片依次入场、关键词高亮"
     },
     {
       title: "总结",
-      bullets: cleanPoints.slice(-3).length ? cleanPoints.slice(-3) : ["回顾重点", "行动建议"]
+      bullets: cleanPoints.slice(-3).length ? cleanPoints.slice(-3) : ["回顾重点", "行动建议"],
+      visualPrompt: "总结卡、行动建议、字幕扫光动效"
     }
   ];
 }

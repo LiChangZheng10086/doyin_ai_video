@@ -30,7 +30,7 @@ function Navigation() {
                 </h1>
                 <p className="text-xs text-tech-muted flex items-center gap-1">
                   <Sparkles size={12} className="text-tech-purple" />
-                  从视频到文稿、PPT 与创作资产
+                  从视频到文稿、提示词与成片
                 </p>
               </div>
             </div>

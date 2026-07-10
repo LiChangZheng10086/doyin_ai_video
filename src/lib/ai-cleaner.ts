@@ -25,9 +25,10 @@ type CleanScriptPayload = {
   voiceover_script: string;
   cover_title: string;
   tags: string[];
-  ppt_outline: Array<{
+  video_outline: Array<{
     title: string;
     bullets: string[];
+    visual_prompt: string;
   }>;
   scene_list: Array<{
     scene: number;
@@ -56,7 +57,7 @@ const CLEAN_SCRIPT_SCHEMA = {
       type: "array",
       items: { type: "string" }
     },
-    ppt_outline: {
+    video_outline: {
       type: "array",
       items: {
         type: "object",
@@ -66,9 +67,10 @@ const CLEAN_SCRIPT_SCHEMA = {
           bullets: {
             type: "array",
             items: { type: "string" }
-          }
+          },
+          visual_prompt: { type: "string" }
         },
-        required: ["title", "bullets"]
+        required: ["title", "bullets", "visual_prompt"]
       }
     },
     scene_list: {
@@ -99,7 +101,7 @@ const CLEAN_SCRIPT_SCHEMA = {
     "voiceover_script",
     "cover_title",
     "tags",
-    "ppt_outline",
+    "video_outline",
     "scene_list",
     "quality_notes"
   ]
@@ -191,8 +193,8 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
               "4. 重点是技术分享，不要扩写不存在的能力、数据、模型或产品功能。",
               "5. 口播稿要自然、短句化，适合直接配音，去掉“嗯、啊、这个、那个、就是说”等废词。",
               "6. summary 用 80 字以内概括内容，key_points 提炼 3 到 6 条核心要点。",
-              "7. ppt_outline 给出 6 到 10 页 PPT 结构，每页包含 title 和 2 到 4 条 bullets。",
-              "8. scene_list 只作为文案段落结构参考，控制在 3 到 5 段，不生成视频提示词。",
+              "7. video_outline 给出 6 到 10 个竖屏视频画面结构，每个包含 title、2 到 4 条 bullets 和 visual_prompt。",
+              "8. scene_list 作为短视频段落结构参考，控制在 3 到 5 段，为后续生成视频提示词服务。",
               "9. 封面标题要适合抖音短视频，tags 尽量保留原始标签，并补充少量技术相关标签。",
               "10. quality_notes 里写 2 到 4 条本次脚本的注意点。",
               "11. 你必须只输出合法 JSON。"
@@ -235,7 +237,7 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
       coverTitle: payload.cover_title || draft.coverTitle,
       tags: dedupeTags([...(payload.tags ?? []), ...(draft.tags ?? [])]),
       keyPoints: payload.key_points ?? draft.keyPoints,
-      pptOutline: normalizePptOutline(payload.ppt_outline, draft.pptOutline),
+      videoOutline: normalizeVideoOutline(payload.video_outline, draft.videoOutline),
       qualityNotes: payload.quality_notes,
       sceneList: normalizeScenes(payload.scene_list, draft.sceneList),
       aiModel: model,
@@ -320,9 +322,9 @@ function dedupeTags(tags: string[]) {
   return result;
 }
 
-function normalizePptOutline(
-  outline: CleanScriptPayload["ppt_outline"],
-  fallback: ScriptAsset["pptOutline"]
+function normalizeVideoOutline(
+  outline: CleanScriptPayload["video_outline"],
+  fallback: ScriptAsset["videoOutline"]
 ) {
   if (!Array.isArray(outline) || outline.length === 0) {
     return fallback;
@@ -333,7 +335,8 @@ function normalizePptOutline(
       title: item.title?.trim(),
       bullets: Array.isArray(item.bullets)
         ? item.bullets.map((bullet) => bullet.trim()).filter(Boolean)
-        : []
+        : [],
+      visualPrompt: item.visual_prompt?.trim()
     }))
     .filter((item) => item.title && item.bullets.length > 0);
 }

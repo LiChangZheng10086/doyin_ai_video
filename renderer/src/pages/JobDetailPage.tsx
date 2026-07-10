@@ -7,8 +7,6 @@ import {
   CheckCircle2,
   Clock,
   Download,
-  FileText,
-  FolderOpen,
   Loader2,
   Mic,
   Play,
@@ -21,17 +19,16 @@ import {
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { apiClient } from '../services/api';
-import type { Job, CleanedScript, RawTranscript, PipelineStep, PipelineStepState } from '../types';
+import type { Job, CleanedScript, RawTranscript, PipelineStep, PipelineStepState, HyperframesVideoOutput } from '../types';
 
-type OutcomeTab = 'transcript' | 'script' | 'ppt' | 'assets';
+type OutcomeTab = 'transcript' | 'script' | 'prompts' | 'video';
 type OutcomeStatus = 'ready' | 'processing' | 'waiting' | 'failed';
 
 const pipelineSteps: Array<{ id: PipelineStep; label: string; description: string; icon: typeof Video }> = [
-  { id: 'download', label: '下载视频', description: '获取原始视频和页面信息', icon: Video },
-  { id: 'extract_audio', label: '提取音频', description: '抽取标准音频', icon: FileText },
-  { id: 'transcribe', label: '视频转录', description: '音频转换为文案', icon: Mic },
+  { id: 'transcribe', label: '视频转录', description: '下载视频、提取音频并转成文案', icon: Mic },
   { id: 'clean', label: 'AI 洗稿', description: '生成创作文稿', icon: Sparkles },
-  { id: 'generate_ppt', label: '生成 PPT', description: '生成演示内容', icon: FolderOpen },
+  { id: 'generate_video_prompts', label: '生成视频提示词', description: '规划竖屏画面', icon: Wand2 },
+  { id: 'generate_video', label: '生成视频', description: '渲染竖屏成片', icon: Video },
 ];
 
 export function JobDetailPage() {
@@ -40,10 +37,12 @@ export function JobDetailPage() {
   const [job, setJob] = useState<Job | null>(null);
   const [cleaned, setCleaned] = useState<CleanedScript | null>(null);
   const [rawTranscript, setRawTranscript] = useState<RawTranscript | null>(null);
+  const [videoOutput, setVideoOutput] = useState<HyperframesVideoOutput | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cleanedError, setCleanedError] = useState<string | null>(null);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [runningStep, setRunningStep] = useState<PipelineStep | null>(null);
   const [activeTab, setActiveTab] = useState<OutcomeTab>('script');
@@ -51,6 +50,8 @@ export function JobDetailPage() {
   const loadJobArtifacts = async (jobData: Job) => {
     setCleanedError(null);
     setTranscriptError(null);
+    setVideoError(null);
+    setVideoOutput(null);
 
     try {
       const transcriptData = await apiClient.getJobRawTranscript(jobData.id);
@@ -67,12 +68,28 @@ export function JobDetailPage() {
     try {
       const cleanedData = await apiClient.getJobCleaned(jobData.id);
       setCleaned(cleanedData);
+      if (cleanedData.output?.hyperframesVideo) {
+        setVideoOutput(cleanedData.output.hyperframesVideo);
+      }
     } catch (err) {
       setCleaned(null);
       if (jobData.steps?.clean?.status === 'failed' || jobData.status === 'done') {
         const errMsg = err instanceof Error ? err.message : '未知错误';
         setCleanedError(`内容加载失败: ${errMsg}`);
       }
+    }
+
+    if (jobData.videoOutputPath || jobData.steps?.generate_video?.status === 'succeeded') {
+      try {
+        const output = await apiClient.getJobVideoOutput(jobData.id);
+        setVideoOutput(output);
+      } catch (err) {
+        setVideoOutput(null);
+        const errMsg = err instanceof Error ? err.message : '未知错误';
+        setVideoError(`视频成片加载失败: ${errMsg}`);
+      }
+    } else if (jobData.steps?.generate_video?.status === 'failed') {
+      setVideoError('视频生成失败，可在当前步骤重试');
     }
   };
 
@@ -170,7 +187,7 @@ export function JobDetailPage() {
     }
   };
 
-  const outcomes = buildOutcomes(job, cleaned, rawTranscript, cleanedError, transcriptError);
+  const outcomes = buildOutcomes(job, cleaned, rawTranscript, videoOutput, cleanedError, transcriptError, videoError);
   const activeOutcome = outcomes.find((item) => item.id === activeTab) ?? outcomes[0];
 
   return (
@@ -264,11 +281,11 @@ export function JobDetailPage() {
             {activeOutcome.id === 'script' && (
               <ScriptContent cleaned={cleaned} cleanedError={cleanedError} />
             )}
-            {activeOutcome.id === 'ppt' && (
-              <PPTContentView content={cleaned?.output?.pptContent} jobId={job.id} />
+            {activeOutcome.id === 'prompts' && (
+              <VideoPromptsContent cleaned={cleaned} />
             )}
-            {activeOutcome.id === 'assets' && (
-              <AssetsContent job={job} cleaned={cleaned} rawTranscript={rawTranscript} />
+            {activeOutcome.id === 'video' && (
+              <VideoContentView output={videoOutput} jobId={job.id} videoError={videoError} />
             )}
           </div>
         </div>
@@ -354,7 +371,7 @@ function WorkflowStepper({ job, runningStep }: { job: Job; runningStep: Pipeline
           <p className="mt-1 text-sm text-tech-muted">从视频素材到创作成果的主链路</p>
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         {pipelineSteps.map((step, index) => {
           const state = getStepState(job, step.id, runningStep);
           const Icon = step.icon;
@@ -419,81 +436,165 @@ function ScriptContent({ cleaned, cleanedError }: { cleaned: CleanedScript | nul
   return <ScriptTab cleaned={cleaned} />;
 }
 
-function PPTContentView({ content, jobId }: { content: any; jobId: string }) {
-  const [pptUrl, setPptUrl] = useState<string | null>(null);
+function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
+  const output = cleaned?.output;
+  const prompts = output?.videoPrompts ?? [];
+  const scenes = output?.enhancedScenes ?? [];
+
+  if (!prompts.length && !scenes.length) {
+    return <EmptyContent title="视频提示词还没生成" description="完成生成视频提示词后，这里会显示 HyperFrames 使用的画面规划。" />;
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="text-lg font-semibold text-tech-text">视频提示词</h3>
+        <p className="mt-1 text-sm text-tech-muted">基于 AI 洗稿结果生成的竖屏画面规划，下一步会交给 HyperFrames 渲染。</p>
+      </div>
+
+      {scenes.length > 0 ? (
+        <div className="space-y-3">
+          {scenes.map((scene) => (
+            <div key={scene.scene} className="rounded-lg border border-tech-border bg-tech-bg p-4">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <p className="font-semibold text-tech-text">场景 {scene.scene}</p>
+                {scene.cameraMovement && (
+                  <span className="rounded-full bg-white px-2 py-1 text-xs text-tech-muted">{scene.cameraMovement}</span>
+                )}
+              </div>
+              <p className="text-sm leading-6 text-tech-text">{scene.videoPrompt}</p>
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                {scene.originalVisual && <Metric label="画面" value={scene.originalVisual} />}
+                {scene.motionEffect && <Metric label="动效" value={scene.motionEffect} />}
+                {scene.lightingStyle && <Metric label="光影" value={scene.lightingStyle} />}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {prompts.map((prompt, index) => (
+            <p key={index} className="rounded-lg border border-tech-border bg-tech-bg p-4 text-sm leading-6 text-tech-text">
+              {index + 1}. {prompt}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {output?.videoOutline && output.videoOutline.length > 0 && (
+        <div>
+          <h4 className="mb-3 text-base font-semibold text-tech-text">视频大纲</h4>
+          <div className="space-y-3">
+            {output.videoOutline.map((item, index) => (
+              <div key={index} className="rounded-lg border border-tech-border bg-tech-bg p-4">
+                <p className="mb-2 font-semibold text-tech-text">{index + 1}. {item.title}</p>
+                <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
+                  {item.bullets.map((bullet, bulletIndex) => (
+                    <li key={bulletIndex}>{bullet}</li>
+                  ))}
+                </ul>
+                {item.visualPrompt && <p className="mt-3 text-sm text-tech-muted">{item.visualPrompt}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VideoContentView({
+  output,
+  jobId,
+  videoError,
+}: {
+  output: HyperframesVideoOutput | null;
+  jobId: string;
+  videoError: string | null;
+}) {
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!content) {
+    if (!output) {
       return;
     }
-    const loadPPTUrl = async () => {
+    const loadVideoUrl = async () => {
       try {
-        const url = await apiClient.downloadPPT(jobId);
-        setPptUrl(url);
+        const url = await apiClient.downloadVideo(jobId);
+        setVideoUrl(url);
       } catch (err) {
-        console.error('Failed to get PPT URL:', err);
+        console.error('Failed to get video URL:', err);
       }
     };
-    loadPPTUrl();
-  }, [content, jobId]);
+    loadVideoUrl();
+  }, [output, jobId]);
 
-  if (!content) {
-    return <EmptyContent title="PPT 还没生成" description="完成生成 PPT 后，这里会显示内容结构和下载入口。" />;
+  if (videoError && !output) {
+    return <Notice tone="danger" title="视频成片不可用">{videoError}</Notice>;
+  }
+
+  if (!output) {
+    return <EmptyContent title="视频还没生成" description="完成生成视频提示词后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。" />;
   }
 
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h3 className="text-lg font-semibold text-tech-text">PPT 内容</h3>
-          <p className="mt-1 text-sm text-tech-muted">根据 AI 洗稿结果生成的演示内容。</p>
+          <h3 className="text-lg font-semibold text-tech-text">视频成片</h3>
+          <p className="mt-1 text-sm text-tech-muted">HyperFrames 本地渲染的竖屏解释视频。</p>
         </div>
-        {pptUrl && (
+        {videoUrl && (
           <a
-            href={pptUrl}
+            href={videoUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
           >
             <Download size={17} />
-            下载 PPT
+            下载 MP4
           </a>
         )}
       </div>
-      <div className="max-h-[420px] overflow-y-auto rounded-lg bg-tech-bg p-4">
-        <pre className="whitespace-pre-wrap text-sm text-tech-text">
-          {typeof content === 'string' ? content : JSON.stringify(content, null, 2)}
-        </pre>
-      </div>
-    </div>
-  );
-}
 
-function AssetsContent({ job, cleaned, rawTranscript }: { job: Job; cleaned: CleanedScript | null; rawTranscript: RawTranscript | null }) {
-  const output = cleaned?.output;
-  return (
-    <div className="space-y-5">
-      <div>
-        <h3 className="text-lg font-semibold text-tech-text">作品资产</h3>
-        <p className="mt-1 text-sm text-tech-muted">当前作品已经产出的创作素材和文件状态。</p>
-      </div>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <AssetState title="Transcript" ready={Boolean(rawTranscript?.transcript || output?.rawText)} />
-        <AssetState title="AI Rewrite" ready={Boolean(output?.cleanScript)} />
-        <AssetState title="PPT" ready={Boolean(output?.pptContent)} />
+        <Metric label="渲染器" value={output.provider} />
+        <Metric label="尺寸" value={`${output.width}x${output.height} · ${output.aspectRatio}`} />
+        <Metric label="时长" value={formatSeconds(output.duration)} />
+      </div>
+
+      <div className="rounded-lg bg-tech-bg p-4">
+        <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">视频文件</label>
+        <p className="break-all font-mono text-xs text-tech-text">{output.videoPath}</p>
       </div>
       <div className="rounded-lg bg-tech-bg p-4">
-        <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">源链接</label>
-        <p className="break-all text-sm text-tech-blue">{job.sourceUrl || '未记录'}</p>
+        <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">HyperFrames 项目</label>
+        <p className="break-all font-mono text-xs text-tech-text">{output.projectPath}</p>
       </div>
-      {output?.tags && output.tags.length > 0 && (
+
+      {output.scenes?.length > 0 && (
         <div>
-          <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">标签</label>
-          <div className="flex flex-wrap gap-2">
-            {output.tags.map((tag, index) => (
-              <span key={index} className="rounded-full bg-purple-50 px-3 py-1 text-sm text-tech-purple">
-                #{tag}
-              </span>
+          <h4 className="mb-3 text-base font-semibold text-tech-text">视频场景</h4>
+          <div className="space-y-3">
+            {output.scenes.map((scene) => (
+              <div key={scene.index} className="rounded-lg border border-tech-border bg-tech-bg p-4">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <p className="font-semibold text-tech-text">{scene.index}. {scene.title}</p>
+                  <span className="shrink-0 rounded-full bg-white px-2 py-1 text-xs text-tech-muted">
+                    {formatSeconds(scene.duration)}
+                  </span>
+                </div>
+                {scene.bullets?.length > 0 && (
+                  <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
+                    {scene.bullets.map((bullet, index) => (
+                      <li key={index}>{bullet}</li>
+                    ))}
+                  </ul>
+                )}
+                {scene.narration && (
+                  <p className="mt-3 text-sm leading-6 text-tech-muted">{scene.narration}</p>
+                )}
+              </div>
             ))}
           </div>
         </div>
@@ -537,6 +638,8 @@ function AdvancedInfo({ job }: { job: Job }) {
         <Field label="更新时间" value={new Date(job.updatedAt).toLocaleString('zh-CN')} />
         <Field label="视频文件" value={job.videoPath} />
         <Field label="音频文件" value={job.audioPath} />
+        <Field label="成片文件" value={job.videoOutputPath} />
+        <Field label="HyperFrames 项目" value={job.videoProjectPath} />
         <Field label="存储路径" value={job.storagePath} />
         {(job.errorMessage || job.error || job.downloadErrorMessage || job.audioErrorMessage || job.transcriptErrorMessage) && (
           <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
@@ -615,23 +718,6 @@ function ScriptTab({ cleaned }: { cleaned: CleanedScript }) {
         </div>
       )}
       {output.cleanScript && <ContentBlock label="清洗后的脚本" value={output.cleanScript} multiline />}
-      {output.pptOutline && output.pptOutline.length > 0 && (
-        <div>
-          <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">PPT 大纲</label>
-          <div className="space-y-3">
-            {output.pptOutline.map((item, index) => (
-              <div key={index} className="rounded-lg border border-tech-border bg-tech-bg p-4">
-                <p className="mb-2 font-semibold text-tech-text">{index + 1}. {item.title}</p>
-                <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
-                  {item.bullets.map((bullet, bulletIndex) => (
-                    <li key={bulletIndex}>{bullet}</li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
       {output.qualityNotes && output.qualityNotes.length > 0 && (
         <div className="space-y-2">
           {output.qualityNotes.map((note, index) => (
@@ -647,8 +733,10 @@ function buildOutcomes(
   job: Job,
   cleaned: CleanedScript | null,
   rawTranscript: RawTranscript | null,
+  videoOutput: HyperframesVideoOutput | null,
   cleanedError: string | null,
-  transcriptError: string | null
+  transcriptError: string | null,
+  videoError: string | null
 ) {
   return [
     {
@@ -664,16 +752,20 @@ function buildOutcomes(
       status: getOutcomeStatus(Boolean(rawTranscript?.transcript || cleaned?.output?.rawText), job.steps?.transcribe?.status, transcriptError),
     },
     {
-      id: 'ppt' as OutcomeTab,
-      label: 'PPT',
-      icon: FolderOpen,
-      status: getOutcomeStatus(Boolean(cleaned?.output?.pptContent), job.steps?.generate_ppt?.status, null),
+      id: 'prompts' as OutcomeTab,
+      label: '视频提示词',
+      icon: Wand2,
+      status: getOutcomeStatus(
+        Boolean(cleaned?.output?.videoPrompts?.length || cleaned?.output?.enhancedScenes?.length),
+        job.steps?.generate_video_prompts?.status,
+        null
+      ),
     },
     {
-      id: 'assets' as OutcomeTab,
-      label: 'Assets',
-      icon: FileText,
-      status: 'ready' as OutcomeStatus,
+      id: 'video' as OutcomeTab,
+      label: '视频成片',
+      icon: Video,
+      status: getOutcomeStatus(Boolean(videoOutput?.videoPath), job.steps?.generate_video?.status, videoError),
     },
   ];
 }
@@ -725,7 +817,7 @@ function getHeroCopy(job: Job, focus: FocusStep | null) {
   if (job.status === 'done') {
     return {
       title: '作品资产已生成',
-      description: '可以查看 AI 洗稿、转录和 PPT 内容，也可以回到创作中心继续处理其他作品。',
+      description: '可以查看视频转录、AI 洗稿、视频提示词和视频成片，也可以回到创作中心继续处理其他作品。',
     };
   }
   if (job.status === 'failed') {
@@ -801,15 +893,6 @@ function OutcomeStatusBadge({ status }: { status: OutcomeStatus }) {
     failed: 'bg-red-50 text-red-700',
   };
   return <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${config[status]}`}>{getOutcomeStatusLabel(status)}</span>;
-}
-
-function AssetState({ title, ready }: { title: string; ready: boolean }) {
-  return (
-    <div className={`rounded-lg border p-4 ${ready ? 'border-purple-200 bg-purple-50' : 'border-tech-border bg-tech-bg'}`}>
-      <p className={`text-sm font-semibold ${ready ? 'text-tech-purple' : 'text-tech-muted'}`}>{title}</p>
-      <p className="mt-1 text-xs text-tech-muted">{ready ? '已生成' : '等待生成'}</p>
-    </div>
-  );
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

@@ -95,7 +95,6 @@ export function detectTopicCandidate(text: string) {
     "anthropic",
     "claude",
     "文档",
-    "PPT",
     "PDF",
     "Excel"
   ];

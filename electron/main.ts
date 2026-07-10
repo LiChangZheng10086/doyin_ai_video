@@ -48,15 +48,12 @@ async function createWindow() {
 
   // 开发环境：加载 Vite 开发服务器
   // 生产环境：加载构建后的文件
-  const url = process.env.NODE_ENV === 'development'
-    ? 'http://localhost:5173'
-    : path.join(__dirname, '../dist-renderer/index.html');
-
-  console.log('[Main] Loading URL:', url);
+  const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
 
   try {
     if (process.env.NODE_ENV === 'development') {
-      await mainWindow.loadURL('http://localhost:5173');
+      console.log('[Main] Loading URL:', devUrl);
+      await mainWindow.loadURL(devUrl);
       console.log('[Main] URL loaded');
 
       if (process.env.OPEN_DEVTOOLS === '1') {
@@ -64,7 +61,9 @@ async function createWindow() {
         mainWindow.webContents.openDevTools();
       }
     } else {
-      await mainWindow.loadFile(path.join(__dirname, '../dist-renderer/index.html'));
+      const rendererPath = path.join(__dirname, '../dist-renderer/index.html');
+      console.log('[Main] Loading file:', rendererPath);
+      await mainWindow.loadFile(rendererPath);
       console.log('[Main] File loaded');
     }
   } catch (error) {
