@@ -122,10 +122,53 @@ export interface EnhancedScene {
   lightingStyle?: string;
 }
 
+export type ShotType = "hook" | "problem" | "explain" | "proof" | "contrast" | "process" | "summary" | "cta";
+
+export type ShotPacing = "fast" | "medium" | "slow";
+
+export type ShotTransition = "cut" | "wipe" | "push" | "zoom" | "match-cut" | "flash";
+
+export type ShortVideoVisualLayerType =
+  | "background"
+  | "subject"
+  | "graphic"
+  | "caption"
+  | "emphasis"
+  | "decoration";
+
+export interface ShortVideoVisualLayer {
+  type: ShortVideoVisualLayerType;
+  content: string;
+  motion?: string;
+  style?: string;
+}
+
+export interface ShortVideoShot {
+  index: number;
+  duration: number;
+  shotType: ShotType;
+  subject: string;
+  action: string;
+  cameraMotion: string;
+  visualLayers: ShortVideoVisualLayer[];
+  caption: string;
+  emphasisWords: string[];
+  transition: ShotTransition;
+  pacing: ShotPacing;
+  narration: string;
+}
+
 export interface HyperframesVideoScene {
   index: number;
-  title: string;
-  bullets: string[];
+  shotType?: ShotType;
+  subject: string;
+  action: string;
+  cameraMotion: string;
+  visualLayers: ShortVideoVisualLayer[];
+  caption: string;
+  emphasisWords: string[];
+  transition: ShotTransition;
+  pacing: ShotPacing;
   narration: string;
   duration: number;
   accent: string;
@@ -186,6 +229,7 @@ export interface ScriptAsset {
   // 视频增强字段
   videoPrompts?: string[];
   enhancedScenes?: EnhancedScene[];
+  shortVideoShots?: ShortVideoShot[];
   videoEnhancedAt?: string;
 
   hyperframesVideo?: HyperframesVideoOutput;

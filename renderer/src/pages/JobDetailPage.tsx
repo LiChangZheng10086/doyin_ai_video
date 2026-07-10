@@ -19,7 +19,15 @@ import {
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { apiClient } from '../services/api';
-import type { Job, CleanedScript, RawTranscript, PipelineStep, PipelineStepState, HyperframesVideoOutput } from '../types';
+import type {
+  Job,
+  CleanedScript,
+  RawTranscript,
+  PipelineStep,
+  PipelineStepState,
+  HyperframesVideoOutput,
+  ShortVideoShot,
+} from '../types';
 
 type OutcomeTab = 'transcript' | 'script' | 'prompts' | 'video';
 type OutcomeStatus = 'ready' | 'processing' | 'waiting' | 'failed';
@@ -438,21 +446,28 @@ function ScriptContent({ cleaned, cleanedError }: { cleaned: CleanedScript | nul
 
 function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
   const output = cleaned?.output;
+  const shots = output?.shortVideoShots ?? [];
   const prompts = output?.videoPrompts ?? [];
   const scenes = output?.enhancedScenes ?? [];
 
-  if (!prompts.length && !scenes.length) {
-    return <EmptyContent title="视频提示词还没生成" description="完成生成视频提示词后，这里会显示 HyperFrames 使用的画面规划。" />;
+  if (!shots.length && !prompts.length && !scenes.length) {
+    return <EmptyContent title="镜头列表还没生成" description="完成生成视频提示词后，这里会显示 HyperFrames 使用的短视频镜头规划。" />;
   }
 
   return (
     <div className="space-y-5">
       <div>
-        <h3 className="text-lg font-semibold text-tech-text">视频提示词</h3>
-        <p className="mt-1 text-sm text-tech-muted">基于 AI 洗稿结果生成的竖屏画面规划，下一步会交给 HyperFrames 渲染。</p>
+        <h3 className="text-lg font-semibold text-tech-text">镜头列表</h3>
+        <p className="mt-1 text-sm text-tech-muted">基于 AI 洗稿结果生成的短视频镜头、字幕、动效节奏和视觉层级。</p>
       </div>
 
-      {scenes.length > 0 ? (
+      {shots.length > 0 ? (
+        <div className="space-y-3">
+          {shots.map((shot) => (
+            <ShotCard key={`${shot.index}-${shot.caption}`} shot={shot} />
+          ))}
+        </div>
+      ) : scenes.length > 0 ? (
         <div className="space-y-3">
           {scenes.map((scene) => (
             <div key={scene.scene} className="rounded-lg border border-tech-border bg-tech-bg p-4">
@@ -483,7 +498,7 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
 
       {output?.videoOutline && output.videoOutline.length > 0 && (
         <div>
-          <h4 className="mb-3 text-base font-semibold text-tech-text">视频大纲</h4>
+          <h4 className="mb-3 text-base font-semibold text-tech-text">兼容视频大纲</h4>
           <div className="space-y-3">
             {output.videoOutline.map((item, index) => (
               <div key={index} className="rounded-lg border border-tech-border bg-tech-bg p-4">
@@ -498,6 +513,65 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
             ))}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function ShotCard({ shot }: { shot: ShortVideoShot }) {
+  const layers = shot.visualLayers ?? [];
+  const visibleLayers = layers.filter((layer) => layer.type !== 'caption').slice(0, 6);
+
+  return (
+    <div className="rounded-lg border border-tech-border bg-tech-bg p-4">
+      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase text-purple-600">Shot {shot.index} · {shot.shotType}</p>
+          <h4 className="mt-1 text-base font-semibold text-tech-text">{shot.subject}</h4>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs text-tech-muted">
+          <span className="rounded-full bg-white px-2 py-1">{formatSeconds(shot.duration)}</span>
+          <span className="rounded-full bg-white px-2 py-1">{shot.transition}</span>
+          <span className="rounded-full bg-white px-2 py-1">{shot.pacing}</span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <Metric label="画面动作" value={shot.action} />
+        <Metric label="镜头运动" value={shot.cameraMotion} />
+      </div>
+
+      <div className="mt-3 rounded-lg border border-purple-100 bg-white p-3">
+        <label className="mb-1 block text-xs font-medium uppercase text-purple-500">字幕</label>
+        <p className="text-sm leading-6 text-tech-text">{shot.caption}</p>
+      </div>
+
+      {shot.emphasisWords?.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {shot.emphasisWords.map((word, index) => (
+            <span key={`${word}-${index}`} className="rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700">
+              {word}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {visibleLayers.length > 0 && (
+        <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+          {visibleLayers.map((layer, index) => (
+            <div key={`${layer.type}-${index}`} className="rounded-lg border border-tech-border bg-white p-3">
+              <p className="text-xs font-semibold uppercase text-tech-muted">{layer.type}</p>
+              <p className="mt-1 text-sm leading-5 text-tech-text">{layer.content}</p>
+              {(layer.motion || layer.style) && (
+                <p className="mt-1 text-xs text-tech-muted">{[layer.motion, layer.style].filter(Boolean).join(' · ')}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {shot.narration && (
+        <p className="mt-3 text-sm leading-6 text-tech-muted">{shot.narration}</p>
       )}
     </div>
   );
@@ -574,22 +648,35 @@ function VideoContentView({
 
       {output.scenes?.length > 0 && (
         <div>
-          <h4 className="mb-3 text-base font-semibold text-tech-text">视频场景</h4>
+          <h4 className="mb-3 text-base font-semibold text-tech-text">渲染镜头</h4>
           <div className="space-y-3">
             {output.scenes.map((scene) => (
               <div key={scene.index} className="rounded-lg border border-tech-border bg-tech-bg p-4">
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <p className="font-semibold text-tech-text">{scene.index}. {scene.title}</p>
+                  <p className="font-semibold text-tech-text">{scene.index}. {scene.subject ?? scene.title ?? '镜头'}</p>
                   <span className="shrink-0 rounded-full bg-white px-2 py-1 text-xs text-tech-muted">
-                    {formatSeconds(scene.duration)}
+                    {[formatSeconds(scene.duration), scene.transition, scene.pacing].filter(Boolean).join(' · ')}
                   </span>
                 </div>
+                {scene.action && <p className="text-sm leading-6 text-tech-text">{scene.action}</p>}
+                {scene.caption && (
+                  <p className="mt-2 rounded-lg bg-white p-3 text-sm leading-6 text-tech-text">{scene.caption}</p>
+                )}
                 {scene.bullets?.length > 0 && (
                   <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
                     {scene.bullets.map((bullet, index) => (
                       <li key={index}>{bullet}</li>
                     ))}
                   </ul>
+                )}
+                {scene.emphasisWords?.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {scene.emphasisWords.map((word, index) => (
+                      <span key={`${word}-${index}`} className="rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700">
+                        {word}
+                      </span>
+                    ))}
+                  </div>
                 )}
                 {scene.narration && (
                   <p className="mt-3 text-sm leading-6 text-tech-muted">{scene.narration}</p>
@@ -753,10 +840,10 @@ function buildOutcomes(
     },
     {
       id: 'prompts' as OutcomeTab,
-      label: '视频提示词',
+      label: '镜头列表',
       icon: Wand2,
       status: getOutcomeStatus(
-        Boolean(cleaned?.output?.videoPrompts?.length || cleaned?.output?.enhancedScenes?.length),
+        Boolean(cleaned?.output?.shortVideoShots?.length || cleaned?.output?.videoPrompts?.length || cleaned?.output?.enhancedScenes?.length),
         job.steps?.generate_video_prompts?.status,
         null
       ),

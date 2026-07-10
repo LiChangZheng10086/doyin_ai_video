@@ -15,9 +15,14 @@
     "mark-cjs": "echo '{\"type\":\"commonjs\"}' > dist-electron/package.json",
     "prepare:whisper": "node scripts/prepare-whisper.mjs",
     "check:whisper": "node scripts/check-whisper-assets.mjs",
-    "package": "npm run build && npm run check:whisper && electron-builder",
-    "package:mac": "npm run build && npm run check:whisper && electron-builder --mac",
-    "package:win": "npm run build && npm run check:whisper && electron-builder --win",
+    "prepare:package:mac": "node scripts/prepare-package-assets.mjs --target=mac",
+    "prepare:package:win": "node scripts/prepare-package-assets.mjs --target=win",
+    "check:package-assets": "node scripts/check-package-assets.mjs",
+    "package": "npm run package:mac",
+    "package:mac": "npm run prepare:package:mac && npm run build && npm run check:package-assets && electron-builder --mac --arm64",
+    "package:win": "npm run prepare:package:win && npm run build && npm run check:package-assets && electron-builder --win --x64",
+    "package:win11": "npm run package:win",
+    "package:all": "npm run package:mac && npm run package:win",
     "start": "node dist/server.js",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "check": "tsc -p tsconfig.json --noEmit"
@@ -53,15 +58,66 @@
     "wait-on": "^9.0.10"
   },
   "build": {
+    "files": [
+      "package.json",
+      "dist/**/*",
+      "dist-electron/**/*",
+      "dist-renderer/**/*",
+      "!dist/mac*/**/*",
+      "!dist/win*/**/*",
+      "!dist/*.dmg",
+      "!dist/*.zip",
+      "!dist/*.exe",
+      "!dist/*.blockmap",
+      "!dist/*.yml",
+      "!storage/**/*",
+      "!vendor/**/*",
+      "!src/**/*",
+      "!renderer/**/*",
+      "!backend/**/*",
+      "!docs/**/*",
+      "!scripts/**/*"
+    ],
     "extraResources": [
       {
-        "from": "vendor/whisper",
+        "from": "vendor/package-assets/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/package-assets/whisper",
         "to": "whisper",
         "filter": [
-          "whisper-cli",
-          "whisper-cli.exe",
-          "models/ggml-small.bin"
+          "**/*"
         ]
+      },
+      {
+        "from": "vendor/package-assets/hyperframes/package.json",
+        "to": "hyperframes/package.json"
+      },
+      {
+        "from": "vendor/package-assets/hyperframes/package-lock.json",
+        "to": "hyperframes/package-lock.json"
+      },
+      {
+        "from": "vendor/package-assets/hyperframes/node_modules",
+        "to": "hyperframes/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/package-assets/browser",
+        "to": "browser",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "vendor/package-assets/manifest.json",
+        "to": "runtime-assets-manifest.json"
       }
     ]
   }

@@ -24,6 +24,11 @@ export interface ServerConfig {
   whisperCliPath?: string;
   whisperModelPath?: string;
   hyperframesNpxBinary?: string;
+  runtimeBinDir?: string;
+  hyperframesCliPath?: string;
+  hyperframesNodeBinary?: string;
+  hyperframesUseElectronAsNode?: boolean;
+  hyperframesBrowserPath?: string;
 }
 
 function isMissingFileError(error: unknown) {
@@ -64,7 +69,12 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   const videoGenerator = new HyperframesVideoGenerator({
     storageRoot: config.storagePath,
-    npxBinary: config.hyperframesNpxBinary
+    npxBinary: config.hyperframesNpxBinary,
+    runtimeBinDir: config.runtimeBinDir,
+    cliPath: config.hyperframesCliPath,
+    nodeBinary: config.hyperframesNodeBinary,
+    useElectronAsNode: config.hyperframesUseElectronAsNode,
+    browserPath: config.hyperframesBrowserPath
   });
 
   const jobs = new JobStore(storage, cleaner, media, asr, videoGenerator);
@@ -344,7 +354,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
   });
 
-  // 🎯 视频提示词接口
+  // 视频提示词接口
   app.get("/api/jobs/:id/video-prompts", async (req, res) => {
     const record = await jobs.get(req.params.id);
     if (!record) {
@@ -354,11 +364,12 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
     try {
       const script = await storage.readJson<ScriptAsset>(path.join("processed", "scripts", `${record.id}.json`));
-      if (!script.videoPrompts?.length && !script.enhancedScenes?.length) {
+      if (!script.shortVideoShots?.length && !script.videoPrompts?.length && !script.enhancedScenes?.length) {
         res.status(404).json({ message: "video prompts not generated yet" });
         return;
       }
       res.json({
+        shortVideoShots: script.shortVideoShots,
         videoPrompts: script.videoPrompts,
         enhancedScenes: script.enhancedScenes,
         videoOutline: script.videoOutline

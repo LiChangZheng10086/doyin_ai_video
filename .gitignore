@@ -57,3 +57,7 @@ vendor/whisper/whisper-cli.exe
 vendor/whisper/models/*.bin
 !vendor/whisper/README.md
 !vendor/whisper/models/.gitkeep
+
+# Platform runtime assets generated for installer packaging
+vendor/runtime/
+vendor/package-assets/

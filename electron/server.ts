@@ -44,6 +44,11 @@ export async function startServer(): Promise<number> {
         ffmpegBinary: binaryPaths.ffmpeg,
         whisperCliPath: binaryPaths.whisperCli,
         whisperModelPath: binaryPaths.whisperModel,
+        runtimeBinDir: binaryPaths.binDir,
+        hyperframesCliPath: binaryPaths.hyperframesCli,
+        hyperframesNodeBinary: process.execPath,
+        hyperframesUseElectronAsNode: electronApp.isPackaged,
+        hyperframesBrowserPath: binaryPaths.hyperframesBrowser,
       });
 
       const PORT = 0; // 使用随机端口

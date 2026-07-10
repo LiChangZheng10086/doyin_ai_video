@@ -21,6 +21,11 @@ import type {
   PipelineStepState,
   PipelineSteps,
   ScriptAsset,
+  ShortVideoShot,
+  ShotPacing,
+  ShotTransition,
+  ShotType,
+  ShortVideoVisualLayer,
   TranscriptAsset
 } from "../types.js";
 
@@ -359,11 +364,13 @@ export class JobStore {
     if (!script.cleanScript?.trim() && !script.voiceoverScript?.trim()) {
       throw new Error("clean script is missing; run AI rewrite first");
     }
-    const promptScenes = this.buildVideoPromptScenes(script);
+    const shortVideoShots = this.buildShortVideoShots(script);
+    const promptScenes = this.buildVideoPromptScenesFromShots(shortVideoShots);
     const enhanced: ScriptAsset = {
       ...script,
       videoPrompts: promptScenes.map((scene) => scene.videoPrompt),
       enhancedScenes: promptScenes,
+      shortVideoShots,
       videoEnhancedAt: new Date().toISOString()
     };
 
@@ -386,7 +393,7 @@ export class JobStore {
 
     const record = await this.requireRecord(id);
     const script = await this.storage.readJson<ScriptAsset>(record.storagePath);
-    if (!script.videoPrompts?.length && !script.enhancedScenes?.length) {
+    if (!script.shortVideoShots?.length && !script.videoPrompts?.length && !script.enhancedScenes?.length) {
       throw new Error("video prompts are missing; run generate video prompts first");
     }
 
@@ -578,7 +585,7 @@ export class JobStore {
     }
   }
 
-  private buildVideoPromptScenes(script: ScriptAsset): EnhancedScene[] {
+  private buildShortVideoShots(script: ScriptAsset): ShortVideoShot[] {
     const candidates: Array<{ caption: string; visual: string; duration?: number }> = [];
     for (const scene of script.sceneList ?? []) {
       candidates.push({
@@ -617,28 +624,148 @@ export class JobStore {
     while (unique.length < 6) {
       unique.push({
         caption: `${title} - 补充视角 ${unique.length + 1}`,
-        visual: "竖屏科技感说明卡、图标矩阵、重点词描边",
+        visual: "竖屏科技感动态图形、图标矩阵、重点词描边",
         duration: 5
       });
     }
 
-    const camera = ["slow push-in", "vertical slide", "soft zoom", "panel reveal"];
-    const motion = ["kinetic subtitles", "card stack transition", "number counter", "highlight sweep"];
-    const lighting = ["clean dark canvas", "high contrast neon accent", "soft gradient rim light"];
+    const shotTypes: ShotType[] = ["hook", "problem", "explain", "process", "contrast", "proof", "summary", "cta"];
+    const transitions: ShotTransition[] = ["flash", "push", "wipe", "zoom", "match-cut", "cut"];
+    const camera = ["slow push-in", "vertical slide", "soft zoom", "panel reveal", "parallax drift"];
+    const actions = [
+      "关键词从背景中弹出并形成主视觉",
+      "信息卡片依次翻入，建立问题和答案的关系",
+      "抽象流程线从左到右连接关键步骤",
+      "主体图形放大，旁侧浮现解释标签",
+      "对比面板左右切换，突出前后差异",
+      "总结卡片收束成一个清晰结论"
+    ];
 
     return unique.slice(0, 10).map((item, index) => ({
-      scene: index + 1,
-      originalVisual: this.cleanText(item.visual),
-      videoPrompt: [
-        `9:16 竖屏中文图文解释视频，第 ${index + 1} 幕。`,
-        `字幕/口播：${this.cleanText(item.caption).slice(0, 120)}。`,
-        `画面：${this.cleanText(item.visual).slice(0, 160)}。`,
-        "风格：深色科技画布、高对比中文动效字幕、信息图卡片、无真人无数字人。"
-      ].join(""),
-      cameraMovement: camera[index % camera.length],
-      motionEffect: motion[index % motion.length],
-      lightingStyle: lighting[index % lighting.length]
+      index: index + 1,
+      duration: this.normalizeShotDuration(item.duration, item.caption),
+      shotType: shotTypes[Math.min(index, shotTypes.length - 1)],
+      subject: this.buildShotSubject(item.caption, title, index),
+      action: actions[index % actions.length],
+      cameraMotion: camera[index % camera.length],
+      visualLayers: this.buildVisualLayers(item, index),
+      caption: this.cleanText(item.caption).slice(0, 56),
+      emphasisWords: this.extractEmphasisWords(item.caption, script.keyPoints),
+      transition: transitions[index % transitions.length],
+      pacing: this.inferPacing(index, item.caption),
+      narration: this.cleanText(item.caption).slice(0, 140)
     }));
+  }
+
+  private buildVideoPromptScenesFromShots(shots: ShortVideoShot[]): EnhancedScene[] {
+    return shots.map((shot) => ({
+      scene: shot.index,
+      originalVisual: shot.subject,
+      videoPrompt: [
+        `9:16 竖屏中文动态图形短视频，第 ${shot.index} 镜。`,
+        `主体：${shot.subject}。`,
+        `动作：${shot.action}。`,
+        `字幕：${shot.caption}。`,
+        `视觉层：${shot.visualLayers.map((layer) => `${layer.type}:${layer.content}`).join("；")}。`,
+        `节奏：${shot.pacing}，转场：${shot.transition}，无真人无数字人。`
+      ].join(""),
+      cameraMovement: shot.cameraMotion,
+      motionEffect: shot.action,
+      lightingStyle: shot.visualLayers.find((layer) => layer.type === "background")?.style
+    }));
+  }
+
+  private buildVisualLayers(
+    item: { caption: string; visual: string; duration?: number },
+    index: number
+  ): ShortVideoVisualLayer[] {
+    const visual = this.cleanText(item.visual);
+    const caption = this.cleanText(item.caption);
+    return [
+      {
+        type: "background",
+        content: index % 2 === 0 ? "深色渐变空间与缓慢移动网格" : "柔和径向光斑与纵向速度线",
+        motion: "slow parallax drift",
+        style: "dark tech canvas"
+      },
+      {
+        type: "subject",
+        content: visual || caption.slice(0, 32) || "核心概念",
+        motion: index % 2 === 0 ? "scale in with slight rotation" : "slide up and settle",
+        style: "glass card / neon outline"
+      },
+      {
+        type: "graphic",
+        content: "流程线、标签卡片、图标节点围绕主体展开",
+        motion: "draw line then pop nodes",
+        style: "compact infographic"
+      },
+      {
+        type: "caption",
+        content: caption.slice(0, 56),
+        motion: "word-by-word reveal",
+        style: "large kinetic Chinese subtitle"
+      },
+      {
+        type: "emphasis",
+        content: this.extractEmphasisWords(caption).join(" / "),
+        motion: "bounce and highlight sweep",
+        style: "accent pills"
+      },
+      {
+        type: "decoration",
+        content: "粒子、扫描线、角标进度",
+        motion: "looping ambient motion",
+        style: "subtle"
+      }
+    ];
+  }
+
+  private buildShotSubject(caption: string, fallback: string, index: number) {
+    const text = this.cleanText(caption);
+    if (!text) {
+      return fallback;
+    }
+    const subject = text.split(/[，,。:：]/).map((part) => part.trim()).find((part) => part.length >= 3);
+    return (subject || fallback || `镜头 ${index + 1}`).slice(0, 24);
+  }
+
+  private normalizeShotDuration(duration: number | undefined, caption: string) {
+    if (Number.isFinite(duration)) {
+      return Math.max(3, Math.min(8, Math.round(duration as number)));
+    }
+    return Math.max(4, Math.min(7, Math.ceil(this.cleanText(caption).length / 28) + 3));
+  }
+
+  private inferPacing(index: number, caption: string): ShotPacing {
+    if (index === 0 || this.cleanText(caption).length <= 28) {
+      return "fast";
+    }
+    if (this.cleanText(caption).length >= 72) {
+      return "slow";
+    }
+    return "medium";
+  }
+
+  private extractEmphasisWords(text: string, keyPoints: string[] = []) {
+    const source = [text, ...keyPoints].join(" ");
+    const words = source
+      .split(/[，,。！？!?；;、\s]+/)
+      .map((word) => this.cleanText(word).replace(/^["'“”‘’]+|["'“”‘’]+$/g, ""))
+      .filter((word) => word.length >= 2 && word.length <= 8);
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const word of words) {
+      if (seen.has(word)) {
+        continue;
+      }
+      seen.add(word);
+      result.push(word);
+      if (result.length >= 3) {
+        break;
+      }
+    }
+    return result.length ? result : ["重点", "节奏", "结果"];
   }
 
   private dedupePromptCandidates(items: Array<{ caption: string; visual: string; duration?: number }>) {
@@ -691,7 +818,7 @@ export class JobStore {
     const subtitle = firstText(authorName, pageInfo?.pageDescription, record.sourceUrl) || "等待内容生成";
     const hasTranscript = Boolean(transcript?.transcript?.trim() || cleaned?.transcriptText?.trim());
     const hasRewrite = Boolean(output?.cleanScript?.trim() || output?.voiceoverScript?.trim());
-    const hasVideoPrompts = Boolean(output?.videoPrompts?.length || output?.enhancedScenes?.length);
+    const hasVideoPrompts = Boolean(output?.shortVideoShots?.length || output?.videoPrompts?.length || output?.enhancedScenes?.length);
     const hasVideo = Boolean(output?.hyperframesVideo?.videoPath || record.videoOutputPath);
     const currentStep = this.getCurrentStep(record);
     const nextStep = this.getNextStep(record);

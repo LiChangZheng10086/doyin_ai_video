@@ -8,8 +8,8 @@ import { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import type { HyperframesCommandRunner } from "./hyperframes-video.js";
 import type { ScriptAsset } from "../types.js";
 
-function sampleScript(): ScriptAsset {
-  return {
+function sampleScript(options: { withShots?: boolean } = { withShots: true }): ScriptAsset {
+  const script: ScriptAsset = {
     sourceUrl: "https://example.com/video",
     topic: "AI 内容生产",
     rawText: "原始文案",
@@ -48,6 +48,121 @@ function sampleScript(): ScriptAsset {
     ],
     videoEnhancedAt: "2026-07-10T00:00:00.000Z"
   };
+  if (options.withShots !== false) {
+    script.shortVideoShots = [
+      {
+        index: 1,
+        duration: 4,
+        shotType: "hook",
+        subject: "目标先行",
+        action: "关键词从暗色背景中弹出，快速建立主题",
+        cameraMotion: "slow push-in",
+        visualLayers: [
+          { type: "background", content: "深色动态网格", motion: "slow drift", style: "dark tech canvas" },
+          { type: "subject", content: "目标卡片", motion: "scale in", style: "neon outline" },
+          { type: "graphic", content: "目标到结果的连线", motion: "draw line", style: "compact infographic" },
+          { type: "caption", content: "先明确目标", motion: "word reveal", style: "large subtitle" },
+          { type: "emphasis", content: "目标", motion: "pop", style: "accent pill" }
+        ],
+        caption: "先明确目标，再开始生成内容。",
+        emphasisWords: ["目标", "生成", "内容"],
+        transition: "flash",
+        pacing: "fast",
+        narration: "AI 内容生产要先明确目标。"
+      },
+      {
+        index: 2,
+        duration: 5,
+        shotType: "process",
+        subject: "拆解步骤",
+        action: "三张流程卡依次滑入，形成清晰路径",
+        cameraMotion: "vertical slide",
+        visualLayers: [
+          { type: "background", content: "流程线背景", motion: "parallax", style: "blue grid" },
+          { type: "subject", content: "三步方法卡", motion: "slide in", style: "glass cards" },
+          { type: "graphic", content: "目标、步骤、验证节点", motion: "pop nodes", style: "infographic" }
+        ],
+        caption: "把大任务拆成可以执行的三步。",
+        emphasisWords: ["拆解", "三步"],
+        transition: "push",
+        pacing: "medium",
+        narration: "再拆解步骤，让每一步都可验证。"
+      },
+      {
+        index: 3,
+        duration: 5,
+        shotType: "explain",
+        subject: "减少返工",
+        action: "错误路径淡出，正确路径高亮",
+        cameraMotion: "soft zoom",
+        visualLayers: [
+          { type: "background", content: "对比面板背景", motion: "slow shift", style: "contrast canvas" },
+          { type: "subject", content: "返工次数下降", motion: "count down", style: "metric card" },
+          { type: "graphic", content: "红色叉号转为绿色勾选", motion: "morph", style: "status graphic" }
+        ],
+        caption: "流程化能明显减少返工。",
+        emphasisWords: ["流程化", "返工"],
+        transition: "wipe",
+        pacing: "medium",
+        narration: "流程化的核心价值，是减少返工和不确定性。"
+      },
+      {
+        index: 4,
+        duration: 5,
+        shotType: "contrast",
+        subject: "降低不确定性",
+        action: "左右对比栏切换，突出稳定输出",
+        cameraMotion: "panel reveal",
+        visualLayers: [
+          { type: "background", content: "双栏对比空间", motion: "subtle pan", style: "split screen" },
+          { type: "subject", content: "混乱输入 vs 稳定输出", motion: "swap panels", style: "comparison cards" },
+          { type: "graphic", content: "噪声点变成直线", motion: "align", style: "minimal chart" }
+        ],
+        caption: "把不确定输入变成稳定输出。",
+        emphasisWords: ["稳定", "输出"],
+        transition: "match-cut",
+        pacing: "fast",
+        narration: "当路径清楚，输出质量就更稳定。"
+      },
+      {
+        index: 5,
+        duration: 5,
+        shotType: "proof",
+        subject: "验证结果",
+        action: "检查清单逐项点亮，最后形成通过状态",
+        cameraMotion: "parallax drift",
+        visualLayers: [
+          { type: "background", content: "检查清单底纹", motion: "ambient", style: "clean dark canvas" },
+          { type: "subject", content: "验证 checklist", motion: "check marks", style: "task list" },
+          { type: "graphic", content: "质量阈值和通过标记", motion: "grow bars", style: "data card" }
+        ],
+        caption: "最后用验证结果判断是否达标。",
+        emphasisWords: ["验证", "达标"],
+        transition: "zoom",
+        pacing: "medium",
+        narration: "最后验证结果，确认内容是否真正达标。"
+      },
+      {
+        index: 6,
+        duration: 4,
+        shotType: "summary",
+        subject: "形成闭环",
+        action: "目标、步骤、验证三个节点汇聚成闭环",
+        cameraMotion: "soft zoom",
+        visualLayers: [
+          { type: "background", content: "环形路径背景", motion: "rotate slowly", style: "loop graphic" },
+          { type: "subject", content: "内容生产闭环", motion: "merge", style: "summary card" },
+          { type: "graphic", content: "三节点闭环", motion: "draw circle", style: "simple diagram" }
+        ],
+        caption: "目标、步骤、验证，形成内容生产闭环。",
+        emphasisWords: ["目标", "步骤", "验证"],
+        transition: "cut",
+        pacing: "slow",
+        narration: "目标、步骤、验证，构成一个完整闭环。"
+      }
+    ];
+  }
+  return script;
 }
 
 test("HyperframesVideoGenerator reports a clear dependency error when doctor cannot run", async () => {
@@ -105,12 +220,24 @@ test("HyperframesVideoGenerator builds a vertical explainer project and renders 
   assert.match(indexHtml, /data-width="1080"/);
   assert.match(indexHtml, /data-height="1920"/);
   assert.match(indexHtml, /window\.__timelines\["main"\]/);
+  assert.match(indexHtml, /class="subject-card"/);
+  assert.match(indexHtml, /class="graphic-layer"/);
+  assert.match(indexHtml, /class="caption"/);
+  assert.match(indexHtml, /class="emphasis"/);
+  assert.match(indexHtml, /class="transition-mask"/);
+  assert.doesNotMatch(indexHtml, /<ul class="bullets"/);
+  assert.doesNotMatch(indexHtml, /class="kicker"/);
 
   const sourceJson = JSON.parse(await readFile(path.join(result.projectPath, "video-source.json"), "utf8")) as {
-    scenes: unknown[];
+    source: { shortVideoShots?: unknown[] };
+    scenes: Array<{ subject?: string; caption?: string; visualLayers?: unknown[] }>;
   };
+  assert.equal(sourceJson.source.shortVideoShots?.length, 6);
   assert.ok(sourceJson.scenes.length >= 6);
   assert.ok(sourceJson.scenes.length <= 10);
+  assert.equal(sourceJson.scenes[0]?.subject, "目标先行");
+  assert.equal(sourceJson.scenes[0]?.caption, "先明确目标，再开始生成内容。");
+  assert.ok((sourceJson.scenes[0]?.visualLayers?.length ?? 0) >= 4);
 
   const invoked = calls.map((call) => call.args.join(" "));
   assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 doctor --json")));
@@ -119,6 +246,76 @@ test("HyperframesVideoGenerator builds a vertical explainer project and renders 
   assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 validate")));
   assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 inspect")));
   assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 render")));
+});
+
+test("HyperframesVideoGenerator falls back to legacy prompt fields when shots are missing", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "hyperframes-legacy-"));
+  const runner: HyperframesCommandRunner = {
+    async run(_command, args, options) {
+      if (args.includes("doctor")) {
+        return { stdout: JSON.stringify({ ok: true }), stderr: "" };
+      }
+      if (args.includes("render")) {
+        const fullPath = path.resolve(options?.cwd ?? storageRoot, "renders/video.mp4");
+        await mkdir(path.dirname(fullPath), { recursive: true });
+        await writeFile(fullPath, Buffer.alloc(2048));
+      }
+      return { stdout: "", stderr: "" };
+    }
+  };
+
+  const generator = new HyperframesVideoGenerator({ storageRoot, commandRunner: runner });
+  const result = await generator.generate(sampleScript({ withShots: false }), "job-legacy");
+  const sourceJson = JSON.parse(await readFile(path.join(result.projectPath, "video-source.json"), "utf8")) as {
+    source: { shortVideoShots?: unknown[] };
+    scenes: Array<{ subject?: string; caption?: string; visualLayers?: unknown[] }>;
+  };
+
+  assert.equal(sourceJson.source.shortVideoShots, undefined);
+  assert.ok(sourceJson.scenes.length >= 6);
+  assert.ok(sourceJson.scenes.every((scene) => scene.subject && scene.caption));
+  assert.ok(sourceJson.scenes.every((scene) => (scene.visualLayers?.length ?? 0) >= 3));
+});
+
+test("HyperframesVideoGenerator uses packaged CLI and runtime assets when configured", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "hyperframes-packaged-"));
+  const cliPath = path.join(storageRoot, "resources", "hyperframes", "node_modules", "hyperframes", "dist", "cli.js");
+  const nodeBinary = path.join(storageRoot, "Douyin AI Video");
+  const runtimeBinDir = path.join(storageRoot, "resources", "bin");
+  const browserPath = path.join(storageRoot, "resources", "browser", "chrome-headless-shell");
+  const calls: Array<{ command: string; args: string[]; env?: NodeJS.ProcessEnv; cwd?: string }> = [];
+  const runner: HyperframesCommandRunner = {
+    async run(command, args, options) {
+      calls.push({ command, args, env: options?.env, cwd: options?.cwd });
+      if (args.includes("doctor")) {
+        return { stdout: JSON.stringify({ ok: true }), stderr: "" };
+      }
+      if (args.includes("render")) {
+        const fullPath = path.resolve(options?.cwd ?? storageRoot, "renders/video.mp4");
+        await mkdir(path.dirname(fullPath), { recursive: true });
+        await writeFile(fullPath, Buffer.alloc(2048));
+      }
+      return { stdout: "", stderr: "" };
+    }
+  };
+
+  const generator = new HyperframesVideoGenerator({
+    storageRoot,
+    commandRunner: runner,
+    cliPath,
+    nodeBinary,
+    runtimeBinDir,
+    browserPath,
+    useElectronAsNode: true
+  });
+  const result = await generator.generate(sampleScript(), "job-packaged");
+
+  assert.equal(result.provider, "hyperframes");
+  assert.equal(calls[0]?.command, nodeBinary);
+  assert.equal(calls[0]?.args[0], cliPath);
+  assert.equal(calls[0]?.env?.ELECTRON_RUN_AS_NODE, "1");
+  assert.equal(calls[0]?.env?.PRODUCER_HEADLESS_SHELL_PATH, browserPath);
+  assert.ok(calls[0]?.env?.PATH?.startsWith(runtimeBinDir));
 });
 
 test("HyperframesVideoGenerator allows optional TTS and BGM doctor failures", async () => {

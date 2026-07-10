@@ -129,9 +129,9 @@
 - Node.js >= 18.0.0
 - npm >= 9.0.0
 - macOS 或 Windows
-- yt-dlp、ffmpeg（视频下载和音频提取需要）
-- 打包前需要运行 `npm run prepare:whisper` 准备内置 Whisper 资源；构建机需要 `cmake`、C/C++ 编译工具链和 `tar`
-- 生成视频步骤额外需要 Node.js >= 22 和可运行的 `npx --yes hyperframes@0.7.48 doctor`
+- 开发模式需要本机可用的 yt-dlp、ffmpeg 和 npx HyperFrames
+- 打包命令会自动准备完整运行资源；构建机需要联网、`tar`、`unzip` 和基础命令行工具
+- 安装包会内置 yt-dlp、ffmpeg、ffprobe、whisper.cpp、ggml-small、HyperFrames CLI 和 Chrome headless shell
 
 ### 安装依赖
 
@@ -158,23 +158,24 @@ npm run dev:electron
 ### 生产构建
 
 ```bash
-# 构建前端
-npm run build:renderer
+# 打 macOS Apple Silicon DMG/ZIP
+npm run package:mac
 
-# 构建 Electron 主进程
-npm run build:electron
+# 打 Windows 11 x64 NSIS 安装器
+npm run package:win
 
-# 构建后端
-npm run build:backend
-
-# 准备内置 Whisper（下载 ggml-small 并构建/复制 whisper-cli）
-npm run prepare:whisper
-
-# 打包应用（会先检查 Whisper 资源是否存在）
-npm run package        # 当前平台
-npm run package:mac    # macOS
-npm run package:win    # Windows
+# 连续打 macOS + Windows
+npm run package:all
 ```
+
+打包脚本会按目标平台准备 `vendor/package-assets`，并把运行所需资源复制到安装包：
+
+- `bin/`：yt-dlp、ffmpeg、ffprobe
+- `whisper/`：whisper-cli、ggml-small 模型和 Windows DLL
+- `hyperframes/`：HyperFrames CLI 及其 Node 依赖
+- `browser/`：Chrome headless shell
+
+当前 `package:mac` 生成 macOS arm64 包；`package:win` 生成 Win11 x64 包。安装后的应用不要求用户再安装 Python、FunASR、Whisper、ffmpeg、yt-dlp、Node.js 或 HyperFrames。抖音下载和 AI 洗稿仍然需要网络，AI 洗稿/PPT 内容生成仍需要有效的 AI API Key。
 
 ## 配置说明
 
@@ -201,7 +202,7 @@ npm run package:win    # Windows
 - 音频：ffmpeg 提取 `pcm_s16le`、16kHz、单声道 WAV
 - 运行方式：本机转录，不需要 ASR API Key、Python、FunASR 或 faster-whisper
 
-打包前运行：
+开发模式或单独准备 Whisper 时运行：
 
 ```bash
 npm run prepare:whisper
@@ -220,7 +221,7 @@ vendor/whisper/
 
 ### 3. 外部依赖
 
-系统会自动使用以下工具（需提前安装）：
+开发模式会使用以下系统工具；正式安装包已经内置同类资源：
 
 - **yt-dlp** - 视频下载
   ```bash
@@ -232,12 +233,12 @@ vendor/whisper/
   brew install ffmpeg  # macOS
   ```
 
-- **HyperFrames** - 本地 HTML 动画渲染为 MP4（生成视频步骤需要）
+- **HyperFrames** - 本地 HTML 动画渲染为 MP4（开发模式生成视频步骤需要）
   ```bash
   npx --yes hyperframes@0.7.48 doctor
   ```
 
-HyperFrames 是本地 HTML/CSS/GSAP 到视频的渲染链路，不是 Sora、Remotion 自动成片或 HeyGen 云端视频生成 API。后端固定通过 `npx --yes hyperframes@0.7.48` 调用 CLI，避免生成项目内的包名影响裸 `npx hyperframes` 解析。当前 v1 生成无真人、无数字人的图文解释视频；`voiceoverScript` 用作字幕和画面节奏，暂不自动生成 TTS 配音。
+HyperFrames 是本地 HTML/CSS/GSAP 到视频的渲染链路，不是 Sora、Remotion 自动成片或 HeyGen 云端视频生成 API。开发环境默认通过 `npx --yes hyperframes@0.7.48` 调用 CLI；打包后优先使用安装包内置的 HyperFrames CLI 和 Chrome headless shell。当前 v1 生成无真人、无数字人的图文解释视频；`voiceoverScript` 用作字幕和画面节奏，暂不自动生成 TTS 配音。
 
 ## 📖 使用指南
 
@@ -312,7 +313,7 @@ HyperFrames 是本地 HTML/CSS/GSAP 到视频的渲染链路，不是 Sora、Rem
 ## 🔧 故障排查
 
 ### 视频下载失败
-- 确认已安装 yt-dlp
+- 开发模式确认已安装 yt-dlp；安装包确认 `resources/bin/yt-dlp` 或 `resources/bin/yt-dlp.exe` 存在
 - 检查网络连接
 - 验证抖音链接格式
 
@@ -324,9 +325,9 @@ HyperFrames 是本地 HTML/CSS/GSAP 到视频的渲染链路，不是 Sora、Rem
 - 查看任务详情页 ASR 步骤的错误信息
 
 ### 视频生成失败
-- 确认当前 Node.js 版本 >= 22：`node -v`
-- 确认 FFmpeg 可用：`ffmpeg -version`
-- 确认 HyperFrames 环境可用：`npx --yes hyperframes@0.7.48 doctor`
+- 开发模式确认当前 Node.js 版本 >= 22：`node -v`
+- 开发模式确认 FFmpeg 和 HyperFrames 可用：`ffmpeg -version`、`npx --yes hyperframes@0.7.48 doctor`
+- 安装包确认 `resources/hyperframes/node_modules/hyperframes/dist/cli.js` 和 `resources/browser/.../chrome-headless-shell` 存在
 - 如果在生成项目目录内手动排查，优先使用项目脚本 `npm run check` / `npm run render`，或使用固定包版本的 `npx --yes hyperframes@0.7.48 ...`
 - 新版本会在任务错误详情里展示失败命令、stdout 和 stderr；若只看到 `Command failed with exit code 1`，请先更新到最新代码后重试
 - 查看任务详情页“生成视频”步骤的错误信息

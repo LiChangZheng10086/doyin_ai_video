@@ -108,12 +108,14 @@ class ApiClient {
   }
 
   // 获取生成的视频提示词
-  async getJobVideoPrompts(id: string): Promise<Pick<ApiResponse, 'videoPrompts' | 'enhancedScenes'>> {
+  async getJobVideoPrompts(id: string): Promise<Pick<ApiResponse, 'shortVideoShots' | 'videoPrompts' | 'enhancedScenes' | 'videoOutline'>> {
     const client = await this.getClient();
     const response = await client.get<ApiResponse>(`/api/jobs/${id}/video-prompts`);
     return {
+      shortVideoShots: response.data.shortVideoShots,
       videoPrompts: response.data.videoPrompts,
       enhancedScenes: response.data.enhancedScenes,
+      videoOutline: response.data.videoOutline,
     };
   }
 

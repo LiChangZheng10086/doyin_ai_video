@@ -8,6 +8,7 @@ import type { AsrService } from "./asr.js";
 import { JobStore } from "./jobs.js";
 import type { MediaService } from "./media.js";
 import { LocalStorage } from "./storage.js";
+import type { ScriptAsset } from "../types.js";
 
 test("JobStore re-extracts old mp3 audio before bundled Whisper transcription", async () => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-old-mp3-"));
@@ -85,4 +86,60 @@ test("JobStore re-extracts old mp3 audio before bundled Whisper transcription", 
   assert.equal(transcribedAudioPath, wavPath);
   assert.equal(result.audioPath, wavPath);
   assert.equal(result.steps?.transcribe.status, "succeeded");
+});
+
+test("JobStore generates shot-based video prompts while preserving legacy prompt fields", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-shot-prompts-"));
+  const storage = new LocalStorage(storageRoot);
+  const cleaner: ScriptCleaner = {
+    async clean(input) {
+      return input.draft;
+    }
+  };
+  const media = {} as MediaService;
+  const asr = {} as AsrService;
+  const jobs = new JobStore(storage, cleaner, media, asr);
+  await jobs.init();
+  await storage.writeJson("cache/jobs-index.json", {
+    shots: {
+      id: "shots",
+      sourceUrl: "https://example.com/video",
+      topic: "AI 内容生产",
+      status: "queued",
+      stage: "cleaned",
+      workflowMode: "manual",
+      steps: {
+        transcribe: { status: "succeeded", attempts: 1 },
+        clean: { status: "succeeded", attempts: 1 },
+        generate_video_prompts: { status: "pending", attempts: 0 },
+        generate_video: { status: "pending", attempts: 0 }
+      },
+      storagePath: path.join("processed", "scripts", "shots.json"),
+      createdAt: "2026-07-10T00:00:00.000Z",
+      updatedAt: "2026-07-10T00:00:00.000Z"
+    }
+  });
+  await storage.writeJson("processed/scripts/shots.json", {
+    sourceUrl: "https://example.com/video",
+    topic: "AI 内容生产",
+    coverTitle: "AI 内容生产三步法",
+    summary: "先明确目标，再拆解步骤，最后验证结果。",
+    cleanScript: "AI 内容生产要先明确目标，再拆解步骤，最后验证结果。",
+    voiceoverScript: "先明确目标，再拆解步骤，最后验证结果。",
+    keyPoints: ["明确目标", "拆解步骤", "验证结果"],
+    videoOutline: [
+      { title: "为什么要流程化", bullets: ["减少返工", "降低不确定性"], visualPrompt: "流程对比信息图" }
+    ],
+    status: "ready"
+  } satisfies ScriptAsset);
+
+  const result = await jobs.runStep("shots", "generate_video_prompts");
+  const script = await storage.readJson<ScriptAsset>("processed/scripts/shots.json");
+
+  assert.equal(result.steps?.generate_video_prompts.status, "succeeded");
+  assert.ok((script.shortVideoShots?.length ?? 0) >= 6);
+  assert.ok(script.shortVideoShots?.every((shot) => shot.subject && shot.action && shot.caption));
+  assert.ok(script.shortVideoShots?.every((shot) => shot.visualLayers.length >= 4));
+  assert.ok((script.videoPrompts?.length ?? 0) >= 6);
+  assert.ok((script.enhancedScenes?.length ?? 0) >= 6);
 });
