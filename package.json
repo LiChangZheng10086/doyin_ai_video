@@ -17,6 +17,7 @@
     "package:mac": "npm run build && electron-builder --mac",
     "package:win": "npm run build && electron-builder --win",
     "start": "node dist/server.js",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

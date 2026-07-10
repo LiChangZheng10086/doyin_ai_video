@@ -160,7 +160,7 @@ export function JobListPage() {
           </p>
           <h2 className="text-2xl font-semibold text-tech-text">最近作品</h2>
           <p className="mt-1 text-sm text-tech-muted">
-            从视频链接开始，管理转录、洗稿和 PPT 产出
+            从视频链接开始，管理转录、洗稿、提示词和视频产出
           </p>
         </div>
         <button
@@ -399,7 +399,8 @@ function JobOverviewCard({
         <div className="mb-4 flex flex-wrap gap-2">
           <AssetPill ready={job.preview.hasTranscript} label="Transcript" />
           <AssetPill ready={job.preview.hasRewrite} label="Rewrite" />
-          <AssetPill ready={job.preview.hasPpt} label="PPT" />
+          <AssetPill ready={job.preview.hasVideoPrompts} label="Prompts" />
+          <AssetPill ready={job.preview.hasVideo} label="Video" />
         </div>
         <div className="flex items-center justify-between gap-3 border-t border-tech-border pt-3">
           <span className="inline-flex items-center gap-2 text-sm font-medium text-tech-text">
@@ -476,7 +477,7 @@ function EmptyCreatorState({ onCreate }: { onCreate: () => void }) {
       </div>
       <h3 className="text-xl font-semibold text-tech-text">还没有作品</h3>
       <p className="mx-auto mt-2 max-w-md text-tech-muted">
-        粘贴抖音链接或分享文本，生成转录、洗稿内容和 PPT 资产。
+        粘贴抖音链接或分享文本，生成转录、洗稿内容、视频提示词和本地成片。
       </p>
       <button
         onClick={onCreate}

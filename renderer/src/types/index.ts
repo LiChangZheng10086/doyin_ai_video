@@ -14,8 +14,8 @@ export type JobStage =
   | 'cleaning'
   | 'cleaned'
   | 'generating-video-prompts'
-  | 'generating-ppt'
   | 'scripted'
+  | 'generating-video'
   | 'rendered'
   | 'failed'
   | 'done'
@@ -24,11 +24,10 @@ export type JobStage =
 export type WorkflowMode = 'manual' | 'auto';
 
 export type PipelineStep =
-  | 'download'
-  | 'extract_audio'
   | 'transcribe'
   | 'clean'
-  | 'generate_ppt';
+  | 'generate_video_prompts'
+  | 'generate_video';
 
 export type PipelineStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 
@@ -51,7 +50,8 @@ export interface JobPreview {
   coverTitle?: string;
   hasTranscript: boolean;
   hasRewrite: boolean;
-  hasPpt: boolean;
+  hasVideoPrompts: boolean;
+  hasVideo: boolean;
   currentStep?: PipelineStep;
   nextStep?: PipelineStep;
   nextActionLabel: string;
@@ -89,6 +89,40 @@ export interface Job {
   storagePath?: string;
   videoPath?: string;
   audioPath?: string;
+  videoProjectPath?: string;
+  videoOutputPath?: string;
+  videoGeneratedAt?: string;
+}
+
+export interface HyperframesVideoScene {
+  index: number;
+  title: string;
+  bullets: string[];
+  narration: string;
+  duration: number;
+  accent: string;
+}
+
+export interface HyperframesVideoOutput {
+  provider: 'hyperframes';
+  projectPath: string;
+  videoPath: string;
+  manifestPath: string;
+  createdAt: string;
+  duration: number;
+  aspectRatio: '9:16';
+  width: 1080;
+  height: 1920;
+  scenes: HyperframesVideoScene[];
+}
+
+export interface VideoPromptScene {
+  scene: number;
+  originalVisual: string;
+  videoPrompt: string;
+  cameraMovement?: string;
+  motionEffect?: string;
+  lightingStyle?: string;
 }
 
 export interface TranscriptSegment {
@@ -122,60 +156,32 @@ export interface CleanedScript {
     cleanScript?: string;
     summary?: string;
     keyPoints?: string[];
-    content?: string;
     tags?: string[];
-    videoPrompts?: any[];
-    pptContent?: any;
-    pptOutline?: Array<{
+    videoOutline?: Array<{
       title: string;
       bullets: string[];
+      visualPrompt?: string;
     }>;
+    videoPrompts?: string[];
+    enhancedScenes?: VideoPromptScene[];
     qualityNotes?: string[];
-    enhancedScenes?: any[];
-    sceneList?: any[];
     voiceoverScript?: string;
-    hashtags?: string[];
-    introText?: string;
     coverTitle?: string;
+    hyperframesVideo?: HyperframesVideoOutput;
   };
   parsed?: any;
   pageInfo?: any;
-}
-
-// 脚本资产
-export interface ScriptAsset {
-  id: string;
-  topic: string;
-  script: string;
-  scenes?: Array<{
-    index: number;
-    text: string;
-    description?: string;
-  }>;
-  videoPrompts?: Array<{
-    sceneIndex: number;
-    prompt: string;
-    style?: string;
-  }>;
-  enhancedScenes?: Array<{
-    index: number;
-    originalText: string;
-    enhancedPrompt: string;
-  }>;
-  pptContent?: any;
-  pptStyle?: string;
-  pptPath?: string;
 }
 
 // API 响应
 export interface ApiResponse<T = any> {
   message?: string;
   job?: Job;
-  script?: ScriptAsset;
   cleaned?: CleanedScript;
   rawTranscript?: RawTranscript;
-  videoPrompts?: any;
-  pptContent?: any;
+  videoPrompts?: string[];
+  enhancedScenes?: VideoPromptScene[];
+  videoOutput?: HyperframesVideoOutput;
   error?: string;
   jobs?: Job[];
 }

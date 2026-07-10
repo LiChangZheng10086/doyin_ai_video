@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import type { Job, ApiResponse, ScriptAsset, CleanedScript, RawTranscript, PipelineStep, JobOverview } from '../types';
+import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput } from '../types';
 
 class ApiClient {
   private client: AxiosInstance | null = null;
@@ -57,11 +57,10 @@ class ApiClient {
   async runJobStep(id: string, step: PipelineStep): Promise<Job> {
     const client = await this.getClient();
     const routeMap: Record<PipelineStep, string> = {
-      download: 'download',
-      extract_audio: 'extract-audio',
       transcribe: 'transcribe',
       clean: 'clean',
-      generate_ppt: 'generate-ppt',
+      generate_video_prompts: 'generate-video-prompts',
+      generate_video: 'generate-video',
     };
     const response = await client.post<ApiResponse>(`/api/jobs/${id}/steps/${routeMap[step]}`);
     return response.data.job!;
@@ -94,13 +93,6 @@ class ApiClient {
     await client.delete<ApiResponse>(`/api/jobs/${id}/permanent`);
   }
 
-  // 获取任务脚本
-  async getJobScript(id: string): Promise<ScriptAsset> {
-    const client = await this.getClient();
-    const response = await client.get<ApiResponse>(`/api/jobs/${id}/script`);
-    return response.data.script!;
-  }
-
   // 获取清洗后的内容
   async getJobCleaned(id: string): Promise<CleanedScript> {
     const client = await this.getClient();
@@ -115,24 +107,27 @@ class ApiClient {
     return response.data.rawTranscript!;
   }
 
-  // 获取视频提示词
-  async getJobVideoPrompts(id: string): Promise<any> {
+  // 获取生成的视频提示词
+  async getJobVideoPrompts(id: string): Promise<Pick<ApiResponse, 'videoPrompts' | 'enhancedScenes'>> {
     const client = await this.getClient();
     const response = await client.get<ApiResponse>(`/api/jobs/${id}/video-prompts`);
-    return response.data;
+    return {
+      videoPrompts: response.data.videoPrompts,
+      enhancedScenes: response.data.enhancedScenes,
+    };
   }
 
-  // 获取 PPT 内容
-  async getJobPPTContent(id: string): Promise<any> {
+  // 获取生成视频信息
+  async getJobVideoOutput(id: string): Promise<HyperframesVideoOutput> {
     const client = await this.getClient();
-    const response = await client.get<ApiResponse>(`/api/jobs/${id}/ppt-content`);
-    return response.data;
+    const response = await client.get<ApiResponse>(`/api/jobs/${id}/video-output`);
+    return response.data.videoOutput!;
   }
 
-  // 下载 PPT
-  async downloadPPT(id: string): Promise<string> {
+  // 下载生成的视频
+  async downloadVideo(id: string): Promise<string> {
     const serverPort = this.serverPort || await window.electron.getServerPort();
-    return `http://localhost:${serverPort}/api/jobs/${id}/ppt/download`;
+    return `http://localhost:${serverPort}/api/jobs/${id}/video/download`;
   }
 
   // 健康检查

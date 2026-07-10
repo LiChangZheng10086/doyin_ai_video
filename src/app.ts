@@ -6,7 +6,7 @@ import { OpenAiScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
 import { JobStepError, JobStore } from "./lib/jobs.js";
-import { createPPTGenerator } from "./lib/ppt-generator.js";
+import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import type { PipelineStep, ScriptAsset } from "./types.js";
 
 export interface ServerConfig {
@@ -29,6 +29,7 @@ export interface ServerConfig {
   whisperModelSize?: string;
   whisperDevice?: string;
   whisperComputeType?: string;
+  hyperframesNpxBinary?: string;
 }
 
 function isMissingFileError(error: unknown) {
@@ -72,15 +73,12 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     whisperComputeType: config.whisperComputeType
   });
 
-  const pptGenerator = createPPTGenerator({
-    apiKey: aiApiKey,
-    model: aiModel,
-    baseURL: aiBaseURL,
-    provider: aiProvider === "deepseek" ? "deepseek" : "openai",
-    storageRoot: config.storagePath
+  const videoGenerator = new HyperframesVideoGenerator({
+    storageRoot: config.storagePath,
+    npxBinary: config.hyperframesNpxBinary
   });
 
-  const jobs = new JobStore(storage, cleaner, media, asr, pptGenerator);
+  const jobs = new JobStore(storage, cleaner, media, asr, videoGenerator);
   await jobs.init();
 
   const app = express();
@@ -101,9 +99,10 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   // 静态文件（开发环境可能不需要）
   const publicDir = path.join(config.rootDir, "public");
-  if (existsSync(publicDir)) {
+  const publicIndex = path.join(publicDir, "index.html");
+  if (existsSync(publicIndex)) {
     app.get("/", (_req, res) => {
-      res.sendFile(path.join(publicDir, "index.html"));
+      res.sendFile(publicIndex);
     });
   }
 
@@ -231,16 +230,6 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
   };
 
-  app.post("/api/jobs/:id/steps/download", async (req, res) => {
-    const result = await runStepRoute(req.params.id, "download");
-    res.status(result.status).json(result.body);
-  });
-
-  app.post("/api/jobs/:id/steps/extract-audio", async (req, res) => {
-    const result = await runStepRoute(req.params.id, "extract_audio");
-    res.status(result.status).json(result.body);
-  });
-
   app.post("/api/jobs/:id/steps/transcribe", async (req, res) => {
     const result = await runStepRoute(req.params.id, "transcribe");
     res.status(result.status).json(result.body);
@@ -251,8 +240,13 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     res.status(result.status).json(result.body);
   });
 
-  app.post("/api/jobs/:id/steps/generate-ppt", async (req, res) => {
-    const result = await runStepRoute(req.params.id, "generate_ppt");
+  app.post("/api/jobs/:id/steps/generate-video-prompts", async (req, res) => {
+    const result = await runStepRoute(req.params.id, "generate_video_prompts");
+    res.status(result.status).json(result.body);
+  });
+
+  app.post("/api/jobs/:id/steps/generate-video", async (req, res) => {
+    const result = await runStepRoute(req.params.id, "generate_video");
     res.status(result.status).json(result.body);
   });
 
@@ -371,38 +365,14 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
     try {
       const script = await storage.readJson<ScriptAsset>(path.join("processed", "scripts", `${record.id}.json`));
-      if (!script.videoPrompts) {
+      if (!script.videoPrompts?.length && !script.enhancedScenes?.length) {
         res.status(404).json({ message: "video prompts not generated yet" });
         return;
       }
-      res.json({ videoPrompts: script.videoPrompts, enhancedScenes: script.enhancedScenes });
-    } catch (error) {
-      if (isMissingFileError(error)) {
-        res.status(404).json({ message: "script not found" });
-        return;
-      }
-      throw error;
-    }
-  });
-
-  // 🎯 PPT 内容接口
-  app.get("/api/jobs/:id/ppt-content", async (req, res) => {
-    const record = await jobs.get(req.params.id);
-    if (!record) {
-      res.status(404).json({ message: "job not found" });
-      return;
-    }
-
-    try {
-      const script = await storage.readJson<ScriptAsset>(path.join("processed", "scripts", `${record.id}.json`));
-      if (!script.pptContent) {
-        res.status(404).json({ message: "PPT not generated yet" });
-        return;
-      }
       res.json({
-        pptContent: script.pptContent,
-        pptStyle: script.pptStyle,
-        pptPath: script.pptPath
+        videoPrompts: script.videoPrompts,
+        enhancedScenes: script.enhancedScenes,
+        videoOutline: script.videoOutline
       });
     } catch (error) {
       if (isMissingFileError(error)) {
@@ -413,8 +383,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
   });
 
-  // 🎯 下载 PPT 文件
-  app.get("/api/jobs/:id/ppt/download", async (req, res) => {
+  app.get("/api/jobs/:id/video-output", async (req, res) => {
     const record = await jobs.get(req.params.id);
     if (!record) {
       res.status(404).json({ message: "job not found" });
@@ -423,18 +392,52 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
     try {
       const script = await storage.readJson<ScriptAsset>(path.join("processed", "scripts", `${record.id}.json`));
-      if (!script.pptPath) {
-        res.status(404).json({ message: "PPT file not generated yet" });
+      const videoOutput = script.hyperframesVideo ?? (
+        record.videoOutputPath
+          ? {
+              provider: "hyperframes",
+              projectPath: record.videoProjectPath,
+              videoPath: record.videoOutputPath,
+              createdAt: record.videoGeneratedAt
+            }
+          : null
+      );
+      if (!videoOutput) {
+        res.status(404).json({ message: "video output not generated yet" });
+        return;
+      }
+      res.json({ videoOutput });
+    } catch (error) {
+      if (isMissingFileError(error)) {
+        res.status(404).json({ message: "script not found" });
+        return;
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/jobs/:id/video/download", async (req, res) => {
+    const record = await jobs.get(req.params.id);
+    if (!record) {
+      res.status(404).json({ message: "job not found" });
+      return;
+    }
+
+    try {
+      const script = await storage.readJson<ScriptAsset>(path.join("processed", "scripts", `${record.id}.json`));
+      const videoPath = script.hyperframesVideo?.videoPath ?? record.videoOutputPath;
+      if (!videoPath) {
+        res.status(404).json({ message: "video file not generated yet" });
         return;
       }
 
-      const pptFullPath = resolveOutputPath(config.storagePath, script.pptPath);
-      if (!existsSync(pptFullPath)) {
-        res.status(404).json({ message: "PPT file not found on disk" });
+      const videoFullPath = resolveOutputPath(config.storagePath, videoPath);
+      if (!existsSync(videoFullPath)) {
+        res.status(404).json({ message: "video file not found on disk" });
         return;
       }
 
-      res.download(pptFullPath, `${record.topic}-${record.id.slice(0, 8)}.pptx`);
+      res.download(videoFullPath, `${record.topic}-${record.id.slice(0, 8)}.mp4`);
     } catch (error) {
       if (isMissingFileError(error)) {
         res.status(404).json({ message: "script not found" });

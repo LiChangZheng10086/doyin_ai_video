@@ -16,14 +16,13 @@ const statusConfig = {
 };
 
 const manualStepLabels: Record<PipelineStep, string> = {
-  download: '下载视频',
-  extract_audio: '提取音频',
-  transcribe: 'ASR 转文案',
+  transcribe: '视频转录',
   clean: 'AI 洗稿',
-  generate_ppt: '生成 PPT',
+  generate_video_prompts: '生成视频提示词',
+  generate_video: '生成视频',
 };
 
-const manualStepOrder: PipelineStep[] = ['download', 'extract_audio', 'transcribe', 'clean', 'generate_ppt'];
+const manualStepOrder: PipelineStep[] = ['transcribe', 'clean', 'generate_video_prompts', 'generate_video'];
 
 // 阶段显示配置
 const stageConfig: Record<string, string> = {
@@ -37,9 +36,9 @@ const stageConfig: Record<string, string> = {
   transcribed: '已转录',
   cleaning: '清洗中',
   cleaned: '已清洗',
-  'generating-video-prompts': '生成输出',
-  'generating-ppt': '生成 PPT',
+  'generating-video-prompts': '生成视频提示词',
   scripted: '脚本完成',
+  'generating-video': '生成视频',
   rendered: '已渲染',
   failed: '失败',
   done: '完成',

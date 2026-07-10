@@ -274,7 +274,7 @@ export class AsrService {
     const stderr = error.stderr.trim();
     const missingModule = /No module named ['"]faster_whisper['"]/.test(stderr);
     const hint = missingModule
-      ? "Install faster-whisper in that Python environment, or set ASR_PYTHON_BINARY to the douyin_ppt venv python."
+      ? "Install faster-whisper in that Python environment, or set ASR_PYTHON_BINARY to the project venv python."
       : "";
     const message = [stderr || error.message, hint].filter(Boolean).join("\n").trim();
     return new Error(message || "local whisper transcription failed");

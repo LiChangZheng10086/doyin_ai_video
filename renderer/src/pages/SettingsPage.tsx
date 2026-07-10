@@ -315,7 +315,7 @@ function ModelsSection({
       <SectionHeader
         icon={KeyRound}
         title="Models / API Keys"
-        description="管理 AI 洗稿和 PPT 生成使用的模型密钥。"
+        description="管理 AI 洗稿使用的模型密钥。"
         action={
           <button
             onClick={() => setIsAdding(true)}
@@ -642,7 +642,7 @@ function StorageSection() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <StorageCard title="Raw assets" value="~/Documents/抖音AI视频/raw" />
           <StorageCard title="Processed scripts" value="~/Documents/抖音AI视频/processed" />
-          <StorageCard title="PPT output" value="~/Documents/抖音AI视频/output/ppt" />
+          <StorageCard title="Video output" value="~/Documents/抖音AI视频/output/videos" />
           <StorageCard title="Logs" value="~/Documents/抖音AI视频/logs" />
         </div>
       </div>
@@ -667,7 +667,7 @@ function AdvancedSection() {
         <InfoCard
           icon={Database}
           title="处理链路"
-          description="视频、音频、转录、洗稿和 PPT 产物按任务 ID 保存，删除后会先进入垃圾桶。"
+          description="视频、音频、转录、洗稿、提示词和成片按任务 ID 保存，删除后会先进入垃圾桶。"
         />
       </div>
     </section>

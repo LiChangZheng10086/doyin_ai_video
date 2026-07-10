@@ -1,8 +1,8 @@
 # 抖音 AI 视频助手
 
-> 基于 Electron 的桌面应用，从抖音视频链接或分享文本生成视频转录、AI 洗稿内容和 PPT
+> 基于 Electron 的桌面应用，从抖音视频链接或分享文本生成视频转录、AI 洗稿内容、视频提示词和本地竖屏视频
 
-一个面向内容复盘和二次创作的本地桌面工具。当前主链路聚焦为：下载视频、提取音频、ASR 转文案、AI 洗稿、生成 PPT。暂不做视频生成；历史视频提示词能力保留兼容，但不作为新任务的主流程入口。
+一个面向内容复盘和二次创作的本地桌面工具。当前主链路聚焦为：视频转录、AI 洗稿、生成视频提示词，并使用 HyperFrames 本地渲染 9:16 MP4。视频转录步骤内部会自动完成视频下载和音频提取。
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)
@@ -19,13 +19,12 @@
 创建任务：解析并保存输入，不自动跑完整链路
   ↓
 用户逐步确认执行：
-  1️⃣ 下载视频（yt-dlp）
-  2️⃣ 提取音频（ffmpeg）
-  3️⃣ ASR 转文案（OpenAI Whisper / 本地 Whisper / 本地 FunASR）
-  4️⃣ AI 洗稿
-  5️⃣ 生成 PPT 内容和 PPTX
+  1️⃣ 视频转录（yt-dlp + ffmpeg + ASR）
+  2️⃣ AI 洗稿
+  3️⃣ 生成视频提示词
+  4️⃣ 生成本地竖屏视频（HyperFrames）
   ↓
-输出：📝 结构化转录 + ✍️ 清洗稿 + 📊 PPT
+输出：📝 结构化转录 + ✍️ 清洗稿 + 🎬 视频提示词 + MP4
 ```
 
 每个步骤都有明确状态：`pending | running | succeeded | failed`。用户点击某一步后，后端会在该请求内自动重试最多 3 次；失败后停在当前步骤，用户可手动重试。
@@ -37,7 +36,8 @@
 - ✅ **语音转录** - 支持 OpenAI Whisper API、本地 faster-whisper、本地 FunASR
 - ✅ **本地 FunASR** - 中文推荐方案，无需第三方 ASR API Key
 - ✅ **AI 洗稿** - 基于转录优先清洗，输出标题、摘要、要点、清洗稿、口播稿和质量提示
-- ✅ **PPT 生成** - 基于清洗稿生成结构化 PPT 内容和 `.pptx`
+- ✅ **视频提示词生成** - 基于清洗稿生成 6-10 个竖屏视频画面提示词
+- ✅ **本地视频生成** - 使用 HyperFrames CLI 将清洗稿和提示词渲染为 9:16 MP4
 - ✅ **任务垃圾桶** - 删除任务后保留 30 天，可恢复或永久删除
 - ✅ **多 AI 模型** - 支持 DeepSeek、OpenAI 等多种 AI 服务
 - ✅ **桌面应用** - 基于 Electron，支持 macOS 和 Windows
@@ -53,10 +53,11 @@
 
 ### 任务详情页
 - **概览** - 任务基本信息和处理状态
-- **主链路步骤** - 下载视频、提取音频、ASR 转文案、AI 洗稿、生成 PPT
+- **主链路步骤** - 视频转录、AI 洗稿、生成视频提示词、生成视频
 - **视频转录** - 从视频音频提取的真实转录文字
 - **AI 洗稿** - 清洗后的标题、摘要、核心要点、脚本、口播稿和质量提示
-- **PPT 内容** - 生成的 PPT 预览和下载
+- **视频提示词** - 基于清洗稿生成的画面规划和场景提示词
+- **视频成片** - HyperFrames 本地渲染的 MP4、项目路径和场景列表
 
 ### 设置页面
 - **AI 密钥管理** - 管理多个 AI 服务 API Key
@@ -82,7 +83,8 @@
 │  - Zustand      │          │  - 音频提取       │
 │  - Tailwind CSS │          │  - 语音转录       │
 │  - React Router │          │  - AI 清洗        │
-│                 │          │  - PPT 生成       │
+│                 │          │  - 提示词生成      │
+│                 │          │  - 本地视频渲染    │
 └─────────────────┘          └──────────────────┘
                                       │
                       ┌───────────────┴───────────────┐
@@ -105,6 +107,7 @@
 - **视频处理**: yt-dlp, ffmpeg
 - **AI 服务**: OpenAI SDK（兼容 DeepSeek / OpenAI-compatible）
 - **ASR**: OpenAI Whisper API、本地 faster-whisper、本地 FunASR（Python 可选依赖）
+- **视频渲染**: HyperFrames CLI（可选，生成视频步骤需要 Node.js 22+ 和 FFmpeg）
 
 ### 前端
 - **框架**: React 19
@@ -125,6 +128,7 @@
 - npm >= 9.0.0
 - macOS 或 Windows
 - yt-dlp、ffmpeg（视频下载和音频提取需要）
+- 生成视频步骤额外需要 Node.js >= 22 和可运行的 `npx hyperframes doctor`
 
 ### 安装依赖
 
@@ -234,6 +238,13 @@ pip install torch torchaudio funasr
   brew install ffmpeg  # macOS
   ```
 
+- **HyperFrames** - 本地 HTML 动画渲染为 MP4（生成视频步骤需要）
+  ```bash
+  npx hyperframes doctor
+  ```
+
+HyperFrames 是本地 HTML/CSS/GSAP 到视频的渲染链路，不是 Sora、Remotion 自动成片或 HeyGen 云端视频生成 API。当前 v1 生成无真人、无数字人的图文解释视频；`voiceoverScript` 用作字幕和画面节奏，暂不自动生成 TTS 配音。
+
 ## 📖 使用指南
 
 ### 创建任务
@@ -249,11 +260,10 @@ pip install torch torchaudio funasr
 
 在任务详情页按顺序点击：
 
-1. 下载视频
-2. 提取音频
-3. ASR 转文案
-4. AI 洗稿
-5. 生成 PPT
+1. 视频转录
+2. AI 洗稿
+3. 生成视频提示词
+4. 生成视频
 
 未满足前置条件的步骤会禁用；运行中的步骤会禁止重复触发。某一步失败时，可查看错误信息并手动重试。
 
@@ -270,10 +280,10 @@ pip install torch torchaudio funasr
   - 标题
   - 摘要和核心要点
   - 清洗稿和口播稿
-  - PPT 大纲建议
   - 质量提示
 
-- **PPT 内容** - 查看生成的幻灯片结构并下载 `.pptx`
+- **视频提示词** - 查看每个场景的画面提示、镜头运动和动效建议
+- **视频成片** - 查看 HyperFrames 渲染结果、场景列表并下载 `.mp4`
 
 ### 删除与垃圾桶
 
@@ -299,7 +309,7 @@ pip install torch torchaudio funasr
 │   └── scenes/            # 场景数据
 │
 └── output/                # 最终输出
-    └── ppt/               # 生成的 PPT
+    └── videos/            # HyperFrames 项目和 MP4
 ```
 
 ## 🔧 故障排查
@@ -318,6 +328,13 @@ pip install torch torchaudio funasr
 - 查看 `raw/transcripts/` 目录是否有文件生成
 - 查看任务详情页 ASR 步骤的错误信息
 
+### 视频生成失败
+- 确认当前 Node.js 版本 >= 22：`node -v`
+- 确认 FFmpeg 可用：`ffmpeg -version`
+- 确认 HyperFrames 环境可用：`npx hyperframes doctor`
+- 查看任务详情页“生成视频”步骤的错误信息
+- 渲染成功后，MP4 位于 `output/videos/{jobId}/hyperframes/renders/video.mp4`
+
 ### 前端无法连接后端
 - Electron 内嵌后端使用随机本地端口，前端通过 `window.electron.getServerPort()` 获取
 - 开发模式下确认 `npm run dev` 正在运行
@@ -332,7 +349,8 @@ pip install torch torchaudio funasr
 - [x] 本地 FunASR 中文转录
 - [x] 本地 Whisper 转录入口
 - [x] AI 内容清洗
-- [x] 基于清洗稿生成 PPT 内容和 PPTX
+- [x] 基于清洗稿生成视频提示词
+- [x] HyperFrames 本地竖屏视频生成
 - [x] 手动分步执行和步骤级自动重试
 - [x] 任务垃圾桶和 30 天保留
 - [x] 多 AI 模型支持
@@ -341,7 +359,8 @@ pip install torch torchaudio funasr
 
 ### 进行中 🚧
 - [ ] 本地 ASR 安装体验优化
-- [ ] PPT 模板和视觉样式优化
+- [ ] 视频视觉样式优化
+- [ ] 视频 TTS 配音和 BGM 支持
 
 ### 计划中 📋
 - [ ] 批量任务导入
@@ -376,5 +395,5 @@ MIT License
 
 ---
 
-**最后更新**: 2026-07-02
+**最后更新**: 2026-07-10
 **仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git

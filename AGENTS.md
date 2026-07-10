@@ -1,6 +1,6 @@
 # 抖音 AI 视频助手
 
-基于 Electron + React 的桌面应用，用于从抖音视频链接或分享文本生成视频转录、AI 洗稿内容和 PPT。当前主链路不做视频生成，新任务也不生成复杂视频提示词；旧视频提示词接口仅保留历史兼容。
+基于 Electron + React 的桌面应用，用于从抖音视频链接或分享文本生成视频转录、AI 洗稿内容、视频提示词和本地竖屏视频。当前视频生成通过 HyperFrames CLI 本地渲染 HTML/CSS/GSAP 成 MP4。
 
 ## 项目架构
 
@@ -15,7 +15,7 @@ douyin/
 │   │   ├── storage.ts       # 文件存储
 │   │   ├── media.ts         # 视频下载、音频提取
 │   │   ├── asr.ts           # 语音识别（OpenAI / local-whisper / FunASR）
-│   │   └── ppt-generator.ts # PPT 内容和 PPTX 生成
+│   │   └── hyperframes-video.ts # HyperFrames 本地视频渲染
 │   └── types.ts             # 后端类型定义
 │
 ├── renderer/                 # 前端界面（React + Vite）
@@ -43,6 +43,7 @@ douyin/
 - `yt-dlp`：视频下载（外部二进制）
 - `ffmpeg` / `ffprobe`：音视频处理（外部二进制）
 - FunASR：本地中文 ASR（可选 Python 依赖，不通过 npm 安装）
+- HyperFrames CLI：本地竖屏 MP4 渲染（生成视频步骤需要 Node.js 22+ 和 FFmpeg）
 
 ### 前端
 - React 19、Vite、React Router DOM 7、Zustand、Tailwind CSS、Axios
@@ -60,11 +61,10 @@ douyin/
 POST /api/jobs 创建任务并解析输入
     ↓
 用户在详情页逐步确认执行：
-    1. 下载视频（yt-dlp）
-    2. 提取音频（ffmpeg）
-    3. ASR 转文案（OpenAI Whisper / 本地 Whisper / 本地 FunASR）
-    4. AI 洗稿
-    5. 生成 PPT 内容和 PPTX
+    1. 视频转录（yt-dlp + ffmpeg + ASR）
+    2. AI 洗稿
+    3. 生成视频提示词
+    4. 生成 9:16 MP4（HyperFrames）
 ```
 
 每个步骤独立执行。用户点击某一步后，后端在同一次请求内自动重试最多 3 次；失败后停在当前步骤，用户可手动重试。后一步必须等前一步成功后才能执行。
@@ -87,7 +87,7 @@ POST /api/jobs 创建任务并解析输入
 │   ├── scenes/              # 历史场景数据
 │   └── subtitles/           # 字幕文件
 ├── output/
-│   └── ppt/                 # PPTX 输出
+│   └── videos/              # HyperFrames 项目和 MP4 输出
 └── logs/
 ```
 
@@ -107,13 +107,14 @@ type JobStage =
   | "transcribed"
   | "cleaning"
   | "cleaned"
-  | "generating-ppt"
+  | "generating-video-prompts"
   | "scripted"
+  | "generating-video"
   | "rendered"
   | "failed";
 
 type WorkflowMode = "manual" | "auto";
-type PipelineStep = "download" | "extract_audio" | "transcribe" | "clean" | "generate_ppt";
+type PipelineStep = "transcribe" | "clean" | "generate_video_prompts" | "generate_video";
 type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 ```
 
@@ -129,19 +130,18 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 - `DELETE /api/jobs/:id/permanent` - 永久删除垃圾桶任务及关联文件
 
 ### 手动步骤
-- `POST /api/jobs/:id/steps/download`
-- `POST /api/jobs/:id/steps/extract-audio`
 - `POST /api/jobs/:id/steps/transcribe`
 - `POST /api/jobs/:id/steps/clean`
-- `POST /api/jobs/:id/steps/generate-ppt`
+- `POST /api/jobs/:id/steps/generate-video-prompts`
+- `POST /api/jobs/:id/steps/generate-video`
 
 ### 内容获取
 - `GET /api/jobs/:id/script` - 历史脚本资产
 - `GET /api/jobs/:id/cleaned` - AI 清洗结果
 - `GET /api/jobs/:id/raw-transcript` - 结构化原始转录
-- `GET /api/jobs/:id/video-prompts` - 历史视频提示词兼容接口
-- `GET /api/jobs/:id/ppt-content` - PPT 内容
-- `GET /api/jobs/:id/ppt/download` - 下载 PPTX
+- `GET /api/jobs/:id/video-prompts` - 视频提示词
+- `GET /api/jobs/:id/video-output` - HyperFrames 视频输出信息
+- `GET /api/jobs/:id/video/download` - 下载 MP4
 
 ## 关键数据结构
 
@@ -163,6 +163,9 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
   audioManifestPath?: string;
   transcriptPath?: string;
   transcriptModel?: string;
+  videoProjectPath?: string;
+  videoOutputPath?: string;
+  videoGeneratedAt?: string;
   storagePath: string;
   createdAt: string;
   updatedAt: string;
@@ -198,12 +201,21 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
   keyPoints?: string[];
   cleanScript?: string;
   voiceoverScript?: string;
-  pptOutline?: Array<{ title: string; bullets: string[] }>;
-  pptContent?: any;
+  videoOutline?: Array<{ title: string; bullets: string[]; visualPrompt?: string }>;
+  videoPrompts?: string[];
+  enhancedScenes?: any[];
+  hyperframesVideo?: {
+    provider: "hyperframes";
+    projectPath: string;
+    videoPath: string;
+    manifestPath: string;
+    duration: number;
+    aspectRatio: "9:16";
+    width: 1080;
+    height: 1920;
+  };
   qualityNotes?: string[];
   tags?: string[];
-  videoPrompts?: string[];    // 历史字段，兼容旧任务
-  enhancedScenes?: any[];     // 历史字段，兼容旧任务
 }
 ```
 
@@ -264,6 +276,7 @@ npm install
 npm run dev              # 启动 Vite + Electron
 npm run dev:renderer     # 单独启动前端
 npm run dev:electron     # 构建 Electron 并启动桌面端
+npm test                  # Node 内置测试（tsx）
 npm run check            # 后端类型检查
 npm run build:backend
 npm run build:renderer
@@ -284,8 +297,10 @@ npm run package
 - 转录文本通过 `/raw-transcript` 获取，响应兼容 `transcript` 字符串并扩展 `segments`。
 
 ### 视频生成
-- 初期不做视频生成、不接 Sora、不接 Remotion 自动成片。
-- `video-prompts` 旧接口可保留兼容，但前端不要恢复为主流程入口。
+- 新任务第 6 步可使用 HyperFrames 本地生成 9:16 MP4。
+- HyperFrames 生成的是本地 HTML/CSS/GSAP 动画渲染，不是 Sora、Remotion 自动成片或 HeyGen 云视频 API。
+- v1 不生成真人/数字人，不自动生成 TTS 配音；`voiceoverScript` 用作字幕和画面节奏。
+- `video-prompts` 是新主链路的正式输出，HyperFrames 生成视频必须先完成该步骤。
 
 ### 手动步骤
 - 新任务默认 `workflowMode: "manual"`。
@@ -293,16 +308,23 @@ npm run package
 - 后一步必须等待前一步 `succeeded`。
 - 运行中重复触发步骤返回 `409`。
 - 每次用户触发某一步，后端自动最多尝试 3 次。
+- 新主链路顺序固定为 transcribe → clean → generate_video_prompts → generate_video。
 
 ### 垃圾桶
 - 删除任务是软删除：设置 `deletedAt` 和 `trashExpiresAt`。
 - 垃圾桶保留 30 天，启动和查询列表时清理过期任务。
 - 永久删除会清理该 jobId 关联产物；处理中任务禁止永久删除。
+- 永久删除需要同步清理 `output/videos/{jobId}` 下的 HyperFrames 项目和 MP4。
 
 ### ASR
 - FunASR 无需第三方 ASR API Key，但首次运行可能需要下载模型。
 - 缺少 `funasr`、`torch`、`torchaudio` 时，转录步骤应失败并给出可执行安装提示。
 - OpenAI Whisper 的 `verbose_json` 若不兼容，应 fallback 到普通转录请求。
+
+### HyperFrames
+- 生成视频步骤依赖 Node.js 22+、FFmpeg、可运行的 `npx hyperframes doctor`。
+- 后端先执行 `doctor --json`，再生成项目、写入 `index.html` / `video-source.json` / `DESIGN.md`，然后执行 `lint`、`validate`、`inspect`、`render`。
+- 成功输出默认位于 `output/videos/{jobId}/hyperframes/renders/video.mp4`。
 
 ## 故障排查
 
@@ -320,6 +342,12 @@ npm run package
 3. 验证抖音链接格式。
 4. 必要时配置 cookies 或浏览器登录态。
 
+### 视频生成失败
+1. 确认 Node.js 版本 >= 22：`node -v`。
+2. 确认 FFmpeg 可用：`ffmpeg -version`。
+3. 确认 HyperFrames 环境可用：`npx hyperframes doctor`。
+4. 查看任务详情页“生成视频”步骤错误和后端日志。
+
 ### 前端无法连接后端
 1. Electron 内嵌后端使用随机本地端口，前端通过 `window.electron.getServerPort()` 获取。
 2. 开发模式下确认 `npm run dev` 正在运行。
@@ -327,6 +355,6 @@ npm run package
 
 ---
 
-**最后更新**: 2026-07-02
+**最后更新**: 2026-07-10
 **维护者**: Codex
 **仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git
