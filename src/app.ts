@@ -21,14 +21,8 @@ export interface ServerConfig {
   ffprobeBinary?: string;
   cookiesFile?: string;
   cookiesFromBrowser?: string;
-  asrApiKey?: string;
-  asrBaseURL?: string;
-  asrModel?: string;
-  asrProvider?: string;
-  asrPythonBinary?: string;
-  whisperModelSize?: string;
-  whisperDevice?: string;
-  whisperComputeType?: string;
+  whisperCliPath?: string;
+  whisperModelPath?: string;
   hyperframesNpxBinary?: string;
 }
 
@@ -63,14 +57,9 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   });
 
   const asr = new AsrService({
-    apiKey: config.asrApiKey ?? config.aiApiKey,
-    baseURL: config.asrBaseURL,
-    model: config.asrModel,
-    provider: config.asrProvider,
-    pythonBinary: config.asrPythonBinary,
-    whisperModelSize: config.whisperModelSize,
-    whisperDevice: config.whisperDevice,
-    whisperComputeType: config.whisperComputeType
+    rootDir: config.rootDir,
+    whisperCliPath: config.whisperCliPath,
+    whisperModelPath: config.whisperModelPath
   });
 
   const videoGenerator = new HyperframesVideoGenerator({

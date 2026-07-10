@@ -1,20 +1,28 @@
-import OpenAI from "openai";
-import { createReadStream } from "node:fs";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { CommandError, runCommand } from "./command.js";
 import type { TranscriptSegment, TranscriptWord } from "../types.js";
 
 export interface AsrServiceConfig {
-  apiKey?: string;
-  baseURL?: string;
-  model?: string;
-  provider?: string;
-  pythonBinary?: string;
-  whisperModelSize?: string;
-  whisperDevice?: string;
-  whisperComputeType?: string;
+  rootDir?: string;
+  whisperCliPath?: string;
+  whisperModelPath?: string;
+  commandRunner?: AsrCommandRunner;
 }
 
-type AsrProvider = "openai" | "local-whisper" | "funasr";
+export interface AsrCommandRunner {
+  run(
+    command: string,
+    args: string[],
+    options?: {
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+      captureStdout?: boolean;
+      captureStderr?: boolean;
+    }
+  ): Promise<{ stdout: string; stderr: string }>;
+}
 
 export interface TranscriptResult {
   text: string;
@@ -27,482 +35,217 @@ export interface TranscriptResult {
   raw?: unknown;
 }
 
+const PROVIDER = "whisper.cpp";
+const MODEL = "ggml-small";
+
 export class AsrService {
-  private readonly client?: OpenAI;
-  private readonly openAiModel: string;
-  private readonly provider: AsrProvider;
-  private readonly pythonBinary: string;
-  private readonly whisperModelSize: string;
-  private readonly whisperDevice: string;
-  private readonly whisperComputeType: string;
-  private readonly funasrModel: string;
-  private readonly funasrVadModel: string;
-  private readonly funasrPuncModel: string;
+  private readonly whisperCliPath: string;
+  private readonly whisperModelPath: string;
+  private readonly runner: AsrCommandRunner;
 
   constructor(config: AsrServiceConfig = {}) {
-    this.provider = normalizeProvider(config.provider, Boolean(config.apiKey));
-    this.openAiModel = firstNonBlank(config.model, process.env.ASR_MODEL) ?? "whisper-1";
-    this.pythonBinary =
-      config.pythonBinary ?? process.env.ASR_PYTHON_BINARY ?? process.env.WHISPER_PYTHON ?? "python3";
-    this.whisperModelSize =
-      firstNonBlank(config.whisperModelSize, process.env.WHISPER_MODEL_SIZE, process.env.ASR_MODEL) ?? "medium";
-    this.whisperDevice = config.whisperDevice ?? process.env.WHISPER_DEVICE ?? "cpu";
-    this.whisperComputeType = config.whisperComputeType ?? process.env.WHISPER_COMPUTE_TYPE ?? "int8";
-    const funasrModel = firstNonBlank(config.model, process.env.FUNASR_MODEL, process.env.ASR_MODEL);
-    this.funasrModel = !funasrModel || funasrModel === "whisper-1" ? "paraformer-zh" : funasrModel;
-    this.funasrVadModel = firstNonBlank(process.env.FUNASR_VAD_MODEL) ?? "fsmn-vad";
-    this.funasrPuncModel = firstNonBlank(process.env.FUNASR_PUNC_MODEL) ?? "ct-punc";
-    if (config.apiKey) {
-      this.client = new OpenAI({
-        apiKey: config.apiKey,
-        baseURL: config.baseURL
-      });
-    }
+    const whisperRoot = getWhisperRoot(config.rootDir);
+    this.whisperCliPath =
+      firstNonBlank(config.whisperCliPath, process.env.WHISPER_CLI_BINARY) ??
+      path.join(whisperRoot, process.platform === "win32" ? "whisper-cli.exe" : "whisper-cli");
+    this.whisperModelPath =
+      firstNonBlank(config.whisperModelPath, process.env.WHISPER_MODEL_PATH) ??
+      path.join(whisperRoot, "models", `${MODEL}.bin`);
+    this.runner = config.commandRunner ?? {
+      run: runCommand
+    };
   }
 
   async transcribe(audioPath: string): Promise<TranscriptResult | null> {
-    if (this.provider === "local-whisper") {
-      return this.transcribeWithLocalWhisper(audioPath);
-    }
+    await this.assertResources(audioPath);
 
-    if (this.provider === "funasr") {
-      return this.transcribeWithFunAsr(audioPath);
-    }
-
-    if (!this.client) {
-      return null;
-    }
-
-    const response = await this.transcribeWithOpenAI(audioPath);
-
-    const text = this.extractText(response);
-    if (!text) {
-      return null;
-    }
-
-    return {
-      text,
-      model: this.openAiModel,
-      provider: this.provider,
-      segments: this.extractSegments(response, text),
-      words: this.extractWords(response),
-      duration: this.extractDuration(response),
-      language: this.extractLanguage(response),
-      raw: response
-    };
-  }
-
-  private async transcribeWithOpenAI(audioPath: string) {
+    const workDir = await mkdtemp(path.join(tmpdir(), "douyin-whisper-"));
+    const outputPrefix = path.join(workDir, "transcript");
     try {
-      return await this.client!.audio.transcriptions.create({
-        file: createReadStream(audioPath),
-        model: this.openAiModel,
-        language: "zh",
-        response_format: "verbose_json",
-        timestamp_granularities: ["segment"]
-      } as any);
-    } catch (error) {
-      if (!isLikelyVerboseJsonCompatibilityError(error)) {
-        throw error;
-      }
-
-      return this.client!.audio.transcriptions.create({
-        file: createReadStream(audioPath),
-        model: this.openAiModel,
-        language: "zh"
-      } as any);
-    }
-  }
-
-  private async transcribeWithLocalWhisper(audioPath: string): Promise<TranscriptResult | null> {
-    const { stdout } = await runCommand(
-      this.pythonBinary,
-      [
-        "-c",
-        LOCAL_WHISPER_SCRIPT,
-        audioPath,
-        this.whisperModelSize,
-        this.whisperDevice,
-        this.whisperComputeType
-      ],
-      {
-        captureStdout: true,
-        captureStderr: true
-      }
-    ).catch((error) => {
-      throw this.decorateLocalWhisperError(error);
-    });
-
-    const payload = parseJson(stdout);
-    const text = this.extractText(payload);
-    if (!text) {
-      return null;
-    }
-
-    return {
-      text,
-      model: this.whisperModelSize,
-      provider: this.provider,
-      segments: this.extractSegments(payload, text),
-      words: this.extractWords(payload),
-      duration: this.extractDuration(payload),
-      language: this.extractLanguage(payload),
-      raw: payload
-    };
-  }
-
-  private async transcribeWithFunAsr(audioPath: string): Promise<TranscriptResult | null> {
-    const { stdout } = await runCommand(
-      this.pythonBinary,
-      [
-        "-c",
-        FUNASR_SCRIPT,
-        audioPath,
-        this.funasrModel,
-        this.funasrVadModel,
-        this.funasrPuncModel
-      ],
-      {
-        captureStdout: true,
-        captureStderr: true
-      }
-    ).catch((error) => {
-      throw this.decorateFunAsrError(error);
-    });
-
-    const payload = parseJson(stdout);
-    if (isFunAsrErrorPayload(payload)) {
-      throw new Error(formatFunAsrMessage(payload.message));
-    }
-
-    const text = this.extractText(payload);
-    if (!text) {
-      return null;
-    }
-
-    return {
-      text,
-      model: this.funasrModel,
-      provider: this.provider,
-      segments: this.extractSegments(payload, text),
-      words: this.extractWords(payload),
-      duration: this.extractDuration(payload),
-      language: this.extractLanguage(payload) ?? "zh",
-      raw: payload
-    };
-  }
-
-  private extractText(response: unknown) {
-    if (typeof response === "string") {
-      return response.trim();
-    }
-
-    const candidate = (response as { text?: unknown })?.text;
-    if (typeof candidate === "string") {
-      return candidate.trim();
-    }
-
-    return "";
-  }
-
-  private extractSegments(response: unknown, fallbackText: string): TranscriptSegment[] {
-    const segments = (response as { segments?: unknown })?.segments;
-    if (Array.isArray(segments)) {
-      return segments
-        .map((segment): TranscriptSegment | null => {
-          const row = segment as { start?: unknown; end?: unknown; text?: unknown };
-          const text = typeof row.text === "string" ? row.text.trim() : "";
-          if (!text) {
-            return null;
+      await this.runner
+        .run(
+          this.whisperCliPath,
+          [
+            "-m",
+            this.whisperModelPath,
+            "-f",
+            audioPath,
+            "-l",
+            "zh",
+            "-ojf",
+            "-of",
+            outputPrefix,
+            "-np"
+          ],
+          {
+            captureStdout: true,
+            captureStderr: true
           }
-          return {
-            start: toFiniteNumber(row.start),
-            end: toFiniteNumber(row.end),
-            text
-          };
-        })
-        .filter((segment): segment is TranscriptSegment => Boolean(segment));
-    }
+        )
+        .catch((error) => {
+          throw decorateWhisperError(error);
+        });
 
-    return fallbackText ? [{ text: fallbackText }] : [];
-  }
-
-  private extractWords(response: unknown): TranscriptWord[] | undefined {
-    const words = (response as { words?: unknown })?.words;
-    if (!Array.isArray(words)) {
-      return undefined;
-    }
-
-    const result = words
-      .map((word): TranscriptWord | null => {
-        const row = word as {
-          start?: unknown;
-          end?: unknown;
-          word?: unknown;
-          probability?: unknown;
-        };
-        const text = typeof row.word === "string" ? row.word.trim() : "";
-        if (!text) {
-          return null;
-        }
-        return {
-          start: toFiniteNumber(row.start),
-          end: toFiniteNumber(row.end),
-          word: text,
-          probability: toFiniteNumber(row.probability)
-        };
-      })
-      .filter((word): word is TranscriptWord => Boolean(word));
-
-    return result.length ? result : undefined;
-  }
-
-  private extractDuration(response: unknown) {
-    return toFiniteNumber((response as { duration?: unknown })?.duration);
-  }
-
-  private extractLanguage(response: unknown) {
-    const language = (response as { language?: unknown })?.language;
-    return typeof language === "string" && language.trim() ? language.trim() : undefined;
-  }
-
-  private decorateLocalWhisperError(error: unknown) {
-    if (!(error instanceof CommandError)) {
-      return error instanceof Error ? error : new Error("local whisper transcription failed");
-    }
-
-    const stderr = error.stderr.trim();
-    const missingModule = /No module named ['"]faster_whisper['"]/.test(stderr);
-    const hint = missingModule
-      ? "Install faster-whisper in that Python environment, or set ASR_PYTHON_BINARY to the project venv python."
-      : "";
-    const message = [stderr || error.message, hint].filter(Boolean).join("\n").trim();
-    return new Error(message || "local whisper transcription failed");
-  }
-
-  private decorateFunAsrError(error: unknown) {
-    if (!(error instanceof CommandError)) {
-      return error instanceof Error ? error : new Error("FunASR transcription failed");
-    }
-
-    const stdout = error.stdout.trim();
-    const payload = parseJson(stdout);
-    if (isFunAsrErrorPayload(payload)) {
-      return new Error(formatFunAsrMessage(payload.message));
-    }
-
-    const stderr = error.stderr.trim();
-    return new Error(formatFunAsrMessage(stderr || error.message || "FunASR transcription failed"));
-  }
-}
-
-function normalizeProvider(provider: string | undefined, hasApiKey: boolean): AsrProvider {
-  const normalized = provider?.trim().toLowerCase();
-  if (normalized === "openai" || normalized === "openai-compatible") {
-    return "openai";
-  }
-
-  if (normalized === "funasr" || normalized === "local-funasr") {
-    return "funasr";
-  }
-
-  if (
-    normalized === "local" ||
-    normalized === "local-whisper" ||
-    normalized === "whisper" ||
-    normalized === "faster-whisper"
-  ) {
-    return "local-whisper";
-  }
-
-  return hasApiKey ? "openai" : "local-whisper";
-}
-
-function parseJson(text: string) {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    const jsonLine = text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .reverse()
-      .find((line) => line.startsWith("{") || line.startsWith("["));
-    if (jsonLine) {
-      try {
-        return JSON.parse(jsonLine) as unknown;
-      } catch {
-        return text;
+      const payload = await readWhisperJson(outputPrefix);
+      const segments = extractSegments(payload);
+      const text = extractText(payload, segments);
+      if (!text) {
+        return null;
       }
+
+      return {
+        text,
+        model: MODEL,
+        provider: PROVIDER,
+        segments: segments.length ? segments : [{ text }],
+        words: extractWords(payload),
+        duration: extractDuration(payload, segments),
+        language: extractLanguage(payload) ?? "zh",
+        raw: payload
+      };
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
     }
-    return text;
+  }
+
+  private async assertResources(audioPath: string) {
+    const missing: string[] = [];
+    await access(this.whisperCliPath).catch(() => missing.push(`whisper-cli: ${this.whisperCliPath}`));
+    await access(this.whisperModelPath).catch(() => missing.push(`ggml-small: ${this.whisperModelPath}`));
+    await access(audioPath).catch(() => missing.push(`audio: ${audioPath}`));
+
+    if (missing.length) {
+      throw new Error(
+        [
+          "内置 Whisper 资源缺失或损坏，无法执行本地转录。",
+          ...missing,
+          "请重新运行 npm run prepare:whisper 后重新打包，或重新安装完整应用。"
+        ].join("\n")
+      );
+    }
   }
 }
 
-function firstNonBlank(...values: Array<string | undefined>) {
-  return values.find((value) => typeof value === "string" && value.trim())?.trim();
+async function readWhisperJson(outputPrefix: string) {
+  const jsonPath = `${outputPrefix}.json`;
+  try {
+    return JSON.parse(await readFile(jsonPath, "utf8")) as unknown;
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      const message = error instanceof Error ? error.message : "invalid JSON";
+      throw new Error(`whisper.cpp 转录失败：JSON 输出格式无效。\n${message}`);
+    }
+  }
+
+  try {
+    return JSON.parse(await readFile(outputPrefix, "utf8")) as unknown;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "missing whisper.cpp JSON output";
+    throw new Error(`whisper.cpp 转录失败：未生成 JSON 输出。\n${message}`);
+  }
 }
 
-const LOCAL_WHISPER_SCRIPT = String.raw`
-import json
-import sys
-from faster_whisper import WhisperModel
+function isMissingFileError(error: unknown) {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
 
-audio_path = sys.argv[1]
-model_size = sys.argv[2]
-device = sys.argv[3]
-compute_type = sys.argv[4]
+function extractText(payload: unknown, segments: TranscriptSegment[]) {
+  const direct = firstNonBlank((payload as { text?: unknown })?.text);
+  if (direct) {
+    return direct;
+  }
+  return segments.map((segment) => segment.text).filter(Boolean).join("\n").trim();
+}
 
-model = WhisperModel(model_size, device=device, compute_type=compute_type)
-segments, info = model.transcribe(
-    audio_path,
-    language="zh",
-    beam_size=5,
-    word_timestamps=True,
-    vad_filter=True,
-)
-
-text_parts = []
-segment_rows = []
-word_rows = []
-for segment in segments:
-    text = segment.text.strip()
-    if not text:
-        continue
-    text_parts.append(text)
-    segment_rows.append({
-        "start": segment.start,
-        "end": segment.end,
-        "text": text,
+function extractSegments(payload: unknown): TranscriptSegment[] {
+  const source = getSegmentSource(payload);
+  return source
+    .map((segment): TranscriptSegment | null => {
+      const row = segment as {
+        start?: unknown;
+        end?: unknown;
+        text?: unknown;
+        offsets?: { from?: unknown; to?: unknown };
+        timestamps?: { from?: unknown; to?: unknown };
+      };
+      const text = firstNonBlank(row.text);
+      if (!text) {
+        return null;
+      }
+      return {
+        start: toSeconds(row.start ?? row.offsets?.from ?? row.timestamps?.from),
+        end: toSeconds(row.end ?? row.offsets?.to ?? row.timestamps?.to),
+        text
+      };
     })
-    for word in getattr(segment, "words", []) or []:
-        word_text = getattr(word, "word", "").strip()
-        if not word_text:
-            continue
-        word_rows.append({
-            "start": getattr(word, "start", None),
-            "end": getattr(word, "end", None),
-            "word": word_text,
-            "probability": getattr(word, "probability", None),
-        })
-
-print(json.dumps({
-    "text": "\n".join(text_parts),
-    "language": getattr(info, "language", None),
-    "duration": getattr(info, "duration", None),
-    "segments": segment_rows,
-    "words": word_rows,
-}, ensure_ascii=False))
-`;
-
-const FUNASR_SCRIPT = String.raw`
-import json
-import os
-import sys
-import traceback
-
-audio_path = sys.argv[1]
-model_name = sys.argv[2]
-vad_model = sys.argv[3]
-punc_model = sys.argv[4]
-
-def emit(payload):
-    print(json.dumps(payload, ensure_ascii=False, default=str))
-
-def fail(message):
-    emit({"code": "ERROR", "message": message})
-    sys.exit(0)
-
-if not os.path.exists(audio_path):
-    fail(f"audio file does not exist: {audio_path}")
-
-if os.path.getsize(audio_path) == 0:
-    fail("audio file is empty")
-
-try:
-    from funasr import AutoModel
-except ModuleNotFoundError as error:
-    missing = getattr(error, "name", "") or "funasr"
-    fail(f"missing Python module: {missing}")
-except Exception as error:
-    fail(f"failed to import FunASR: {error}")
-
-try:
-    model = AutoModel(
-        model=model_name,
-        vad_model=vad_model,
-        punc_model=punc_model,
-        disable_update=True,
-    )
-    result = model.generate(input=audio_path)
-except ModuleNotFoundError as error:
-    missing = getattr(error, "name", "") or str(error)
-    fail(f"missing Python module: {missing}")
-except Exception as error:
-    fail(f"FunASR failed: {error}\n{traceback.format_exc(limit=2)}")
-
-texts = []
-segments = []
-timestamps = []
-
-items = result if isinstance(result, list) else [result]
-for item in items:
-    if isinstance(item, dict):
-        text = str(item.get("text") or "").strip()
-        if text:
-            texts.append(text)
-        timestamp = item.get("timestamp")
-        if isinstance(timestamp, list):
-            timestamps.extend(timestamp)
-    elif isinstance(item, str):
-        text = item.strip()
-        if text:
-            texts.append(text)
-
-text = "\n".join(texts).strip()
-if not text:
-    fail("FunASR returned no transcript")
-
-if timestamps:
-    for timestamp in timestamps:
-        if (
-            isinstance(timestamp, (list, tuple))
-            and len(timestamp) >= 3
-            and isinstance(timestamp[2], str)
-            and timestamp[2].strip()
-        ):
-            segments.append({
-                "start": timestamp[0] / 1000 if isinstance(timestamp[0], (int, float)) else None,
-                "end": timestamp[1] / 1000 if isinstance(timestamp[1], (int, float)) else None,
-                "text": timestamp[2].strip(),
-            })
-
-if not segments:
-    segments = [{"text": text}]
-
-emit({
-    "code": "SUCCESS",
-    "text": text,
-    "segments": segments,
-    "language": "zh",
-    "raw": result,
-})
-`;
-
-function isFunAsrErrorPayload(value: unknown): value is { code: "ERROR"; message?: string } {
-  const payload = value as { code?: unknown; message?: unknown };
-  return payload?.code === "ERROR";
+    .filter((segment): segment is TranscriptSegment => Boolean(segment));
 }
 
-function formatFunAsrMessage(message?: string) {
-  const body = message?.trim() || "FunASR transcription failed";
-  const missingDependency = /No module named|missing Python module|failed to import FunASR|funasr|torch|torchaudio/i.test(body);
-  const dependencyHint = missingDependency
-    ? "请在 ASR 使用的 Python 环境中安装 Python 3.8+ 依赖：pip install torch torchaudio funasr"
-    : "";
-  const modelHint = /download|model|modelscope|network|connect|timeout/i.test(body)
-    ? "FunASR 首次运行可能需要下载模型；请检查网络连接和磁盘空间后重试。"
-    : "";
-  return [body, dependencyHint, modelHint].filter(Boolean).join("\n").trim();
+function getSegmentSource(payload: unknown): unknown[] {
+  const value = payload as { segments?: unknown; transcription?: unknown };
+  if (Array.isArray(value.segments)) {
+    return value.segments;
+  }
+  if (Array.isArray(value.transcription)) {
+    return value.transcription;
+  }
+  return [];
+}
+
+function extractWords(payload: unknown): TranscriptWord[] | undefined {
+  const words = (payload as { words?: unknown })?.words;
+  if (!Array.isArray(words)) {
+    return undefined;
+  }
+
+  const result = words
+    .map((word): TranscriptWord | null => {
+      const row = word as { start?: unknown; end?: unknown; word?: unknown; text?: unknown; probability?: unknown };
+      const text = firstNonBlank(row.word, row.text);
+      if (!text) {
+        return null;
+      }
+      return {
+        start: toSeconds(row.start),
+        end: toSeconds(row.end),
+        word: text,
+        probability: toFiniteNumber(row.probability)
+      };
+    })
+    .filter((word): word is TranscriptWord => Boolean(word));
+
+  return result.length ? result : undefined;
+}
+
+function extractDuration(payload: unknown, segments: TranscriptSegment[]) {
+  const direct = toFiniteNumber((payload as { duration?: unknown })?.duration);
+  if (direct !== undefined) {
+    return direct;
+  }
+  const end = Math.max(...segments.map((segment) => segment.end ?? 0));
+  return Number.isFinite(end) && end > 0 ? end : undefined;
+}
+
+function extractLanguage(payload: unknown) {
+  const direct = firstNonBlank((payload as { language?: unknown })?.language);
+  if (direct) {
+    return direct;
+  }
+  const result = (payload as { result?: { language?: unknown }; params?: { language?: unknown } });
+  return firstNonBlank(result.result?.language, result.params?.language);
+}
+
+function toSeconds(value: unknown) {
+  if (typeof value === "string" && /^\d{2}:\d{2}:\d{2}[,.]\d{3}$/.test(value.trim())) {
+    const [hours = "0", minutes = "0", rest = "0"] = value.trim().replace(",", ".").split(":");
+    return Number(hours) * 3600 + Number(minutes) * 60 + Number(rest);
+  }
+
+  const numberValue = toFiniteNumber(value);
+  if (numberValue === undefined) {
+    return undefined;
+  }
+  return Math.abs(numberValue) >= 1000 ? numberValue / 1000 : numberValue;
 }
 
 function toFiniteNumber(value: unknown) {
@@ -510,7 +253,31 @@ function toFiniteNumber(value: unknown) {
   return Number.isFinite(numberValue) ? numberValue : undefined;
 }
 
-function isLikelyVerboseJsonCompatibilityError(error: unknown) {
+function decorateWhisperError(error: unknown) {
+  if (error instanceof CommandError) {
+    const detail = firstNonBlank(error.stderr, error.stdout, error.message) ?? "whisper.cpp command failed";
+    return new Error(`whisper.cpp 转录失败：${detail}`);
+  }
+
   const message = error instanceof Error ? error.message : String(error);
-  return /response_format|timestamp|granularit|verbose_json|unsupported|invalid/i.test(message);
+  return new Error(`whisper.cpp 转录失败：${message}`);
+}
+
+function getWhisperRoot(rootDir?: string) {
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  return firstNonBlank(
+    process.env.WHISPER_DIR,
+    resourcesPath ? path.join(resourcesPath, "whisper") : undefined,
+    rootDir ? path.join(rootDir, "vendor", "whisper") : undefined,
+    path.join(process.cwd(), "vendor", "whisper")
+  )!;
+}
+
+function firstNonBlank(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
 }

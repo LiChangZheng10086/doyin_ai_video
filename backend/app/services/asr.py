@@ -1,5 +1,7 @@
 """
-ASR 语音识别 — faster-whisper
+Legacy Python/Vue backend ASR — faster-whisper.
+
+The maintained desktop app uses src/lib/asr.ts with bundled whisper.cpp.
 """
 
 import asyncio

@@ -242,7 +242,7 @@ export class JobStore {
       await this.runDownloadStep(id);
       record = await this.requireRecord(id);
     }
-    if (!record.audioPath) {
+    if (!(await this.isWhisperReadyAudio(id, record.audioPath))) {
       await this.update(id, { status: "processing", stage: "extracting" });
       await this.runExtractAudioStep(id);
       record = await this.requireRecord(id);
@@ -283,6 +283,39 @@ export class JobStore {
       transcriptModel: transcriptResult.model,
       transcriptErrorMessage: undefined
     });
+  }
+
+  private async isWhisperReadyAudio(id: string, audioPath?: string) {
+    if (!audioPath || path.extname(audioPath).toLowerCase() !== ".wav") {
+      return false;
+    }
+
+    const manifest = await this.readOptionalJson<{
+      status?: string;
+      args?: string[];
+      audio?: {
+        streams?: Array<{
+          codec_name?: unknown;
+          channels?: unknown;
+          sample_rate?: unknown;
+        }>;
+      };
+    }>(path.join("raw", "audio", `${id}.json`));
+    if (!manifest || manifest.status !== "ready") {
+      return false;
+    }
+
+    const args = manifest.args ?? [];
+    const stream = manifest.audio?.streams?.find((candidate) => candidate.codec_name || candidate.sample_rate);
+    return (
+      args.includes("pcm_s16le") &&
+      args.includes("16000") &&
+      args.includes("1") &&
+      (!stream ||
+        (stream.codec_name === "pcm_s16le" &&
+          Number(stream.channels) === 1 &&
+          String(stream.sample_rate) === "16000"))
+    );
   }
 
   private async runCleanStep(id: string) {
@@ -993,6 +1026,7 @@ export class JobStore {
     addRelative("raw", "videos", `${record.id}.mp4`);
     addRelative("raw", "videos", `${record.id}.page.json`);
     addRelative("raw", "audio", `${record.id}.mp3`);
+    addRelative("raw", "audio", `${record.id}.wav`);
     addRelative("raw", "audio", `${record.id}.json`);
     addRelative("processed", "scripts", `${record.id}.json`);
     addRelative("processed", "cleaned", `${record.id}.json`);

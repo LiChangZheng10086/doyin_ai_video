@@ -1,5 +1,7 @@
 version: "3.9"
 
+# Legacy Docker stack from the old Python/Vue implementation.
+# Current maintained app is the Electron + Node.js desktop pipeline.
 services:
   backend:
     build:
@@ -11,7 +13,6 @@ services:
       - ./backend/data:/app/data
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
-      - WHISPER_MODEL_SIZE=medium
 
   frontend:
     build:

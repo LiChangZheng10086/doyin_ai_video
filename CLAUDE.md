@@ -14,7 +14,7 @@ douyin/
 │   │   ├── ai-cleaner.ts    # AI 洗稿
 │   │   ├── storage.ts       # 文件存储
 │   │   ├── media.ts         # 视频下载、音频提取
-│   │   ├── asr.ts           # 语音识别（OpenAI / local-whisper / FunASR）
+│   │   ├── asr.ts           # 语音识别（内置 whisper.cpp）
 │   │   └── hyperframes-video.ts # HyperFrames 本地视频渲染
 │   └── types.ts             # 后端类型定义
 │
@@ -39,10 +39,10 @@ douyin/
 
 ### 后端
 - Node.js 18+、Express 4、TypeScript
-- `openai`：OpenAI-compatible AI 与 OpenAI Whisper ASR
+- `openai`：OpenAI-compatible AI 洗稿
 - `yt-dlp`：视频下载（外部二进制）
 - `ffmpeg` / `ffprobe`：音视频处理（外部二进制）
-- FunASR：本地中文 ASR（可选 Python 依赖，不通过 npm 安装）
+- whisper.cpp：内置本地 ASR，默认 `ggml-small` 多语言模型
 - HyperFrames CLI：本地竖屏 MP4 渲染（生成视频步骤需要 Node.js 22+ 和 FFmpeg）
 
 ### 前端
@@ -61,7 +61,7 @@ douyin/
 POST /api/jobs 创建任务并解析输入
     ↓
 用户在详情页逐步确认执行：
-    1. 视频转录（yt-dlp + ffmpeg + ASR）
+    1. 视频转录（yt-dlp + ffmpeg + 内置 whisper.cpp）
     2. AI 洗稿
     3. 生成视频提示词
     4. 生成 9:16 MP4（HyperFrames）
@@ -186,7 +186,7 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
   duration?: number;
   language?: string;
   model: string;
-  provider: string; // openai | local-whisper | funasr
+  provider: string; // "whisper.cpp"
   createdAt: string;
 }
 ```
@@ -243,31 +243,21 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 
 ### ASR 配置
 
-FunASR 本地中文转录：
+ASR 固定使用随软件打包的本地 Whisper：
 
-```json
-{
-  "asrProvider": "funasr",
-  "asrModel": "paraformer-zh"
-}
+- 引擎：`whisper.cpp`
+- 模型：`ggml-small`
+- 音频输入：`pcm_s16le`、16kHz、单声道 WAV
+- 打包资源：`resources/whisper/whisper-cli` 和 `resources/whisper/models/ggml-small.bin`
+
+打包前运行：
+
+```bash
+npm run prepare:whisper
 ```
 
-OpenAI Whisper API：
-
-```json
-{
-  "asrProvider": "openai",
-  "asrApiKey": "sk-...",
-  "asrBaseURL": "https://api.openai.com/v1",
-  "asrModel": "whisper-1"
-}
-```
-
-支持的 ASR provider：
-
-- `funasr`：本地中文 ASR，推荐用于中文短视频；无需 ASR API Key，但需要 Python 3.8+、`torch`、`torchaudio`、`funasr`。
-- `openai`：OpenAI Whisper API，需要 `asrApiKey`。
-- `local` / `local-whisper` / `whisper` / `faster-whisper`：本地 faster-whisper，需要 Python 环境中安装 `faster-whisper`。
+旧配置中的 `asrProvider`、`asrApiKey`、`asrBaseURL`、`asrModel` 字段兼容读取，但后端转录不再使用。
+`prepare:whisper` 是构建机步骤，需要 `cmake`、C/C++ 编译工具链和 `tar`；最终用户安装应用后不需要这些依赖。
 
 ## 构建与运行
 
@@ -281,7 +271,8 @@ npm run check            # 后端类型检查
 npm run build:backend
 npm run build:renderer
 npm run build:electron
-npm run package
+npm run prepare:whisper
+npm run package           # 会先检查 vendor/whisper 资源是否存在
 ```
 
 ## 关键注意事项
@@ -317,9 +308,9 @@ npm run package
 - 永久删除需要同步清理 `output/videos/{jobId}` 下的 HyperFrames 项目和 MP4。
 
 ### ASR
-- FunASR 无需第三方 ASR API Key，但首次运行可能需要下载模型。
-- 缺少 `funasr`、`torch`、`torchaudio` 时，转录步骤应失败并给出可执行安装提示。
-- OpenAI Whisper 的 `verbose_json` 若不兼容，应 fallback 到普通转录请求。
+- ASR 固定使用内置 `whisper.cpp`，不再调用 OpenAI Whisper API、FunASR 或 faster-whisper。
+- `MediaService.extractAudio()` 输出 `raw/audio/{jobId}.wav`，编码为 `pcm_s16le`、16kHz、单声道。
+- 缺少 `whisper-cli` 或 `ggml-small.bin` 时，转录步骤应失败并提示重新运行 `npm run prepare:whisper` 或重新安装完整应用。
 
 ### HyperFrames
 - 生成视频步骤依赖 Node.js 22+、FFmpeg、可运行的 `npx hyperframes doctor`。
@@ -329,12 +320,11 @@ npm run package
 ## 故障排查
 
 ### 转录功能不工作
-1. 检查设置页 ASR provider。
-2. FunASR：确认当前 Python 环境已安装 `torch`、`torchaudio`、`funasr`。
-3. OpenAI Whisper：确认 API Key、Base URL 和模型有效。
-4. 本地 Whisper：确认 Python 环境已安装 `faster-whisper`。
-5. 查看 `raw/transcripts/` 是否生成 JSON。
-6. 查看任务详情页转录步骤错误和后端日志。
+1. 确认打包前已运行 `npm run prepare:whisper`。
+2. 开发模式检查 `vendor/whisper/whisper-cli` 和 `vendor/whisper/models/ggml-small.bin`。
+3. 生产模式检查安装包资源目录 `resources/whisper`。
+4. 查看 `raw/transcripts/` 是否生成 JSON。
+5. 查看任务详情页转录步骤错误和后端日志。
 
 ### 视频下载失败
 1. 确认 `yt-dlp` 二进制存在。

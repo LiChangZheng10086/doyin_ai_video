@@ -29,15 +29,6 @@ interface AIKeyConfig {
   lastTested?: string;
 }
 
-interface ASRConfig {
-  asrApiKey?: string;
-  asrBaseURL?: string;
-  asrModel?: string;
-  asrProvider?: string;
-}
-
-const CLOUD_ASR_PROVIDERS = new Set(['openai', 'openai-compatible']);
-
 type SettingsSection = 'models' | 'asr' | 'storage' | 'advanced';
 
 const sections: Array<{ id: SettingsSection; label: string; description: string; icon: typeof KeyRound }> = [
@@ -49,7 +40,6 @@ const sections: Array<{ id: SettingsSection; label: string; description: string;
 
 export function SettingsPage() {
   const [apiKeys, setApiKeys] = useState<AIKeyConfig[]>([]);
-  const [asrConfig, setAsrConfig] = useState<ASRConfig>({});
   const [activeSection, setActiveSection] = useState<SettingsSection>('models');
   const [isAdding, setIsAdding] = useState(false);
   const [newKey, setNewKey] = useState({
@@ -62,8 +52,6 @@ export function SettingsPage() {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ valid: boolean; error?: string } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [asrSaving, setAsrSaving] = useState(false);
-  const [asrSaved, setAsrSaved] = useState(false);
 
   useEffect(() => {
     loadApiKeys();
@@ -73,12 +61,6 @@ export function SettingsPage() {
     try {
       const config = await window.electron.getConfig();
       setApiKeys(config.aiKeys || []);
-      setAsrConfig({
-        asrApiKey: config.asrApiKey,
-        asrBaseURL: config.asrBaseURL,
-        asrModel: config.asrModel,
-        asrProvider: config.asrProvider,
-      });
     } catch (error) {
       console.error('Failed to load API keys:', error);
     }
@@ -181,21 +163,6 @@ export function SettingsPage() {
     }
   };
 
-  const handleSaveAsrConfig = async () => {
-    setAsrSaving(true);
-    setAsrSaved(false);
-
-    try {
-      await window.electron.saveConfig(asrConfig);
-      setAsrSaved(true);
-      setTimeout(() => setAsrSaved(false), 3000);
-    } catch (error) {
-      alert('保存失败：' + (error instanceof Error ? error.message : '未知错误'));
-    } finally {
-      setAsrSaving(false);
-    }
-  };
-
   return (
     <Layout>
       <div className="mb-8">
@@ -250,15 +217,7 @@ export function SettingsPage() {
               onSetActive={handleSetActive}
             />
           )}
-          {activeSection === 'asr' && (
-            <AsrSection
-              asrConfig={asrConfig}
-              setAsrConfig={setAsrConfig}
-              asrSaving={asrSaving}
-              asrSaved={asrSaved}
-              onSave={handleSaveAsrConfig}
-            />
-          )}
+          {activeSection === 'asr' && <AsrSection />}
           {activeSection === 'storage' && <StorageSection />}
           {activeSection === 'advanced' && <AdvancedSection />}
         </main>
@@ -502,127 +461,33 @@ function ModelsSection({
   );
 }
 
-function AsrSection({
-  asrConfig,
-  setAsrConfig,
-  asrSaving,
-  asrSaved,
-  onSave,
-}: {
-  asrConfig: ASRConfig;
-  setAsrConfig: (value: ASRConfig) => void;
-  asrSaving: boolean;
-  asrSaved: boolean;
-  onSave: () => void;
-}) {
-  const selectedProvider = asrConfig.asrProvider || 'openai';
-  const isCloudProvider = CLOUD_ASR_PROVIDERS.has(selectedProvider);
-  const isFunAsr = selectedProvider === 'funasr';
-  const handleAsrProviderChange = (provider: string) => {
-    const currentModel = asrConfig.asrModel;
-    const nextModel =
-      provider === 'funasr' && (!currentModel || currentModel === 'whisper-1')
-        ? 'paraformer-zh'
-        : provider === 'openai' && (!currentModel || currentModel === 'paraformer-zh')
-        ? 'whisper-1'
-        : currentModel;
-    setAsrConfig({ ...asrConfig, asrProvider: provider, asrModel: nextModel });
-  };
-
+function AsrSection() {
   return (
     <section className="space-y-6">
       <SectionHeader
         icon={Mic}
         title="ASR"
-        description="配置视频转录所需的语音识别服务。"
+        description="视频转录由软件内置 Whisper 本地完成。"
       />
 
       <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
-        <div className="space-y-5">
-          <FormField label="服务提供商">
-            <select
-              value={selectedProvider}
-              onChange={(event) => handleAsrProviderChange(event.target.value)}
-              className={inputClassName}
-            >
-              <option value="openai">OpenAI Whisper API</option>
-              <option value="local">本地 Whisper（需要 Python）</option>
-              <option value="funasr">本地 FunASR（中文推荐，无需 API Key）</option>
-            </select>
-          </FormField>
-
-          {isCloudProvider && (
-            <>
-              <FormField label="API Key">
-                <input
-                  type="password"
-                  value={asrConfig.asrApiKey || ''}
-                  onChange={(event) => setAsrConfig({ ...asrConfig, asrApiKey: event.target.value })}
-                  placeholder="sk-..."
-                  className={`${inputClassName} font-mono text-sm`}
-                />
-              </FormField>
-            </>
-          )}
-
-          {isCloudProvider && (
-            <>
-              <FormField label="Base URL（可选）" hint="留空使用默认地址">
-                <input
-                  type="text"
-                  value={asrConfig.asrBaseURL || ''}
-                  onChange={(event) => setAsrConfig({ ...asrConfig, asrBaseURL: event.target.value })}
-                  placeholder="https://api.openai.com/v1"
-                  className={`${inputClassName} font-mono text-sm`}
-                />
-              </FormField>
-            </>
-          )}
-
-          {(isCloudProvider || isFunAsr) && (
-            <>
-              <FormField label="模型">
-                <input
-                  type="text"
-                  value={asrConfig.asrModel || (isFunAsr ? 'paraformer-zh' : 'whisper-1')}
-                  onChange={(event) => setAsrConfig({ ...asrConfig, asrModel: event.target.value })}
-                  placeholder={isFunAsr ? 'paraformer-zh' : 'whisper-1'}
-                  className={`${inputClassName} font-mono text-sm`}
-                />
-              </FormField>
-            </>
-          )}
-
-          <div className={`rounded-lg border p-4 text-sm ${
-            isFunAsr ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-blue-200 bg-blue-50 text-blue-700'
-          }`}>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
             <div className="flex items-start gap-3">
               <AlertCircle size={18} className="mt-0.5 shrink-0" />
               <div>
-                <p className="font-semibold">{isFunAsr ? '关于本地 FunASR' : '关于语音识别'}</p>
+                <p className="font-semibold">内置 Whisper 本地转录</p>
                 <p className="mt-1 leading-6">
-                  {isFunAsr
-                    ? 'FunASR 在本机执行中文语音识别，不需要 ASR API Key。首次使用可能需要下载模型；请确保当前 Python 环境已安装 torch、torchaudio 和 funasr。'
-                    : '用于将视频音频转换为文字。未配置时，系统会使用分享文本作为后备；配置后需要重新处理任务才会生效。'}
+                  软件会随安装包携带 whisper.cpp 和 ggml-small 多语言模型。视频转录在本机完成，不需要 ASR API Key、Python、FunASR 或 faster-whisper。
                 </p>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-2">
-            {asrSaved && (
-              <span className="inline-flex items-center gap-1 text-sm font-medium text-emerald-600">
-                <CheckCircle2 size={15} />
-                已保存
-              </span>
-            )}
-            <button
-              onClick={onSave}
-              disabled={asrSaving}
-              className="rounded-lg bg-tech-blue px-6 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark disabled:opacity-50"
-            >
-              {asrSaving ? '保存中...' : '保存配置'}
-            </button>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <StorageCard title="转录引擎" value="whisper.cpp" />
+            <StorageCard title="内置模型" value="ggml-small" />
+            <StorageCard title="运行方式" value="本地离线" />
           </div>
         </div>
       </div>

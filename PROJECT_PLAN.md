@@ -25,7 +25,7 @@ HyperFrames 本地生成视频
 - 桌面端：Electron + React + Vite。
 - 后端：Node.js + Express + TypeScript。
 - 下载与处理：`yt-dlp`、`ffmpeg`、`ffprobe`。
-- ASR：OpenAI Whisper API、本地 faster-whisper、本地 FunASR。
+- ASR：内置 whisper.cpp + ggml-small，本机转录，无需 ASR API Key 或 Python 依赖。
 - 洗稿：OpenAI-compatible Chat Completions，优先使用视频转录文本。
 - 视频提示词：基于清洗稿、视频大纲、核心要点和口播稿本地生成场景提示词。
 - 视频生成：HyperFrames CLI 本地渲染 HTML/CSS/GSAP 到 MP4。
@@ -52,7 +52,7 @@ HyperFrames 本地生成视频
 
 ## 后续方向
 
-- 优化 FunASR 和本地 Whisper 安装体验。
+- 优化 Whisper 模型体积、速度和多平台打包体验。
 - 增加视频样式模板和镜头节奏配置。
 - 增加可选 TTS 配音和 BGM。
 - 增加批量任务与导出能力。

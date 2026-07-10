@@ -13,9 +13,11 @@
     "build:electron": "tsc -p tsconfig.electron.json",
     "build:backend": "tsc -p tsconfig.json",
     "mark-cjs": "echo '{\"type\":\"commonjs\"}' > dist-electron/package.json",
-    "package": "npm run build && electron-builder",
-    "package:mac": "npm run build && electron-builder --mac",
-    "package:win": "npm run build && electron-builder --win",
+    "prepare:whisper": "node scripts/prepare-whisper.mjs",
+    "check:whisper": "node scripts/check-whisper-assets.mjs",
+    "package": "npm run build && npm run check:whisper && electron-builder",
+    "package:mac": "npm run build && npm run check:whisper && electron-builder --mac",
+    "package:win": "npm run build && npm run check:whisper && electron-builder --win",
     "start": "node dist/server.js",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "check": "tsc -p tsconfig.json --noEmit"
@@ -49,5 +51,18 @@
     "typescript": "^5.8.3",
     "vite": "^8.1.0",
     "wait-on": "^9.0.10"
+  },
+  "build": {
+    "extraResources": [
+      {
+        "from": "vendor/whisper",
+        "to": "whisper",
+        "filter": [
+          "whisper-cli",
+          "whisper-cli.exe",
+          "models/ggml-small.bin"
+        ]
+      }
+    ]
   }
 }

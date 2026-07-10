@@ -1,6 +1,6 @@
 import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { runCommand } from "./command.js";
+import { CommandError, runCommand } from "./command.js";
 import type { EnhancedScene, ScriptAsset } from "../types.js";
 
 export interface HyperframesCommandRunner {
@@ -32,6 +32,7 @@ export interface HyperframesVideoResult {
 export interface HyperframesVideoGeneratorOptions {
   storageRoot: string;
   npxBinary?: string;
+  packageSpec?: string;
   commandRunner?: HyperframesCommandRunner;
 }
 
@@ -57,10 +58,12 @@ const defaultRunner: HyperframesCommandRunner = {
 export class HyperframesVideoGenerator {
   private readonly runner: HyperframesCommandRunner;
   private readonly npxBinary: string;
+  private readonly packageSpec: string;
 
   constructor(private readonly options: HyperframesVideoGeneratorOptions) {
     this.runner = options.commandRunner ?? defaultRunner;
     this.npxBinary = options.npxBinary ?? (process.platform === "win32" ? "npx.cmd" : "npx");
+    this.packageSpec = options.packageSpec ?? process.env.HYPERFRAMES_PACKAGE ?? "hyperframes@0.7.48";
   }
 
   async generate(script: ScriptAsset, jobId: string): Promise<HyperframesVideoResult> {
@@ -73,12 +76,12 @@ export class HyperframesVideoGenerator {
 
     await this.ensureEnvironment();
     await rm(projectPath, { recursive: true, force: true });
-    await mkdir(rendersPath, { recursive: true });
 
-    await this.runHyperframes(["hyperframes", "init", projectPath, "--non-interactive", "--example=blank"], {
+    await this.runHyperframes(["init", projectPath, "--non-interactive", "--example=blank"], {
       cwd: this.options.storageRoot
     });
 
+    await mkdir(rendersPath, { recursive: true });
     await mkdir(projectPath, { recursive: true });
     await writeFile(path.join(projectPath, "DESIGN.md"), this.renderDesign(script), "utf8");
     await writeFile(path.join(projectPath, "video-source.json"), JSON.stringify({
@@ -101,10 +104,10 @@ export class HyperframesVideoGenerator {
     }, null, 2), "utf8");
     await writeFile(path.join(projectPath, "index.html"), this.renderIndexHtml(script, scenes, duration), "utf8");
 
-    await this.runHyperframes(["hyperframes", "lint"], { cwd: projectPath });
-    await this.runHyperframes(["hyperframes", "validate"], { cwd: projectPath });
-    await this.runHyperframes(["hyperframes", "inspect"], { cwd: projectPath });
-    await this.runHyperframes(["hyperframes", "render", "--quality", "high", "--fps", "30", "--output", "renders/video.mp4"], {
+    await this.runHyperframes(["lint"], { cwd: projectPath });
+    await this.runHyperframes(["validate"], { cwd: projectPath });
+    await this.runHyperframes(["inspect"], { cwd: projectPath });
+    await this.runHyperframes(["render", "--quality", "high", "--fps", "30", "--output", "renders/video.mp4"], {
       cwd: projectPath
     });
 
@@ -136,7 +139,7 @@ export class HyperframesVideoGenerator {
     }
 
     try {
-      const result = await this.runHyperframes(["hyperframes", "doctor", "--json"], {
+      const result = await this.runHyperframes(["doctor", "--json"], {
         cwd: this.options.storageRoot,
         captureStdout: true,
         captureStderr: true
@@ -175,11 +178,26 @@ export class HyperframesVideoGenerator {
       captureStderr?: boolean;
     } = {}
   ) {
-    return this.runner.run(this.npxBinary, ["--yes", ...args], {
-      captureStdout: true,
-      captureStderr: true,
-      ...options
-    });
+    const commandArgs = ["--yes", this.packageSpec, ...args];
+    try {
+      return await this.runner.run(this.npxBinary, commandArgs, {
+        captureStdout: true,
+        captureStderr: true,
+        ...options
+      });
+    } catch (error) {
+      if (error instanceof CommandError) {
+        const detail = [error.stderr, error.stdout, error.message].map((value) => value.trim()).find(Boolean);
+        throw new Error(
+          [
+            "HyperFrames 命令失败。",
+            `命令：${error.command} ${error.args.join(" ")}`,
+            detail ? `错误：${detail}` : undefined
+          ].filter(Boolean).join("\n")
+        );
+      }
+      throw error;
+    }
   }
 
   private dependencyError(detail: string) {

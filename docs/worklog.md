@@ -6,7 +6,7 @@
 
 - 项目：抖音 AI 视频助手
 - 当前形态：Electron + React + Express 的桌面应用
-- 已有能力：本地存储、任务模型、抖音分享文本解析、视频下载、音频抽取、结构化 ASR 转写（OpenAI Whisper / 本地 Whisper / 本地 FunASR）、AI 洗稿、视频提示词生成、HyperFrames 本地视频生成、手动分步执行、步骤级 3 次自动重试、任务垃圾桶
+- 已有能力：本地存储、任务模型、抖音分享文本解析、视频下载、音频抽取、内置 whisper.cpp 结构化 ASR 转写、AI 洗稿、视频提示词生成、HyperFrames 本地视频生成、手动分步执行、步骤级 3 次自动重试、任务垃圾桶
 - 当前接口：
   - `GET /health`
   - `POST /api/jobs`
@@ -26,10 +26,12 @@
   - `GET /api/jobs/:id/video-output`
   - `GET /api/jobs/:id/video/download`
 - 本地存储目录：`storage/`
-- 当前待办：本地 ASR 依赖安装体验优化、视频视觉样式优化、端到端样本回归测试
+- 当前待办：Whisper 模型体积和速度优化、视频视觉样式优化、端到端样本回归测试
 
 ## 最近操作
 
+- 2026-07-10：桌面主线 ASR 收敛为内置 whisper.cpp + ggml-small；音频提取改为 16kHz 单声道 WAV，设置页移除 ASR provider/API Key 输入。
+- 2026-07-10：`backend/` 与 `frontend/` Docker 栈标记为历史实现；当前维护主线是 Electron + Node 后端。
 - 2026-07-10：主链路移除 PPT，改为“视频转录 → AI 洗稿 → 生成视频提示词 → HyperFrames 生成视频”；删除主后端 PPT 生成器、PPT 步骤/API/前端入口，并更新 README/AGENTS/CLAUDE/PROJECT_PLAN。
 - 2026-07-02：接入本地 FunASR 作为第三种 ASR provider，设置页新增“本地 FunASR（中文推荐，无需 API Key）”；缺依赖时会在转录步骤返回明确安装提示。
 - 2026-07-02：更新 README、AGENTS、CLAUDE 和工作日志，将项目文档同步到“手动分步执行 → 视频转录 → AI 洗稿 → PPT”主链路。

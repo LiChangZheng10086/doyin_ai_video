@@ -79,7 +79,7 @@ async def run_download_pipeline(task_id: str):
             audio_path = await extract_audio(video_path, task_id)
             await _update(task_id, audio_path=audio_path)
 
-            # Step 3: Transcribe (faster-whisper)
+            # Step 3: Transcribe (legacy faster-whisper stack; desktop app uses bundled whisper.cpp)
             await publish_status(task_id, TaskStatus.TRANSCRIBING.value, 2)
             await _update(task_id, status=TaskStatus.TRANSCRIBING.value, current_step=2)
             raw_text = await transcribe(audio_path)

@@ -31,14 +31,8 @@ const app = await createExpressApp({
   ffprobeBinary: process.env.FFPROBE_BINARY,
   cookiesFile: process.env.YTDLP_COOKIES_FILE,
   cookiesFromBrowser: process.env.YTDLP_COOKIES_FROM_BROWSER,
-  asrApiKey: process.env.ASR_API_KEY ?? process.env.OPENAI_API_KEY,
-  asrBaseURL: process.env.ASR_BASE_URL,
-  asrModel: process.env.ASR_MODEL,
-  asrProvider: process.env.ASR_PROVIDER,
-  asrPythonBinary: process.env.ASR_PYTHON_BINARY,
-  whisperModelSize: process.env.WHISPER_MODEL_SIZE,
-  whisperDevice: process.env.WHISPER_DEVICE,
-  whisperComputeType: process.env.WHISPER_COMPUTE_TYPE,
+  whisperCliPath: process.env.WHISPER_CLI_BINARY,
+  whisperModelPath: process.env.WHISPER_MODEL_PATH,
   hyperframesNpxBinary: process.env.HYPERFRAMES_NPX_BINARY
 });
 

@@ -12,6 +12,20 @@ export interface MediaServiceConfig {
   ffprobeBinary?: string;
   cookiesFile?: string;
   cookiesFromBrowser?: string;
+  commandRunner?: MediaCommandRunner;
+}
+
+export interface MediaCommandRunner {
+  run(
+    command: string,
+    args: string[],
+    options?: {
+      cwd?: string;
+      env?: NodeJS.ProcessEnv;
+      captureStdout?: boolean;
+      captureStderr?: boolean;
+    }
+  ): Promise<{ stdout: string; stderr: string }>;
 }
 
 export interface DownloadResult {
@@ -48,10 +62,14 @@ const DOUYIN_HEADERS = {
 };
 
 export class MediaService {
+  private readonly runner: MediaCommandRunner;
+
   constructor(
     private readonly storage: LocalStorage,
     private readonly config: MediaServiceConfig = {}
-  ) {}
+  ) {
+    this.runner = config.commandRunner ?? { run: runCommand };
+  }
 
   async downloadVideo(sourceUrl: string, jobId: string): Promise<DownloadResult> {
     let pageError: Error | null = null;
@@ -77,7 +95,7 @@ export class MediaService {
   async extractAudio(videoPath: string, jobId: string): Promise<AudioExtractionResult> {
     const ffmpeg = this.config.ffmpegBinary ?? "ffmpeg";
     const ffprobe = this.config.ffprobeBinary ?? this.inferFfprobeBinary(ffmpeg);
-    const audioPath = this.storage.resolve("raw/audio", `${jobId}.mp3`);
+    const audioPath = this.storage.resolve("raw/audio", `${jobId}.wav`);
     const manifestPath = this.storage.resolve("raw/audio", `${jobId}.json`);
     const args = [
       "-y",
@@ -85,13 +103,11 @@ export class MediaService {
       videoPath,
       "-vn",
       "-acodec",
-      "libmp3lame",
+      "pcm_s16le",
       "-ar",
       "16000",
       "-ac",
       "1",
-      "-q:a",
-      "2",
       audioPath
     ];
     const sourceProbe = await this.probeMedia(ffprobe, videoPath);
@@ -108,7 +124,7 @@ export class MediaService {
     };
 
     try {
-      await runCommand(ffmpeg, args, {
+      await this.runner.run(ffmpeg, args, {
         captureStderr: true
       });
     } catch (error) {
@@ -151,7 +167,7 @@ export class MediaService {
     errorMessage?: string;
   }> {
     try {
-      const { stdout } = await runCommand(
+      const { stdout } = await this.runner.run(
         ffprobe,
         [
           "-v",
@@ -235,7 +251,7 @@ export class MediaService {
     ];
 
     try {
-      await runCommand(ytDlp, args, {
+      await this.runner.run(ytDlp, args, {
         captureStderr: true
       });
     } catch (error) {

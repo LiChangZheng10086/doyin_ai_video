@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { CommandError } from "./command.js";
 import { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import type { HyperframesCommandRunner } from "./hyperframes-video.js";
 import type { ScriptAsset } from "../types.js";
@@ -74,6 +75,12 @@ test("HyperframesVideoGenerator builds a vertical explainer project and renders 
       if (args.includes("doctor")) {
         return { stdout: JSON.stringify({ ok: true }), stderr: "" };
       }
+      assert.match(args[1], /^hyperframes@/);
+      if (args.includes("init")) {
+        const projectPath = args[args.indexOf("init") + 1];
+        const existingFiles = await readdir(projectPath).catch(() => []);
+        assert.deepEqual(existingFiles, []);
+      }
       if (args.includes("render")) {
         const outputIndex = args.indexOf("--output");
         const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : "renders/video.mp4";
@@ -106,12 +113,12 @@ test("HyperframesVideoGenerator builds a vertical explainer project and renders 
   assert.ok(sourceJson.scenes.length <= 10);
 
   const invoked = calls.map((call) => call.args.join(" "));
-  assert.ok(invoked.some((args) => args.includes("hyperframes doctor --json")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes init")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes lint")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes validate")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes inspect")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes render")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 doctor --json")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 init")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 lint")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 validate")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 inspect")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 render")));
 });
 
 test("HyperframesVideoGenerator allows optional TTS and BGM doctor failures", async () => {
@@ -148,4 +155,30 @@ test("HyperframesVideoGenerator allows optional TTS and BGM doctor failures", as
 
   const result = await generator.generate(sampleScript(), "job-optional");
   assert.equal(result.provider, "hyperframes");
+});
+
+test("HyperframesVideoGenerator includes HyperFrames stderr when a command fails", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "hyperframes-stderr-"));
+  const runner: HyperframesCommandRunner = {
+    async run(command, args) {
+      if (args.includes("doctor")) {
+        return { stdout: JSON.stringify({ ok: true }), stderr: "" };
+      }
+      throw new CommandError(
+        "Command failed with exit code 1",
+        command,
+        args,
+        "",
+        "Directory already exists and is not empty: demo",
+        1
+      );
+    }
+  };
+
+  const generator = new HyperframesVideoGenerator({ storageRoot, commandRunner: runner });
+
+  await assert.rejects(
+    () => generator.generate(sampleScript(), "job-stderr"),
+    /HyperFrames 命令失败.*hyperframes@0\.7\.48 init.*Directory already exists/s
+  );
 });
