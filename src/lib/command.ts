@@ -22,6 +22,7 @@ export async function runCommand(
     env?: NodeJS.ProcessEnv;
     captureStdout?: boolean;
     captureStderr?: boolean;
+    timeoutMs?: number;
   } = {}
 ) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
@@ -32,13 +33,55 @@ export async function runCommand(
         "ignore",
         options.captureStdout ? "pipe" : "ignore",
         options.captureStderr ? "pipe" : "ignore"
-      ]
+      ],
+      detached: process.platform !== "win32"
     });
 
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let forceKillTimer: NodeJS.Timeout | undefined;
+    const killProcessTree = (signal: NodeJS.Signals) => {
+      if (process.platform !== "win32" && child.pid) {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // The process group may already have exited.
+        }
+      }
+      child.kill(signal);
+    };
+    const timeout = options.timeoutMs
+      ? setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          killProcessTree("SIGTERM");
+          forceKillTimer = setTimeout(() => killProcessTree("SIGKILL"), 1_000);
+          forceKillTimer.unref();
+          reject(
+            new CommandError(
+              `Command timed out after ${options.timeoutMs}ms`,
+              command,
+              args,
+              stdout,
+              stderr,
+              null
+            )
+          );
+        }, options.timeoutMs)
+      : undefined;
+    timeout?.unref();
+
+    const clearTimers = () => {
+      if (timeout) clearTimeout(timeout);
+      if (forceKillTimer) clearTimeout(forceKillTimer);
+    };
 
     child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
       reject(
         new CommandError(
           error.message,
@@ -64,6 +107,9 @@ export async function runCommand(
     }
 
     child.on("close", (exitCode) => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
       if (exitCode === 0) {
         resolve({ stdout, stderr });
         return;

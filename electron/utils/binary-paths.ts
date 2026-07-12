@@ -5,6 +5,7 @@ import path from 'path';
 export interface BinaryPaths {
   binDir?: string;
   ffmpeg: string;
+  ffprobe: string;
   ytdlp: string;
   whisperCli: string;
   whisperModel: string;
@@ -26,6 +27,7 @@ export function getBinaryPaths(): BinaryPaths {
     return {
       binDir: undefined,
       ffmpeg: 'ffmpeg',
+      ffprobe: 'ffprobe',
       ytdlp: 'yt-dlp',
       whisperCli: path.join(whisperPath, platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli'),
       whisperModel: path.join(whisperPath, 'models', 'ggml-small.bin'),
@@ -46,6 +48,7 @@ export function getBinaryPaths(): BinaryPaths {
     return {
       binDir: binPath,
       ffmpeg: assetPath('ffmpeg', path.join(binPath, 'ffmpeg.exe')),
+      ffprobe: assetPath('ffprobe', path.join(binPath, 'ffprobe.exe')),
       ytdlp: assetPath('ytdlp', path.join(binPath, 'yt-dlp.exe')),
       whisperCli: assetPath('whisperCli', path.join(whisperPath, 'whisper-cli.exe')),
       whisperModel: assetPath('whisperModel', path.join(whisperPath, 'models', 'ggml-small.bin')),
@@ -56,6 +59,7 @@ export function getBinaryPaths(): BinaryPaths {
     return {
       binDir: binPath,
       ffmpeg: assetPath('ffmpeg', path.join(binPath, 'ffmpeg')),
+      ffprobe: assetPath('ffprobe', path.join(binPath, 'ffprobe')),
       ytdlp: assetPath('ytdlp', path.join(binPath, 'yt-dlp')),
       whisperCli: assetPath('whisperCli', path.join(whisperPath, 'whisper-cli')),
       whisperModel: assetPath('whisperModel', path.join(whisperPath, 'models', 'ggml-small.bin')),
@@ -67,6 +71,7 @@ export function getBinaryPaths(): BinaryPaths {
     return {
       binDir: undefined,
       ffmpeg: 'ffmpeg',
+      ffprobe: 'ffprobe',
       ytdlp: 'yt-dlp',
       whisperCli: path.join(whisperPath, 'whisper-cli'),
       whisperModel: path.join(whisperPath, 'models', 'ggml-small.bin'),

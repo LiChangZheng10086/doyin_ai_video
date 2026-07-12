@@ -18,7 +18,7 @@ const statusConfig = {
 const manualStepLabels: Record<PipelineStep, string> = {
   transcribe: '视频转录',
   clean: 'AI 洗稿',
-  generate_video_prompts: '生成视频提示词',
+  generate_video_prompts: '生成分镜',
   generate_video: '生成视频',
 };
 
@@ -36,7 +36,7 @@ const stageConfig: Record<string, string> = {
   transcribed: '已转录',
   cleaning: '清洗中',
   cleaned: '已清洗',
-  'generating-video-prompts': '生成视频提示词',
+  'generating-video-prompts': '生成分镜',
   scripted: '脚本完成',
   'generating-video': '生成视频',
   rendered: '已渲染',

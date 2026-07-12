@@ -9,6 +9,7 @@ import type { MediaService } from "./media.js";
 import type { AsrService } from "./asr.js";
 import { LocalStorage } from "./storage.js";
 import { parseDouyinShare } from "./douyin.js";
+import { toSimplifiedChinese } from "./chinese.js";
 import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import type {
   JobOverview,
@@ -16,16 +17,10 @@ import type {
   JobRecord,
   JobStatus,
   JobStage,
-  EnhancedScene,
   PipelineStep,
   PipelineStepState,
   PipelineSteps,
   ScriptAsset,
-  ShortVideoShot,
-  ShotPacing,
-  ShotTransition,
-  ShotType,
-  ShortVideoVisualLayer,
   TranscriptAsset
 } from "../types.js";
 
@@ -42,7 +37,7 @@ const PIPELINE_STEPS: PipelineStep[] = [
 const STEP_LABELS: Record<PipelineStep, string> = {
   transcribe: "视频转录",
   clean: "AI 洗稿",
-  generate_video_prompts: "生成视频提示词",
+  generate_video_prompts: "生成分镜",
   generate_video: "生成视频"
 };
 const STEP_STAGE: Record<PipelineStep, { running: JobStage; succeeded: JobStage }> = {
@@ -147,7 +142,8 @@ export class JobStore {
       await this.markStepRunning(record, step);
 
       let lastError = "";
-      for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt += 1) {
+      const maxAttempts = step === "generate_video" ? 1 : MAX_STEP_ATTEMPTS;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         await this.updateStep(id, step, { attempts: attempt });
         try {
           await this.executeStepAction(id, step);
@@ -259,7 +255,7 @@ export class JobStore {
     }
 
     const transcriptResult = await this.asr.transcribe(audioPath);
-    const transcriptText = transcriptResult?.text?.trim();
+    const transcriptText = transcriptResult?.text ? toSimplifiedChinese(transcriptResult.text).trim() : "";
     if (!transcriptResult || !transcriptText) {
       throw new Error("ASR returned no transcript; check ASR configuration and retry");
     }
@@ -272,10 +268,16 @@ export class JobStore {
       jobId: id,
       sourceUrl: record.sourceUrl,
       audioPath,
-      transcript: transcriptResult.text,
-      text: transcriptResult.text,
-      segments: transcriptResult.segments,
-      words: transcriptResult.words,
+      transcript: transcriptText,
+      text: transcriptText,
+      segments: transcriptResult.segments.map((segment) => ({
+        ...segment,
+        text: toSimplifiedChinese(segment.text)
+      })),
+      words: transcriptResult.words?.map((word) => ({
+        ...word,
+        word: toSimplifiedChinese(word.word)
+      })),
       duration: transcriptResult.duration ?? audioManifest?.duration,
       language: transcriptResult.language,
       model: transcriptResult.model,
@@ -364,13 +366,16 @@ export class JobStore {
     if (!script.cleanScript?.trim() && !script.voiceoverScript?.trim()) {
       throw new Error("clean script is missing; run AI rewrite first");
     }
-    const shortVideoShots = this.buildShortVideoShots(script);
-    const promptScenes = this.buildVideoPromptScenesFromShots(shortVideoShots);
+    if (!this.cleaner.planShortVideo) {
+      throw new Error("AI 分镜服务不可用");
+    }
+    const plan = await this.cleaner.planShortVideo(script);
     const enhanced: ScriptAsset = {
       ...script,
-      videoPrompts: promptScenes.map((scene) => scene.videoPrompt),
-      enhancedScenes: promptScenes,
-      shortVideoShots,
+      planVersion: plan.planVersion,
+      targetDuration: plan.targetDuration,
+      shortVideoScript: plan.shortVideoScript,
+      shortVideoShots: plan.shots,
       videoEnhancedAt: new Date().toISOString()
     };
 
@@ -394,10 +399,12 @@ export class JobStore {
     const record = await this.requireRecord(id);
     const script = await this.storage.readJson<ScriptAsset>(record.storagePath);
     if (!script.shortVideoShots?.length && !script.videoPrompts?.length && !script.enhancedScenes?.length) {
-      throw new Error("video prompts are missing; run generate video prompts first");
+      throw new Error("分镜尚未生成，请先执行生成分镜");
     }
 
-    const videoResult = await this.videoGenerator.generate(script, id);
+    const videoResult = await this.videoGenerator.generate(script, id, async ({ phase, progress }) => {
+      await this.updateStep(id, "generate_video", { phase, progress });
+    });
     const enhanced: ScriptAsset = {
       ...script,
       hyperframesVideo: videoResult,
@@ -481,7 +488,9 @@ export class JobStore {
         attempts: 0,
         lastError: undefined,
         startedAt: now,
-        finishedAt: undefined
+        finishedAt: undefined,
+        phase: undefined,
+        progress: step === "generate_video" ? 0 : undefined
       },
       {
         status: "processing",
@@ -585,220 +594,6 @@ export class JobStore {
     }
   }
 
-  private buildShortVideoShots(script: ScriptAsset): ShortVideoShot[] {
-    const candidates: Array<{ caption: string; visual: string; duration?: number }> = [];
-    for (const scene of script.sceneList ?? []) {
-      candidates.push({
-        caption: scene.caption,
-        visual: scene.visual,
-        duration: scene.duration
-      });
-    }
-    for (const item of script.videoOutline ?? []) {
-      candidates.push({
-        caption: [item.title, ...item.bullets].join("。"),
-        visual: item.visualPrompt || item.bullets.join("，")
-      });
-    }
-    for (const point of script.keyPoints ?? []) {
-      candidates.push({
-        caption: point,
-        visual: "关键词高亮、流程卡片、信息图转场"
-      });
-    }
-    for (const sentence of this.splitSentences(script.voiceoverScript || script.cleanScript || script.rawText)) {
-      candidates.push({
-        caption: sentence,
-        visual: "竖屏解释视频字幕卡、重点词放大、抽象信息图"
-      });
-    }
-
-    const title = firstText(script.coverTitle, script.title, script.topic) || "视频成片";
-    const summary = firstText(script.summary, script.cleanScript, script.voiceoverScript) || title;
-    const unique = this.dedupePromptCandidates([
-      { caption: title, visual: "开场标题卡、主题关键词、强对比排版", duration: 4 },
-      { caption: summary, visual: "核心摘要卡、三段式信息图、节奏化字幕", duration: 6 },
-      ...candidates
-    ]);
-
-    while (unique.length < 6) {
-      unique.push({
-        caption: `${title} - 补充视角 ${unique.length + 1}`,
-        visual: "竖屏科技感动态图形、图标矩阵、重点词描边",
-        duration: 5
-      });
-    }
-
-    const shotTypes: ShotType[] = ["hook", "problem", "explain", "process", "contrast", "proof", "summary", "cta"];
-    const transitions: ShotTransition[] = ["flash", "push", "wipe", "zoom", "match-cut", "cut"];
-    const camera = ["slow push-in", "vertical slide", "soft zoom", "panel reveal", "parallax drift"];
-    const actions = [
-      "关键词从背景中弹出并形成主视觉",
-      "信息卡片依次翻入，建立问题和答案的关系",
-      "抽象流程线从左到右连接关键步骤",
-      "主体图形放大，旁侧浮现解释标签",
-      "对比面板左右切换，突出前后差异",
-      "总结卡片收束成一个清晰结论"
-    ];
-
-    return unique.slice(0, 10).map((item, index) => ({
-      index: index + 1,
-      duration: this.normalizeShotDuration(item.duration, item.caption),
-      shotType: shotTypes[Math.min(index, shotTypes.length - 1)],
-      subject: this.buildShotSubject(item.caption, title, index),
-      action: actions[index % actions.length],
-      cameraMotion: camera[index % camera.length],
-      visualLayers: this.buildVisualLayers(item, index),
-      caption: this.cleanText(item.caption).slice(0, 56),
-      emphasisWords: this.extractEmphasisWords(item.caption, script.keyPoints),
-      transition: transitions[index % transitions.length],
-      pacing: this.inferPacing(index, item.caption),
-      narration: this.cleanText(item.caption).slice(0, 140)
-    }));
-  }
-
-  private buildVideoPromptScenesFromShots(shots: ShortVideoShot[]): EnhancedScene[] {
-    return shots.map((shot) => ({
-      scene: shot.index,
-      originalVisual: shot.subject,
-      videoPrompt: [
-        `9:16 竖屏中文动态图形短视频，第 ${shot.index} 镜。`,
-        `主体：${shot.subject}。`,
-        `动作：${shot.action}。`,
-        `字幕：${shot.caption}。`,
-        `视觉层：${shot.visualLayers.map((layer) => `${layer.type}:${layer.content}`).join("；")}。`,
-        `节奏：${shot.pacing}，转场：${shot.transition}，无真人无数字人。`
-      ].join(""),
-      cameraMovement: shot.cameraMotion,
-      motionEffect: shot.action,
-      lightingStyle: shot.visualLayers.find((layer) => layer.type === "background")?.style
-    }));
-  }
-
-  private buildVisualLayers(
-    item: { caption: string; visual: string; duration?: number },
-    index: number
-  ): ShortVideoVisualLayer[] {
-    const visual = this.cleanText(item.visual);
-    const caption = this.cleanText(item.caption);
-    return [
-      {
-        type: "background",
-        content: index % 2 === 0 ? "深色渐变空间与缓慢移动网格" : "柔和径向光斑与纵向速度线",
-        motion: "slow parallax drift",
-        style: "dark tech canvas"
-      },
-      {
-        type: "subject",
-        content: visual || caption.slice(0, 32) || "核心概念",
-        motion: index % 2 === 0 ? "scale in with slight rotation" : "slide up and settle",
-        style: "glass card / neon outline"
-      },
-      {
-        type: "graphic",
-        content: "流程线、标签卡片、图标节点围绕主体展开",
-        motion: "draw line then pop nodes",
-        style: "compact infographic"
-      },
-      {
-        type: "caption",
-        content: caption.slice(0, 56),
-        motion: "word-by-word reveal",
-        style: "large kinetic Chinese subtitle"
-      },
-      {
-        type: "emphasis",
-        content: this.extractEmphasisWords(caption).join(" / "),
-        motion: "bounce and highlight sweep",
-        style: "accent pills"
-      },
-      {
-        type: "decoration",
-        content: "粒子、扫描线、角标进度",
-        motion: "looping ambient motion",
-        style: "subtle"
-      }
-    ];
-  }
-
-  private buildShotSubject(caption: string, fallback: string, index: number) {
-    const text = this.cleanText(caption);
-    if (!text) {
-      return fallback;
-    }
-    const subject = text.split(/[，,。:：]/).map((part) => part.trim()).find((part) => part.length >= 3);
-    return (subject || fallback || `镜头 ${index + 1}`).slice(0, 24);
-  }
-
-  private normalizeShotDuration(duration: number | undefined, caption: string) {
-    if (Number.isFinite(duration)) {
-      return Math.max(3, Math.min(8, Math.round(duration as number)));
-    }
-    return Math.max(4, Math.min(7, Math.ceil(this.cleanText(caption).length / 28) + 3));
-  }
-
-  private inferPacing(index: number, caption: string): ShotPacing {
-    if (index === 0 || this.cleanText(caption).length <= 28) {
-      return "fast";
-    }
-    if (this.cleanText(caption).length >= 72) {
-      return "slow";
-    }
-    return "medium";
-  }
-
-  private extractEmphasisWords(text: string, keyPoints: string[] = []) {
-    const source = [text, ...keyPoints].join(" ");
-    const words = source
-      .split(/[，,。！？!?；;、\s]+/)
-      .map((word) => this.cleanText(word).replace(/^["'“”‘’]+|["'“”‘’]+$/g, ""))
-      .filter((word) => word.length >= 2 && word.length <= 8);
-    const seen = new Set<string>();
-    const result: string[] = [];
-    for (const word of words) {
-      if (seen.has(word)) {
-        continue;
-      }
-      seen.add(word);
-      result.push(word);
-      if (result.length >= 3) {
-        break;
-      }
-    }
-    return result.length ? result : ["重点", "节奏", "结果"];
-  }
-
-  private dedupePromptCandidates(items: Array<{ caption: string; visual: string; duration?: number }>) {
-    const seen = new Set<string>();
-    return items.filter((item) => {
-      const caption = this.cleanText(item.caption);
-      const visual = this.cleanText(item.visual);
-      if (!caption && !visual) {
-        return false;
-      }
-      const key = `${caption}:${visual}`.toLowerCase();
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      item.caption = caption;
-      item.visual = visual;
-      return true;
-    });
-  }
-
-  private splitSentences(text?: string) {
-    return (text ?? "")
-      .split(/[。！？!?；;\n]+/)
-      .map((sentence) => this.cleanText(sentence))
-      .filter((sentence) => sentence.length >= 8)
-      .slice(0, 8);
-  }
-
-  private cleanText(value?: string) {
-    return (value ?? "").replace(/\s+/g, " ").trim();
-  }
-
   private async buildPreview(record: JobRecord): Promise<JobPreview> {
     const [pageInfo, cleaned, transcript] = await Promise.all([
       this.readPageInfo(record.id),
@@ -810,12 +605,15 @@ export class JobStore {
       this.readTranscript(record.id)
     ]);
     const output = cleaned?.output;
-    const displayTitle =
+    const displayTitle = toSimplifiedChinese(
       firstText(output?.title, output?.coverTitle, output?.pageTitle, pageInfo?.pageTitle, record.topic) ||
-      "未命名作品";
+      "未命名作品"
+    );
     const authorName = firstText(pageInfo?.authorName, output?.authorName);
-    const summary = firstText(output?.summary, pageInfo?.pageDescription, output?.rawText)?.slice(0, 140);
-    const subtitle = firstText(authorName, pageInfo?.pageDescription, record.sourceUrl) || "等待内容生成";
+    const summaryValue = firstText(output?.summary, pageInfo?.pageDescription, output?.rawText)?.slice(0, 140);
+    const summary = summaryValue ? toSimplifiedChinese(summaryValue) : undefined;
+    const subtitle = toSimplifiedChinese(firstText(authorName, pageInfo?.pageDescription, record.sourceUrl) || "等待内容生成");
+    const coverTitleValue = firstText(output?.coverTitle, output?.title, pageInfo?.pageTitle, record.topic);
     const hasTranscript = Boolean(transcript?.transcript?.trim() || cleaned?.transcriptText?.trim());
     const hasRewrite = Boolean(output?.cleanScript?.trim() || output?.voiceoverScript?.trim());
     const hasVideoPrompts = Boolean(output?.shortVideoShots?.length || output?.videoPrompts?.length || output?.enhancedScenes?.length);
@@ -829,7 +627,7 @@ export class JobStore {
       sourcePlatform: this.getSourcePlatform(record.sourceUrl),
       authorName,
       summary,
-      coverTitle: firstText(output?.coverTitle, output?.title, pageInfo?.pageTitle, record.topic),
+      coverTitle: coverTitleValue ? toSimplifiedChinese(coverTitleValue) : undefined,
       hasTranscript,
       hasRewrite,
       hasVideoPrompts,

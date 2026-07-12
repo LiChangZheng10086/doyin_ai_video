@@ -10,7 +10,7 @@ class ApiClient {
       this.serverPort = await window.electron.getServerPort();
       this.client = axios.create({
         baseURL: `http://localhost:${this.serverPort}`,
-        timeout: 600000,
+        timeout: 960000,
       });
     }
     return this.client!;
@@ -107,11 +107,14 @@ class ApiClient {
     return response.data.rawTranscript!;
   }
 
-  // 获取生成的视频提示词
-  async getJobVideoPrompts(id: string): Promise<Pick<ApiResponse, 'shortVideoShots' | 'videoPrompts' | 'enhancedScenes' | 'videoOutline'>> {
+  // 获取分镜（兼容历史视频提示词字段）
+  async getJobVideoPrompts(id: string): Promise<Pick<ApiResponse, 'planVersion' | 'targetDuration' | 'shortVideoScript' | 'shortVideoShots' | 'videoPrompts' | 'enhancedScenes' | 'videoOutline'>> {
     const client = await this.getClient();
     const response = await client.get<ApiResponse>(`/api/jobs/${id}/video-prompts`);
     return {
+      planVersion: response.data.planVersion,
+      targetDuration: response.data.targetDuration,
+      shortVideoScript: response.data.shortVideoScript,
       shortVideoShots: response.data.shortVideoShots,
       videoPrompts: response.data.videoPrompts,
       enhancedScenes: response.data.enhancedScenes,
@@ -130,6 +133,11 @@ class ApiClient {
   async downloadVideo(id: string): Promise<string> {
     const serverPort = this.serverPort || await window.electron.getServerPort();
     return `http://localhost:${serverPort}/api/jobs/${id}/video/download`;
+  }
+
+  async getVideoStreamUrl(id: string): Promise<string> {
+    const serverPort = this.serverPort || await window.electron.getServerPort();
+    return `http://localhost:${serverPort}/api/jobs/${id}/video/stream`;
   }
 
   // 健康检查

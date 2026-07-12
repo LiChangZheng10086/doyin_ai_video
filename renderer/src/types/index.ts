@@ -30,6 +30,13 @@ export type PipelineStep =
   | 'generate_video';
 
 export type PipelineStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
+export type VideoGenerationPhase =
+  | 'checking_environment'
+  | 'building_project'
+  | 'validating'
+  | 'snapshotting'
+  | 'rendering'
+  | 'verifying';
 
 export interface PipelineStepState {
   status: PipelineStepStatus;
@@ -37,6 +44,8 @@ export interface PipelineStepState {
   lastError?: string;
   startedAt?: string;
   finishedAt?: string;
+  phase?: VideoGenerationPhase;
+  progress?: number;
 }
 
 export type PipelineSteps = Record<PipelineStep, PipelineStepState>;
@@ -99,6 +108,12 @@ export interface HyperframesVideoScene {
   title?: string;
   bullets?: string[];
   shotType?: ShotType;
+  layout?: ShotLayout;
+  headline?: string;
+  supportingText?: string;
+  captionLines?: string[];
+  visualItems?: ShortVideoVisualItem[];
+  sourceKeyPoints?: number[];
   subject?: string;
   action?: string;
   cameraMotion?: string;
@@ -140,6 +155,22 @@ export type ShotPacing = 'fast' | 'medium' | 'slow';
 
 export type ShotTransition = 'cut' | 'wipe' | 'push' | 'zoom' | 'match-cut' | 'flash';
 
+export type ShotLayout =
+  | 'kinetic-title'
+  | 'concept-map'
+  | 'process-flow'
+  | 'comparison'
+  | 'metric'
+  | 'summary-stack';
+
+export type ShotVisualTone = 'primary' | 'success' | 'danger' | 'muted';
+
+export interface ShortVideoVisualItem {
+  label: string;
+  value?: string;
+  tone?: ShotVisualTone;
+}
+
 export type ShortVideoVisualLayerType =
   | 'background'
   | 'subject'
@@ -168,6 +199,12 @@ export interface ShortVideoShot {
   transition: ShotTransition;
   pacing: ShotPacing;
   narration: string;
+  layout?: ShotLayout;
+  headline?: string;
+  supportingText?: string;
+  captionLines?: string[];
+  visualItems?: ShortVideoVisualItem[];
+  sourceKeyPoints?: number[];
 }
 
 export interface TranscriptSegment {
@@ -200,6 +237,8 @@ export interface CleanedScript {
     rawText?: string;
     cleanScript?: string;
     summary?: string;
+    hook?: string;
+    shortVideoScript?: string;
     keyPoints?: string[];
     tags?: string[];
     videoOutline?: Array<{
@@ -210,6 +249,8 @@ export interface CleanedScript {
     videoPrompts?: string[];
     enhancedScenes?: VideoPromptScene[];
     shortVideoShots?: ShortVideoShot[];
+    planVersion?: 2;
+    targetDuration?: 60;
     qualityNotes?: string[];
     voiceoverScript?: string;
     coverTitle?: string;
@@ -228,6 +269,9 @@ export interface ApiResponse<T = any> {
   videoPrompts?: string[];
   enhancedScenes?: VideoPromptScene[];
   shortVideoShots?: ShortVideoShot[];
+  planVersion?: 2;
+  targetDuration?: 60;
+  shortVideoScript?: string;
   videoOutline?: Array<{
     title: string;
     bullets: string[];

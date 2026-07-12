@@ -7,6 +7,7 @@ import type { ScriptCleaner } from "./ai-cleaner.js";
 import type { AsrService } from "./asr.js";
 import { JobStore } from "./jobs.js";
 import type { MediaService } from "./media.js";
+import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import { LocalStorage } from "./storage.js";
 import type { ScriptAsset } from "../types.js";
 
@@ -37,10 +38,10 @@ test("JobStore re-extracts old mp3 audio before bundled Whisper transcription", 
     async transcribe(audioPath: string) {
       transcribedAudioPath = audioPath;
       return {
-        text: "转录正文",
+        text: "轉錄正文，推薦內容",
         model: "ggml-small",
         provider: "whisper.cpp",
-        segments: [{ text: "转录正文" }],
+        segments: [{ text: "轉錄正文，推薦內容" }],
         duration: 2,
         language: "zh"
       };
@@ -81,21 +82,55 @@ test("JobStore re-extracts old mp3 audio before bundled Whisper transcription", 
   });
 
   const result = await jobs.runStep("legacy", "transcribe");
+  const transcript = await storage.readJson<{ transcript: string; segments: Array<{ text: string }> }>("raw/transcripts/legacy.json");
 
   assert.equal(extracted, 1);
   assert.equal(transcribedAudioPath, wavPath);
   assert.equal(result.audioPath, wavPath);
   assert.equal(result.steps?.transcribe.status, "succeeded");
+  assert.equal(transcript.transcript, "转录正文，推荐内容");
+  assert.equal(transcript.segments[0]?.text, "转录正文，推荐内容");
 });
 
-test("JobStore generates shot-based video prompts while preserving legacy prompt fields", async () => {
+test("JobStore stores the AI generated Shot V2 plan", async () => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-shot-prompts-"));
   const storage = new LocalStorage(storageRoot);
-  const cleaner: ScriptCleaner = {
+  const plannedShots = Array.from({ length: 8 }, (_, index) => ({
+    index: index + 1,
+    duration: index < 4 ? 7 : 6,
+    shotType: index === 0 ? "hook" : index === 7 ? "summary" : "explain",
+    layout: index === 0 ? "kinetic-title" : index === 7 ? "summary-stack" : "concept-map",
+    headline: `核心要点${index + 1}`,
+    supportingText: "把复杂内容讲清楚",
+    captionLines: [`核心内容${index + 1}`, "逐步展开"],
+    visualItems: [
+      { label: "目标", tone: "primary" },
+      { label: "结果", tone: "success" }
+    ],
+    sourceKeyPoints: [index % 3],
+    subject: `核心要点${index + 1}`,
+    action: "",
+    cameraMotion: "",
+    visualLayers: [],
+    caption: `核心内容${index + 1}`,
+    emphasisWords: ["核心"],
+    transition: index === 0 ? "flash" : "cut",
+    pacing: index === 0 ? "fast" : "medium",
+    narration: `核心内容${index + 1}`
+  }));
+  const cleaner = {
     async clean(input) {
       return input.draft;
+    },
+    async planShortVideo() {
+      return {
+        planVersion: 2,
+        targetDuration: 60,
+        shortVideoScript: "这是为六十秒视频精编的完整内容。".repeat(10),
+        shots: plannedShots
+      };
     }
-  };
+  } as ScriptCleaner;
   const media = {} as MediaService;
   const asr = {} as AsrService;
   const jobs = new JobStore(storage, cleaner, media, asr);
@@ -137,9 +172,66 @@ test("JobStore generates shot-based video prompts while preserving legacy prompt
   const script = await storage.readJson<ScriptAsset>("processed/scripts/shots.json");
 
   assert.equal(result.steps?.generate_video_prompts.status, "succeeded");
-  assert.ok((script.shortVideoShots?.length ?? 0) >= 6);
-  assert.ok(script.shortVideoShots?.every((shot) => shot.subject && shot.action && shot.caption));
-  assert.ok(script.shortVideoShots?.every((shot) => shot.visualLayers.length >= 4));
-  assert.ok((script.videoPrompts?.length ?? 0) >= 6);
-  assert.ok((script.enhancedScenes?.length ?? 0) >= 6);
+  assert.equal(script.planVersion, 2);
+  assert.equal(script.targetDuration, 60);
+  assert.equal(script.shortVideoShots?.length, 8);
+  assert.equal(script.shortVideoShots?.[0]?.layout, "kinetic-title");
+  assert.equal(script.shortVideoShots?.[7]?.layout, "summary-stack");
+  assert.equal(script.videoPrompts, undefined);
+  assert.equal(script.enhancedScenes, undefined);
+});
+
+test("JobStore attempts video rendering only once and preserves the failure phase", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-video-once-"));
+  const storage = new LocalStorage(storageRoot);
+  let generateCalls = 0;
+  const videoGenerator = {
+    async generate(_script: ScriptAsset, _jobId: string, onProgress?: (state: { phase: string; progress: number }) => void) {
+      generateCalls += 1;
+      await onProgress?.({ phase: "validating", progress: 35 });
+      throw new Error("inspect failed: clipped text");
+    }
+  } as unknown as HyperframesVideoGenerator;
+  const jobs = new JobStore(
+    storage,
+    { async clean(input) { return input.draft; } },
+    {} as MediaService,
+    {} as AsrService,
+    videoGenerator
+  );
+  await jobs.init();
+  await storage.writeJson("cache/jobs-index.json", {
+    video: {
+      id: "video",
+      sourceUrl: "https://example.com/video",
+      topic: "video",
+      status: "queued",
+      stage: "scripted",
+      workflowMode: "manual",
+      steps: {
+        transcribe: { status: "succeeded", attempts: 1 },
+        clean: { status: "succeeded", attempts: 1 },
+        generate_video_prompts: { status: "succeeded", attempts: 1 },
+        generate_video: { status: "pending", attempts: 0 }
+      },
+      storagePath: "processed/scripts/video.json",
+      createdAt: "2026-07-10T00:00:00.000Z",
+      updatedAt: "2026-07-10T00:00:00.000Z"
+    }
+  });
+  await storage.writeJson("processed/scripts/video.json", {
+    sourceUrl: "https://example.com/video",
+    topic: "video",
+    rawText: "content",
+    shortVideoShots: [{ index: 1, duration: 6, shotType: "hook", subject: "hook", action: "", cameraMotion: "", visualLayers: [], caption: "hook", emphasisWords: [], transition: "cut", pacing: "fast", narration: "hook" }],
+    status: "ready"
+  } satisfies ScriptAsset);
+
+  await assert.rejects(jobs.runStep("video", "generate_video"), /inspect failed/);
+  const result = await jobs.get("video");
+
+  assert.equal(generateCalls, 1);
+  assert.equal(result?.steps?.generate_video.attempts, 1);
+  assert.equal(result?.steps?.generate_video.phase, "validating");
+  assert.equal(result?.steps?.generate_video.progress, 35);
 });

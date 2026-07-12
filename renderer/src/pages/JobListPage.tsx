@@ -477,7 +477,7 @@ function EmptyCreatorState({ onCreate }: { onCreate: () => void }) {
       </div>
       <h3 className="text-xl font-semibold text-tech-text">还没有作品</h3>
       <p className="mx-auto mt-2 max-w-md text-tech-muted">
-        粘贴抖音链接或分享文本，生成转录、洗稿内容、视频提示词和本地成片。
+        粘贴抖音链接或分享文本，生成转录、洗稿内容、连续分镜和本地成片。
       </p>
       <button
         onClick={onCreate}

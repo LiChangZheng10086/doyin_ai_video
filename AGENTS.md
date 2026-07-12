@@ -1,6 +1,6 @@
 # 抖音 AI 视频助手
 
-基于 Electron + React 的桌面应用，用于从抖音视频链接或分享文本生成视频转录、AI 洗稿内容、视频提示词和本地竖屏视频。当前视频生成通过 HyperFrames CLI 本地渲染 HTML/CSS/GSAP 成 MP4。
+基于 Electron + React 的桌面应用，用于从抖音视频链接或分享文本生成视频转录、AI 洗稿内容、连续分镜和本地竖屏视频。当前视频生成通过 HyperFrames CLI 本地渲染 HTML/CSS/GSAP 成 MP4。
 
 ## 项目架构
 
@@ -63,7 +63,7 @@ POST /api/jobs 创建任务并解析输入
 用户在详情页逐步确认执行：
     1. 视频转录（yt-dlp + ffmpeg + 内置 whisper.cpp）
     2. AI 洗稿
-    3. 生成视频提示词
+    3. 生成分镜
     4. 生成 9:16 MP4（HyperFrames）
 ```
 
@@ -139,7 +139,7 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 - `GET /api/jobs/:id/script` - 历史脚本资产
 - `GET /api/jobs/:id/cleaned` - AI 清洗结果
 - `GET /api/jobs/:id/raw-transcript` - 结构化原始转录
-- `GET /api/jobs/:id/video-prompts` - 视频提示词
+- `GET /api/jobs/:id/video-prompts` - 分镜（兼容历史视频提示词字段）
 - `GET /api/jobs/:id/video-output` - HyperFrames 视频输出信息
 - `GET /api/jobs/:id/video/download` - 下载 MP4
 

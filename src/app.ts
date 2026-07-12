@@ -2,11 +2,12 @@ import express, { Express } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { AsrService } from "./lib/asr.js";
-import { OpenAiScriptCleaner } from "./lib/ai-cleaner.js";
+import { OpenAiScriptCleaner, RuntimeScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
 import { JobStepError, JobStore } from "./lib/jobs.js";
 import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
+import { simplifyChineseValue } from "./lib/chinese.js";
 import type { PipelineStep, ScriptAsset } from "./types.js";
 
 export interface ServerConfig {
@@ -29,6 +30,14 @@ export interface ServerConfig {
   hyperframesNodeBinary?: string;
   hyperframesUseElectronAsNode?: boolean;
   hyperframesBrowserPath?: string;
+  resolveAiConfig?: () => Promise<AiRuntimeConfig | null>;
+}
+
+export interface AiRuntimeConfig {
+  provider: "deepseek" | "openai" | "custom";
+  model: string;
+  apiKey: string;
+  baseURL?: string;
 }
 
 function isMissingFileError(error: unknown) {
@@ -46,12 +55,24 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   const aiApiKey = config.aiApiKey;
   const aiBaseURL = config.aiBaseURL ?? (aiProvider === "deepseek" ? "https://api.deepseek.com" : undefined);
 
-  const cleaner = new OpenAiScriptCleaner({
+  const staticCleanerOptions = {
     apiKey: aiApiKey,
     model: aiModel,
     baseURL: aiBaseURL,
     provider: aiProvider === "deepseek" ? "deepseek" : "openai"
-  });
+  } as const;
+  const cleaner = config.resolveAiConfig
+    ? new RuntimeScriptCleaner(async () => {
+        const current = await config.resolveAiConfig?.();
+        if (!current) return null;
+        return {
+          apiKey: current.apiKey,
+          model: current.model,
+          baseURL: current.baseURL,
+          provider: current.provider === "deepseek" ? "deepseek" : "openai"
+        };
+      })
+    : new OpenAiScriptCleaner(staticCleanerOptions);
 
   const media = new MediaService(storage, {
     ytDlpBinary: config.ytDlpBinary,
@@ -74,7 +95,8 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     cliPath: config.hyperframesCliPath,
     nodeBinary: config.hyperframesNodeBinary,
     useElectronAsNode: config.hyperframesUseElectronAsNode,
-    browserPath: config.hyperframesBrowserPath
+    browserPath: config.hyperframesBrowserPath,
+    ffprobeBinary: config.ffprobeBinary
   });
 
   const jobs = new JobStore(storage, cleaner, media, asr, videoGenerator);
@@ -268,7 +290,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
     try {
       const script = await storage.readJson(path.join("processed", "scripts", `${record.id}.json`));
-      res.json({ script });
+      res.json({ script: simplifyChineseValue(script) });
     } catch (error) {
       if (isMissingFileError(error)) {
         res.status(404).json({ message: "script not found" });
@@ -287,7 +309,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
     try {
       const cleaned = await storage.readJson(path.join("processed", "cleaned", `${record.id}.json`));
-      res.json({ cleaned });
+      res.json({ cleaned: simplifyChineseValue(cleaned) });
     } catch (error) {
       if (isMissingFileError(error)) {
         res.status(404).json({ message: "cleaned result not found" });
@@ -344,7 +366,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
     try {
       const rawTranscript = await storage.readJson(path.join("raw", "transcripts", `${record.id}.json`));
-      res.json({ rawTranscript });
+      res.json({ rawTranscript: simplifyChineseValue(rawTranscript) });
     } catch (error) {
       if (isMissingFileError(error)) {
         res.status(404).json({ message: "raw transcript not found" });
@@ -354,7 +376,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
   });
 
-  // 视频提示词接口
+  // 分镜接口（保留旧字段以兼容历史任务）
   app.get("/api/jobs/:id/video-prompts", async (req, res) => {
     const record = await jobs.get(req.params.id);
     if (!record) {
@@ -365,15 +387,18 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     try {
       const script = await storage.readJson<ScriptAsset>(path.join("processed", "scripts", `${record.id}.json`));
       if (!script.shortVideoShots?.length && !script.videoPrompts?.length && !script.enhancedScenes?.length) {
-        res.status(404).json({ message: "video prompts not generated yet" });
+        res.status(404).json({ message: "分镜尚未生成" });
         return;
       }
-      res.json({
+      res.json(simplifyChineseValue({
+        planVersion: script.planVersion,
+        targetDuration: script.targetDuration,
+        shortVideoScript: script.shortVideoScript,
         shortVideoShots: script.shortVideoShots,
         videoPrompts: script.videoPrompts,
         enhancedScenes: script.enhancedScenes,
         videoOutline: script.videoOutline
-      });
+      }));
     } catch (error) {
       if (isMissingFileError(error)) {
         res.status(404).json({ message: "script not found" });
@@ -424,21 +449,38 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
 
     try {
-      const script = await storage.readJson<ScriptAsset>(path.join("processed", "scripts", `${record.id}.json`));
-      const videoPath = script.hyperframesVideo?.videoPath ?? record.videoOutputPath;
-      if (!videoPath) {
-        res.status(404).json({ message: "video file not generated yet" });
-        return;
-      }
-
-      const videoFullPath = resolveOutputPath(config.storagePath, videoPath);
-      if (!existsSync(videoFullPath)) {
-        res.status(404).json({ message: "video file not found on disk" });
-        return;
-      }
-
+      const videoFullPath = await resolveVideoFile(storage, config.storagePath, record);
       res.download(videoFullPath, `${record.topic}-${record.id.slice(0, 8)}.mp4`);
     } catch (error) {
+      if (error instanceof VideoFileError) {
+        res.status(404).json({ message: error.message });
+        return;
+      }
+      if (isMissingFileError(error)) {
+        res.status(404).json({ message: "script not found" });
+        return;
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/jobs/:id/video/stream", async (req, res) => {
+    const record = await jobs.get(req.params.id);
+    if (!record) {
+      res.status(404).json({ message: "job not found" });
+      return;
+    }
+
+    try {
+      const videoFullPath = await resolveVideoFile(storage, config.storagePath, record);
+      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Content-Disposition", "inline");
+      res.sendFile(videoFullPath);
+    } catch (error) {
+      if (error instanceof VideoFileError) {
+        res.status(404).json({ message: error.message });
+        return;
+      }
       if (isMissingFileError(error)) {
         res.status(404).json({ message: "script not found" });
         return;
@@ -449,6 +491,23 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   return app;
 }
+
+async function resolveVideoFile(storage: LocalStorage, storagePath: string, record: { id: string; videoOutputPath?: string }) {
+  const script = await storage.readJson<ScriptAsset>(path.join("processed", "scripts", `${record.id}.json`));
+  const videoPath = script.hyperframesVideo?.videoPath ?? record.videoOutputPath;
+  if (!videoPath) {
+    throw new VideoFileError("video file not generated yet");
+  }
+
+  const videoFullPath = resolveOutputPath(storagePath, videoPath);
+  if (!existsSync(videoFullPath)) {
+    throw new VideoFileError("video file not found on disk");
+  }
+
+  return videoFullPath;
+}
+
+class VideoFileError extends Error {}
 
 function resolveOutputPath(storagePath: string, outputPath: string) {
   if (path.isAbsolute(outputPath)) {

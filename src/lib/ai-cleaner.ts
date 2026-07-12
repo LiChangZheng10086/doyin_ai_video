@@ -1,8 +1,19 @@
 import OpenAI from "openai";
+import { toSimplifiedChinese } from "./chinese.js";
+import { diagnoseAiError } from "./ai-errors.js";
 import { buildScriptDraft, buildTranscriptDraft } from "./script-builder.js";
 import type { DouyinShareParseResult } from "./douyin.js";
-import type { ScriptAsset } from "../types.js";
 import type { DouyinPageInfo } from "./douyin-page.js";
+import type {
+  ScriptAsset,
+  ShortVideoPlan,
+  ShortVideoShot,
+  ShortVideoVisualItem,
+  ShotLayout,
+  ShotPacing,
+  ShotTransition,
+  ShotType
+} from "../types.js";
 
 export interface ScriptCleanerInput {
   parsed?: DouyinShareParseResult | null;
@@ -14,6 +25,36 @@ export interface ScriptCleanerInput {
 
 export interface ScriptCleaner {
   clean(input: ScriptCleanerInput): Promise<ScriptAsset>;
+  planShortVideo?(script: ScriptAsset): Promise<ShortVideoPlan>;
+}
+
+export interface OpenAiScriptCleanerOptions {
+  apiKey?: string;
+  model?: string;
+  baseURL?: string;
+  thinkingMode?: "enabled" | "disabled";
+  provider?: "deepseek" | "openai";
+}
+
+export class RuntimeScriptCleaner implements ScriptCleaner {
+  constructor(
+    private readonly resolveOptions: () => Promise<OpenAiScriptCleanerOptions | null>,
+    private readonly createCleaner: (options: OpenAiScriptCleanerOptions) => ScriptCleaner = (options) => new OpenAiScriptCleaner(options)
+  ) {}
+
+  async clean(input: ScriptCleanerInput) {
+    return (await this.current()).clean(input);
+  }
+
+  async planShortVideo(script: ScriptAsset) {
+    const cleaner = await this.current();
+    if (!cleaner.planShortVideo) throw new Error("AI 分镜服务不可用");
+    return cleaner.planShortVideo(script);
+  }
+
+  private async current() {
+    return this.createCleaner((await this.resolveOptions()) ?? {});
+  }
 }
 
 type CleanScriptPayload = {
@@ -22,90 +63,17 @@ type CleanScriptPayload = {
   hook: string;
   key_points: string[];
   clean_script: string;
-  voiceover_script: string;
+  short_video_script: string;
   cover_title: string;
   tags: string[];
-  video_outline: Array<{
-    title: string;
-    bullets: string[];
-    visual_prompt: string;
-  }>;
-  scene_list: Array<{
-    scene: number;
-    duration: number;
-    caption: string;
-    visual: string;
-  }>;
   quality_notes: string[];
 };
 
-const CLEAN_SCRIPT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    title: { type: "string" },
-    summary: { type: "string" },
-    hook: { type: "string" },
-    key_points: {
-      type: "array",
-      items: { type: "string" }
-    },
-    clean_script: { type: "string" },
-    voiceover_script: { type: "string" },
-    cover_title: { type: "string" },
-    tags: {
-      type: "array",
-      items: { type: "string" }
-    },
-    video_outline: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          title: { type: "string" },
-          bullets: {
-            type: "array",
-            items: { type: "string" }
-          },
-          visual_prompt: { type: "string" }
-        },
-        required: ["title", "bullets", "visual_prompt"]
-      }
-    },
-    scene_list: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          scene: { type: "number" },
-          duration: { type: "number" },
-          caption: { type: "string" },
-          visual: { type: "string" }
-        },
-        required: ["scene", "duration", "caption", "visual"]
-      }
-    },
-    quality_notes: {
-      type: "array",
-      items: { type: "string" }
-    }
-  },
-  required: [
-    "title",
-    "summary",
-    "hook",
-    "key_points",
-    "clean_script",
-    "voiceover_script",
-    "cover_title",
-    "tags",
-    "video_outline",
-    "scene_list",
-    "quality_notes"
-  ]
-} as const;
+const SHOT_TYPES = new Set<ShotType>(["hook", "problem", "explain", "proof", "contrast", "process", "summary", "cta"]);
+const SHOT_LAYOUTS = new Set<ShotLayout>(["kinetic-title", "concept-map", "process-flow", "comparison", "metric", "summary-stack"]);
+const SHOT_TRANSITIONS = new Set<ShotTransition>(["cut", "wipe", "push", "zoom", "match-cut", "flash"]);
+const SHOT_PACING = new Set<ShotPacing>(["fast", "medium", "slow"]);
+const PRODUCTION_TEXT = /\bSHOT\b|camera\s*motion|panel\s*reveal|highlight\s*sweep|slow\s*push|match[- ]cut|9\s*:\s*16|动态图形|无真人|视觉层|镜头运动/i;
 
 export class OpenAiScriptCleaner implements ScriptCleaner {
   private readonly client?: OpenAI;
@@ -114,144 +82,148 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
   private readonly thinkingMode: "enabled" | "disabled";
   private readonly provider: "deepseek" | "openai";
 
-  constructor(
-    options: {
-      apiKey?: string;
-      model?: string;
-      baseURL?: string;
-      thinkingMode?: "enabled" | "disabled";
-      provider?: "deepseek" | "openai";
-    } = {}
-  ) {
+  constructor(options: OpenAiScriptCleanerOptions = {}) {
     this.model = options.model ?? process.env.AI_MODEL ?? "deepseek-v4-pro";
     this.baseURL = options.baseURL;
     this.provider = options.provider ?? (options.baseURL ? "deepseek" : "openai");
-    this.thinkingMode =
-      options.thinkingMode ?? (process.env.AI_THINKING_MODE as "enabled" | "disabled") ?? "disabled";
+    this.thinkingMode = options.thinkingMode ?? (process.env.AI_THINKING_MODE as "enabled" | "disabled") ?? "disabled";
     if (options.apiKey) {
-      this.client = new OpenAI({
-        apiKey: options.apiKey,
-        baseURL: options.baseURL
-      });
+      this.client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL });
     }
   }
 
   async clean(input: ScriptCleanerInput): Promise<ScriptAsset> {
-    const draft = input.draft ?? this.buildDraft(input);
     if (!this.client) {
-      return this.toAssetFromDraft(draft, "fallback");
+      throw new Error("未配置 AI API Key，无法执行 AI 洗稿");
     }
-
-    try {
-      const response = await this.client.chat.completions.create({
-        model: this.model,
-        messages: [
+    const draft = input.draft ?? this.buildDraft(input);
+    let correction = "";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      let text: string;
+      try {
+        text = await this.completeJson([
           {
             role: "system",
-            content:
-              "你是一个中文 AI 视频文案清洗和短视频结构规划专家。你的任务是清洗语音转写或分享文案，去掉口语废词、重复表达和无效寒暄，保留所有技术细节，并改写成科技博主口播风格。输出必须严格符合给定 JSON 格式，不要输出 Markdown。"
+            content: "你是中文短视频文案编辑。所有观众可见文字必须使用中国大陆规范简体中文，禁止使用繁体字。只负责清洗、压缩和重写内容，不生成 PPT 大纲、分镜或视觉提示词。只输出合法 JSON。"
           },
           {
             role: "user",
             content: [
-              "请根据下面的信息生成一版更适合短视频口播的 JSON 成稿：",
-              "",
+              "请将视频转录重写成一份 50 到 60 秒无声动效短视频可用的精编文案。",
               `主题：${input.topic}`,
-              input.parsed
-                ? [
-                    `内容类型：${input.parsed.contentType}`,
-                    `标题候选：${input.parsed.titleCandidate}`,
-                    `简介：${input.parsed.introText}`,
-                    `标签：${input.parsed.hashtags.join("、") || "无"}`
-                  ].join("\n")
-                : "内容类型：video_transcript",
-              input.pageInfo
-                ? [
-                    "",
-                    `页面标题：${input.pageInfo.pageTitle ?? "无"}`,
-                    `页面描述：${input.pageInfo.pageDescription ?? "无"}`,
-                    `作者：${input.pageInfo.authorName ?? "无"}`,
-                    `发布时间：${input.pageInfo.publishTime ?? "无"}`,
-                    `视频 ID：${input.pageInfo.videoId ?? "无"}`
-                  ].join("\n")
-                : "",
-              "",
-              "原始分享文本：",
-              input.parsed?.shareText ?? "无",
-              input.transcriptText
-                ? [
-                    "",
-                    "视频转写原文：",
-                    input.transcriptText
-                  ].join("\n")
-                : "",
-              "",
-              "要求：",
-              "1. 视频转写原文优先级最高；没有转写时，才使用分享文案。",
-              "2. 开场要有钩子，可以用问句、反常识观点或痛点切入，但不要夸张。",
-              "3. 用“你”拉近距离，复杂概念要翻译成普通人能听懂的话。",
-              "4. 重点是技术分享，不要扩写不存在的能力、数据、模型或产品功能。",
-              "5. 口播稿要自然、短句化，适合直接配音，去掉“嗯、啊、这个、那个、就是说”等废词。",
-              "6. summary 用 80 字以内概括内容，key_points 提炼 3 到 6 条核心要点。",
-              "7. video_outline 给出 6 到 10 个竖屏视频画面结构，每个包含 title、2 到 4 条 bullets 和 visual_prompt。",
-              "8. scene_list 作为短视频段落结构参考，控制在 3 到 5 段，为后续生成视频提示词服务。",
-              "9. 封面标题要适合抖音短视频，tags 尽量保留原始标签，并补充少量技术相关标签。",
-              "10. quality_notes 里写 2 到 4 条本次脚本的注意点。",
-              "11. 你必须只输出合法 JSON。"
-            ].join("\n")
+              `页面标题：${input.pageInfo?.pageTitle ?? "无"}`,
+              `分享文本：${input.parsed?.shareText ?? "无"}`,
+              "视频转录（最高优先级）：",
+              input.transcriptText ?? draft.rawText,
+              "要求：不得编造原文没有的能力、数据或结论；修正明显口语废词和重复；技术名词优先参考页面标题与分享文本。",
+              "short_video_script 必须为 180 到 260 个中文字符，形成完整的钩子、核心内容和结论。",
+              "key_points 为 3 到 6 条；summary 不超过 80 字；不要输出 video_outline、bullets、scene_list 或视觉提示词。",
+              "JSON 字段：title, summary, hook, key_points, clean_script, short_video_script, cover_title, tags, quality_notes。",
+              correction
+            ].filter(Boolean).join("\n")
           }
-        ],
-        max_tokens: 2048,
-        response_format: {
-          type: "json_object"
-        },
-        ...(this.baseURL
-          ? {
-              extra_body: {
-                thinking: {
-                  type: this.thinkingMode
-                }
-              }
-            }
-          : {})
-      } as any);
-
-      const payload = this.parsePayload(extractChatCompletionText(response));
-      if (!payload) {
-        return this.toAssetFromDraft(draft, "fallback", this.model);
+        ], 2400);
+      } catch (error) {
+        const diagnosis = await diagnoseAiError(error, { baseURL: this.baseURL, model: this.model });
+        throw new Error(`AI 洗稿失败：${diagnosis.message}`);
       }
 
-      return this.toAssetFromPayload(payload, draft, this.model);
-    } catch {
-      return this.toAssetFromDraft(draft, "fallback", this.model);
+      try {
+        return this.toAssetFromPayload(parseCleanPayload(text), draft);
+      } catch (error) {
+        if (attempt === 0) {
+          correction = `上一次输出未通过校验：${errorMessage(error)}。请保持原文事实不变，只修正 JSON 字段和长度后重新输出完整 JSON。`;
+          continue;
+        }
+        const diagnosis = await diagnoseAiError(error, { baseURL: this.baseURL, model: this.model });
+        throw new Error(`AI 洗稿失败：${diagnosis.message}`);
+      }
     }
+    throw new Error("AI 洗稿失败");
   }
 
-  private toAssetFromPayload(payload: CleanScriptPayload, draft: ScriptAsset, model: string): ScriptAsset {
+  async planShortVideo(script: ScriptAsset): Promise<ShortVideoPlan> {
+    if (!this.client) {
+      throw new Error("未配置 AI API Key，无法生成分镜");
+    }
+    const keyPoints = script.keyPoints ?? [];
+    let correction = "";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const text = await this.completeJson([
+          {
+            role: "system",
+            content: "你是无真人短视频分镜导演。所有观众可见文字必须使用中国大陆规范简体中文，禁止使用繁体字。把精编文案转成结构化镜头，不写 HTML，不输出制作说明文字，只输出合法 JSON。"
+          },
+          {
+            role: "user",
+            content: [
+              "为下面的 9:16 无声本地图形短视频生成 8 到 10 个连续镜头，总时长 50 到 60 秒。",
+              `标题：${script.coverTitle || script.title || script.topic}`,
+              `精编文案：${script.shortVideoScript || script.cleanScript}`,
+              `核心要点：${keyPoints.map((point, index) => `${index}:${point}`).join("；")}`,
+              "首镜必须是 hook，末段必须有 summary 或 cta，至少四个内容镜头。",
+              "layout 只能是 kinetic-title、concept-map、process-flow、comparison、metric、summary-stack。",
+              "headline 最多 18 字，supporting_text 最多 40 字，caption_lines 为 1 到 2 行且每行最多 16 字。",
+              "visual_items 为 2 到 5 项，每项包含最多 12 字的 label、可选的最多 12 字 value 和 tone(primary/success/danger/muted)。",
+              "source_key_points 必须引用核心要点索引，并覆盖每一条核心要点。没有原文数字时禁止使用 metric。",
+              "不要把 SHOT、镜头运动、节奏、转场名、9:16、动态图形、视觉层等制作术语写进观众文字。",
+              "JSON 字段：target_duration, shots。每个 shot 字段：index, duration, shot_type, layout, headline, supporting_text, caption_lines, visual_items, source_key_points, transition, pacing。",
+              correction
+            ].filter(Boolean).join("\n")
+          }
+        ], 3600);
+        const parsed = JSON.parse(text) as unknown;
+        const validated = validateShortVideoPlan(parsed, keyPoints.length, script.shortVideoScript || script.cleanScript);
+        return {
+          planVersion: 2,
+          targetDuration: 60,
+          shortVideoScript: script.shortVideoScript || script.cleanScript,
+          shots: validated.shots
+        };
+      } catch (error) {
+        correction = `上一次输出未通过校验：${errorMessage(error)}。请完整修正后重新输出 JSON。`;
+        if (attempt === 1) {
+          const diagnosis = await diagnoseAiError(error, { baseURL: this.baseURL, model: this.model });
+          throw new Error(`AI 分镜生成失败：${diagnosis.message}`);
+        }
+      }
+    }
+    throw new Error("AI 分镜生成失败");
+  }
+
+  private async completeJson(messages: Array<{ role: "system" | "user"; content: string }>, maxTokens: number) {
+    const response = await this.client!.chat.completions.create({
+      model: this.model,
+      messages,
+      max_tokens: maxTokens,
+      response_format: { type: "json_object" },
+      ...(this.baseURL ? { extra_body: { thinking: { type: this.thinkingMode } } } : {})
+    } as any);
+    const text = response?.choices?.[0]?.message?.content?.trim?.() ?? "";
+    if (!text) {
+      throw new Error("AI 返回了空内容");
+    }
+    return text;
+  }
+
+  private toAssetFromPayload(payload: CleanScriptPayload, draft: ScriptAsset): ScriptAsset {
     return {
       ...draft,
-      title: payload.title || draft.title,
-      summary: payload.summary || draft.summary,
-      cleanScript: payload.clean_script || draft.cleanScript,
-      voiceoverScript: payload.voiceover_script || draft.voiceoverScript,
-      coverTitle: payload.cover_title || draft.coverTitle,
+      title: payload.title,
+      summary: payload.summary,
+      hook: payload.hook,
+      cleanScript: payload.clean_script,
+      shortVideoScript: payload.short_video_script,
+      voiceoverScript: payload.short_video_script,
+      coverTitle: payload.cover_title,
       tags: dedupeTags([...(payload.tags ?? []), ...(draft.tags ?? [])]),
-      keyPoints: payload.key_points ?? draft.keyPoints,
-      videoOutline: normalizeVideoOutline(payload.video_outline, draft.videoOutline),
+      keyPoints: payload.key_points,
       qualityNotes: payload.quality_notes,
-      sceneList: normalizeScenes(payload.scene_list, draft.sceneList),
-      aiModel: model,
+      videoOutline: undefined,
+      sceneList: [],
+      aiModel: this.model,
       cleaningMode: this.provider,
-      cleanedAt: new Date().toISOString(),
-      status: "ready"
-    };
-  }
-
-  private toAssetFromDraft(draft: ScriptAsset, cleaningMode: "fallback", model?: string): ScriptAsset {
-    return {
-      ...draft,
-      aiModel: model,
-      cleaningMode,
       cleanedAt: new Date().toISOString(),
       status: "ready"
     };
@@ -261,7 +233,6 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
     if (input.parsed) {
       return buildScriptDraft(input.parsed, input.topic, input.pageInfo);
     }
-
     if (input.transcriptText?.trim()) {
       return buildTranscriptDraft({
         sourceUrl: input.draft.sourceUrl,
@@ -270,73 +241,195 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
         pageInfo: input.pageInfo
       });
     }
-
     return input.draft;
   }
-
-  private parsePayload(text: string): CleanScriptPayload | null {
-    if (!text) {
-      return null;
-    }
-
-    try {
-      const parsed = JSON.parse(text) as CleanScriptPayload;
-      return parsed;
-    } catch {
-      return null;
-    }
-  }
 }
 
-function extractChatCompletionText(response: any) {
-  return response?.choices?.[0]?.message?.content?.trim?.() ?? "";
-}
-
-function normalizeScenes(
-  scenes: CleanScriptPayload["scene_list"],
-  fallback: ScriptAsset["sceneList"]
-) {
-  if (!Array.isArray(scenes) || scenes.length === 0) {
-    return fallback;
+export function validateShortVideoPlan(raw: unknown, keyPointCount: number, sourceText = "") {
+  const plan = objectValue(raw, "分镜必须是 JSON 对象");
+  const shotValues = arrayValue(plan.shots, "shots 必须是数组");
+  const errors: string[] = [];
+  if (plan.target_duration !== undefined && numberValue(plan.target_duration, 0) !== 60) {
+    errors.push("target_duration 必须为 60");
+  }
+  if (shotValues.length < 8 || shotValues.length > 10) {
+    errors.push("镜头数量必须为 8 到 10 个");
   }
 
-  return scenes.map((scene, index) => ({
-    scene: Number.isFinite(scene.scene) ? scene.scene : index + 1,
-    duration: Number.isFinite(scene.duration) ? scene.duration : 5,
-    caption: scene.caption.trim(),
-    visual: scene.visual.trim()
-  }));
+  const shots = shotValues.map((value, index) => normalizeShot(value, index, errors));
+  const total = shots.reduce((sum, shot) => sum + shot.duration, 0);
+  if (total < 50 || total > 60) {
+    errors.push(`总时长 ${total} 秒，必须在 50 到 60 秒之间`);
+  }
+  if (shots[0]?.shotType !== "hook") {
+    errors.push("首镜必须是 hook");
+  }
+  if (!shots.slice(-2).some((shot) => shot.shotType === "summary" || shot.shotType === "cta")) {
+    errors.push("末段缺少 summary 或 cta");
+  }
+  if (shots.filter((shot) => !["hook", "summary", "cta"].includes(shot.shotType)).length < 4) {
+    errors.push("至少需要四个内容镜头");
+  }
+  const covered = new Set(shots.flatMap((shot) => shot.sourceKeyPoints ?? []));
+  if ([...covered].some((index) => index < 0 || index >= keyPointCount)) {
+    errors.push("source_key_points 包含无效的核心要点索引");
+  }
+  for (let index = 0; index < keyPointCount; index += 1) {
+    if (!covered.has(index)) {
+      errors.push(`核心要点 ${index} 未被镜头覆盖`);
+    }
+  }
+  for (const shot of shots.filter((candidate) => candidate.layout === "metric")) {
+    const values = (shot.visualItems ?? []).map((item) => item.value).filter(Boolean) as string[];
+    if (!values.length || values.some((value) => !sourceText.includes(value))) {
+      errors.push(`镜头 ${shot.index} 的 metric 数值不在原文中`);
+    }
+  }
+  if (errors.length) {
+    throw new Error(errors.join("；"));
+  }
+  return { targetDuration: 60 as const, shots };
+}
+
+function normalizeShot(value: unknown, arrayIndex: number, errors: string[]): ShortVideoShot {
+  const shot = objectValue(value, `镜头 ${arrayIndex + 1} 必须是对象`);
+  const index = numberValue(shot.index, arrayIndex + 1);
+  const duration = numberValue(shot.duration, 0);
+  const shotType = checkedEnum(shot.shot_type ?? shot.shotType, SHOT_TYPES, "explain", `镜头 ${index} shotType 无效`, errors);
+  const layout = checkedEnum(shot.layout, SHOT_LAYOUTS, "concept-map", `镜头 ${index} layout 无效`, errors);
+  const headline = textValue(shot.headline);
+  const supportingText = textValue(shot.supporting_text ?? shot.supportingText);
+  const captionLines = arrayValue(shot.caption_lines ?? shot.captionLines, "caption_lines 必须是数组").map(textValue).filter(Boolean);
+  const visualItems = arrayValue(shot.visual_items ?? shot.visualItems, "visual_items 必须是数组")
+    .map((item, itemIndex) => normalizeVisualItem(item, index, itemIndex, errors));
+  const sourceKeyPoints = arrayValue(shot.source_key_points ?? shot.sourceKeyPoints, "source_key_points 必须是数组").map((item) => numberValue(item, -1));
+  const transition = checkedEnum(shot.transition, SHOT_TRANSITIONS, "cut", `镜头 ${index} transition 无效`, errors);
+  const pacing = checkedEnum(shot.pacing, SHOT_PACING, "medium", `镜头 ${index} pacing 无效`, errors);
+
+  if (index !== arrayIndex + 1) errors.push(`镜头索引必须连续，期望 ${arrayIndex + 1}`);
+  if (duration < 3 || duration > 8) errors.push(`镜头 ${index} 时长必须为 3 到 8 秒`);
+  if (headline.length < 2 || headline.length > 18) errors.push(`镜头 ${index} headline 必须为 2 到 18 字`);
+  if (supportingText.length > 40) errors.push(`镜头 ${index} supportingText 超过 40 字`);
+  if (captionLines.length < 1 || captionLines.length > 2) errors.push(`镜头 ${index} 字幕必须为 1 到 2 行`);
+  if (captionLines.some((line) => line.length > 16)) errors.push(`镜头 ${index} 字幕单行超过 16 字`);
+  if (visualItems.length < 2 || visualItems.length > 5) errors.push(`镜头 ${index} visualItems 必须为 2 到 5 项`);
+  if (visualItems.some((item) => !item.label || item.label.length > 12 || (item.value?.length ?? 0) > 12)) {
+    errors.push(`镜头 ${index} visualItems 文本为空或超过 12 字`);
+  }
+  const expectedLayout = layoutForShotType(shotType);
+  if (layout !== expectedLayout) errors.push(`镜头 ${index} 的 ${shotType} 必须使用 ${expectedLayout} 布局`);
+  if ([headline, supportingText, ...captionLines, ...visualItems.flatMap((item) => [item.label, item.value ?? ""])].some((text) => PRODUCTION_TEXT.test(text))) {
+    errors.push(`镜头 ${index} 观众文字包含制作术语`);
+  }
+
+  return {
+    index,
+    duration,
+    shotType,
+    layout,
+    headline,
+    supportingText: supportingText || undefined,
+    captionLines,
+    visualItems,
+    sourceKeyPoints,
+    subject: headline,
+    action: "",
+    cameraMotion: "",
+    visualLayers: [],
+    caption: captionLines.join(" "),
+    emphasisWords: visualItems.map((item) => item.label).slice(0, 3),
+    transition,
+    pacing,
+    narration: captionLines.join(" ")
+  };
+}
+
+function normalizeVisualItem(value: unknown, shotIndex: number, itemIndex: number, errors: string[]): ShortVideoVisualItem {
+  const item = objectValue(value, "visual_item 必须是对象");
+  const tone = textValue(item.tone);
+  if (tone && !["primary", "success", "danger", "muted"].includes(tone)) {
+    errors.push(`镜头 ${shotIndex} visualItem ${itemIndex + 1} tone 无效`);
+  }
+  return {
+    label: textValue(item.label),
+    value: textValue(item.value) || undefined,
+    tone: (["primary", "success", "danger", "muted"] as const).includes(tone as any) ? tone as ShortVideoVisualItem["tone"] : undefined
+  };
+}
+
+function layoutForShotType(type: ShotType): ShotLayout {
+  if (type === "hook" || type === "cta") return "kinetic-title";
+  if (type === "problem" || type === "contrast") return "comparison";
+  if (type === "process") return "process-flow";
+  if (type === "proof") return "metric";
+  if (type === "summary") return "summary-stack";
+  return "concept-map";
+}
+
+function parseCleanPayload(text: string): CleanScriptPayload {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new Error("AI 返回的洗稿结果不是合法 JSON");
+  }
+  const value = objectValue(raw, "洗稿结果必须是 JSON 对象");
+  const payload: CleanScriptPayload = {
+    title: textValue(value.title),
+    summary: textValue(value.summary),
+    hook: textValue(value.hook),
+    key_points: arrayValue(value.key_points, "key_points 必须是数组").map(textValue).filter(Boolean),
+    clean_script: textValue(value.clean_script),
+    short_video_script: textValue(value.short_video_script),
+    cover_title: textValue(value.cover_title),
+    tags: arrayValue(value.tags, "tags 必须是数组").map(textValue).filter(Boolean),
+    quality_notes: arrayValue(value.quality_notes, "quality_notes 必须是数组").map(textValue).filter(Boolean)
+  };
+  if (!payload.title || !payload.hook || !payload.clean_script || !payload.cover_title) {
+    throw new Error("AI 洗稿缺少必填字段");
+  }
+  if (payload.summary.length > 80) {
+    throw new Error("summary 必须不超过 80 字");
+  }
+  const scriptLength = payload.short_video_script.replace(/\s+/g, "").length;
+  if (scriptLength < 180 || scriptLength > 260) {
+    throw new Error(`short_video_script 长度为 ${scriptLength}，必须在 180 到 260 字之间`);
+  }
+  if (payload.key_points.length < 3 || payload.key_points.length > 6) {
+    throw new Error("key_points 必须为 3 到 6 条");
+  }
+  return payload;
+}
+
+function objectValue(value: unknown, message: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(message);
+  return value as Record<string, unknown>;
+}
+
+function arrayValue(value: unknown, message: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(message);
+  return value;
+}
+
+function textValue(value: unknown) {
+  return typeof value === "string" ? toSimplifiedChinese(value).replace(/\s+/g, " ").trim() : "";
+}
+
+function numberValue(value: unknown, fallback: number) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function checkedEnum<T extends string>(value: unknown, choices: Set<T>, fallback: T, message: string, errors: string[]): T {
+  if (typeof value === "string" && choices.has(value as T)) return value as T;
+  errors.push(message);
+  return fallback;
 }
 
 function dedupeTags(tags: string[]) {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const tag of tags) {
-    const normalized = tag.trim();
-    if (!normalized || seen.has(normalized.toLowerCase())) {
-      continue;
-    }
-    seen.add(normalized.toLowerCase());
-    result.push(normalized);
-  }
-  return result;
+  return [...new Map(tags.map((tag) => [tag.trim().toLowerCase(), tag.trim()])).values()].filter(Boolean);
 }
 
-function normalizeVideoOutline(
-  outline: CleanScriptPayload["video_outline"],
-  fallback: ScriptAsset["videoOutline"]
-) {
-  if (!Array.isArray(outline) || outline.length === 0) {
-    return fallback;
-  }
-
-  return outline
-    .map((item) => ({
-      title: item.title?.trim(),
-      bullets: Array.isArray(item.bullets)
-        ? item.bullets.map((bullet) => bullet.trim()).filter(Boolean)
-        : [],
-      visualPrompt: item.visual_prompt?.trim()
-    }))
-    .filter((item) => item.title && item.bullets.length > 0);
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -1,8 +1,10 @@
 import { ipcMain, app, safeStorage } from 'electron';
 import fs from 'fs/promises';
 import path from 'path';
-import { AppConfig, AIKeyConfig } from '../preload';
+import { resolve4, resolve6 } from 'dns/promises';
+import { AppConfig, AIKeyChanges, AIKeyConfig, AIKeyInput, AIKeyTestResult, AiErrorCode } from '../preload';
 import { randomUUID } from 'crypto';
+import { classifyHttpFailure, classifyNetworkFailure, mergeAiKeyChanges, normalizeBaseURL } from '../utils/ai-config';
 
 const CONFIG_FILE = 'config.json';
 
@@ -48,11 +50,17 @@ function decryptApiKey(encrypted: string): string {
 }
 
 // 测试 API Key
-async function testApiKey(keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>): Promise<{ valid: boolean; error?: string }> {
-  try {
-    const baseURL = keyConfig.baseURL ||
-      (keyConfig.provider === 'deepseek' ? 'https://api.deepseek.com' : 'https://api.openai.com/v1');
+async function testApiKey(keyConfig: AIKeyInput): Promise<AIKeyTestResult> {
+  const testedAt = new Date().toISOString();
+  const baseURL = normalizeBaseURL(keyConfig.baseURL) || defaultBaseURL(keyConfig.provider);
+  if (!baseURL) {
+    return { valid: false, code: 'endpoint', error: `请填写自定义 API 地址（模型：${keyConfig.model}）`, testedAt };
+  }
+  const hostname = getHostname(baseURL);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
 
+  try {
     const response = await fetch(`${baseURL}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -64,23 +72,65 @@ async function testApiKey(keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isVa
         messages: [{ role: 'user', content: 'Hi' }],
         max_tokens: 5,
       }),
+      signal: controller.signal,
     });
 
     if (response.ok) {
-      return { valid: true };
-    } else {
-      const errorData: any = await response.json();
-      return {
-        valid: false,
-        error: errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`
-      };
+      return { valid: true, testedAt };
     }
+    const errorData = await response.json().catch(() => ({})) as { error?: { message?: string } };
+    const rawMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+    const code = classifyHttpFailure(response.status, rawMessage);
+    return { valid: false, code, error: formatAiTestError(code, hostname, keyConfig.model, response.status), testedAt };
   } catch (error) {
-    return {
-      valid: false,
-      error: error instanceof Error ? error.message : '网络错误'
-    };
+    let code: AiErrorCode = classifyNetworkFailure(error);
+    if (code === 'unknown' && hostname !== '未知地址' && !(await hasDnsRecords(hostname))) code = 'dns';
+    return { valid: false, code, error: formatAiTestError(code, hostname, keyConfig.model), testedAt };
+  } finally {
+    clearTimeout(timeout);
   }
+}
+
+function defaultBaseURL(provider: AIKeyConfig['provider']) {
+  if (provider === 'deepseek') return 'https://api.deepseek.com';
+  if (provider === 'openai') return 'https://api.openai.com/v1';
+  return '';
+}
+
+function normalizeAiKey<T extends AIKeyInput>(keyConfig: T): T {
+  return {
+    ...keyConfig,
+    baseURL: normalizeBaseURL(keyConfig.baseURL) || defaultBaseURL(keyConfig.provider),
+  };
+}
+
+function getHostname(baseURL: string) {
+  try {
+    return new URL(baseURL).hostname;
+  } catch {
+    return '未知地址';
+  }
+}
+
+async function hasDnsRecords(hostname: string) {
+  const results = await Promise.allSettled([resolve4(hostname), resolve6(hostname)]);
+  return results.some(result => result.status === 'fulfilled' && result.value.length > 0);
+}
+
+function formatAiTestError(code: AiErrorCode, hostname: string, model: string, status?: number) {
+  const modelSuffix = model ? `（模型：${model}）` : '';
+  const messages: Record<AiErrorCode, string> = {
+    dns: `无法解析 API 域名 ${hostname}，请填写中转服务商提供的新地址`,
+    tls: `TLS、证书或代理连接失败（域名：${hostname}）`,
+    timeout: `连接 AI 服务超时（域名：${hostname}）`,
+    auth: 'API Key 无效或没有访问权限',
+    endpoint: `API 地址路径不正确${status ? `（HTTP ${status}）` : ''}`,
+    model: '模型 ID 不存在或当前账号无权使用',
+    quota: 'API 请求被限流或额度不足',
+    upstream: `AI 中转服务暂时不可用${status ? `（HTTP ${status}）` : ''}`,
+    unknown: `AI 服务连接失败（域名：${hostname}）`,
+  };
+  return `${messages[code]}${modelSuffix}`;
 }
 
 // 读取配置
@@ -140,16 +190,19 @@ export async function saveConfig(config: Partial<AppConfig>): Promise<void> {
 }
 
 // 添加 API Key
-async function addApiKey(keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>): Promise<string> {
+async function addApiKey(keyConfig: AIKeyInput): Promise<string> {
   const config = await loadConfig();
+  const normalized = normalizeAiKey(keyConfig);
+  const result = await testApiKey(normalized);
+  if (!result.valid) throw new Error(result.error || 'API 配置测试失败');
   const id = randomUUID();
 
   const newKey: AIKeyConfig = {
-    ...keyConfig,
+    ...normalized,
     id,
     isActive: config.aiKeys.length === 0, // 第一个自动激活
-    isValid: undefined,
-    lastTested: undefined,
+    isValid: true,
+    lastTested: result.testedAt,
   };
 
   config.aiKeys.push(newKey);
@@ -158,15 +211,39 @@ async function addApiKey(keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isVal
   return id;
 }
 
+async function updateApiKey(keyId: string, changes: AIKeyChanges): Promise<void> {
+  const config = await loadConfig();
+  const index = config.aiKeys.findIndex(key => key.id === keyId);
+  if (index < 0) throw new Error('API 配置不存在');
+  const merged = normalizeAiKey(mergeAiKeyChanges(config.aiKeys[index], {
+    ...changes,
+    apiKey: changes.apiKey || '',
+  }));
+  const result = await testApiKey(merged);
+  if (!result.valid) throw new Error(result.error || 'API 配置测试失败，原配置未修改');
+  config.aiKeys[index] = { ...merged, isValid: true, lastTested: result.testedAt };
+  await saveConfig(config);
+}
+
+async function retestApiKey(keyId: string): Promise<AIKeyTestResult> {
+  const config = await loadConfig();
+  const index = config.aiKeys.findIndex(key => key.id === keyId);
+  if (index < 0) throw new Error('API 配置不存在');
+  const result = await testApiKey(config.aiKeys[index]);
+  config.aiKeys[index] = {
+    ...config.aiKeys[index],
+    isValid: result.valid,
+    lastTested: result.testedAt,
+    ...(result.valid ? {} : { isActive: false }),
+  };
+  await saveConfig(config);
+  return result;
+}
+
 // 删除 API Key
 async function removeApiKey(keyId: string): Promise<void> {
   const config = await loadConfig();
   config.aiKeys = config.aiKeys.filter(key => key.id !== keyId);
-
-  // 如果删除的是活跃 Key，激活第一个
-  if (!config.aiKeys.find(key => key.isActive) && config.aiKeys.length > 0) {
-    config.aiKeys[0].isActive = true;
-  }
 
   await saveConfig(config);
 }
@@ -174,9 +251,20 @@ async function removeApiKey(keyId: string): Promise<void> {
 // 设置活跃的 API Key
 async function setActiveApiKey(keyId: string): Promise<void> {
   const config = await loadConfig();
+  const target = config.aiKeys.find(key => key.id === keyId);
+  if (!target) throw new Error('API 配置不存在');
+  const result = await testApiKey(target);
+  if (!result.valid) {
+    config.aiKeys = config.aiKeys.map(key => key.id === keyId
+      ? { ...key, isValid: false, lastTested: result.testedAt }
+      : key);
+    await saveConfig(config);
+    throw new Error(result.error || 'API 配置测试失败，无法设为当前');
+  }
   config.aiKeys = config.aiKeys.map(key => ({
     ...key,
     isActive: key.id === keyId,
+    ...(key.id === keyId ? { isValid: true, lastTested: result.testedAt } : {}),
   }));
   await saveConfig(config);
 }
@@ -191,12 +279,20 @@ export function registerConfigHandlers(): void {
     await saveConfig(config);
   });
 
-  ipcMain.handle('test-api-key', async (_, keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) => {
+  ipcMain.handle('test-api-key', async (_, keyConfig: AIKeyInput) => {
     return await testApiKey(keyConfig);
   });
 
-  ipcMain.handle('add-api-key', async (_, keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) => {
+  ipcMain.handle('add-api-key', async (_, keyConfig: AIKeyInput) => {
     return await addApiKey(keyConfig);
+  });
+
+  ipcMain.handle('update-api-key', async (_, keyId: string, changes: AIKeyChanges) => {
+    await updateApiKey(keyId, changes);
+  });
+
+  ipcMain.handle('retest-api-key', async (_, keyId: string) => {
+    return await retestApiKey(keyId);
   });
 
   ipcMain.handle('remove-api-key', async (_, keyId: string) => {

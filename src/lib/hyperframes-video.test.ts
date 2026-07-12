@@ -161,6 +161,22 @@ function sampleScript(options: { withShots?: boolean } = { withShots: true }): S
         narration: "目标、步骤、验证，构成一个完整闭环。"
       }
     ];
+    const layouts = ["kinetic-title", "process-flow", "concept-map", "comparison", "metric", "summary-stack"] as const;
+    script.planVersion = 2;
+    script.targetDuration = 60;
+    script.shortVideoScript = "先明确目标，再拆解步骤，对比混乱与稳定输出，最后验证结果并形成完整闭环。";
+    script.shortVideoShots = script.shortVideoShots.map((shot, index) => ({
+      ...shot,
+      layout: layouts[index],
+      headline: shot.subject,
+      supportingText: shot.caption,
+      captionLines: [shot.caption.slice(0, 16)],
+      visualItems: [
+        { label: shot.emphasisWords[0] ?? "重点", tone: "primary" },
+        { label: shot.emphasisWords[1] ?? "结果", tone: "success" }
+      ],
+      sourceKeyPoints: [index % 3]
+    }));
   }
   return script;
 }
@@ -220,23 +236,29 @@ test("HyperframesVideoGenerator builds a vertical explainer project and renders 
   assert.match(indexHtml, /data-width="1080"/);
   assert.match(indexHtml, /data-height="1920"/);
   assert.match(indexHtml, /window\.__timelines\["main"\]/);
-  assert.match(indexHtml, /class="subject-card"/);
-  assert.match(indexHtml, /class="graphic-layer"/);
-  assert.match(indexHtml, /class="caption"/);
-  assert.match(indexHtml, /class="emphasis"/);
-  assert.match(indexHtml, /class="transition-mask"/);
+  for (const layout of ["kinetic-title", "concept-map", "process-flow", "comparison", "metric", "summary-stack"]) {
+    assert.match(indexHtml, new RegExp(`data-layout="${layout}"`));
+  }
+  assert.match(indexHtml, /class="audience-caption"/);
+  assert.match(indexHtml, /class="transition-mask" data-layout-allow-overflow/);
+  assert.doesNotMatch(indexHtml, /cdn\.jsdelivr\.net/);
+  assert.match(indexHtml, /assets\/gsap\.min\.js/);
+  assert.doesNotMatch(indexHtml, /\.transition-mask\s*\{[^}]*transform\s*:/s);
+  assert.match(indexHtml, /\.transition-mask\s*\{[^}]*opacity:\s*0/s);
+  assert.doesNotMatch(indexHtml, /SHOT 1|slow push-in|panel reveal|SUBJECT|GRAPHIC|class="narration"/i);
   assert.doesNotMatch(indexHtml, /<ul class="bullets"/);
   assert.doesNotMatch(indexHtml, /class="kicker"/);
 
   const sourceJson = JSON.parse(await readFile(path.join(result.projectPath, "video-source.json"), "utf8")) as {
     source: { shortVideoShots?: unknown[] };
-    scenes: Array<{ subject?: string; caption?: string; visualLayers?: unknown[] }>;
+    scenes: Array<{ subject?: string; caption?: string; narration?: string; visualLayers?: unknown[] }>;
   };
   assert.equal(sourceJson.source.shortVideoShots?.length, 6);
   assert.ok(sourceJson.scenes.length >= 6);
   assert.ok(sourceJson.scenes.length <= 10);
   assert.equal(sourceJson.scenes[0]?.subject, "目标先行");
   assert.equal(sourceJson.scenes[0]?.caption, "先明确目标，再开始生成内容。");
+  assert.ok(sourceJson.scenes.every((scene) => (scene.narration?.length ?? 0) <= 80));
   assert.ok((sourceJson.scenes[0]?.visualLayers?.length ?? 0) >= 4);
 
   const invoked = calls.map((call) => call.args.join(" "));
@@ -245,7 +267,60 @@ test("HyperframesVideoGenerator builds a vertical explainer project and renders 
   assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 lint")));
   assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 validate")));
   assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 inspect")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 snapshot")));
   assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 render")));
+});
+
+test("HyperframesVideoGenerator preserves the previous video when validation fails", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "hyperframes-preserve-"));
+  const previousPath = path.join(storageRoot, "output", "videos", "job-preserve", "hyperframes", "renders", "video.mp4");
+  await mkdir(path.dirname(previousPath), { recursive: true });
+  await writeFile(previousPath, "previous-video");
+  const runner: HyperframesCommandRunner = {
+    async run(command, args) {
+      if (args.includes("doctor")) return { stdout: JSON.stringify({ ok: true }), stderr: "" };
+      if (args.includes("inspect")) {
+        throw new CommandError("inspect failed", command, args, "", "text_occluded", 1);
+      }
+      return { stdout: "", stderr: "" };
+    }
+  };
+
+  const generator = new HyperframesVideoGenerator({ storageRoot, commandRunner: runner });
+  await assert.rejects(() => generator.generate(sampleScript(), "job-preserve"), /text_occluded/);
+
+  assert.equal(await readFile(previousPath, "utf8"), "previous-video");
+});
+
+test("HyperframesVideoGenerator verifies the encoded output with ffprobe", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "hyperframes-probe-"));
+  let probed = false;
+  const runner: HyperframesCommandRunner = {
+    async run(command, args, options) {
+      if (args.includes("doctor")) return { stdout: JSON.stringify({ ok: true }), stderr: "" };
+      if (args.includes("render")) {
+        const fullPath = path.resolve(options?.cwd ?? storageRoot, "renders/video.mp4");
+        await mkdir(path.dirname(fullPath), { recursive: true });
+        await writeFile(fullPath, Buffer.alloc(2048));
+      }
+      if (command === "ffprobe-test") {
+        probed = true;
+        return {
+          stdout: JSON.stringify({
+            streams: [{ codec_type: "video", codec_name: "h264", width: 1080, height: 1920, r_frame_rate: "30/1" }],
+            format: { duration: "52", size: "2048" }
+          }),
+          stderr: ""
+        };
+      }
+      return { stdout: "", stderr: "" };
+    }
+  };
+
+  const generator = new HyperframesVideoGenerator({ storageRoot, commandRunner: runner, ffprobeBinary: "ffprobe-test" });
+  await generator.generate(sampleScript(), "job-probe");
+
+  assert.equal(probed, true);
 });
 
 test("HyperframesVideoGenerator falls back to legacy prompt fields when shots are missing", async () => {
@@ -265,16 +340,24 @@ test("HyperframesVideoGenerator falls back to legacy prompt fields when shots ar
   };
 
   const generator = new HyperframesVideoGenerator({ storageRoot, commandRunner: runner });
-  const result = await generator.generate(sampleScript({ withShots: false }), "job-legacy");
+  const legacyScript = sampleScript({ withShots: false });
+  legacyScript.voiceoverScript = "推薦內容方法，這是觀眾字幕。";
+  legacyScript.sceneList[0].caption = "推薦內容方法，這是觀眾字幕。";
+  const result = await generator.generate(legacyScript, "job-legacy");
   const sourceJson = JSON.parse(await readFile(path.join(result.projectPath, "video-source.json"), "utf8")) as {
     source: { shortVideoShots?: unknown[] };
-    scenes: Array<{ subject?: string; caption?: string; visualLayers?: unknown[] }>;
+    scenes: Array<{ subject?: string; caption?: string; narration?: string; visualLayers?: unknown[] }>;
   };
 
   assert.equal(sourceJson.source.shortVideoShots, undefined);
   assert.ok(sourceJson.scenes.length >= 6);
   assert.ok(sourceJson.scenes.every((scene) => scene.subject && scene.caption));
   assert.ok(sourceJson.scenes.every((scene) => (scene.visualLayers?.length ?? 0) >= 3));
+  const renderedText = sourceJson.scenes.map((scene) => [scene.caption, scene.narration].join(" ")).join(" ");
+  assert.doesNotMatch(renderedText, /9:16|动态图形|图文解释视频|无真人/);
+  assert.doesNotMatch(renderedText, /推薦|內容|這是|觀眾/);
+  assert.match(renderedText, /推荐内容方法|这是观众字幕/);
+  assert.match(renderedText, /推荐内容方法|明确目标/);
 });
 
 test("HyperframesVideoGenerator uses packaged CLI and runtime assets when configured", async () => {
@@ -351,6 +434,41 @@ test("HyperframesVideoGenerator allows optional TTS and BGM doctor failures", as
   const generator = new HyperframesVideoGenerator({ storageRoot, commandRunner: runner });
 
   const result = await generator.generate(sampleScript(), "job-optional");
+  assert.equal(result.provider, "hyperframes");
+});
+
+test("HyperframesVideoGenerator allows HyperFrames version upgrade doctor warning", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "hyperframes-version-"));
+  const runner: HyperframesCommandRunner = {
+    async run(_command, args, options) {
+      if (args.includes("doctor")) {
+        return {
+          stdout: JSON.stringify({
+            ok: false,
+            checks: [
+              {
+                name: "Version",
+                ok: false,
+                detail: "0.7.48 → 0.7.52 available",
+                hint: "Run: hyperframes upgrade"
+              }
+            ]
+          }),
+          stderr: ""
+        };
+      }
+      if (args.includes("render")) {
+        const fullPath = path.resolve(options?.cwd ?? storageRoot, "renders/video.mp4");
+        await mkdir(path.dirname(fullPath), { recursive: true });
+        await writeFile(fullPath, Buffer.alloc(2048));
+      }
+      return { stdout: "", stderr: "" };
+    }
+  };
+
+  const generator = new HyperframesVideoGenerator({ storageRoot, commandRunner: runner });
+
+  const result = await generator.generate(sampleScript(), "job-version");
   assert.equal(result.provider, "hyperframes");
 });
 

@@ -9,8 +9,10 @@ export interface ElectronAPI {
   // 配置管理
   getConfig: () => Promise<AppConfig>;
   saveConfig: (config: Partial<AppConfig>) => Promise<void>;
-  testApiKey: (keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) => Promise<{ valid: boolean; error?: string }>;
+  testApiKey: (keyConfig: AIKeyInput) => Promise<AIKeyTestResult>;
   addApiKey: (keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) => Promise<string>;
+  updateApiKey: (keyId: string, changes: AIKeyChanges) => Promise<void>;
+  retestApiKey: (keyId: string) => Promise<AIKeyTestResult>;
   removeApiKey: (keyId: string) => Promise<void>;
   setActiveApiKey: (keyId: string) => Promise<void>;
 
@@ -38,6 +40,17 @@ export interface AIKeyConfig {
   lastTested?: string; // 最后测试时间
 }
 
+export type AIKeyInput = Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>;
+export type AIKeyChanges = Omit<AIKeyInput, 'apiKey'> & { apiKey?: string };
+export type AiErrorCode = 'dns' | 'tls' | 'timeout' | 'auth' | 'endpoint' | 'model' | 'quota' | 'upstream' | 'unknown';
+
+export interface AIKeyTestResult {
+  valid: boolean;
+  code?: AiErrorCode;
+  error?: string;
+  testedAt: string;
+}
+
 export interface AppConfig {
   storagePath: string;
   aiKeys: AIKeyConfig[]; // 支持多个 API Key
@@ -61,10 +74,14 @@ contextBridge.exposeInMainWorld('electron', {
   getConfig: () => ipcRenderer.invoke('get-config'),
   saveConfig: (config: Partial<AppConfig>) =>
     ipcRenderer.invoke('save-config', config),
-  testApiKey: (keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) =>
+  testApiKey: (keyConfig: AIKeyInput) =>
     ipcRenderer.invoke('test-api-key', keyConfig),
   addApiKey: (keyConfig: Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>) =>
     ipcRenderer.invoke('add-api-key', keyConfig),
+  updateApiKey: (keyId: string, changes: AIKeyChanges) =>
+    ipcRenderer.invoke('update-api-key', keyId, changes),
+  retestApiKey: (keyId: string) =>
+    ipcRenderer.invoke('retest-api-key', keyId),
   removeApiKey: (keyId: string) =>
     ipcRenderer.invoke('remove-api-key', keyId),
   setActiveApiKey: (keyId: string) =>

@@ -7,7 +7,9 @@ import {
   HardDrive,
   KeyRound,
   Mic,
+  Pencil,
   Plus,
+  RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -29,6 +31,24 @@ interface AIKeyConfig {
   lastTested?: string;
 }
 
+type AIKeyForm = {
+  name: string;
+  provider: 'deepseek' | 'openai' | 'custom';
+  apiKey: string;
+  baseURL: string;
+  model: string;
+};
+
+type AIKeyTestResult = { valid: boolean; code?: string; error?: string; testedAt?: string };
+
+const emptyKeyForm = (): AIKeyForm => ({
+  name: '',
+  provider: 'deepseek',
+  apiKey: '',
+  baseURL: 'https://api.deepseek.com',
+  model: 'deepseek-chat',
+});
+
 type SettingsSection = 'models' | 'asr' | 'storage' | 'advanced';
 
 const sections: Array<{ id: SettingsSection; label: string; description: string; icon: typeof KeyRound }> = [
@@ -42,15 +62,12 @@ export function SettingsPage() {
   const [apiKeys, setApiKeys] = useState<AIKeyConfig[]>([]);
   const [activeSection, setActiveSection] = useState<SettingsSection>('models');
   const [isAdding, setIsAdding] = useState(false);
-  const [newKey, setNewKey] = useState({
-    name: '',
-    provider: 'deepseek' as 'deepseek' | 'openai' | 'custom',
-    apiKey: '',
-    baseURL: 'https://api.deepseek.com',
-    model: 'deepseek-chat',
-  });
+  const [newKey, setNewKey] = useState<AIKeyForm>(emptyKeyForm);
+  const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
+  const [testingKeyId, setTestingKeyId] = useState<string | null>(null);
+  const [keyResults, setKeyResults] = useState<Record<string, AIKeyTestResult>>({});
   const [isTesting, setIsTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ valid: boolean; error?: string } | null>(null);
+  const [testResult, setTestResult] = useState<AIKeyTestResult | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -124,15 +141,7 @@ export function SettingsPage() {
     try {
       await window.electron.addApiKey(newKey);
       await loadApiKeys();
-      setIsAdding(false);
-      setNewKey({
-        name: '',
-        provider: 'deepseek',
-        apiKey: '',
-        baseURL: 'https://api.deepseek.com',
-        model: 'deepseek-chat',
-      });
-      setTestResult(null);
+      closeKeyForm();
     } catch (error) {
       setTestResult({
         valid: false,
@@ -140,6 +149,67 @@ export function SettingsPage() {
       });
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const startAdding = () => {
+    setEditingKeyId(null);
+    setNewKey(emptyKeyForm());
+    setTestResult(null);
+    setIsAdding(true);
+  };
+
+  const startEditing = (key: AIKeyConfig) => {
+    setEditingKeyId(key.id);
+    setNewKey({
+      name: key.name,
+      provider: key.provider,
+      apiKey: '',
+      baseURL: key.baseURL || '',
+      model: key.model,
+    });
+    setTestResult(null);
+    setIsAdding(true);
+  };
+
+  const closeKeyForm = () => {
+    setIsAdding(false);
+    setEditingKeyId(null);
+    setNewKey(emptyKeyForm());
+    setTestResult(null);
+  };
+
+  const handleUpdate = async () => {
+    if (!editingKeyId || !newKey.name || !newKey.model || (newKey.provider === 'custom' && !newKey.baseURL)) {
+      setTestResult({ valid: false, error: '请填写完整信息' });
+      return;
+    }
+    setIsSaving(true);
+    setTestResult(null);
+    try {
+      await window.electron.updateApiKey(editingKeyId, newKey);
+      await loadApiKeys();
+      closeKeyForm();
+    } catch (error) {
+      setTestResult({ valid: false, error: error instanceof Error ? error.message : '更新失败' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleRetest = async (keyId: string) => {
+    setTestingKeyId(keyId);
+    try {
+      const result = await window.electron.retestApiKey(keyId);
+      setKeyResults((current) => ({ ...current, [keyId]: result }));
+      await loadApiKeys();
+    } catch (error) {
+      setKeyResults((current) => ({
+        ...current,
+        [keyId]: { valid: false, error: error instanceof Error ? error.message : '测试失败' },
+      }));
+    } finally {
+      setTestingKeyId(null);
     }
   };
 
@@ -155,11 +225,17 @@ export function SettingsPage() {
   };
 
   const handleSetActive = async (keyId: string) => {
+    setTestingKeyId(keyId);
     try {
       await window.electron.setActiveApiKey(keyId);
       await loadApiKeys();
     } catch (error) {
-      alert('切换失败：' + (error instanceof Error ? error.message : '未知错误'));
+      setKeyResults((current) => ({
+        ...current,
+        [keyId]: { valid: false, error: error instanceof Error ? error.message : '切换失败' },
+      }));
+    } finally {
+      setTestingKeyId(null);
     }
   };
 
@@ -203,7 +279,9 @@ export function SettingsPage() {
             <ModelsSection
               apiKeys={apiKeys}
               isAdding={isAdding}
-              setIsAdding={setIsAdding}
+              editingKeyId={editingKeyId}
+              testingKeyId={testingKeyId}
+              keyResults={keyResults}
               newKey={newKey}
               setNewKey={setNewKey}
               testResult={testResult}
@@ -213,6 +291,11 @@ export function SettingsPage() {
               onProviderChange={handleProviderChange}
               onTest={handleTest}
               onAdd={handleAdd}
+              onUpdate={handleUpdate}
+              onStartAdd={startAdding}
+              onEdit={startEditing}
+              onRetest={handleRetest}
+              onCloseForm={closeKeyForm}
               onRemove={handleRemove}
               onSetActive={handleSetActive}
             />
@@ -229,7 +312,9 @@ export function SettingsPage() {
 function ModelsSection({
   apiKeys,
   isAdding,
-  setIsAdding,
+  editingKeyId,
+  testingKeyId,
+  keyResults,
   newKey,
   setNewKey,
   testResult,
@@ -239,33 +324,33 @@ function ModelsSection({
   onProviderChange,
   onTest,
   onAdd,
+  onUpdate,
+  onStartAdd,
+  onEdit,
+  onRetest,
+  onCloseForm,
   onRemove,
   onSetActive,
 }: {
   apiKeys: AIKeyConfig[];
   isAdding: boolean;
-  setIsAdding: (value: boolean) => void;
-  newKey: {
-    name: string;
-    provider: 'deepseek' | 'openai' | 'custom';
-    apiKey: string;
-    baseURL: string;
-    model: string;
-  };
-  setNewKey: (value: {
-    name: string;
-    provider: 'deepseek' | 'openai' | 'custom';
-    apiKey: string;
-    baseURL: string;
-    model: string;
-  }) => void;
-  testResult: { valid: boolean; error?: string } | null;
-  setTestResult: (value: { valid: boolean; error?: string } | null) => void;
+  editingKeyId: string | null;
+  testingKeyId: string | null;
+  keyResults: Record<string, AIKeyTestResult>;
+  newKey: AIKeyForm;
+  setNewKey: (value: AIKeyForm) => void;
+  testResult: AIKeyTestResult | null;
+  setTestResult: (value: AIKeyTestResult | null) => void;
   isTesting: boolean;
   isSaving: boolean;
   onProviderChange: (provider: 'deepseek' | 'openai' | 'custom') => void;
   onTest: () => void;
   onAdd: () => void;
+  onUpdate: () => void;
+  onStartAdd: () => void;
+  onEdit: (key: AIKeyConfig) => void;
+  onRetest: (keyId: string) => void;
+  onCloseForm: () => void;
   onRemove: (keyId: string) => void;
   onSetActive: (keyId: string) => void;
 }) {
@@ -277,7 +362,7 @@ function ModelsSection({
         description="管理 AI 洗稿使用的模型密钥。"
         action={
           <button
-            onClick={() => setIsAdding(true)}
+            onClick={onStartAdd}
             className="inline-flex items-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition-all hover:bg-tech-blue-dark"
           >
             <Plus size={16} />
@@ -292,7 +377,7 @@ function ModelsSection({
           <h3 className="text-lg font-semibold text-tech-text">还没有 API 密钥</h3>
           <p className="mt-2 text-tech-muted">添加第一个密钥后即可创建视频作品。</p>
           <button
-            onClick={() => setIsAdding(true)}
+            onClick={onStartAdd}
             className="mt-6 inline-flex items-center gap-2 rounded-lg bg-tech-blue px-5 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
           >
             <Plus size={17} />
@@ -325,14 +410,35 @@ function ModelsSection({
                   <p className="text-sm text-tech-muted">
                     模型：<code className="rounded bg-tech-bg px-2 py-0.5 text-tech-text">{key.model}</code>
                   </p>
+                  {key.baseURL && <p className="mt-1 break-all font-mono text-xs text-tech-muted">{key.baseURL}</p>}
                   <p className="mt-1 font-mono text-xs text-tech-muted">
                     密钥：{key.apiKey.slice(0, 8)}...{key.apiKey.slice(-4)}
                   </p>
+                  <p className={`mt-2 text-xs ${key.isValid === true ? 'text-emerald-600' : key.isValid === false ? 'text-red-600' : 'text-tech-muted'}`}>
+                    {key.isValid === true ? '连接有效' : key.isValid === false ? '连接失效' : '尚未重新测试'}
+                    {key.lastTested ? ` · ${new Date(key.lastTested).toLocaleString('zh-CN')}` : ''}
+                  </p>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+                  <button
+                    onClick={() => onRetest(key.id)}
+                    disabled={testingKeyId === key.id}
+                    className="inline-flex items-center gap-1 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text transition-all hover:border-tech-blue hover:text-tech-blue disabled:opacity-50"
+                  >
+                    <RefreshCw size={15} className={testingKeyId === key.id ? 'animate-spin' : ''} />
+                    重新测试
+                  </button>
+                  <button
+                    onClick={() => onEdit(key)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text transition-all hover:border-tech-blue hover:text-tech-blue"
+                  >
+                    <Pencil size={15} />
+                    编辑
+                  </button>
                   {!key.isActive && (
                     <button
                       onClick={() => onSetActive(key.id)}
+                      disabled={testingKeyId === key.id}
                       className="rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text transition-all hover:border-tech-blue hover:text-tech-blue"
                     >
                       设为当前
@@ -347,6 +453,14 @@ function ModelsSection({
                   </button>
                 </div>
               </div>
+              {keyResults[key.id] && (
+                <div className="mt-4">
+                  <ResultBanner
+                    valid={keyResults[key.id].valid}
+                    message={keyResults[key.id].valid ? 'API 连接测试通过' : keyResults[key.id].error || '测试失败'}
+                  />
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -355,12 +469,9 @@ function ModelsSection({
       {isAdding && (
         <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
           <div className="mb-6 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-tech-text">添加新密钥</h3>
+            <h3 className="text-lg font-semibold text-tech-text">{editingKeyId ? '编辑 AI 配置' : '添加新密钥'}</h3>
             <button
-              onClick={() => {
-                setIsAdding(false);
-                setTestResult(null);
-              }}
+              onClick={onCloseForm}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-tech-muted transition-all hover:bg-tech-bg hover:text-tech-text"
               aria-label="关闭添加密钥"
             >
@@ -399,7 +510,7 @@ function ModelsSection({
               </div>
             </div>
 
-            <FormField label="API Key" required>
+            <FormField label="API Key" required={!editingKeyId}>
               <input
                 type="password"
                 value={newKey.apiKey}
@@ -407,7 +518,7 @@ function ModelsSection({
                   setNewKey({ ...newKey, apiKey: event.target.value });
                   setTestResult(null);
                 }}
-                placeholder="sk-..."
+                placeholder={editingKeyId ? '留空则保留原 API Key' : 'sk-...'}
                 className={`${inputClassName} font-mono text-sm`}
               />
             </FormField>
@@ -417,7 +528,10 @@ function ModelsSection({
                 <input
                   type="text"
                   value={newKey.baseURL}
-                  onChange={(event) => setNewKey({ ...newKey, baseURL: event.target.value })}
+                  onChange={(event) => {
+                    setNewKey({ ...newKey, baseURL: event.target.value });
+                    setTestResult(null);
+                  }}
                   placeholder="https://api.example.com/v1"
                   className={`${inputClassName} font-mono text-sm`}
                 />
@@ -428,7 +542,10 @@ function ModelsSection({
               <input
                 type="text"
                 value={newKey.model}
-                onChange={(event) => setNewKey({ ...newKey, model: event.target.value })}
+                onChange={(event) => {
+                  setNewKey({ ...newKey, model: event.target.value });
+                  setTestResult(null);
+                }}
                 placeholder="模型 ID"
                 className={`${inputClassName} font-mono text-sm`}
               />
@@ -439,19 +556,21 @@ function ModelsSection({
             )}
 
             <div className="flex justify-end gap-3 pt-2">
+              {!editingKeyId && (
+                <button
+                  onClick={onTest}
+                  disabled={isTesting || !newKey.apiKey}
+                  className="rounded-lg border border-tech-border px-5 py-2.5 font-medium text-tech-text transition-all hover:bg-tech-bg disabled:opacity-50"
+                >
+                  {isTesting ? '测试中...' : '测试连接'}
+                </button>
+              )}
               <button
-                onClick={onTest}
-                disabled={isTesting || !newKey.apiKey}
-                className="rounded-lg border border-tech-border px-5 py-2.5 font-medium text-tech-text transition-all hover:bg-tech-bg disabled:opacity-50"
-              >
-                {isTesting ? '测试中...' : '测试连接'}
-              </button>
-              <button
-                onClick={onAdd}
-                disabled={isSaving || !testResult?.valid}
+                onClick={editingKeyId ? onUpdate : onAdd}
+                disabled={isSaving || (!editingKeyId && !testResult?.valid)}
                 className="rounded-lg bg-tech-blue px-5 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {isSaving ? '保存中...' : '保存密钥'}
+                {isSaving ? '测试并保存中...' : editingKeyId ? '测试并保存' : '保存密钥'}
               </button>
             </div>
           </div>

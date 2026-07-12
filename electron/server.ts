@@ -40,8 +40,21 @@ export async function startServer(): Promise<number> {
         aiModel: activeKey?.model || 'deepseek-chat',
         aiApiKey: activeKey?.apiKey || '',
         aiBaseURL: activeKey?.baseURL || (activeKey?.provider === 'deepseek' ? 'https://api.deepseek.com' : undefined),
+        resolveAiConfig: async () => {
+          const latest = await loadConfig();
+          const current = latest.aiKeys.find(key => key.isActive);
+          return current ? {
+            provider: current.provider,
+            model: current.model,
+            apiKey: current.apiKey,
+            baseURL: current.baseURL || (current.provider === 'deepseek'
+              ? 'https://api.deepseek.com'
+              : current.provider === 'openai' ? 'https://api.openai.com/v1' : undefined),
+          } : null;
+        },
         ytDlpBinary: binaryPaths.ytdlp,
         ffmpegBinary: binaryPaths.ffmpeg,
+        ffprobeBinary: binaryPaths.ffprobe,
         whisperCliPath: binaryPaths.whisperCli,
         whisperModelPath: binaryPaths.whisperModel,
         runtimeBinDir: binaryPaths.binDir,

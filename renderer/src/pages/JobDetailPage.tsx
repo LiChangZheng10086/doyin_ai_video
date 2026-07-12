@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { apiClient } from '../services/api';
+import { getCleanArtifactDecision, getCleanArtifactLoadError } from '../utils/jobArtifacts';
 import type {
   Job,
   CleanedScript,
@@ -27,6 +28,8 @@ import type {
   PipelineStepState,
   HyperframesVideoOutput,
   ShortVideoShot,
+  ShotLayout,
+  ShotType,
 } from '../types';
 
 type OutcomeTab = 'transcript' | 'script' | 'prompts' | 'video';
@@ -35,7 +38,7 @@ type OutcomeStatus = 'ready' | 'processing' | 'waiting' | 'failed';
 const pipelineSteps: Array<{ id: PipelineStep; label: string; description: string; icon: typeof Video }> = [
   { id: 'transcribe', label: '视频转录', description: '下载视频、提取音频并转成文案', icon: Mic },
   { id: 'clean', label: 'AI 洗稿', description: '生成创作文稿', icon: Sparkles },
-  { id: 'generate_video_prompts', label: '生成视频提示词', description: '规划竖屏画面', icon: Wand2 },
+  { id: 'generate_video_prompts', label: '生成分镜', description: '规划连续竖屏镜头', icon: Wand2 },
   { id: 'generate_video', label: '生成视频', description: '渲染竖屏成片', icon: Video },
 ];
 
@@ -73,18 +76,27 @@ export function JobDetailPage() {
       }
     }
 
-    try {
-      const cleanedData = await apiClient.getJobCleaned(jobData.id);
-      setCleaned(cleanedData);
-      if (cleanedData.output?.hyperframesVideo) {
-        setVideoOutput(cleanedData.output.hyperframesVideo);
+    const cleanArtifact = getCleanArtifactDecision(jobData);
+    if (cleanArtifact.error) setCleanedError(cleanArtifact.error);
+    if (cleanArtifact.shouldLoad) {
+      try {
+        const cleanedData = await apiClient.getJobCleaned(jobData.id);
+        setCleaned(cleanedData);
+        if (cleanedData.output?.hyperframesVideo) {
+          setVideoOutput(cleanedData.output.hyperframesVideo);
+        }
+      } catch (err) {
+        setCleaned(null);
+        const status = getApiErrorStatus(err);
+        const loadError = getCleanArtifactLoadError(jobData, status, getApiErrorMessage(err));
+        if (loadError) setCleanedError(loadError);
       }
-    } catch (err) {
+    } else {
       setCleaned(null);
-      if (jobData.steps?.clean?.status === 'failed' || jobData.status === 'done') {
-        const errMsg = err instanceof Error ? err.message : '未知错误';
-        setCleanedError(`内容加载失败: ${errMsg}`);
-      }
+    }
+
+    if (jobData.steps?.generate_video?.status === 'failed') {
+      setVideoError(jobData.steps.generate_video.lastError || '视频生成失败，可在当前步骤重试');
     }
 
     if (jobData.videoOutputPath || jobData.steps?.generate_video?.status === 'succeeded') {
@@ -96,8 +108,6 @@ export function JobDetailPage() {
         const errMsg = err instanceof Error ? err.message : '未知错误';
         setVideoError(`视频成片加载失败: ${errMsg}`);
       }
-    } else if (jobData.steps?.generate_video?.status === 'failed') {
-      setVideoError('视频生成失败，可在当前步骤重试');
     }
   };
 
@@ -119,6 +129,23 @@ export function JobDetailPage() {
 
     fetchJob();
   }, [id]);
+
+  useEffect(() => {
+    if (!id || !runningStep) return;
+    let active = true;
+    const timer = window.setInterval(async () => {
+      try {
+        const latest = await apiClient.getJob(id);
+        if (active) setJob(latest);
+      } catch {
+        // The original step request remains the source of truth for errors.
+      }
+    }, 750);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [id, runningStep]);
 
   const focus = useMemo(() => job ? getFocusStep(job, runningStep) : null, [job, runningStep]);
 
@@ -323,6 +350,8 @@ function CurrentStepHero({
   const percent = Math.round((completed / total) * 100);
   const hero = getHeroCopy(job, focus);
   const actionDisabled = !focus || focus.disabled || Boolean(job.deletedAt);
+  const renderState = job.steps?.generate_video;
+  const showRenderProgress = focus?.step === 'generate_video' && renderState?.progress !== undefined;
 
   return (
     <section className="overflow-hidden rounded-lg border border-blue-100 bg-gradient-to-br from-blue-50 via-white to-purple-50 p-6 shadow-sm">
@@ -345,6 +374,20 @@ function CurrentStepHero({
                 style={{ width: `${percent}%` }}
               />
             </div>
+            {showRenderProgress && (
+              <div className="mt-4">
+                <div className="mb-2 flex items-center justify-between text-xs font-medium text-tech-muted">
+                  <span>{formatGenerationPhase(renderState.phase)}</span>
+                  <span>{renderState.progress}%</span>
+                </div>
+                <div className="h-2 overflow-hidden rounded-full bg-white">
+                  <div className="h-full rounded-full bg-tech-purple transition-all" style={{ width: `${renderState.progress}%` }} />
+                </div>
+                {renderState.status === 'failed' && renderState.lastError && (
+                  <p className="mt-2 line-clamp-2 text-xs text-red-600">{renderState.lastError}</p>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
@@ -436,7 +479,7 @@ function TranscriptContent({
 
 function ScriptContent({ cleaned, cleanedError }: { cleaned: CleanedScript | null; cleanedError: string | null }) {
   if (cleanedError) {
-    return <Notice tone="danger" title="AI 洗稿加载失败">{cleanedError}</Notice>;
+    return <Notice tone="danger" title="AI 洗稿失败">{cleanedError}</Notice>;
   }
   if (!cleaned?.output?.cleanScript && !cleaned?.output?.summary) {
     return <EmptyContent title="AI 成果还没生成" description="完成 AI 洗稿后，这里会展示标题、摘要、核心要点和成稿。" />;
@@ -451,7 +494,7 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
   const scenes = output?.enhancedScenes ?? [];
 
   if (!shots.length && !prompts.length && !scenes.length) {
-    return <EmptyContent title="镜头列表还没生成" description="完成生成视频提示词后，这里会显示 HyperFrames 使用的短视频镜头规划。" />;
+    return <EmptyContent title="镜头列表还没生成" description="完成生成分镜后，这里会显示 HyperFrames 使用的短视频镜头规划。" />;
   }
 
   return (
@@ -520,59 +563,59 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
 
 function ShotCard({ shot }: { shot: ShortVideoShot }) {
   const layers = shot.visualLayers ?? [];
-  const visibleLayers = layers.filter((layer) => layer.type !== 'caption').slice(0, 6);
+  const captionLines = shot.captionLines?.length ? shot.captionLines : [shot.caption].filter(Boolean);
+  const visualItems = shot.visualItems ?? [];
 
   return (
     <div className="rounded-lg border border-tech-border bg-tech-bg p-4">
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase text-purple-600">Shot {shot.index} · {shot.shotType}</p>
-          <h4 className="mt-1 text-base font-semibold text-tech-text">{shot.subject}</h4>
+          <p className="text-xs font-semibold text-purple-600">镜头 {shot.index} · {formatShotType(shot.shotType)}</p>
+          <h4 className="mt-1 text-base font-semibold text-tech-text">{shot.headline || shot.subject}</h4>
+          {shot.supportingText && <p className="mt-1 text-sm text-tech-muted">{shot.supportingText}</p>}
         </div>
         <div className="flex flex-wrap gap-2 text-xs text-tech-muted">
           <span className="rounded-full bg-white px-2 py-1">{formatSeconds(shot.duration)}</span>
-          <span className="rounded-full bg-white px-2 py-1">{shot.transition}</span>
-          <span className="rounded-full bg-white px-2 py-1">{shot.pacing}</span>
+          {shot.layout && <span className="rounded-full bg-white px-2 py-1">{formatLayout(shot.layout)}</span>}
+          {shot.sourceKeyPoints?.length ? <span className="rounded-full bg-white px-2 py-1">覆盖要点 {shot.sourceKeyPoints.map((item) => item + 1).join('、')}</span> : null}
         </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <Metric label="画面动作" value={shot.action} />
-        <Metric label="镜头运动" value={shot.cameraMotion} />
       </div>
 
       <div className="mt-3 rounded-lg border border-purple-100 bg-white p-3">
         <label className="mb-1 block text-xs font-medium uppercase text-purple-500">字幕</label>
-        <p className="text-sm leading-6 text-tech-text">{shot.caption}</p>
+        {captionLines.map((line, index) => <p key={index} className="text-sm leading-6 text-tech-text">{line}</p>)}
       </div>
 
-      {shot.emphasisWords?.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {shot.emphasisWords.map((word, index) => (
-            <span key={`${word}-${index}`} className="rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700">
-              {word}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {visibleLayers.length > 0 && (
-        <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-          {visibleLayers.map((layer, index) => (
-            <div key={`${layer.type}-${index}`} className="rounded-lg border border-tech-border bg-white p-3">
-              <p className="text-xs font-semibold uppercase text-tech-muted">{layer.type}</p>
-              <p className="mt-1 text-sm leading-5 text-tech-text">{layer.content}</p>
-              {(layer.motion || layer.style) && (
-                <p className="mt-1 text-xs text-tech-muted">{[layer.motion, layer.style].filter(Boolean).join(' · ')}</p>
-              )}
+      {visualItems.length > 0 && (
+        <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3">
+          {visualItems.map((item, index) => (
+            <div key={`${item.label}-${index}`} className="rounded-lg border border-tech-border bg-white p-3">
+              <p className="text-xs text-tech-muted">{item.label}</p>
+              {item.value && <p className="mt-1 font-semibold text-tech-text">{item.value}</p>}
             </div>
           ))}
         </div>
       )}
 
-      {shot.narration && (
-        <p className="mt-3 text-sm leading-6 text-tech-muted">{shot.narration}</p>
-      )}
+      <details className="mt-3 rounded-lg border border-tech-border bg-white p-3">
+        <summary className="cursor-pointer text-sm font-medium text-tech-muted">制作信息</summary>
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+          <Metric label="转场" value={shot.transition} />
+          <Metric label="节奏" value={shot.pacing} />
+          <Metric label="画面动作" value={shot.action} />
+          <Metric label="镜头运动" value={shot.cameraMotion} />
+        </div>
+        {layers.length > 0 && (
+          <div className="mt-3 space-y-2">
+            {layers.map((layer, index) => (
+              <p key={`${layer.type}-${index}`} className="text-xs leading-5 text-tech-muted">
+                {layer.type}: {[layer.content, layer.motion, layer.style].filter(Boolean).join(' · ')}
+              </p>
+            ))}
+          </div>
+        )}
+        {shot.narration && <p className="mt-3 text-xs leading-5 text-tech-muted">内部口播稿：{shot.narration}</p>}
+      </details>
     </div>
   );
 }
@@ -587,15 +630,22 @@ function VideoContentView({
   videoError: string | null;
 }) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState(false);
 
   useEffect(() => {
     if (!output) {
       return;
     }
+    setStreamError(false);
     const loadVideoUrl = async () => {
       try {
-        const url = await apiClient.downloadVideo(jobId);
-        setVideoUrl(url);
+        const [downloadUrl, previewUrl] = await Promise.all([
+          apiClient.downloadVideo(jobId),
+          apiClient.getVideoStreamUrl(jobId),
+        ]);
+        setVideoUrl(downloadUrl);
+        setStreamUrl(previewUrl);
       } catch (err) {
         console.error('Failed to get video URL:', err);
       }
@@ -608,7 +658,7 @@ function VideoContentView({
   }
 
   if (!output) {
-    return <EmptyContent title="视频还没生成" description="完成生成视频提示词后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。" />;
+    return <EmptyContent title="视频还没生成" description="完成生成分镜后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。" />;
   }
 
   return (
@@ -616,7 +666,7 @@ function VideoContentView({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 className="text-lg font-semibold text-tech-text">视频成片</h3>
-          <p className="mt-1 text-sm text-tech-muted">HyperFrames 本地渲染的竖屏解释视频。</p>
+          <p className="mt-1 text-sm text-tech-muted">HyperFrames 本地渲染的 9:16 无声动效版。</p>
         </div>
         {videoUrl && (
           <a
@@ -631,11 +681,27 @@ function VideoContentView({
         )}
       </div>
 
+      {videoError && <Notice tone="warning" title="本次渲染失败，正在显示上一版成片">{videoError}</Notice>}
+
       <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
         <Metric label="渲染器" value={output.provider} />
         <Metric label="尺寸" value={`${output.width}x${output.height} · ${output.aspectRatio}`} />
         <Metric label="时长" value={formatSeconds(output.duration)} />
       </div>
+
+      {streamUrl && !streamError ? (
+        <div className="rounded-lg border border-tech-border bg-black p-3">
+          <video
+            src={streamUrl}
+            controls
+            playsInline
+            className="mx-auto aspect-[9/16] max-h-[72vh] w-full max-w-sm rounded-md bg-black"
+            onError={() => setStreamError(true)}
+          />
+        </div>
+      ) : streamError ? (
+        <Notice tone="warning" title="视频预览加载失败">可以先下载 MP4 到本地查看。</Notice>
+      ) : null}
 
       <div className="rounded-lg bg-tech-bg p-4">
         <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">视频文件</label>
@@ -653,14 +719,16 @@ function VideoContentView({
             {output.scenes.map((scene) => (
               <div key={scene.index} className="rounded-lg border border-tech-border bg-tech-bg p-4">
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <p className="font-semibold text-tech-text">{scene.index}. {scene.subject ?? scene.title ?? '镜头'}</p>
+                  <p className="font-semibold text-tech-text">{scene.index}. {scene.headline ?? scene.subject ?? scene.title ?? '镜头'}</p>
                   <span className="shrink-0 rounded-full bg-white px-2 py-1 text-xs text-tech-muted">
                     {[formatSeconds(scene.duration), scene.transition, scene.pacing].filter(Boolean).join(' · ')}
                   </span>
                 </div>
-                {scene.action && <p className="text-sm leading-6 text-tech-text">{scene.action}</p>}
-                {scene.caption && (
-                  <p className="mt-2 rounded-lg bg-white p-3 text-sm leading-6 text-tech-text">{scene.caption}</p>
+                <p className="text-xs text-tech-muted">{scene.layout ? formatLayout(scene.layout) : formatShotType(scene.shotType)}</p>
+                {(scene.captionLines?.length || scene.caption) && (
+                  <div className="mt-2 rounded-lg bg-white p-3 text-sm leading-6 text-tech-text">
+                    {(scene.captionLines?.length ? scene.captionLines : [scene.caption]).filter(Boolean).map((line, index) => <p key={index}>{line}</p>)}
+                  </div>
                 )}
                 {scene.bullets?.length > 0 && (
                   <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
@@ -677,9 +745,6 @@ function VideoContentView({
                       </span>
                     ))}
                   </div>
-                )}
-                {scene.narration && (
-                  <p className="mt-3 text-sm leading-6 text-tech-muted">{scene.narration}</p>
                 )}
               </div>
             ))}
@@ -904,7 +969,7 @@ function getHeroCopy(job: Job, focus: FocusStep | null) {
   if (job.status === 'done') {
     return {
       title: '作品资产已生成',
-      description: '可以查看视频转录、AI 洗稿、视频提示词和视频成片，也可以回到创作中心继续处理其他作品。',
+      description: '可以查看视频转录、AI 洗稿、分镜和视频成片，也可以回到创作中心继续处理其他作品。',
     };
   }
   if (job.status === 'failed') {
@@ -1068,6 +1133,44 @@ function getPipelineStepLabel(step: PipelineStep) {
   return pipelineSteps.find((item) => item.id === step)?.label || step;
 }
 
+function formatGenerationPhase(phase?: PipelineStepState['phase']) {
+  const labels: Record<NonNullable<PipelineStepState['phase']>, string> = {
+    checking_environment: '检查本地环境',
+    building_project: '生成视频工程',
+    validating: '检查画面布局',
+    snapshotting: '生成镜头快照',
+    rendering: '渲染视频',
+    verifying: '验证成片',
+  };
+  return phase ? labels[phase] : '准备渲染';
+}
+
+function formatShotType(type?: ShotType) {
+  const labels: Record<ShotType, string> = {
+    hook: '开场钩子',
+    problem: '问题',
+    explain: '解释',
+    proof: '验证',
+    contrast: '对比',
+    process: '流程',
+    summary: '总结',
+    cta: '行动引导',
+  };
+  return type ? labels[type] : '内容镜头';
+}
+
+function formatLayout(layout: ShotLayout) {
+  const labels: Record<ShotLayout, string> = {
+    'kinetic-title': '动态标题',
+    'concept-map': '概念关系',
+    'process-flow': '流程图',
+    comparison: '对比画面',
+    metric: '数据状态',
+    'summary-stack': '总结收束',
+  };
+  return labels[layout];
+}
+
 function getStepActionLabel(state: PipelineStepState, blocked: boolean) {
   if (blocked) return '等待上一步';
   if (state.status === 'failed') return '重试';
@@ -1160,4 +1263,14 @@ function formatDateTime(value: string) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function getApiErrorStatus(error: unknown) {
+  return (error as { response?: { status?: number } })?.response?.status;
+}
+
+function getApiErrorMessage(error: unknown) {
+  const responseMessage = (error as { response?: { data?: { message?: string } } })?.response?.data?.message;
+  if (responseMessage) return responseMessage;
+  return error instanceof Error ? error.message : '未知错误';
 }
