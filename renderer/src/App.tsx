@@ -1,15 +1,18 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Settings, Sparkles, Trash2, Video } from 'lucide-react';
+import { LayoutDashboard, Settings, Sparkles, Trash2, Users, Video } from 'lucide-react';
 import { JobListPage } from './pages/JobListPage';
 import { JobDetailPage } from './pages/JobDetailPage';
 import { TrashPage } from './pages/TrashPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { CollectionListPage } from './pages/CollectionListPage';
+import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { ApiKeyStatusIndicator } from './components/ApiKeyStatusIndicator';
 
 function Navigation() {
   const location = useLocation();
   const navItems = [
     { to: '/', label: '创作中心', icon: LayoutDashboard },
+    { to: '/collections', label: '合集', icon: Users },
     { to: '/settings', label: '设置', icon: Settings },
     { to: '/trash', label: '垃圾桶', icon: Trash2 },
   ];
@@ -41,7 +44,9 @@ function Navigation() {
                 const Icon = item.icon;
                 const active = item.to === '/'
                   ? location.pathname === '/' || location.pathname.startsWith('/jobs/')
-                  : location.pathname === item.to;
+                  : item.to === '/collections'
+                    ? location.pathname === '/collections' || location.pathname.startsWith('/collections/')
+                    : location.pathname === item.to;
                 return (
                   <Link
                     key={item.to}
@@ -74,6 +79,8 @@ function Navigation() {
         <Routes>
           <Route path="/" element={<JobListPage />} />
           <Route path="/jobs/:id" element={<JobDetailPage />} />
+          <Route path="/collections" element={<CollectionListPage />} />
+          <Route path="/collections/:id" element={<CollectionDetailPage />} />
           <Route path="/trash" element={<TrashPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

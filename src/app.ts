@@ -6,9 +6,10 @@ import { OpenAiScriptCleaner, RuntimeScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
 import { JobStepError, JobStore } from "./lib/jobs.js";
+import { CollectionStore } from "./lib/collections.js";
 import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import { simplifyChineseValue } from "./lib/chinese.js";
-import type { PipelineStep, ScriptAsset } from "./types.js";
+import type { CollectionRecord, PipelineStep, ScriptAsset } from "./types.js";
 
 export interface ServerConfig {
   storagePath: string;
@@ -101,6 +102,12 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   const jobs = new JobStore(storage, cleaner, media, asr, videoGenerator);
   await jobs.init();
+
+  const collections = new CollectionStore(storage, jobs, {
+    cookiesFile: config.cookiesFile,
+    cookiesFromBrowser: config.cookiesFromBrowser,
+  });
+  await collections.init();
 
   const app = express();
 
@@ -486,6 +493,133 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
         return;
       }
       throw error;
+    }
+  });
+
+  // ─── 合集 API ──────────────────────────────────────────────
+
+  // 创建合集（爬取用户主页 + 创建合集记录）
+  app.post("/api/collections", async (req, res) => {
+    try {
+      const { pageUrl, maxItems } = req.body as { pageUrl?: string; maxItems?: number };
+      if (!pageUrl || typeof pageUrl !== "string") {
+        res.status(400).json({ message: "pageUrl is required" });
+        return;
+      }
+      const result = await collections.create(pageUrl, Math.min(maxItems ?? 100, 500));
+      res.status(201).json({
+        collection: result.collection,
+        crawlResult: result.crawlResult,
+        message: "collection created",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "collection create failed";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 列出所有合集
+  app.get("/api/collections", async (_req, res) => {
+    try {
+      const overviews = await collections.listOverviews();
+      res.json({ collections: overviews });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to list collections";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 获取单个合集详情
+  app.get("/api/collections/:id", async (req, res) => {
+    try {
+      const overview = await collections.getOverview(req.params.id);
+      if (!overview) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+      res.json({ collection: overview });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to get collection";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 删除合集
+  app.delete("/api/collections/:id", async (req, res) => {
+    try {
+      const deleted = await collections.delete(req.params.id);
+      if (!deleted) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+      res.json({ message: "collection deleted" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to delete collection";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 基于合集创建子任务
+  app.post("/api/collections/:id/create-jobs", async (req, res) => {
+    try {
+      const { selectedIds, topic } = req.body as { selectedIds?: string[]; topic?: string };
+      if (!selectedIds || !Array.isArray(selectedIds) || selectedIds.length === 0) {
+        res.status(400).json({ message: "selectedIds array is required" });
+        return;
+      }
+      const result = await collections.createChildJobs(
+        req.params.id,
+        selectedIds,
+        topic ?? ""
+      );
+      res.status(201).json({
+        collection: result.collection,
+        createdJobs: result.createdJobs,
+        message: `${result.createdJobs.length} 个子任务已创建`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to create child jobs";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 批量执行合集步骤
+  app.post("/api/collections/:id/steps/:step", async (req, res) => {
+    try {
+      const { id, step } = req.params;
+      const pipelineStep = step as PipelineStep;
+      if (!["transcribe", "clean", "generate_video_prompts", "generate_video"].includes(pipelineStep)) {
+        res.status(400).json({ message: `invalid step: ${step}` });
+        return;
+      }
+
+      const collection = await collections.get(id);
+      if (!collection) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+
+      const results: Array<{ jobId: string; status: string; error?: string }> = [];
+      for (const jobId of collection.childJobIds) {
+        try {
+          await jobs.runStep(jobId, pipelineStep);
+          results.push({ jobId, status: "ok" });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "step failed";
+          results.push({ jobId, status: "error", error: message });
+        }
+      }
+
+      const succeeded = results.filter((r) => r.status === "ok").length;
+      const failed = results.filter((r) => r.status === "error").length;
+
+      res.json({
+        message: `批量${step}完成：${succeeded} 成功，${failed} 失败`,
+        results,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "batch step failed";
+      res.status(500).json({ message });
     }
   });
 

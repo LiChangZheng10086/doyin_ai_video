@@ -7,11 +7,83 @@
       "skillPath": "skills/baoyu-ppt-generator/SKILL.md",
       "computedHash": "c0e825d27cf298169e3d0180965fbc5504cb8ce6d6951347a97619ec59d6d46a"
     },
+    "agent-browser": {
+      "source": "brianlovin/claude-config",
+      "sourceType": "github",
+      "skillPath": "skills/agent-browser/SKILL.md",
+      "computedHash": "92e4972e178ea5de857925c38c9449ec298410b3223a880f26c15176c9f99a91"
+    },
+    "claude-api": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/claude-api/SKILL.md",
+      "computedHash": "7688fe71c809c208542ddf6b5d222eb5af4ed979ab0a93740bb666c946d484fa"
+    },
+    "docx": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/docx/SKILL.md",
+      "computedHash": "59c70107f8eae818bdfca7da685a6e4111aa519638b667775b794cb74987ec47"
+    },
+    "electron-wrapper": {
+      "source": "brianlovin/claude-config",
+      "sourceType": "github",
+      "skillPath": "skills/electron-wrapper/SKILL.md",
+      "computedHash": "717dffa338aed82b884191fbd7f449e76172ee548bf0c09a2a5b92f7e5a7f32e"
+    },
+    "frontend-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-design/SKILL.md",
+      "computedHash": "4eabc66183767153e404b39d1b839b1c37f2d82d86f0a0d7e880a579d8d62336"
+    },
+    "loop-me": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/in-progress/loop-me/SKILL.md",
+      "computedHash": "e1fcab9b531b338eb540c9d57ee089e2660e4bba1d7623ec566c6f32f77f2d26"
+    },
+    "pdf": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/pdf/SKILL.md",
+      "computedHash": "cfbc539377088ca7e44a813b30c306327385bbd973cd7a721e1743f60837dd62"
+    },
+    "pptx": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/pptx/SKILL.md",
+      "computedHash": "82eaf5daede5a1779aa17ccf06597cb209a0c2bd41d3a2f18bd45e0301a387fb"
+    },
+    "react-doctor": {
+      "source": "brianlovin/claude-config",
+      "sourceType": "github",
+      "skillPath": "skills/react-doctor/SKILL.md",
+      "computedHash": "acfe81f4b916b822e7a9e7be90e6a60a1b5b01779a8a5ee445e941c59638f917"
+    },
+    "sentry": {
+      "source": "brianlovin/claude-config",
+      "sourceType": "github",
+      "skillPath": "skills/sentry/SKILL.md",
+      "computedHash": "b0bca82503944688d78dfab0cfba89a0359a1f4de76e342c4ff1d26bfc843a90"
+    },
+    "simplify": {
+      "source": "brianlovin/claude-config",
+      "sourceType": "github",
+      "skillPath": "skills/simplify/SKILL.md",
+      "computedHash": "322a20071306ede626dc73ac05182b08c97b60781e23ec3fbf23f85a4d27d111"
+    },
     "video-master": {
       "source": "huangserva/skill-prompt-generator",
       "sourceType": "github",
       "skillPath": ".claude/skills/video-master/SKILL.md",
       "computedHash": "30e1137be6155c6062d69026cb4547534e6ef97b4a76bff61e86597a17e87af8"
+    },
+    "xlsx": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/xlsx/SKILL.md",
+      "computedHash": "f5945e6e76dc7c178375e5cdf3140959b30cbcd4570ec3dc62296812259fc38d"
     }
   }
 }

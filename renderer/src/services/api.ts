@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput } from '../types';
+import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput, CollectionOverview, CrawlUserPageResult } from '../types';
 
 class ApiClient {
   private client: AxiosInstance | null = null;
@@ -149,6 +149,58 @@ class ApiClient {
     } catch {
       return false;
     }
+  }
+
+  // ─── 合集 API ──────────────────────────────────────────────
+
+  // 创建合集（爬取用户主页）
+  async createCollection(params: { pageUrl: string; maxItems?: number }): Promise<{ collection: any; crawlResult: CrawlUserPageResult }> {
+    const client = await this.getClient();
+    const response = await client.post('/api/collections', params);
+    return response.data;
+  }
+
+  // 列出所有合集
+  async getCollections(): Promise<CollectionOverview[]> {
+    const client = await this.getClient();
+    const response = await client.get('/api/collections');
+    return response.data.collections ?? [];
+  }
+
+  // 获取合集详情
+  async getCollection(id: string): Promise<CollectionOverview> {
+    const client = await this.getClient();
+    const response = await client.get(`/api/collections/${id}`);
+    return response.data.collection!;
+  }
+
+  // 删除合集
+  async deleteCollection(id: string): Promise<void> {
+    const client = await this.getClient();
+    await client.delete(`/api/collections/${id}`);
+  }
+
+  // 基于合集创建子任务
+  async createCollectionJobs(collectionId: string, selectedIds: string[], topic?: string): Promise<{ createdJobs: Job[]; collection: any }> {
+    const client = await this.getClient();
+    const response = await client.post(`/api/collections/${collectionId}/create-jobs`, {
+      selectedIds,
+      topic,
+    });
+    return response.data;
+  }
+
+  // 批量执行合集步骤
+  async batchRunCollectionStep(collectionId: string, step: PipelineStep): Promise<{ message: string; results: Array<{ jobId: string; status: string; error?: string }> }> {
+    const client = await this.getClient();
+    const routeMap: Record<PipelineStep, string> = {
+      transcribe: 'transcribe',
+      clean: 'clean',
+      generate_video_prompts: 'generate_video_prompts',
+      generate_video: 'generate_video',
+    };
+    const response = await client.post(`/api/collections/${collectionId}/steps/${routeMap[step]}`);
+    return response.data;
   }
 }
 

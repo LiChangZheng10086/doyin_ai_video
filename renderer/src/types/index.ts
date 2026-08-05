@@ -281,3 +281,68 @@ export interface ApiResponse<T = any> {
   error?: string;
   jobs?: Job[];
 }
+
+// --- 合集相关类型 ---
+
+export interface DouyinVideoItem {
+  awemeId: string;
+  desc: string;
+  coverUrl: string;
+  videoUrl: string;
+  duration: number;
+  createTime: number;
+  statistics: {
+    diggCount: number;
+    commentCount: number;
+    shareCount: number;
+    playCount: number;
+  };
+  musicTitle?: string;
+  hashtags?: string[];
+}
+
+export interface DouyinUserPageInfo {
+  secUid: string;
+  nickname: string;
+  avatarUrl: string;
+  description: string;
+  followerCount: number;
+  followingCount: number;
+  awemeCount: number;
+}
+
+export interface CrawlUserPageResult {
+  userInfo: DouyinUserPageInfo;
+  items: DouyinVideoItem[];
+  totalCollected: number;
+  hasMore: boolean;
+  nextCursor: number;
+}
+
+export interface CollectionRecord {
+  id: string;
+  sourcePageUrl: string;
+  secUid: string;
+  nickname: string;
+  avatarUrl: string;
+  crawlResult: {
+    items: DouyinVideoItem[];
+    totalCollected: number;
+    hasMore: boolean;
+    nextCursor: number;
+  };
+  childJobIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CollectionOverview extends CollectionRecord {
+  childJobProgress: {
+    total: number;
+    transcribed: number;
+    cleaned: number;
+    scripted: number;
+    rendered: number;
+    failed: number;
+  };
+}
