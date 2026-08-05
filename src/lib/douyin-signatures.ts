@@ -5,10 +5,14 @@
  * - A-Bogus: SM3 哈希 + RC4 加密 + 自定义 Base64 编码
  * - X-Bogus: MD5 哈希 + RC4 加密 + 自定义 Base64 编码
  *
- * 依赖 Node.js 22+ 内置的 crypto.createHash('sm3')
+ * SM3 使用 sm-crypto (纯 JS 实现)，避免依赖 Node.js/Electron 内置 crypto.createHash('sm3')
  */
 
+import { createRequire } from "node:module";
 import crypto from "node:crypto";
+
+const _require = createRequire(import.meta.url);
+const sm3HashLib: (data: string) => string = _require("sm-crypto").sm3;
 
 // ─── 字符映射表 ──────────────────────────────────────────────────
 
@@ -23,7 +27,8 @@ const CHARSETS = {
 // ─── SM3 哈希辅助 ─────────────────────────────────────────────────
 
 function sm3Hash(data: string | Buffer): string {
-  return crypto.createHash("sm3").update(data).digest("hex");
+  const input = Buffer.isBuffer(data) ? data.toString("utf8") : data;
+  return sm3HashLib(input);
 }
 
 function sm3HashToArray(data: string): number[] {
