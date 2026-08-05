@@ -338,7 +338,7 @@ async function crawlViaApi(
   let cursor = 0;
   let hasMore = true;
   let userInfo: DouyinUserPageInfo | null = null;
-  const perPage = Math.min(maxItems, 35);
+  const perPage = 18;  // optimal page size for the aweme/post API
 
   while (hasMore && allItems.length < maxItems) {
     const signed = signUserPostRequest(secUid, cursor, perPage, userAgent);
@@ -398,12 +398,18 @@ async function crawlViaApi(
       };
     }
 
+    // Track seen awemeIds to deduplicate across pages
+    for (const item of parsed.items) {
+      if (!allItems.find(e => e.awemeId === item.awemeId)) {
+        allItems.push(item);
+      }
+    }
+
     cursor = json?.max_cursor ?? 0;
     hasMore = (json?.has_more === 1) && parsed.items.length > 0;
-    allItems.push(...parsed.items);
 
-    if (!parsed.hasMore || parsed.items.length === 0) break;
     if (cursor === 0) break;
+    if (!hasMore) break;
   }
 
   if (allItems.length === 0) {
