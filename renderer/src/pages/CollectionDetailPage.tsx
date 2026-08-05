@@ -16,6 +16,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { CookieHint } from '../components/CookieHint';
 import { apiClient } from '../services/api';
 import type { CollectionOverview, DouyinVideoItem, Job, PipelineStep } from '../types';
 
@@ -224,6 +225,9 @@ export function CollectionDetailPage() {
       {collection.childJobIds.length > 0 && (
         <div className="mb-5 rounded-lg border border-tech-border bg-tech-surface p-4">
           <h3 className="mb-3 text-sm font-semibold text-tech-text">批量操作</h3>
+          <div className="mb-3">
+            <CookieHint compact />
+          </div>
           <div className="flex flex-wrap gap-2">
             {pipelineSteps.map((step) => (
               <button
@@ -270,7 +274,7 @@ export function CollectionDetailPage() {
                 还有 {uncreatedCount} 个视频未创建子任务
               </h3>
               <p className="text-sm text-tech-muted mt-1">
-                勾选需要处理的视频，创建为独立任务
+                勾选需要处理的视频，创建为独立任务。视频下载会尝试使用已配置的 Cookie 获取无水印版本。
               </p>
             </div>
             <button

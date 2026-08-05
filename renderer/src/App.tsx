@@ -7,6 +7,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { CollectionListPage } from './pages/CollectionListPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { ApiKeyStatusIndicator } from './components/ApiKeyStatusIndicator';
+import { CookieStatusIndicator } from './components/CookieStatusIndicator';
 
 function Navigation() {
   const location = useLocation();
@@ -67,6 +68,7 @@ function Navigation() {
 
           <div className="flex items-center gap-4">
             <ApiKeyStatusIndicator />
+            <CookieStatusIndicator />
             <span className="text-xs text-tech-muted bg-tech-bg px-3 py-1 rounded-full">
               v0.1.0
             </span>

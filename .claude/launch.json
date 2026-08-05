@@ -5,7 +5,8 @@
       "name": "douyin",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:renderer"],
-      "port": 5173
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }

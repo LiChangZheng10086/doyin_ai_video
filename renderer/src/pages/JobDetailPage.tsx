@@ -18,6 +18,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { CookieHint } from '../components/CookieHint';
 import { apiClient } from '../services/api';
 import { getCleanArtifactDecision, getCleanArtifactLoadError } from '../utils/jobArtifacts';
 import type {
@@ -363,6 +364,11 @@ function CurrentStepHero({
           </p>
           <h2 className="text-2xl font-semibold text-tech-text">{hero.title}</h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-tech-muted">{hero.description}</p>
+          {focus?.step === 'transcribe' && (
+            <div className="mt-3 max-w-lg">
+              <CookieHint compact />
+            </div>
+          )}
           <div className="mt-5 max-w-lg">
             <div className="mb-2 flex items-center justify-between text-xs font-medium text-tech-muted">
               <span>主链路进度</span>
