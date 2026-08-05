@@ -338,7 +338,7 @@ async function crawlViaApi(
   let cursor = 0;
   let hasMore = true;
   let userInfo: DouyinUserPageInfo | null = null;
-  const perPage = 18;  // optimal page size for the aweme/post API
+  const perPage = 20;  // optimal: vc=170400 + count=20 avoids 403
 
   while (hasMore && allItems.length < maxItems) {
     const signed = signUserPostRequest(secUid, cursor, perPage, userAgent);
