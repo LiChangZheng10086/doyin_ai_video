@@ -6,9 +6,11 @@ import {
   Database,
   HardDrive,
   KeyRound,
+  LogIn,
   Mic,
   Pencil,
   Plus,
+  QrCode,
   RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
@@ -18,6 +20,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { apiClient } from '../services/api';
 
 interface AIKeyConfig {
   id: string;
@@ -49,10 +52,11 @@ const emptyKeyForm = (): AIKeyForm => ({
   model: 'deepseek-chat',
 });
 
-type SettingsSection = 'models' | 'asr' | 'storage' | 'advanced';
+type SettingsSection = 'models' | 'douyin' | 'asr' | 'storage' | 'advanced';
 
 const sections: Array<{ id: SettingsSection; label: string; description: string; icon: typeof KeyRound }> = [
   { id: 'models', label: 'Models / API Keys', description: 'AI 服务与密钥', icon: KeyRound },
+  { id: 'douyin', label: 'Douyin Login', description: '抖音扫码登录', icon: QrCode },
   { id: 'asr', label: 'ASR', description: '视频转录服务', icon: Mic },
   { id: 'storage', label: 'Storage', description: '本地文件位置', icon: HardDrive },
   { id: 'advanced', label: 'Advanced', description: '安全与提示', icon: SlidersHorizontal },
@@ -300,6 +304,7 @@ export function SettingsPage() {
               onSetActive={handleSetActive}
             />
           )}
+          {activeSection === 'douyin' && <DouyinSection />}
           {activeSection === 'asr' && <AsrSection />}
           {activeSection === 'storage' && <StorageSection />}
           {activeSection === 'advanced' && <AdvancedSection />}
@@ -729,6 +734,205 @@ function getProviderLabel(provider: AIKeyConfig['provider']) {
   if (provider === 'deepseek') return 'DeepSeek';
   if (provider === 'openai') return 'OpenAI';
   return '第三方';
+}
+
+// ─── 手动 Cookie 输入组件 ──────────────────────────────────────
+
+function ManualCookieInput({ onSaved, disabled }: { onSaved: () => void; disabled: boolean }) {
+  const [cookie, setCookie] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const handleSave = async () => {
+    if (!cookie.trim()) return;
+    setSaving(true);
+    setMsg(null);
+    try {
+      const r = await apiClient.saveCookie(cookie.trim());
+      setMsg({ ok: r.success && r.hasAuth, text: r.message });
+      if (r.success) { setCookie(""); onSaved(); }
+    } catch (err: any) {
+      setMsg({ ok: false, text: err.response?.data?.message || err.message || "保存失败" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <textarea
+        value={cookie}
+        onChange={(e) => setCookie(e.target.value)}
+        placeholder="sessionid=xxx; sid_guard=xxx; passport_csrf_token=xxx; ..."
+        disabled={disabled || saving}
+        rows={3}
+        className="w-full rounded-lg border border-tech-border bg-tech-bg px-4 py-3 text-sm font-mono text-tech-text placeholder-tech-muted outline-none transition-all focus:border-tech-blue focus:ring-2 focus:ring-blue-100 resize-y"
+      />
+      <div className="flex items-center gap-3">
+        <button
+          onClick={handleSave}
+          disabled={disabled || saving || !cookie.trim()}
+          className="rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition-all hover:bg-blue-600 disabled:opacity-50"
+        >
+          {saving ? "保存中..." : "保存 Cookie"}
+        </button>
+        {msg && (
+          <span className={`text-sm ${msg.ok ? "text-emerald-600" : "text-red-500"}`}>{msg.text}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── 抖音扫码登录 ──────────────────────────────────────────────
+
+function DouyinSection() {
+  const [status, setStatus] = useState<{ hasCookie: boolean; hasAuth: boolean; path: string; status: string } | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [loginResult, setLoginResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    loadStatus();
+  }, []);
+
+  const loadStatus = async () => {
+    try {
+      const s = await apiClient.getCookieStatus();
+      setStatus(s);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleQrLogin = async () => {
+    setIsLoggingIn(true);
+    setLoginResult(null);
+    try {
+      const result = await apiClient.startQrLogin();
+      setLoginResult({ success: result.success, message: result.message });
+      await loadStatus();
+    } catch (err: any) {
+      setLoginResult({
+        success: false,
+        message: err.response?.data?.message || err.message || '扫码登录失败',
+      });
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const statusDisplay = status
+    ? status.status === 'authenticated'
+      ? { icon: CheckCircle2, color: 'text-emerald-600 bg-emerald-50 border-emerald-200', text: '已登录', desc: 'Cookie 包含登录态，API 调用可用' }
+      : status.status === 'no_auth'
+      ? { icon: AlertCircle, color: 'text-amber-600 bg-amber-50 border-amber-200', text: '未登录', desc: 'Cookie 存在但无登录态，需扫码登录' }
+      : { icon: XCircle, color: 'text-red-600 bg-red-50 border-red-200', text: '无 Cookie', desc: '尚未获取任何 Cookie' }
+    : null;
+
+  return (
+    <section className="space-y-6">
+      <SectionHeader
+        icon={QrCode}
+        title="Douyin Login"
+        description="扫码登录抖音以获取 API 调用所需的 Cookie。登录后即可使用签名 API 批量采集视频。"
+      />
+
+      {/* Status card */}
+      {statusDisplay && (
+        <div className={`rounded-lg border p-5 ${statusDisplay.color}`}>
+          <div className="flex items-start gap-4">
+            <statusDisplay.icon size={24} className="shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <h3 className="font-semibold text-lg">Cookie 状态：{statusDisplay.text}</h3>
+              <p className="mt-1 text-sm opacity-80">{statusDisplay.desc}</p>
+              {status && (
+                <p className="mt-2 text-xs opacity-60 break-all">
+                  存储位置：{status.path}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Login button */}
+      <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
+        <h3 className="text-lg font-semibold text-tech-text mb-4">扫码登录</h3>
+        <p className="text-sm text-tech-muted mb-6 leading-relaxed">
+          点击下方按钮后，系统会自动打开浏览器窗口并导航至抖音首页。
+          请在浏览器中<strong>使用抖音 App 扫描二维码</strong>完成登录。
+          登录成功后浏览器会自动关闭，Cookie 将保存到本地供后续使用。
+        </p>
+        <p className="text-sm text-tech-muted mb-6">
+          此操作只需执行一次，后续所有 API 调用将自动使用持久化的登录态。
+        </p>
+
+        <button
+          onClick={handleQrLogin}
+          disabled={isLoggingIn}
+          className="inline-flex items-center gap-3 rounded-lg bg-tech-purple px-6 py-4 text-base font-semibold text-white transition-all hover:bg-purple-700 disabled:opacity-50 disabled:cursor-wait shadow-sm"
+        >
+          {isLoggingIn ? (
+            <>
+              <RefreshCw size={20} className="animate-spin" />
+              等待扫码中...（浏览器已打开，请用抖音 App 扫码）
+            </>
+          ) : (
+            <>
+              <QrCode size={20} />
+              打开浏览器扫码登录
+            </>
+          )}
+        </button>
+
+        {isLoggingIn && (
+          <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700">
+            <div className="flex items-start gap-3">
+              <AlertCircle size={18} className="shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold">请查看桌面上的浏览器窗口</p>
+                <p className="mt-1">
+                  浏览器窗口正在等待您扫码登录。请在打开的 Chromium 窗口中用抖音 App 扫描二维码。
+                  检测到登录后窗口会自动关闭。
+                  <strong className="block mt-1">最长等待时间：2 分钟</strong>
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {loginResult && (
+          <div className={`mt-4 rounded-lg border p-4 text-sm ${
+            loginResult.success
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+              : 'border-red-200 bg-red-50 text-red-700'
+          }`}>
+            <div className="flex items-center gap-2">
+              {loginResult.success ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
+              {loginResult.message}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Manual cookie input */}
+      <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
+        <h3 className="text-sm font-semibold text-tech-text mb-3">手动粘贴 Cookie</h3>
+        <p className="text-sm text-tech-muted leading-relaxed mb-3">
+          在 Chrome 中打开抖音并登录，然后按 <kbd className="px-1.5 py-0.5 rounded bg-tech-bg text-xs">F12</kbd> 打开 DevTools，
+          进入 <strong>Application</strong> → <strong>Cookies</strong> → <strong>douyin.com</strong>，
+          将下方格式的 Cookie 字符串粘贴到输入框中保存。
+        </p>
+        <ManualCookieInput
+          onSaved={() => loadStatus()}
+          disabled={isLoggingIn}
+        />
+        <p className="mt-3 text-sm text-tech-muted">
+          保存位置：<code className="bg-tech-bg px-2 py-0.5 rounded text-xs select-all">{status?.path || '~/.douyin-ai-video/douyin-cookie.txt'}</code>
+        </p>
+      </div>
+    </section>
+  );
 }
 
 const inputClassName =

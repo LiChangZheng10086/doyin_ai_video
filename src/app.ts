@@ -7,6 +7,7 @@ import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
 import { JobStepError, JobStore } from "./lib/jobs.js";
 import { CollectionStore } from "./lib/collections.js";
+import { registerConfigRoutes } from "./lib/config-server.js";
 import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import { simplifyChineseValue } from "./lib/chinese.js";
 import type { CollectionRecord, PipelineStep, ScriptAsset } from "./types.js";
@@ -136,18 +137,6 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   app.get("/health", (_req, res) => {
     res.json({ ok: true, service: "douyin-ai-video" });
-  });
-
-  // 浏览器开发模式下获取配置（替代 Electron IPC）
-  app.get("/api/config", async (_req, res) => {
-    try {
-      const resolved = config.resolveAiConfig ? await config.resolveAiConfig() : null;
-      res.json({
-        aiKeys: resolved ? [{ provider: resolved.provider, model: resolved.model, baseURL: resolved.baseURL, isActive: true, name: resolved.provider, id: "resolved" }] : [],
-      });
-    } catch {
-      res.json({ aiKeys: [] });
-    }
   });
 
   app.get("/api/jobs", async (_req, res) => {
@@ -505,6 +494,77 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
         return;
       }
       throw error;
+    }
+  });
+
+  // ─── 配置管理 API（浏览器开发模式替代 Electron IPC）─────
+  registerConfigRoutes(app);
+
+  // ─── 抖音 Cookie / 扫码登录 API ─────────────────────────────
+
+  // 检查 cookie 状态
+  app.get("/api/douyin/cookie-status", (_req, res) => {
+    import("./lib/douyin-cookie.js").then(({ hasCookie, hasAuthCookie, getCookiePath }) => {
+      const has = hasCookie();
+      const hasAuth = hasAuthCookie();
+      res.json({
+        hasCookie: has,
+        hasAuth,
+        path: getCookiePath(),
+        status: hasAuth ? "authenticated" : has ? "no_auth" : "empty",
+      });
+    }).catch(err => {
+      res.status(500).json({ message: err.message });
+    });
+  });
+
+  // 扫码登录 — 启动可视化浏览器等待用户扫码
+  app.post("/api/douyin/qr-login", async (_req, res) => {
+    try {
+      const { extractCookiesWithQRLogin } = await import("./lib/douyin-cookie.js");
+      const result = await extractCookiesWithQRLogin(120); // 2 minute timeout
+
+      if (result.hasAuth) {
+        res.json({
+          success: true,
+          message: "登录成功，Cookie 已保存",
+          hasAuth: true,
+          authInfo: result.authInfo,
+        });
+      } else {
+        res.status(401).json({
+          success: false,
+          message: "登录失败：未检测到登录态",
+          hasAuth: false,
+        });
+      }
+    } catch (err: any) {
+      res.status(500).json({
+        success: false,
+        message: err.message || "扫码登录失败",
+        hasAuth: false,
+      });
+    }
+  });
+
+  // 手动保存 Cookie（用户从 Chrome DevTools 复制粘贴）
+  app.post("/api/douyin/save-cookie", async (req, res) => {
+    try {
+      const { cookie } = req.body as { cookie?: string };
+      if (!cookie || typeof cookie !== "string" || cookie.trim().length < 10) {
+        res.status(400).json({ success: false, message: "请提供有效的 Cookie 字符串" });
+        return;
+      }
+      const { saveCookie, hasAuthCookie, getCookiePath } = await import("./lib/douyin-cookie.js");
+      saveCookie(cookie.trim());
+      res.json({
+        success: true,
+        message: "Cookie 已保存",
+        hasAuth: hasAuthCookie(),
+        path: getCookiePath(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message || "保存 Cookie 失败" });
     }
   });
 

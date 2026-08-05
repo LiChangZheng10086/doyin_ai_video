@@ -207,6 +207,29 @@ class ApiClient {
     const response = await client.post(`/api/collections/${collectionId}/steps/${routeMap[step]}`);
     return response.data;
   }
+
+  // ─── 抖音 Cookie / 扫码登录 API ───────────────────────────
+
+  // 检查 cookie 状态
+  async getCookieStatus(): Promise<{ hasCookie: boolean; hasAuth: boolean; path: string; status: string }> {
+    const client = await this.getClient();
+    const response = await client.get('/api/douyin/cookie-status');
+    return response.data;
+  }
+
+  // 扫码登录
+  async startQrLogin(): Promise<{ success: boolean; message: string; hasAuth: boolean; authInfo?: any }> {
+    const client = await this.getClient();
+    const response = await client.post('/api/douyin/qr-login');
+    return response.data;
+  }
+
+  // 手动保存 Cookie
+  async saveCookie(cookie: string): Promise<{ success: boolean; message: string; hasAuth: boolean; path: string }> {
+    const client = await this.getClient();
+    const response = await client.post('/api/douyin/save-cookie', { cookie });
+    return response.data;
+  }
 }
 
 export const apiClient = new ApiClient();

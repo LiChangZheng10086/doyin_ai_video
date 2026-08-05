@@ -37,19 +37,19 @@ export interface CrawlUserPageResult {
 }
 
 export interface UserPageCrawlerConfig {
-  /** 可选，覆盖 User-Agent */
+  /** Optional User-Agent override */
   userAgent?: string;
-  /** cookies 文件路径（兼容 yt-dlp 格式） */
+  /** Path to cookies file (yt-dlp compatible format) */
   cookiesFile?: string;
-  /** 从浏览器读取 cookies */
+  /** Read cookies from browser */
   cookiesFromBrowser?: string;
-  /** 直接传入Cookie字符串（优先级最高） */
+  /** Cookie string directly passed in (highest priority) */
   cookieString?: string;
 }
 
 /**
- * 抖音 API 认证所需的关键 Cookie 字段。
- * 参考 dyDownload 和 douyin-download 两个项目。
+ * Key cookie fields required for Douyin API auth.
+ * Based on dyDownload and douyin-download projects.
  */
 export const DOUYIN_COOKIE_KEYS = [
   "msToken",
@@ -68,9 +68,6 @@ export const DOUYIN_COOKIE_KEYS = [
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) EdgiOS/121.0.2277.107 Version/17.0 Mobile/15E148 Safari/604.1";
 
-const MOBILE_USER_AGENT_IOS =
-  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1";
-
 function buildHeaders(config: UserPageCrawlerConfig, extra: Record<string, string> = {}): Record<string, string> {
   const cookie = resolveCookieHeader(config);
   const headers: Record<string, string> = {
@@ -84,26 +81,22 @@ function buildHeaders(config: UserPageCrawlerConfig, extra: Record<string, strin
 }
 
 /**
- * 从多种来源解析 Cookie 字符串。
- * 优先级：cookieString > cookiesFile > 环境变量 DOUYIN_COOKIE
+ * Resolve cookie string from multiple sources.
+ * Priority: cookieString > environment variable DOUYIN_COOKIE
  */
 function resolveCookieHeader(config: UserPageCrawlerConfig): string {
-  // 1. 直接传入的 Cookie 字符串
   if (config.cookieString?.trim()) {
     return config.cookieString.trim();
   }
-
-  // 2. 从环境变量读取
   if (process.env.DOUYIN_COOKIE?.trim()) {
     return process.env.DOUYIN_COOKIE.trim();
   }
-
   return "";
 }
 
 /**
- * 从 yt-dlp 格式的 cookies 文件中提取 Netscape 格式的 cookies，
- * 并转换为适用于抖音 API 请求的 Cookie header。
+ * Load cookies from yt-dlp format (Netscape) cookies file
+ * and convert to Cookie header string for Douyin API requests.
  */
 async function loadCookiesFromFile(filePath: string): Promise<string> {
   const content = await readFile(filePath, "utf8");
@@ -112,20 +105,18 @@ async function loadCookiesFromFile(filePath: string): Promise<string> {
   const pairs: string[] = [];
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
-    // 跳过注释和空行
     if (!trimmed || trimmed.startsWith("#")) continue;
 
     const fields = trimmed.split("\t");
-    // Netscape 格式: domain flag path secure expires name value
+    // Netscape format: domain flag path secure expires name value
     if (fields.length >= 7) {
       const domain = fields[0];
       const expires = Number(fields[4]);
       const name = fields[5];
       const value = fields[6];
 
-      // 只保留抖音相关域名的 cookie
+      // Only keep cookies for Douyin-related domains
       if (domain.includes("douyin.com") || domain.includes("iesdouyin.com") || domain.includes("snssdk.com") || domain.includes("byteimg.com") || domain.includes("bytedance.com")) {
-        // 跳过过期 cookie
         if (expires > 0 && expires < now) continue;
         pairs.push(`${name}=${value}`);
       }
@@ -136,34 +127,31 @@ async function loadCookiesFromFile(filePath: string): Promise<string> {
 }
 
 /**
- * 构建请求专用的头部，包含从各种来源加载的认证信息。
- * 并发安全的轻量版本——每次调用都同步读取环境变量，不缓存文件。
+ * Build auth headers, including cookies from various sources.
+ * Concurrency-safe lightweight version - reads env vars synchronously each call without caching files.
  */
 function buildAuthHeaders(config: UserPageCrawlerConfig): Record<string, string> {
   return buildHeaders(config);
 }
 
-/** 从用户主页 URL 中提取 sec_uid */
+/** Extract sec_uid from a user page URL */
 export function extractSecUidFromUrl(url: string): string | null {
-  // 匹配模式：/user/{sec_uid} 或 /user/{sec_uid}?...
   const match = url.match(/\/user\/([A-Za-z0-9_-]+)/);
   return match?.[1] ?? null;
 }
 
-/** 从用户主页 HTML 中提取 SSR 数据和 sec_uid */
+/** Extract sec_uid and user info from user page HTML */
 function extractSecUidFromHtml(html: string, fallbackUrl: string): string | null {
-  // 先尝试从 URL 提取
   const fromUrl = extractSecUidFromUrl(fallbackUrl);
   if (fromUrl) return fromUrl;
 
-  // 尝试从 ROUTER_DATA 或其他内嵌 JSON 中提取
+  // Try to extract from ROUTER_DATA or other embedded JSON
   const routerMatch = html.match(/window\._ROUTER_DATA\s*=\s*(.*?)<\/script>/s);
   if (routerMatch) {
     try {
       const raw = routerMatch[1].trim().replace(/;$/, "");
       const data = JSON.parse(raw) as Record<string, any>;
       const loaderData = (data.loaderData ?? {}) as Record<string, any>;
-      // 遍历 loaderData 查找包含 sec_uid 的 key
       for (const value of Object.values(loaderData)) {
         const typed = value as Record<string, any> | undefined;
         if (typed?.userPageResp?.sec_uid) return String(typed.userPageResp.sec_uid);
@@ -171,15 +159,15 @@ function extractSecUidFromHtml(html: string, fallbackUrl: string): string | null
         if (typed?.sec_uid) return String(typed.sec_uid);
       }
     } catch {
-      // ROUTER_DATA 解析失败，继续尝试其他方式
+      // ROUTER_DATA parse failed, continue trying
     }
   }
 
-  // 尝试从页面 JS 变量中提取
+  // Try JS variables in the page
   const secUidMatch = html.match(/"sec_uid"\s*:\s*"([^"]+)"/);
   if (secUidMatch) return secUidMatch[1];
 
-  // 尝试从 SSR 初始 state 提取
+  // Try SSR initial state
   const stateMatch = html.match(
     /"user"\s*:\s*\{[^}]*"sec_uid"\s*:\s*"([^"]+)"/
   );
@@ -188,7 +176,6 @@ function extractSecUidFromHtml(html: string, fallbackUrl: string): string | null
   return null;
 }
 
-/** 从 HTML 中提取昵称等用户信息 */
 function extractUserInfoFromHtml(
   html: string
 ): Partial<DouyinUserPageInfo> {
@@ -213,13 +200,11 @@ function extractUserInfoFromHtml(
         }
       }
     } catch {
-      // 忽略
+      // ignore
     }
   }
 
-  // 从 meta 标签 fallback
   info.nickname = info.nickname ?? extractMetaContent(html, "og:title");
-
   return info;
 }
 
@@ -246,7 +231,7 @@ function decodeHtmlEntities(value: string): string {
 }
 
 /**
- * 解析 aweme/post API 返回的 JSON，提取视频列表
+ * Parse aweme/post API response JSON, extract video items.
  */
 function parseAwemeItems(data: Record<string, any>): {
   items: DouyinVideoItem[];
@@ -264,7 +249,7 @@ function parseAwemeItems(data: Record<string, any>): {
     const coverInfo = video.cover ?? video.origin_cover ?? {};
     const stats = aweme.statistics ?? {};
 
-    // 优先使用无水印地址
+    // Prefer non-watermarked address
     const videoUrl =
       playAddr.url_list?.find?.((u: string) => !u.includes("watermark")) ??
       playAddr.url_list?.[0] ??
@@ -301,7 +286,6 @@ function parseAwemeItems(data: Record<string, any>): {
     };
   });
 
-  // 从第一个视频的作者信息提取
   let userInfo: Partial<DouyinUserPageInfo> | undefined;
   const author = awemeList[0]?.author;
   if (author) {
@@ -319,134 +303,122 @@ function parseAwemeItems(data: Record<string, any>): {
 }
 
 /**
- * 通过直接 API 调用爬取用户作品列表。
- * 优先使用 www.douyin.com 接口（Cookie 认证），失败则尝试 iesdouyin.com。
- * 参考: dyDownload (Everless321) 和 douyin-download (datnndd)
+ * Crawl user page via direct API calls with a_bogus + X-Bogus signatures.
+ * Automatically loads persisted cookie; if none exists, extracts via browser.
  */
 async function crawlViaApi(
   secUid: string,
   maxItems: number,
   config: UserPageCrawlerConfig
 ): Promise<CrawlUserPageResult> {
+  // Dynamic import to avoid top-level side effects
+  const { signUserPostRequest } = await import("./douyin-signatures.js");
+  const { loadCookie, extractCookiesViaBrowser } = await import("./douyin-cookie.js");
+
+  let cookie = resolveCookieHeader(config);
+  if (!cookie) {
+    cookie = loadCookie();
+  }
+
+  // No cookie at all? Extract one via headless browser
+  if (!cookie) {
+    try {
+      console.log("[crawl] No cookie found, extracting via headless browser...");
+      cookie = await extractCookiesViaBrowser();
+      console.log("[crawl] Cookie extracted, length:", cookie.length);
+    } catch (err) {
+      console.warn("[crawl] Auto cookie extraction failed:", err);
+    }
+  }
+
+  const userAgent = config.userAgent ??
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+
   const allItems: DouyinVideoItem[] = [];
   let cursor = 0;
   let hasMore = true;
   let userInfo: DouyinUserPageInfo | null = null;
   const perPage = Math.min(maxItems, 35);
 
-  // 两个备选 API 端点
-  const apiEndpoints = [
-    {
-      name: "douyin-web",
-      baseUrl: "https://www.douyin.com/aweme/v1/web/aweme/post/",
-      referer: `https://www.douyin.com/user/${secUid}`,
-      params: (csr: number) => ({
-        sec_user_id: secUid,
-        count: String(perPage),
-        max_cursor: String(csr),
-        aid: "6383",
-        cookie_enabled: "true",
-        platform: "pc",
-        downlink: "10",
-      }),
-      responseListKey: (json: any) => json?.aweme_list ?? json?.data,
-      hasMoreKey: (json: any) => json?.has_more === 1,
-      nextCursorKey: (json: any) => json?.max_cursor ?? 0,
-      statusOk: (json: any) => json?.status_code === 0 || json?.status_code === undefined,
-    },
-    {
-      name: "iesdouyin",
-      baseUrl: "https://www.iesdouyin.com/web/api/v2/aweme/post/",
-      referer: `https://www.iesdouyin.com/share/user/${secUid}`,
-      params: (csr: number) => ({
-        sec_user_id: secUid,
-        count: String(perPage),
-        max_cursor: String(csr),
-        aid: "6383",
-        cookie_enabled: "true",
-        platform: "pc",
-        downlink: "10",
-      }),
-      responseListKey: (json: any) => json?.aweme_list ?? json?.data,
-      hasMoreKey: (json: any) => json?.has_more === 1 || json?.has_more === true,
-      nextCursorKey: (json: any) => json?.max_cursor ?? json?.cursor ?? 0,
-      statusOk: (json: any) => json?.status_code === 0 || json?.status_code === undefined,
-    },
-  ];
+  while (hasMore && allItems.length < maxItems) {
+    const signed = signUserPostRequest(secUid, cursor, perPage, userAgent);
 
-  for (const endpoint of apiEndpoints) {
-    // 重置
-    cursor = 0;
-    hasMore = true;
-    allItems.length = 0;
-
-    try {
-      while (hasMore && allItems.length < maxItems) {
-        const params = endpoint.params(cursor);
-        const queryString = new URLSearchParams(
-          Object.entries(params).map(([k, v]) => [k, String(v)])
-        ).toString();
-        const apiUrl = `${endpoint.baseUrl}?${queryString}`;
-        const headers = buildAuthHeaders(config);
-        headers["Referer"] = endpoint.referer;
-        headers["Accept"] = "application/json, text/plain, */*";
-
-        const response = await fetch(apiUrl, {
-          method: "GET",
-          headers,
-          redirect: "follow",
-        });
-
-        if (!response.ok) {
-          if (allItems.length > 0) break;
-          throw new Error(`${endpoint.name}: HTTP ${response.status}`);
-        }
-
-        const json = (await response.json()) as Record<string, any>;
-
-        if (!endpoint.statusOk(json)) {
-          throw new Error(
-            `${endpoint.name}: API status ${json.status_code ?? "unknown"}: ${json.status_msg ?? ""}`
-          );
-        }
-
-        const parsed = parseAwemeItems(json);
-
-        if (!userInfo && parsed.userInfo) {
-          userInfo = {
-            secUid,
-            nickname: parsed.userInfo.nickname ?? "未知用户",
-            avatarUrl: parsed.userInfo.avatarUrl ?? "",
-            description: parsed.userInfo.description ?? "",
-            followerCount: parsed.userInfo.followerCount ?? 0,
-            followingCount: parsed.userInfo.followingCount ?? 0,
-            awemeCount: parsed.userInfo.awemeCount ?? 0,
-          };
-        }
-
-        cursor = endpoint.nextCursorKey(json);
-        hasMore = endpoint.hasMoreKey(json) && parsed.items.length > 0;
-        allItems.push(...parsed.items);
-
-        if (!parsed.hasMore || parsed.items.length === 0) break;
-      }
-
-      // 成功获取到数据，退出循环
-      if (allItems.length > 0 || !hasMore) break;
-    } catch (err) {
-      console.warn(`API 端点 ${endpoint.name} 失败:`, err);
-      // 继续尝试下一个端点
+    const headers: Record<string, string> = {
+      "User-Agent": signed.userAgent,
+      "Accept": "application/json, text/plain, */*",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+      "Referer": `https://www.douyin.com/user/${secUid}`,
+      "Origin": "https://www.douyin.com",
+      "Sec-Fetch-Site": "same-origin",
+      "Sec-Fetch-Mode": "cors",
+      "Sec-Fetch-Dest": "empty",
+    };
+    if (cookie) {
+      headers["Cookie"] = cookie;
     }
+
+    const response = await fetch(signed.url, {
+      method: "GET",
+      headers,
+      redirect: "follow",
+    });
+
+    if (!response.ok) {
+      throw new Error(`API returned HTTP ${response.status}`);
+    }
+
+    const text = await response.text();
+    if (!text.trim()) {
+      // Empty response: cookie expired or missing
+      throw new Error(
+        "API returned empty response. Cookie may have expired.\n" +
+        "Try deleting ~/.douyin-ai-video/douyin-cookie.txt to re-extract."
+      );
+    }
+
+    const json = JSON.parse(text) as Record<string, any>;
+
+    if (json.status_code !== 0) {
+      throw new Error(
+        `API error: status_code=${json.status_code}, msg=${json.status_msg ?? "unknown"}`
+      );
+    }
+
+    const parsed = parseAwemeItems(json);
+
+    if (!userInfo && parsed.userInfo) {
+      userInfo = {
+        secUid,
+        nickname: parsed.userInfo.nickname ?? "Unknown User",
+        avatarUrl: parsed.userInfo.avatarUrl ?? "",
+        description: parsed.userInfo.description ?? "",
+        followerCount: parsed.userInfo.followerCount ?? 0,
+        followingCount: parsed.userInfo.followingCount ?? 0,
+        awemeCount: parsed.userInfo.awemeCount ?? 0,
+      };
+    }
+
+    cursor = json?.max_cursor ?? 0;
+    hasMore = (json?.has_more === 1) && parsed.items.length > 0;
+    allItems.push(...parsed.items);
+
+    if (!parsed.hasMore || parsed.items.length === 0) break;
+    if (cursor === 0) break;
   }
 
   if (allItems.length === 0) {
-    throw new Error("所有 API 端点均失败，无法获取视频列表。请尝试:\n1. 设置环境变量 DOUYIN_COOKIE=你的Cookie\n2. 使用 cookiesFile 参数指定 Cookie 文件\n3. 查看 README 了解如何获取抖音 Cookie");
+    throw new Error(
+      "No videos collected from user page. Possible causes:\n" +
+      "1. Cookie expired: delete ~/.douyin-ai-video/douyin-cookie.txt and retry\n" +
+      "2. Need to login: open https://www.douyin.com/ in browser and sign in first\n" +
+      "3. Set DOUYIN_COOKIE=... env var with a valid cookie string"
+    );
   }
 
   if (!userInfo) {
     userInfo = {
       secUid,
-      nickname: "未知用户",
+      nickname: "Unknown User",
       avatarUrl: "",
       description: "",
       followerCount: 0,
@@ -465,122 +437,132 @@ async function crawlViaApi(
 }
 
 /**
- * 通过 Playwright 浏览器自动化爬取用户作品列表。
- * 启动无头浏览器，拦截 aweme/post API 响应来获取数据。
+ * Crawl user page via Playwright browser automation.
+ * Launches headless browser, intercepts aweme/post API responses to get data.
+ *
+ * Writes an ESM script to a temp .mjs file and executes it as a child process,
+ * avoiding the issue where require('playwright') fails in an ESM project.
  */
 async function crawlViaBrowser(
   secUid: string,
   maxItems: number,
   config: UserPageCrawlerConfig
 ): Promise<CrawlUserPageResult> {
-  // 检查 npx playwright 是否可用
-  const playwrightScript = `
-const { chromium } = require('playwright');
+  const os = await import("node:os");
+  const pathModule = await import("node:path");
+  const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
 
-(async () => {
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({
-    userAgent: "${config.userAgent ?? DEFAULT_USER_AGENT}",
-    viewport: { width: 390, height: 844 },
-  });
+  const tmpDir = await mkdtemp(pathModule.join(os.tmpdir(), "douyin-crawl-"));
+  const scriptPath = pathModule.join(tmpDir, "crawl.mjs");
 
-  const page = await context.newPage();
-  const items = [];
-  let userInfo = null;
-  let hasMore = true;
-  let cursor = 0;
+  // Resolve playwright to an absolute path so the child process can import it
+  const playwrightPath = pathModule.join(process.cwd(), "node_modules", "playwright", "index.js");
 
-  // 拦截 API 响应
-  page.on('response', async (response) => {
-    const url = response.url();
-    if (url.includes('aweme/v1/web/aweme/post') || url.includes('aweme/post')) {
-      try {
-        const json = await response.json();
-        if (json && json.aweme_list) {
-          items.push(...json.aweme_list);
-          cursor = json.max_cursor || 0;
-          hasMore = json.has_more === 1;
-        }
-        if (!userInfo && json?.aweme_list?.[0]?.author) {
-          const author = json.aweme_list[0].author;
-          userInfo = {
-            secUid: author.sec_uid || "${secUid}",
-            nickname: author.nickname || '',
-            avatarUrl: (author.avatar_medium?.url_list?.[0] || author.avatar_thumb?.url_list?.[0] || ''),
-            description: author.signature || '',
-            followerCount: author.follower_count || 0,
-            followingCount: author.following_count || 0,
-            awemeCount: author.aweme_count || 0,
-          };
-        }
-      } catch {}
-    }
-  });
+  const scriptContent = `import pkg from ${JSON.stringify(playwrightPath)};
+const { chromium } = pkg;
 
-  const targetMax = ${maxItems};
-  await page.goto('https://www.douyin.com/user/${secUid}', {
-    waitUntil: 'networkidle',
-    timeout: 30000,
-  });
+const secUid = ${JSON.stringify(secUid)};
+const maxItems = ${maxItems};
+const userAgent = ${JSON.stringify(config.userAgent ?? DEFAULT_USER_AGENT)};
 
-  // 等待初始数据加载
-  await page.waitForTimeout(3000);
+const browser = await chromium.launch({ headless: true });
+const context = await browser.newContext({
+  userAgent,
+  viewport: { width: 1280, height: 900 },
+});
+const page = await context.newPage();
 
-  // 滚动加载更多
-  while (hasMore && items.length < targetMax) {
-    await page.evaluate(() => {
-      window.scrollTo(0, document.body.scrollHeight);
-    });
-    await page.waitForTimeout(2000);
+const items = [];
+let userInfo = null;
+let hasMore = true;
+let cursor = 0;
 
-    // 如果连续滚动都没有新数据，尝试点击 "加载更多"
-    const loadMore = page.locator('text=加载更多, text=查看更多');
-    if (await loadMore.count() > 0) {
-      await loadMore.first().click();
-      await page.waitForTimeout(2000);
-    }
+page.on("response", async (response) => {
+  const url = response.url();
+  if ((url.includes("aweme/v1/web/aweme/post") || url.includes("aweme/post")) && response.status() === 200) {
+    try {
+      const json = await response.json();
+      if (json && json.aweme_list && json.aweme_list.length > 0) {
+        items.push(...json.aweme_list);
+        cursor = json.max_cursor || 0;
+        hasMore = json.has_more === 1;
+      }
+      if (!userInfo && json?.aweme_list?.[0]?.author) {
+        const author = json.aweme_list[0].author;
+        userInfo = {
+          secUid: author.sec_uid || secUid,
+          nickname: author.nickname || "",
+          avatarUrl: (author.avatar_medium?.url_list?.[0] || author.avatar_thumb?.url_list?.[0] || ""),
+          description: author.signature || "",
+          followerCount: author.follower_count || 0,
+          followingCount: author.following_count || 0,
+          awemeCount: author.aweme_count || 0,
+        };
+      }
+    } catch {}
   }
+});
 
-  if (!userInfo) {
-    userInfo = {
-      secUid: "${secUid}",
-      nickname: "未知用户",
-      avatarUrl: "",
-      description: "",
-      followerCount: 0,
-      followingCount: 0,
-      awemeCount: 0,
-    };
+await page.goto("https://www.douyin.com/user/" + secUid, {
+  waitUntil: "domcontentloaded",
+  timeout: 30000,
+});
+await page.waitForTimeout(4000);
+
+// Scroll to load more
+let noNewRounds = 0;
+while (hasMore && items.length < maxItems && noNewRounds < 3) {
+  const before = items.length;
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  await page.waitForTimeout(2500);
+  if (items.length === before) {
+    noNewRounds++;
+  } else {
+    noNewRounds = 0;
   }
+}
 
-  console.log(JSON.stringify({ items, userInfo, hasMore, cursor }));
-  await browser.close();
-})();
+if (!userInfo) {
+  userInfo = {
+    secUid: secUid,
+    nickname: "Unknown User",
+    avatarUrl: "",
+    description: "",
+    followerCount: 0,
+    followingCount: 0,
+    awemeCount: 0,
+  };
+}
+
+process.stdout.write(JSON.stringify({ items, userInfo, hasMore, cursor }));
+await browser.close();
 `;
 
   try {
-    const { stdout } = await runCommand("npx", ["playwright", "run", "-c", "/dev/null", "--"], {
+    await writeFile(scriptPath, scriptContent, "utf8");
+
+    const nodeModulesPath = pathModule.join(process.cwd(), "node_modules");
+    const env: NodeJS.ProcessEnv = { ...process.env, NODE_PATH: nodeModulesPath };
+    delete env.NODE_OPTIONS; // avoid --import etc flags interfering with child process
+
+    const { stdout, stderr } = await runCommand("node", ["--no-warnings", scriptPath], {
       captureStdout: true,
       captureStderr: true,
       timeoutMs: 120000,
-      env: {
-        ...process.env,
-        PLAYWRIGHT_SCRIPT: playwrightScript,
-      },
-    }).catch(async () => {
-      // npx playwright run 可能不支持这种用法，尝试 node -e
-      return await runCommand("node", ["-e", playwrightScript], {
-        captureStdout: true,
-        captureStderr: true,
-        timeoutMs: 120000,
-      });
+      env,
     });
 
     const raw = stdout.trim();
-    // 找到最后一个 JSON 对象
+    if (stderr) {
+      console.warn("Playwright stderr:", stderr.slice(0, 500));
+    }
+
+    // Find JSON object
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
-      throw new Error("浏览器模式未能获取有效数据");
+      throw new Error(
+        `Browser mode did not return valid data. stdout: ${raw.slice(0, 200)}, stderr: ${stderr.slice(0, 200)}`
+      );
     }
 
     const result = JSON.parse(jsonMatch[0]) as {
@@ -590,12 +572,16 @@ const { chromium } = require('playwright');
       cursor: number;
     };
 
-    const parsed = parseAwemeItems({ aweme_list: result.items, max_cursor: result.cursor, has_more: result.hasMore ? 1 : 0 });
+    const parsed = parseAwemeItems({
+      aweme_list: result.items,
+      max_cursor: result.cursor,
+      has_more: result.hasMore ? 1 : 0,
+    });
 
     return {
       userInfo: result.userInfo ?? {
         secUid,
-        nickname: parsed.userInfo?.nickname ?? "未知用户",
+        nickname: parsed.userInfo?.nickname ?? "Unknown User",
         avatarUrl: parsed.userInfo?.avatarUrl ?? "",
         description: parsed.userInfo?.description ?? "",
         followerCount: parsed.userInfo?.followerCount ?? 0,
@@ -610,27 +596,38 @@ const { chromium } = require('playwright');
   } catch (error) {
     if (error instanceof CommandError) {
       throw new Error(
-        `浏览器自动化爬取失败: ${error.stderr || error.message}\n请确认已安装 Playwright: npx playwright install chromium`
+        `Browser automation crawl failed: ${error.stderr || error.message}\n` +
+        `Please ensure Playwright is installed: npm install playwright && npx playwright install chromium`
       );
     }
     throw error;
+  } finally {
+    // Clean up temp directory
+    rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
 /**
- * 爬取抖音用户主页视频列表。
+ * Crawl Douyin user page to get video list.
  *
- * @param pageUrl - 用户主页链接，如 https://www.douyin.com/user/MS4wLjABAAAA...
- * @param maxItems - 最多获取的作品数
- * @param config - 配置选项
- * @returns 爬取结果
+ * Priority:
+ *   1. Direct API with signatures (a_bogus + X-Bogus) + cookie
+ *   2. Playwright browser automation (fallback if signature API fails)
+ *
+ * First call will auto-extract cookie via headless browser if none exists;
+ * subsequent calls reuse the persisted cookie for lightning-fast API access.
+ *
+ * @param pageUrl - User page URL, e.g. https://www.douyin.com/user/MS4wLjABAAAA...
+ * @param maxItems - Maximum number of items to fetch
+ * @param config - Configuration options
+ * @returns Crawl result
  */
 export async function crawlUserPage(
   pageUrl: string,
   maxItems: number = 100,
   config: UserPageCrawlerConfig = {}
 ): Promise<CrawlUserPageResult> {
-  // Step 1: 获取页面 HTML，提取 sec_uid 和可能的内嵌数据
+  // Step 1: Fetch page HTML, extract sec_uid and embedded data
   let secUid: string | null = null;
   let htmlUserInfo: Partial<DouyinUserPageInfo> = {};
 
@@ -656,20 +653,21 @@ export async function crawlUserPage(
 
   if (!secUid) {
     throw new Error(
-      `无法从页面链接中提取用户 ID: ${pageUrl}\n请确认链接格式为 https://www.douyin.com/user/{用户ID}`
+      `Cannot extract user ID from page URL: ${pageUrl}\n` +
+      `Please ensure the URL format is https://www.douyin.com/user/{userID}`
     );
   }
 
-  // Step 2: 尝试 API 直接调用
+  // Step 2: Try direct API with signatures (fast, no browser needed)
   try {
     const apiResult = await crawlViaApi(secUid, maxItems, config);
 
-    // 合并页面中提取的用户信息（通常更完整）
+    // Merge user info from page HTML (often more complete)
     return {
       ...apiResult,
       userInfo: {
         secUid,
-        nickname: htmlUserInfo.nickname ?? apiResult.userInfo.nickname ?? "未知用户",
+        nickname: htmlUserInfo.nickname ?? apiResult.userInfo.nickname ?? "Unknown User",
         avatarUrl: htmlUserInfo.avatarUrl ?? apiResult.userInfo.avatarUrl ?? "",
         description: htmlUserInfo.description ?? apiResult.userInfo.description ?? "",
         followerCount: htmlUserInfo.followerCount ?? apiResult.userInfo.followerCount ?? 0,
@@ -678,9 +676,9 @@ export async function crawlUserPage(
       },
     };
   } catch (apiError) {
-    console.warn("API 直调爬取失败，正在降级到浏览器模式:", apiError);
+    console.warn("Direct API crawl failed, falling back to browser mode:", apiError);
   }
 
-  // Step 3: 降级到浏览器自动化
+  // Step 3: Fall back to browser automation
   return crawlViaBrowser(secUid, maxItems, config);
 }

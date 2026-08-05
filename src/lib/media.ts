@@ -44,11 +44,13 @@ export interface AudioExtractionResult {
 type DouyinPageVideoInfo = {
   videoId: string;
   videoUrl: string;
+  watermarkFreeUrl?: string;
   title: string;
   desc: string;
   sourceUrl: string;
   resolvedShareUrl: string;
   pageUrl: string;
+  itemUrl?: string;
   metadata: Record<string, unknown>;
 };
 
@@ -72,11 +74,19 @@ export class MediaService {
   }
 
   async downloadVideo(sourceUrl: string, jobId: string): Promise<DownloadResult> {
+    // Try page parser first (works without auth, gets watermarked video)
     let pageError: Error | null = null;
     try {
       return await this.downloadViaPageParser(sourceUrl, jobId);
     } catch (error) {
       pageError = error instanceof Error ? error : new Error("page parser download failed");
+    }
+
+    // Try signed API (gets watermark-free video, needs auth cookie)
+    try {
+      return await this.downloadViaSignedApi(sourceUrl, jobId);
+    } catch {
+      // silent — fall through to yt-dlp
     }
 
     try {
@@ -204,7 +214,10 @@ export class MediaService {
     const videoPath = this.storage.resolve("raw/videos", `${jobId}.mp4`);
     const metadataPath = this.storage.resolve("raw/videos", `${jobId}.page.json`);
 
-    await this.downloadFile(info.videoUrl, videoPath, {
+    // Prefer watermark-free URL if available (download_addr), fall back to play_addr
+    const downloadUrl = info.watermarkFreeUrl || info.videoUrl;
+
+    await this.downloadFile(downloadUrl, videoPath, {
       referer: info.pageUrl
     });
 
@@ -213,9 +226,10 @@ export class MediaService {
       downloadedVia: "page-parser",
       sourceUrl: info.sourceUrl,
       resolvedShareUrl: info.resolvedShareUrl,
-      pageUrl: info.pageUrl,
+      itemUrl: info.itemUrl || info.pageUrl,
       videoId: info.videoId,
-      videoUrl: info.videoUrl,
+      videoUrl: downloadUrl,
+      isWatermarkFree: !!info.watermarkFreeUrl,
       title: info.title,
       desc: info.desc,
       downloadedAt: new Date().toISOString(),
@@ -324,9 +338,15 @@ export class MediaService {
     const desc = String(item?.desc ?? "").trim() || `douyin_${videoId}`;
     const title = this.sanitizeFilename(desc);
 
+    // Try to extract watermark-free URL (download_addr) if available
+    const watermarkFreeUrl = item?.video?.download_addr?.url_list?.[0]
+      ? String(item.video.download_addr.url_list[0]).replace("playwm", "play")
+      : undefined;
+
     return {
       videoId,
       videoUrl,
+      watermarkFreeUrl,
       title,
       desc,
       sourceUrl,
@@ -443,6 +463,97 @@ export class MediaService {
     const hint = this.buildYtDlpHint();
     const message = [error.stderr.trim(), hint].filter(Boolean).join("\n").trim();
     return new Error(message || "yt-dlp download failed");
+  }
+
+  // ─── 签名 API 下载（无水印）────────────────────────────────────
+
+  /**
+   * Download via the signed aweme/detail API.
+   * Gets watermark-free download URLs from download_addr when available.
+   * Requires an authenticated cookie (sessionid) for the API to return video data.
+   */
+  private async downloadViaSignedApi(sourceUrl: string, jobId: string): Promise<DownloadResult> {
+    const videoId = this.extractVideoId(sourceUrl);
+    if (!videoId) {
+      throw new Error("unable to extract video ID for signed API download");
+    }
+
+    // Dynamic imports to avoid circular dependency at module load
+    const [
+      { signAwemeDetailRequest },
+      { loadCookie, hasAuthCookie }
+    ] = await Promise.all([
+      import("./douyin-signatures.js"),
+      import("./douyin-cookie.js"),
+    ]);
+
+    const cookie = loadCookie();
+    if (!cookie || !hasAuthCookie()) {
+      throw new Error("no auth cookie available for signed API download");
+    }
+
+    const { url, userAgent } = signAwemeDetailRequest(videoId);
+
+    const resp = await fetch(url, {
+      headers: {
+        "User-Agent": userAgent,
+        "Referer": "https://www.douyin.com/",
+        "Cookie": cookie,
+      },
+    });
+
+    if (!resp.ok) {
+      throw new Error(`signed API request failed: ${resp.status}`);
+    }
+
+    const data = await resp.json() as Record<string, any>;
+    const item = data?.aweme_detail as Record<string, any> | null;
+    if (!item) {
+      throw new Error("signed API returned empty video data (may need login cookie)");
+    }
+
+    const video = item.video as Record<string, any>;
+    // Priority: download_addr (watermark-free) > play_addr_h264 > play_addr
+    const downloadAddr = video?.download_addr?.url_list?.[0];
+    const playAddrH264 = video?.play_addr_h264?.url_list?.[0];
+    const playAddr = video?.play_addr?.url_list?.[0];
+
+    const downloadUrl = typeof downloadAddr === "string"
+      ? downloadAddr.replace("playwm", "play")
+      : typeof playAddrH264 === "string"
+        ? playAddrH264.replace("playwm", "play")
+        : typeof playAddr === "string"
+          ? playAddr.replace("playwm", "play")
+          : null;
+
+    if (!downloadUrl) {
+      throw new Error("unable to extract video URL from signed API response");
+    }
+
+    const isWatermarkFree = typeof downloadAddr === "string";
+    const videoPath = this.storage.resolve("raw/videos", `${jobId}.mp4`);
+    const metadataPath = this.storage.resolve("raw/videos", `${jobId}.page.json`);
+
+    await this.downloadFile(downloadUrl, videoPath, {
+      referer: "https://www.douyin.com/",
+    });
+
+    const desc = String(item?.desc ?? "").trim() || `douyin_${videoId}`;
+    const metadata = {
+      ...item,
+      downloadedVia: "signed-api",
+      sourceUrl,
+      videoId,
+      videoUrl: downloadUrl,
+      isWatermarkFree,
+      title: this.sanitizeFilename(desc),
+      desc,
+      downloadedAt: new Date().toISOString(),
+      videoPath,
+    };
+    await this.storage.writeJson(path.join("raw", "videos", `${jobId}.page.json`), metadata);
+
+    return { videoPath, metadataPath, metadata, method: "page-parser" as const };
   }
 
   private decorateAudioError(error: unknown) {
