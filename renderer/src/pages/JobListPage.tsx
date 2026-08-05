@@ -58,8 +58,12 @@ export function JobListPage() {
   useEffect(() => {
     const init = async () => {
       try {
-        const port = await window.electron.getServerPort();
-        setServerPort(port);
+        if (typeof window !== 'undefined' && window.electron?.getServerPort) {
+          const port = await window.electron.getServerPort();
+          setServerPort(port);
+        } else {
+          setServerPort(5173); // 浏览器开发模式使用 Vite 代理端口
+        }
         await apiClient.initialize();
         await refreshOverviews();
       } catch (error) {

@@ -138,6 +138,18 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     res.json({ ok: true, service: "douyin-ai-video" });
   });
 
+  // 浏览器开发模式下获取配置（替代 Electron IPC）
+  app.get("/api/config", async (_req, res) => {
+    try {
+      const resolved = config.resolveAiConfig ? await config.resolveAiConfig() : null;
+      res.json({
+        aiKeys: resolved ? [{ provider: resolved.provider, model: resolved.model, baseURL: resolved.baseURL, isActive: true, name: resolved.provider, id: "resolved" }] : [],
+      });
+    } catch {
+      res.json({ aiKeys: [] });
+    }
+  });
+
   app.get("/api/jobs", async (_req, res) => {
     try {
       const jobList = await jobs.list();

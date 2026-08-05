@@ -7,7 +7,12 @@ class ApiClient {
 
   async initialize() {
     if (!this.serverPort) {
-      this.serverPort = await window.electron.getServerPort();
+      // Electron 环境下获取后端端口，浏览器开发模式下使用 Vite 代理
+      if (typeof window !== 'undefined' && window.electron?.getServerPort) {
+        this.serverPort = await window.electron.getServerPort();
+      } else {
+        this.serverPort = 5173; // Vite proxy port
+      }
       this.client = axios.create({
         baseURL: `http://localhost:${this.serverPort}`,
         timeout: 960000,
@@ -131,12 +136,12 @@ class ApiClient {
 
   // 下载生成的视频
   async downloadVideo(id: string): Promise<string> {
-    const serverPort = this.serverPort || await window.electron.getServerPort();
+    const serverPort = this.serverPort || (typeof window !== 'undefined' && window.electron?.getServerPort ? await window.electron.getServerPort() : 5173);
     return `http://localhost:${serverPort}/api/jobs/${id}/video/download`;
   }
 
   async getVideoStreamUrl(id: string): Promise<string> {
-    const serverPort = this.serverPort || await window.electron.getServerPort();
+    const serverPort = this.serverPort || (typeof window !== 'undefined' && window.electron?.getServerPort ? await window.electron.getServerPort() : 5173);
     return `http://localhost:${serverPort}/api/jobs/${id}/video/stream`;
   }
 

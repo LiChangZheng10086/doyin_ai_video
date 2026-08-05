@@ -9,8 +9,16 @@
  */
 export async function hasValidApiKey(): Promise<boolean> {
   try {
-    const config = await window.electron.getConfig();
-    return config.aiKeys?.some(key => key.isActive) ?? false;
+    if (typeof window !== 'undefined' && window.electron?.getConfig) {
+      const config = await window.electron.getConfig();
+      return config.aiKeys?.some(key => key.isActive) ?? false;
+    }
+    // 浏览器开发模式：检查后端 /api/config 端点
+    try {
+      const res = await fetch('/api/config');
+      const config = await res.json();
+      return config.aiKeys?.some((key: any) => key.isActive) ?? false;
+    } catch { return false; }
   } catch (error) {
     console.error('Failed to check API key:', error);
     return false;
@@ -23,8 +31,15 @@ export async function hasValidApiKey(): Promise<boolean> {
  */
 export async function getActiveApiKey() {
   try {
-    const config = await window.electron.getConfig();
-    return config.aiKeys?.find(key => key.isActive) ?? null;
+    if (typeof window !== 'undefined' && window.electron?.getConfig) {
+      const config = await window.electron.getConfig();
+      return config.aiKeys?.find(key => key.isActive) ?? null;
+    }
+    try {
+      const res = await fetch('/api/config');
+      const config = await res.json();
+      return config.aiKeys?.find((key: any) => key.isActive) ?? null;
+    } catch { return null; }
   } catch (error) {
     console.error('Failed to get active API key:', error);
     return null;
