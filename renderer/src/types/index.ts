@@ -346,3 +346,17 @@ export interface CollectionOverview extends CollectionRecord {
     failed: number;
   };
 }
+
+// 合集全部转录文本聚合响应
+export interface CollectionTranscriptsResponse {
+  collection: { id: string; nickname: string };
+  transcripts: Array<{
+    jobId: string;
+    desc: string;
+    transcript: string;
+    duration?: number;
+    segments?: TranscriptSegment[];
+  }>;
+  aggregatedText: string;
+  summary: { totalJobs: number; transcribed: number };
+}

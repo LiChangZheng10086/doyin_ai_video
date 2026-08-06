@@ -695,6 +695,66 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
   });
 
+  // 获取合集全部转录文本（聚合）
+  app.get("/api/collections/:id/transcripts", async (req, res) => {
+    try {
+      const collection = await collections.get(req.params.id);
+      if (!collection) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+
+      const transcripts: Array<{
+        jobId: string;
+        desc: string;
+        transcript: string;
+        duration?: number;
+        segments?: any[];
+      }> = [];
+
+      for (let i = 0; i < collection.childJobIds.length; i++) {
+        const jobId = collection.childJobIds[i];
+        const item = collection.crawlResult.items[i];
+        try {
+          const t = await storage.readJson<any>(
+            path.join("raw", "transcripts", `${jobId}.json`)
+          );
+          if (t?.transcript) {
+            transcripts.push({
+              jobId,
+              desc: item?.desc || "(无描述)",
+              transcript: t.transcript,
+              duration: t.duration,
+              segments: t.segments,
+            });
+          }
+        } catch {
+          // 转录文件不存在则跳过
+        }
+      }
+
+      const aggregatedText = transcripts
+        .map((t) => `【${t.desc}】\n${t.transcript}`)
+        .join("\n\n---\n\n");
+
+      res.json({
+        collection: {
+          id: collection.id,
+          nickname: collection.nickname,
+        },
+        transcripts,
+        aggregatedText,
+        summary: {
+          totalJobs: collection.childJobIds.length,
+          transcribed: transcripts.length,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "fetch transcripts failed";
+      res.status(500).json({ message });
+    }
+  });
+
   return app;
 }
 

@@ -4,7 +4,9 @@ import {
   ArrowLeft,
   CheckCircle2,
   Clock,
+  Copy,
   Download,
+  FileText,
   Loader2,
   Mic,
   Play,
@@ -13,12 +15,13 @@ import {
   Users,
   Video,
   Wand2,
+  X,
   XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { CookieHint } from '../components/CookieHint';
 import { apiClient } from '../services/api';
-import type { CollectionOverview, DouyinVideoItem, Job, PipelineStep } from '../types';
+import type { CollectionOverview, DouyinVideoItem, Job, PipelineStep, CollectionTranscriptsResponse } from '../types';
 
 const pipelineSteps: Array<{ id: PipelineStep; label: string; description: string; icon: typeof Video }> = [
   { id: 'transcribe', label: '批量转录', description: '全部子任务执行视频转录', icon: Mic },
@@ -37,6 +40,8 @@ export function CollectionDetailPage() {
   const [runningStep, setRunningStep] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [batchResults, setBatchResults] = useState<Array<{ jobId: string; status: string; error?: string }> | null>(null);
+  const [transcriptsData, setTranscriptsData] = useState<CollectionTranscriptsResponse | null>(null);
+  const [loadingTranscripts, setLoadingTranscripts] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!id) return;
@@ -134,6 +139,26 @@ export function CollectionDetailPage() {
       setError(err.response?.data?.message || '批量执行失败');
     } finally {
       setRunningStep(null);
+    }
+  };
+
+  const handleViewTranscripts = async () => {
+    if (!collection) return;
+    setLoadingTranscripts(true);
+    setError('');
+    try {
+      const data = await apiClient.getCollectionTranscripts(collection.id);
+      setTranscriptsData(data);
+    } catch (err: any) {
+      setError(err.response?.data?.message || '获取转录文本失败');
+    } finally {
+      setLoadingTranscripts(false);
+    }
+  };
+
+  const handleCopyAllText = () => {
+    if (transcriptsData?.aggregatedText) {
+      navigator.clipboard.writeText(transcriptsData.aggregatedText);
     }
   };
 
@@ -253,6 +278,23 @@ export function CollectionDetailPage() {
             <div className="mt-3 text-xs text-tech-muted">
               完成：{batchResults.filter((r) => r.status === 'ok').length} 成功，
               {batchResults.filter((r) => r.status === 'error').length} 失败
+            </div>
+          )}
+          {/* 查看全部转录按钮 */}
+          {collection.childJobProgress.transcribed > 0 && (
+            <div className="mt-3 border-t border-tech-border pt-3">
+              <button
+                disabled={loadingTranscripts}
+                onClick={handleViewTranscripts}
+                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 transition-all disabled:opacity-50"
+              >
+                {loadingTranscripts ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <FileText size={14} />
+                )}
+                查看全部转录（{collection.childJobProgress.transcribed}）
+              </button>
             </div>
           )}
         </div>
@@ -441,6 +483,15 @@ export function CollectionDetailPage() {
           })}
         </div>
       </div>
+
+      {/* 转录文本查看 Modal */}
+      {transcriptsData && (
+        <TranscriptsModal
+          data={transcriptsData}
+          onCopy={handleCopyAllText}
+          onClose={() => setTranscriptsData(null)}
+        />
+      )}
     </Layout>
   );
 }
@@ -480,4 +531,131 @@ function formatDuration(seconds: number): string {
 function formatCount(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
   return String(n);
+}
+
+// ─── 转录文本查看 Modal ────────────────────────────────────────────
+
+function TranscriptsModal({
+  data,
+  onCopy,
+  onClose,
+}: {
+  data: CollectionTranscriptsResponse;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  const [view, setView] = useState<'merged' | 'list'>('merged');
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    onCopy();
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="flex h-[90vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl">
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-tech-border px-6 py-4">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold text-tech-text truncate">
+              {data.collection.nickname} · 全部转录文本
+            </h2>
+            <p className="text-xs text-tech-muted mt-0.5">
+              {data.summary.transcribed}/{data.summary.totalJobs} 个视频已转录
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCopy}
+              className="inline-flex items-center gap-2 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg transition-colors"
+            >
+              {copied ? <CheckCircle2 size={16} className="text-emerald-500" /> : <Copy size={16} />}
+              {copied ? '已复制' : '复制全部文本'}
+            </button>
+            <button
+              onClick={onClose}
+              className="rounded-lg p-2 text-tech-muted hover:bg-tech-bg hover:text-tech-text transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+
+        {/* View switcher */}
+        <div className="flex shrink-0 gap-1 border-b border-tech-border bg-tech-bg px-6 py-2">
+          <button
+            onClick={() => setView('merged')}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+              view === 'merged'
+                ? 'bg-white text-tech-text shadow-sm'
+                : 'text-tech-muted hover:text-tech-text'
+            }`}
+          >
+            聚合全文
+          </button>
+          <button
+            onClick={() => setView('list')}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+              view === 'list'
+                ? 'bg-white text-tech-text shadow-sm'
+                : 'text-tech-muted hover:text-tech-text'
+            }`}
+          >
+            按视频查看
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {view === 'merged' ? (
+            <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-tech-text">
+              {data.aggregatedText || '(暂无转录文本)'}
+            </pre>
+          ) : (
+            <div className="space-y-3">
+              {data.transcripts.map((item, idx) => (
+                <div
+                  key={item.jobId}
+                  className="rounded-lg border border-tech-border overflow-hidden"
+                >
+                  <button
+                    onClick={() => setExpandedIndex(expandedIndex === idx ? null : idx)}
+                    className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-tech-bg transition-colors"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-tech-text truncate pr-2">
+                        {item.desc}
+                      </p>
+                      {item.duration != null && (
+                        <p className="text-xs text-tech-muted mt-0.5">
+                          时长 {formatDuration(item.duration)}
+                          {item.segments?.length ? ` · ${item.segments.length} 个分段` : ''}
+                        </p>
+                      )}
+                    </div>
+                    <span className={`text-tech-muted transition-transform shrink-0 ${expandedIndex === idx ? 'rotate-180' : ''}`}>
+                      ▼
+                    </span>
+                  </button>
+                  {expandedIndex === idx && (
+                    <div className="border-t border-tech-border bg-tech-bg px-4 py-3">
+                      <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-tech-text">
+                        {item.transcript}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {data.transcripts.length === 0 && (
+                <p className="text-center text-tech-muted py-8">暂无转录文本</p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }

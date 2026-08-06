@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput, CollectionOverview, CrawlUserPageResult } from '../types';
+import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput, CollectionOverview, CrawlUserPageResult, CollectionTranscriptsResponse } from '../types';
 
 class ApiClient {
   private client: AxiosInstance | null = null;
@@ -205,6 +205,13 @@ class ApiClient {
       generate_video: 'generate_video',
     };
     const response = await client.post(`/api/collections/${collectionId}/steps/${routeMap[step]}`);
+    return response.data;
+  }
+
+  // 获取合集全部转录文本
+  async getCollectionTranscripts(id: string): Promise<CollectionTranscriptsResponse> {
+    const client = await this.getClient();
+    const response = await client.get(`/api/collections/${id}/transcripts`);
     return response.data;
   }
 
