@@ -1,11 +1,12 @@
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Settings, Sparkles, Trash2, Users, Video } from 'lucide-react';
+import { Brain, LayoutDashboard, Settings, Sparkles, Trash2, Users, Video } from 'lucide-react';
 import { JobListPage } from './pages/JobListPage';
 import { JobDetailPage } from './pages/JobDetailPage';
 import { TrashPage } from './pages/TrashPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { CollectionListPage } from './pages/CollectionListPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
+import { SkillListPage } from './pages/SkillListPage';
 import { ApiKeyStatusIndicator } from './components/ApiKeyStatusIndicator';
 import { CookieStatusIndicator } from './components/CookieStatusIndicator';
 
@@ -14,6 +15,7 @@ function Navigation() {
   const navItems = [
     { to: '/', label: '创作中心', icon: LayoutDashboard },
     { to: '/collections', label: '合集', icon: Users },
+    { to: '/skills', label: 'Skills', icon: Brain },
     { to: '/settings', label: '设置', icon: Settings },
     { to: '/trash', label: '垃圾桶', icon: Trash2 },
   ];
@@ -83,6 +85,7 @@ function Navigation() {
           <Route path="/jobs/:id" element={<JobDetailPage />} />
           <Route path="/collections" element={<CollectionListPage />} />
           <Route path="/collections/:id" element={<CollectionDetailPage />} />
+          <Route path="/skills" element={<SkillListPage />} />
           <Route path="/trash" element={<TrashPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

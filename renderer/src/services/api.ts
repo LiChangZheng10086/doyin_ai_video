@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput, CollectionOverview, CrawlUserPageResult, CollectionTranscriptsResponse } from '../types';
+import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput, CollectionOverview, CrawlUserPageResult, CollectionTranscriptsResponse, GenerateSkillResponse } from '../types';
 
 class ApiClient {
   private client: AxiosInstance | null = null;
@@ -185,6 +185,13 @@ class ApiClient {
     await client.delete(`/api/collections/${id}`);
   }
 
+  // 增量更新合集 — 抓取新视频追加到已有合集
+  async updateCollection(id: string): Promise<{ collection: any; newItemsCount: number; message: string }> {
+    const client = await this.getClient();
+    const response = await client.post(`/api/collections/${id}/update`);
+    return response.data;
+  }
+
   // 基于合集创建子任务
   async createCollectionJobs(collectionId: string, selectedIds: string[], topic?: string): Promise<{ createdJobs: Job[]; collection: any }> {
     const client = await this.getClient();
@@ -212,6 +219,48 @@ class ApiClient {
   async getCollectionTranscripts(id: string): Promise<CollectionTranscriptsResponse> {
     const client = await this.getClient();
     const response = await client.get(`/api/collections/${id}/transcripts`);
+    return response.data;
+  }
+
+  // 生成/更新 Skill
+  async generateSkill(id: string, options: { focusPrompt?: string; mode?: 'create' | 'update' }): Promise<GenerateSkillResponse> {
+    const client = await this.getClient();
+    const response = await client.post(`/api/collections/${id}/generate-skill`, options);
+    return response.data;
+  }
+
+  // 获取 Skill 内容
+  async getSkillContent(id: string): Promise<any> {
+    const client = await this.getClient();
+    const response = await client.get(`/api/collections/${id}/skill-content`);
+    return response.data;
+  }
+
+  // 切换自动同步 Skill 开关
+  async toggleAutoSyncSkill(id: string, enabled: boolean): Promise<{ success: boolean; autoSyncSkill: boolean }> {
+    const client = await this.getClient();
+    const response = await client.post(`/api/collections/${id}/toggle-auto-sync-skill`, { enabled });
+    return response.data;
+  }
+
+  // 列出所有已生成的 Skill
+  async getSkills(): Promise<{ skills: any[] }> {
+    const client = await this.getClient();
+    const response = await client.get('/api/skills');
+    return response.data;
+  }
+
+  // 删除 Skill
+  async deleteSkill(collectionId: string): Promise<{ success: boolean }> {
+    const client = await this.getClient();
+    const response = await client.delete(`/api/skills/${collectionId}`);
+    return response.data;
+  }
+
+  // 重命名 Skill
+  async renameSkill(collectionId: string, newName: string): Promise<{ success: boolean; skillName: string; skillPath: string }> {
+    const client = await this.getClient();
+    const response = await client.put(`/api/skills/${collectionId}/rename`, { newName });
     return response.data;
   }
 

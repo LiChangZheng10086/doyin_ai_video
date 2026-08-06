@@ -332,6 +332,10 @@ export interface CollectionRecord {
     nextCursor: number;
   };
   childJobIds: string[];
+  skillName?: string;
+  skillPath?: string;
+  autoSyncSkill?: boolean;
+  skillGeneratedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -345,6 +349,45 @@ export interface CollectionOverview extends CollectionRecord {
     rendered: number;
     failed: number;
   };
+}
+
+// Skill 生成 API 响应
+export interface GenerateSkillResponse {
+  success: boolean;
+  skillName: string;
+  skillPath: string;
+  message: string;
+}
+
+// Skill 查看内容响应
+export interface SkillContentResponse {
+  skillName: string;
+  skillPath: string;
+  skillMarkdown: string;
+  sourceMarkdown: string;
+  meta: {
+    collectionId: string;
+    nickname: string;
+    sourcePageUrl: string;
+    generatedAt: string;
+    videoCount: number;
+    hasFocusPrompt: boolean;
+  } | null;
+}
+
+// Skill 列表项
+export interface SkillSummary {
+  collectionId: string;
+  collectionNickname: string;
+  skillName: string;
+  skillPath: string;
+  skillGeneratedAt: string;
+  autoSyncSkill: boolean;
+  transcribedCount: number;
+}
+
+export interface SkillsListResponse {
+  skills: SkillSummary[];
 }
 
 // 合集全部转录文本聚合响应

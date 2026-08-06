@@ -23,6 +23,10 @@ export interface CollectionRecord {
     nextCursor: number;
   };
   childJobIds: string[];
+  skillName?: string;
+  skillPath?: string;
+  autoSyncSkill?: boolean;
+  skillGeneratedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -91,6 +95,42 @@ export class CollectionStore {
     await this.writeIndex(index);
 
     return { collection: record, crawlResult };
+  }
+
+  /**
+   * 增量更新合集 — 爬取新视频并去重追加到已有合集
+   */
+  async update(collectionId: string): Promise<{
+    collection: CollectionRecord;
+    newItemsCount: number;
+  }> {
+    const existing = await this.get(collectionId);
+    if (!existing) {
+      throw new Error("collection not found");
+    }
+
+    const pageUrl = existing.sourcePageUrl;
+    // 重新爬取（增量检测不需要太多，50 条足以覆盖新内容）
+    const crawlResult = await crawlUserPage(pageUrl, 50, this.crawlerConfig);
+
+    // 用 awemeId 去重
+    const existingIds = new Set(existing.crawlResult.items.map((item) => item.awemeId));
+    const newItems = crawlResult.items.filter((item) => !existingIds.has(item.awemeId));
+
+    if (newItems.length > 0) {
+      existing.crawlResult.items.push(...newItems);
+      existing.crawlResult.totalCollected = existing.crawlResult.items.length;
+      existing.crawlResult.hasMore = crawlResult.hasMore;
+      existing.crawlResult.nextCursor = crawlResult.nextCursor;
+    }
+
+    existing.updatedAt = new Date().toISOString();
+
+    const index = await this.readIndex();
+    index[collectionId] = existing;
+    await this.writeIndex(index);
+
+    return { collection: existing, newItemsCount: newItems.length };
   }
 
   /**
@@ -256,6 +296,44 @@ export class CollectionStore {
 
     const jobId = collection.childJobIds[itemIndex];
     return this.jobStore.get(jobId);
+  }
+
+  /**
+   * 更新合集 Skill 元信息
+   */
+  async updateSkillMeta(
+    id: string,
+    meta: { skillName: string; skillPath: string; skillGeneratedAt: string; autoSyncSkill?: boolean }
+  ): Promise<CollectionRecord | null> {
+    const index = await this.readIndex();
+    const record = index[id];
+    if (!record) return null;
+
+    record.skillName = meta.skillName;
+    record.skillPath = meta.skillPath;
+    record.skillGeneratedAt = meta.skillGeneratedAt;
+    if (meta.autoSyncSkill !== undefined) {
+      record.autoSyncSkill = meta.autoSyncSkill;
+    }
+    record.updatedAt = new Date().toISOString();
+    index[id] = record;
+    await this.writeIndex(index);
+    return record;
+  }
+
+  /**
+   * 切换自动同步 Skill 开关
+   */
+  async toggleAutoSyncSkill(id: string, enabled: boolean): Promise<CollectionRecord | null> {
+    const index = await this.readIndex();
+    const record = index[id];
+    if (!record) return null;
+
+    record.autoSyncSkill = enabled;
+    record.updatedAt = new Date().toISOString();
+    index[id] = record;
+    await this.writeIndex(index);
+    return record;
   }
 
   private async readIndex(): Promise<CollectionsIndex> {

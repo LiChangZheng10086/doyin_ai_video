@@ -1,5 +1,6 @@
 import express, { Express } from "express";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { AsrService } from "./lib/asr.js";
 import { OpenAiScriptCleaner, RuntimeScriptCleaner } from "./lib/ai-cleaner.js";
@@ -631,6 +632,23 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
   });
 
+  // 增量更新合集 — 抓取博主新视频追加到已有合集
+  app.post("/api/collections/:id/update", async (req, res) => {
+    try {
+      const result = await collections.update(req.params.id);
+      res.json({
+        collection: result.collection,
+        newItemsCount: result.newItemsCount,
+        message: result.newItemsCount > 0
+          ? `新增 ${result.newItemsCount} 个视频`
+          : "已是最新，没有新视频",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to update collection";
+      res.status(500).json({ message });
+    }
+  });
+
   // 基于合集创建子任务
   app.post("/api/collections/:id/create-jobs", async (req, res) => {
     try {
@@ -689,6 +707,14 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
         message: `批量${step}完成：${succeeded} 成功，${failed} 失败`,
         results,
       });
+
+      // 如果是转录步骤且有成功项、且开启了自动同步，则在后台触发 Skill 更新
+      if (pipelineStep === "transcribe" && succeeded > 0 && collection.autoSyncSkill && collection.skillName) {
+        // 异步触发，不阻塞响应
+        generateSkillForCollection(collection.id, collection.nickname, collections, storage, config).catch((err) => {
+          console.warn(`Auto-sync skill failed for collection ${collection.id}:`, err.message);
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "batch step failed";
       res.status(500).json({ message });
@@ -755,6 +781,344 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
   });
 
+  // 生成/更新 Skill 文件
+  app.post("/api/collections/:id/generate-skill", async (req, res) => {
+    // 此路由无超时限制：AI 蒸馏大量转录文本可能需要较长时间
+    req.setTimeout(0);
+    res.setTimeout(0);
+    try {
+      const collection = await collections.get(req.params.id);
+      if (!collection) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+
+      const { focusPrompt, mode } = req.body as {
+        focusPrompt?: string;
+        mode?: "create" | "update";
+      };
+
+      // 1. 收集全部转录文本
+      const transcripts: Array<{ desc: string; transcript: string }> = [];
+      for (let i = 0; i < collection.childJobIds.length; i++) {
+        const jobId = collection.childJobIds[i];
+        const item = collection.crawlResult.items[i];
+        try {
+          const t = await storage.readJson<any>(
+            path.join("raw", "transcripts", `${jobId}.json`)
+          );
+          if (t?.transcript) {
+            transcripts.push({ desc: item?.desc || "(无描述)", transcript: t.transcript });
+          }
+        } catch { /* skip */ }
+      }
+
+      if (transcripts.length === 0) {
+        res.status(400).json({ message: "没有已转录的文本，请先执行批量转录" });
+        return;
+      }
+
+      const aggregatedText = transcripts
+        .map((t) => `【${t.desc}】\n${t.transcript}`)
+        .join("\n\n---\n\n");
+
+      // 2. 生成 Skill 名称（基于合集 ID，避免同名覆盖）
+      const skillName = `douyin-${collection.id.slice(0, 8)}`;
+      const skillsDir = path.join(homedir(), ".claude", "skills", skillName);
+
+      // 3. 调用 AI 蒸馏
+      const focusInstruction = focusPrompt?.trim()
+        ? `\n\n用户聚焦方向（只提取与此相关的知识，忽略无关内容）：${focusPrompt.trim()}`
+        : "";
+
+      const systemPrompt = `你是知识蒸馏专家。将以下视频转录文本提炼为可复用的 Claude Code Skill（SKILL.md）。
+
+输出格式：
+- frontmatter 包含 name: "${skillName}" 和 description（一行中文描述）
+- 正文按以下 section 组织（如果某个 section 没有实质内容可省略）：
+  ## 核心方法论 — 可复用的框架、步骤、原则
+  ## 金句与观点 — 可直接引用的精华语句
+  ## 术语表 — 领域术语及解释
+  ## 案例库 — 原文中的案例、故事及其教训
+  ## 适用场景 — 何时触发这个 Skill
+  ## 边界与注意事项 — 不适用的情况、局限性
+- SKILL.md 总体保持精炼（200-400行），方法论要有可执行性（不是摘要，是可操作的步骤）
+${focusInstruction}`;
+
+      const userPrompt = `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频的转录文本。
+
+${aggregatedText}`;
+
+      // 4. 调用 AI（复用现有 cleaner 的 OpenAI 客户端）
+      let skillContent: string;
+      try {
+        // 使用 RuntimeScriptCleaner 获取当前活跃的 AI 配置
+        const aiConfig = config.resolveAiConfig
+          ? await config.resolveAiConfig()
+          : { provider: aiProvider, model: aiModel, apiKey: aiApiKey, baseURL: aiBaseURL };
+
+        if (!aiConfig?.apiKey) {
+          res.status(400).json({ message: "未配置 AI API Key，请在设置中配置" });
+          return;
+        }
+
+        const OpenAI = (await import("openai")).default;
+        const client = new OpenAI({
+          apiKey: aiConfig.apiKey,
+          baseURL: aiConfig.baseURL || (aiConfig.provider === "deepseek" ? "https://api.deepseek.com" : undefined),
+        });
+
+        const completion = await client.chat.completions.create({
+          model: aiConfig.model || "deepseek-chat",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          max_tokens: 8000,
+          temperature: 0.7,
+        });
+
+        skillContent = completion.choices[0]?.message?.content || "";
+        if (!skillContent.trim()) {
+          throw new Error("AI 返回空内容");
+        }
+      } catch (err: any) {
+        const message = err?.message || "AI 调用失败";
+        res.status(500).json({ message: `Skill 生成失败：${message}` });
+        return;
+      }
+
+      // 5. 写入文件
+      mkdirSync(skillsDir, { recursive: true });
+      mkdirSync(path.join(skillsDir, "references"), { recursive: true });
+
+      writeFileSync(path.join(skillsDir, "SKILL.md"), skillContent, "utf-8");
+      writeFileSync(
+        path.join(skillsDir, "references", "source.md"),
+        `# 原始转录来源\n\n合集：${collection.nickname}\n生成时间：${new Date().toISOString()}\n视频数：${transcripts.length}\n\n${aggregatedText}`,
+        "utf-8"
+      );
+      writeFileSync(
+        path.join(skillsDir, "references", "meta.json"),
+        JSON.stringify({
+          collectionId: collection.id,
+          nickname: collection.nickname,
+          sourcePageUrl: collection.sourcePageUrl,
+          generatedAt: new Date().toISOString(),
+          videoCount: transcripts.length,
+          hasFocusPrompt: !!focusPrompt?.trim(),
+        }, null, 2),
+        "utf-8"
+      );
+
+      // 6. 更新合集 Skill 元信息
+      await collections.updateSkillMeta(collection.id, {
+        skillName,
+        skillPath: skillsDir,
+        skillGeneratedAt: new Date().toISOString(),
+      });
+
+      res.json({
+        success: true,
+        skillName,
+        skillPath: skillsDir,
+        message: `Skill 已生成：${skillName}`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "generate skill failed";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 查看 Skill 内容
+  app.get("/api/collections/:id/skill-content", async (req, res) => {
+    try {
+      const collection = await collections.get(req.params.id);
+      if (!collection) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+
+      if (!collection.skillPath) {
+        res.status(404).json({ message: "该合集尚未生成 Skill" });
+        return;
+      }
+
+      const skillsDir = collection.skillPath;
+      const readFileSafe = async (p: string) => {
+        try {
+          return await import("node:fs").then((m) => m.promises.readFile(p, "utf-8"));
+        } catch {
+          return null;
+        }
+      };
+
+      const [skillMarkdown, sourceMarkdown, metaRaw] = await Promise.all([
+        readFileSafe(path.join(skillsDir, "SKILL.md")),
+        readFileSafe(path.join(skillsDir, "references", "source.md")),
+        readFileSafe(path.join(skillsDir, "references", "meta.json")),
+      ]);
+
+      let meta = null;
+      if (metaRaw) {
+        try {
+          meta = JSON.parse(metaRaw);
+        } catch { /* ignore */ }
+      }
+
+      res.json({
+        skillName: collection.skillName,
+        skillPath: skillsDir,
+        skillMarkdown: skillMarkdown || "",
+        sourceMarkdown: sourceMarkdown || "",
+        meta,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "read skill failed";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 列出所有已生成的 Skill
+  app.get("/api/skills", async (_req, res) => {
+    try {
+      const allCollections = await collections.list();
+      const skills = allCollections
+        .filter((c) => c.skillName)
+        .map((c) => ({
+          collectionId: c.id,
+          collectionNickname: c.nickname,
+          skillName: c.skillName,
+          skillPath: c.skillPath,
+          skillGeneratedAt: c.skillGeneratedAt,
+          autoSyncSkill: c.autoSyncSkill || false,
+          transcribedCount: c.childJobIds.length,
+        }));
+      res.json({ skills });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "list skills failed";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 重命名 Skill
+  app.put("/api/skills/:collectionId/rename", async (req, res) => {
+    try {
+      const { newName } = req.body as { newName?: string };
+      if (!newName || typeof newName !== "string" || !/^[\w一-鿿-]+$/.test(newName)) {
+        res.status(400).json({ message: "newName 仅支持字母、数字、中文、下划线和短横线" });
+        return;
+      }
+
+      const collection = await collections.get(req.params.collectionId);
+      if (!collection) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+      if (!collection.skillName || !collection.skillPath) {
+        res.status(400).json({ message: "该合集未生成 Skill" });
+        return;
+      }
+
+      const homedir = await import("node:os").then(m => m.homedir());
+      const { rename, access } = await import("node:fs/promises");
+      const path = await import("node:path");
+
+      const newSkillDir = path.join(homedir, ".claude", "skills", newName);
+
+      // 检查目标路径是否已存在
+      try {
+        await access(newSkillDir);
+        res.status(409).json({ message: `Skill 名称 "${newName}" 已存在` });
+        return;
+      } catch { /* 不存在，可以重命名 */ }
+
+      // 重命名目录
+      try {
+        await rename(collection.skillPath, newSkillDir);
+      } catch {
+        // rename 跨设备可能失败，用 copy + delete
+        const { cp, rm: del } = await import("node:fs/promises");
+        await cp(collection.skillPath, newSkillDir, { recursive: true });
+        await del(collection.skillPath, { recursive: true, force: true });
+      }
+
+      // 更新 SKILL.md 的 frontmatter name 字段
+      const skillMdPath = path.join(newSkillDir, "SKILL.md");
+      try {
+        const { readFile, writeFile } = await import("node:fs/promises");
+        let content = await readFile(skillMdPath, "utf8");
+        content = content.replace(/^name:\s*.*$/m, `name: ${newName}`);
+        await writeFile(skillMdPath, content, "utf8");
+      } catch {
+        // SKILL.md 不存在不影响
+      }
+
+      // 更新合集记录
+      await collections.updateSkillMeta(req.params.collectionId, {
+        skillName: newName,
+        skillPath: newSkillDir,
+        skillGeneratedAt: collection.skillGeneratedAt ?? new Date().toISOString(),
+      });
+
+      res.json({ success: true, skillName: newName, skillPath: newSkillDir });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "rename skill failed";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 删除 Skill 文件并清除合集记录
+  app.delete("/api/skills/:collectionId", async (req, res) => {
+    try {
+      const collection = await collections.get(req.params.collectionId);
+      if (!collection) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+
+      // 删除 Skill 目录
+      if (collection.skillPath) {
+        try {
+          const { rm } = await import("node:fs/promises");
+          await rm(collection.skillPath, { recursive: true, force: true });
+        } catch {
+          // 文件删除失败不影响记录清理
+        }
+      }
+
+      // 清除合集 skill 字段
+      await collections.updateSkillMeta(req.params.collectionId, {
+        skillName: "",
+        skillPath: "",
+        skillGeneratedAt: new Date().toISOString(),
+      });
+
+      res.json({ success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "delete skill failed";
+      res.status(500).json({ message });
+    }
+  });
+
+  // 切换自动同步 Skill 开关
+  app.post("/api/collections/:id/toggle-auto-sync-skill", async (req, res) => {
+    try {
+      const collection = await collections.get(req.params.id);
+      if (!collection) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+
+      const { enabled } = req.body as { enabled: boolean };
+      const updated = await collections.toggleAutoSyncSkill(req.params.id, enabled);
+      res.json({ success: true, autoSyncSkill: updated?.autoSyncSkill });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "toggle failed";
+      res.status(500).json({ message });
+    }
+  });
+
   return app;
 }
 
@@ -774,6 +1138,103 @@ async function resolveVideoFile(storage: LocalStorage, storagePath: string, reco
 }
 
 class VideoFileError extends Error {}
+
+async function generateSkillForCollection(
+  collectionId: string,
+  nickname: string,
+  _collections: CollectionStore,
+  _storage: LocalStorage,
+  _config: ServerConfig,
+  focusPrompt?: string,
+): Promise<void> {
+  const skillName = `douyin-${collectionId.slice(0, 8)}`;
+  const skillsDir = path.join(homedir(), ".claude", "skills", skillName);
+
+  // Gather all transcripts
+  const transcripts: Array<{ desc: string; transcript: string }> = [];
+  const collection = await _collections.get(collectionId);
+  if (!collection) return;
+
+  for (let i = 0; i < collection.childJobIds.length; i++) {
+    const jobId = collection.childJobIds[i];
+    const item = collection.crawlResult.items[i];
+    try {
+      const t = await _storage.readJson<any>(path.join("raw", "transcripts", `${jobId}.json`));
+      if (t?.transcript) {
+        transcripts.push({ desc: item?.desc || "(无描述)", transcript: t.transcript });
+      }
+    } catch { /* skip */ }
+  }
+
+  if (transcripts.length === 0) return;
+
+  const aggregatedText = transcripts
+    .map((t) => `【${t.desc}】\n${t.transcript}`)
+    .join("\n\n---\n\n");
+
+  const focusInstruction = focusPrompt?.trim()
+    ? `\n\n用户聚焦方向（只提取与此相关的知识，忽略无关内容）：${focusPrompt.trim()}`
+    : "";
+
+  const systemPrompt = `你是知识蒸馏专家。将以下视频转录文本提炼为可复用的 Claude Code Skill（SKILL.md）。
+
+输出格式：
+- frontmatter 包含 name: "${skillName}" 和 description（一行中文描述）
+- 正文按以下 section 组织（如果某个 section 没有实质内容可省略）：
+  ## 核心方法论 — 可复用的框架、步骤、原则
+  ## 金句与观点 — 可直接引用的精华语句
+  ## 术语表 — 领域术语及解释
+  ## 案例库 — 原文中的案例、故事及其教训
+  ## 适用场景 — 何时触发这个 Skill
+  ## 边界与注意事项 — 不适用的情况、局限性
+- SKILL.md 总体保持精炼（200-400行），方法论要有可执行性（不是摘要，是可操作的步骤）
+${focusInstruction}`;
+
+  const userPrompt = `来源：抖音合集「${nickname}」，共 ${transcripts.length} 个视频的转录文本（自动同步更新）。
+
+${aggregatedText}`;
+
+  const aiProvider = _config.aiProvider ?? "deepseek";
+  const aiConfig = _config.resolveAiConfig
+    ? await _config.resolveAiConfig()
+    : { provider: aiProvider as string, model: _config.aiModel ?? "deepseek-chat", apiKey: _config.aiApiKey, baseURL: _config.aiBaseURL ?? (aiProvider === "deepseek" ? "https://api.deepseek.com" : undefined) };
+
+  if (!aiConfig?.apiKey) return;
+
+  const OpenAI = (await import("openai")).default;
+  const client = new OpenAI({
+    apiKey: aiConfig.apiKey,
+    baseURL: aiConfig.baseURL || (aiConfig.provider === "deepseek" ? "https://api.deepseek.com" : undefined),
+  });
+
+  const completion = await client.chat.completions.create({
+    model: aiConfig.model || "deepseek-chat",
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    max_tokens: 8000,
+    temperature: 0.7,
+  });
+
+  const skillContent = completion.choices[0]?.message?.content || "";
+  if (!skillContent.trim()) return;
+
+  mkdirSync(skillsDir, { recursive: true });
+  mkdirSync(path.join(skillsDir, "references"), { recursive: true });
+  writeFileSync(path.join(skillsDir, "SKILL.md"), skillContent, "utf-8");
+  writeFileSync(
+    path.join(skillsDir, "references", "source.md"),
+    `# 原始转录来源\n\n合集：${nickname}\n自动同步时间：${new Date().toISOString()}\n视频数：${transcripts.length}\n\n${aggregatedText}`,
+    "utf-8"
+  );
+
+  await _collections.updateSkillMeta(collectionId, {
+    skillName,
+    skillPath: skillsDir,
+    skillGeneratedAt: new Date().toISOString(),
+  });
+}
 
 function resolveOutputPath(storagePath: string, outputPath: string) {
   if (path.isAbsolute(outputPath)) {

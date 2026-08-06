@@ -38,6 +38,9 @@ const app = await createExpressApp({
 
 const port = Number(process.env.PORT ?? 3100);
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
+
+// 设置全局超时：10 分钟（generate-skill 等路由需要较长时间）
+server.timeout = 600_000;

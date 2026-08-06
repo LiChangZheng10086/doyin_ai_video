@@ -73,6 +73,9 @@ export async function startServer(): Promise<number> {
         resolve(port);
       });
 
+      // 设置全局超时：10 分钟（generate-skill 等路由需要较长时间）
+      serverInstance.timeout = 600_000;
+
       serverInstance.on('error', (err: Error) => {
         console.error('Failed to start Express server:', err);
         reject(err);

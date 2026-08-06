@@ -2,15 +2,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
+  Brain,
   CheckCircle2,
   Clock,
   Copy,
   Download,
+  Eye,
   FileText,
   Loader2,
   Mic,
   Play,
   Plus,
+  RefreshCw,
   Sparkles,
   Users,
   Video,
@@ -21,7 +24,7 @@ import {
 import { Layout } from '../components/Layout';
 import { CookieHint } from '../components/CookieHint';
 import { apiClient } from '../services/api';
-import type { CollectionOverview, DouyinVideoItem, Job, PipelineStep, CollectionTranscriptsResponse } from '../types';
+import type { CollectionOverview, DouyinVideoItem, Job, PipelineStep, CollectionTranscriptsResponse, GenerateSkillResponse } from '../types';
 
 const pipelineSteps: Array<{ id: PipelineStep; label: string; description: string; icon: typeof Video }> = [
   { id: 'transcribe', label: '批量转录', description: '全部子任务执行视频转录', icon: Mic },
@@ -42,6 +45,24 @@ export function CollectionDetailPage() {
   const [batchResults, setBatchResults] = useState<Array<{ jobId: string; status: string; error?: string }> | null>(null);
   const [transcriptsData, setTranscriptsData] = useState<CollectionTranscriptsResponse | null>(null);
   const [loadingTranscripts, setLoadingTranscripts] = useState(false);
+  // 合集更新状态
+  const [updating, setUpdating] = useState(false);
+  const [updateResult, setUpdateResult] = useState<{ newItemsCount: number; message: string } | null>(null);
+  // Skill generation state
+  const [skillModalOpen, setSkillModalOpen] = useState(false);
+  const [skillFocusPrompt, setSkillFocusPrompt] = useState("");
+  const [generatingSkill, setGeneratingSkill] = useState(false);
+  const [skillResult, setSkillResult] = useState<GenerateSkillResponse | null>(null);
+  const [skillError, setSkillError] = useState("");
+  // Skill content view state
+  const [viewingSkill, setViewingSkill] = useState(false);
+  const [skillContentData, setSkillContentData] = useState<{
+    skillName: string;
+    skillPath: string;
+    skillMarkdown: string;
+    sourceMarkdown: string;
+    meta: any;
+  } | null>(null);
 
   const refresh = useCallback(async () => {
     if (!id) return;
@@ -125,6 +146,22 @@ export function CollectionDetailPage() {
     }
   };
 
+  const handleUpdate = async () => {
+    if (!collection) return;
+    setUpdating(true);
+    setError('');
+    setUpdateResult(null);
+    try {
+      const result = await apiClient.updateCollection(collection.id);
+      setUpdateResult(result);
+      await refresh();
+    } catch (err: any) {
+      setError(err.response?.data?.message || '检查更新失败');
+    } finally {
+      setUpdating(false);
+    }
+  };
+
   const handleBatchStep = async (step: PipelineStep) => {
     if (!collection) return;
 
@@ -153,6 +190,53 @@ export function CollectionDetailPage() {
       setError(err.response?.data?.message || '获取转录文本失败');
     } finally {
       setLoadingTranscripts(false);
+    }
+  };
+
+  const handleGenerateSkill = async () => {
+    if (!collection) return;
+    setGeneratingSkill(true);
+    setSkillError('');
+    setSkillResult(null);
+    try {
+      const result = await apiClient.generateSkill(collection.id, {
+        focusPrompt: skillFocusPrompt.trim() || undefined,
+        mode: collection.skillName ? 'update' : 'create',
+      });
+      setSkillResult(result);
+      await refresh();
+    } catch (err: any) {
+      setSkillError(err.response?.data?.message || 'Skill 生成失败');
+    } finally {
+      setGeneratingSkill(false);
+    }
+  };
+
+  const handleToggleAutoSync = async (enabled: boolean) => {
+    if (!collection) return;
+    try {
+      await apiClient.toggleAutoSyncSkill(collection.id, enabled);
+      await refresh();
+    } catch { /* ignore */ }
+  };
+
+  const openSkillModal = () => {
+    setSkillFocusPrompt("");
+    setSkillResult(null);
+    setSkillError("");
+    setSkillModalOpen(true);
+  };
+
+  const handleViewSkill = async () => {
+    if (!collection) return;
+    setViewingSkill(true);
+    try {
+      const data = await apiClient.getSkillContent(collection.id);
+      setSkillContentData(data);
+    } catch (err: any) {
+      setError(err.response?.data?.message || '读取 Skill 失败');
+    } finally {
+      setViewingSkill(false);
     }
   };
 
@@ -231,6 +315,27 @@ export function CollectionDetailPage() {
               已创建 {collection.childJobIds.length} 个子任务
             </p>
           </div>
+          {/* 更新按钮 */}
+          <div className="shrink-0">
+            <button
+              onClick={handleUpdate}
+              disabled={updating}
+              className="inline-flex items-center gap-2 rounded-lg border border-tech-border px-3 py-2 text-sm text-tech-text hover:bg-tech-bg transition-colors disabled:opacity-50"
+              title="检查博主是否有新视频"
+            >
+              {updating ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <RefreshCw size={14} />
+              )}
+              {updating ? '检查中…' : '检查更新'}
+            </button>
+            {updateResult && (
+              <p className={`mt-1 text-xs ${updateResult.newItemsCount > 0 ? 'text-emerald-600' : 'text-tech-muted'}`}>
+                {updateResult.message}
+              </p>
+            )}
+          </div>
         </div>
 
         {/* 进度概览 */}
@@ -282,7 +387,7 @@ export function CollectionDetailPage() {
           )}
           {/* 查看全部转录按钮 */}
           {collection.childJobProgress.transcribed > 0 && (
-            <div className="mt-3 border-t border-tech-border pt-3">
+            <div className="mt-3 border-t border-tech-border pt-3 flex flex-wrap items-center gap-3">
               <button
                 disabled={loadingTranscripts}
                 onClick={handleViewTranscripts}
@@ -294,6 +399,67 @@ export function CollectionDetailPage() {
                   <FileText size={14} />
                 )}
                 查看全部转录（{collection.childJobProgress.transcribed}）
+              </button>
+
+              {/* 生成 Skill 按钮 */}
+              <button
+                onClick={openSkillModal}
+                className="inline-flex items-center gap-2 rounded-lg bg-tech-purple px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 transition-all"
+              >
+                <Brain size={14} />
+                生成 Skill
+                {collection.skillName && (
+                  <span className="text-xs opacity-80">（更新）</span>
+                )}
+              </button>
+
+              {/* 自动同步开关 */}
+              <label className="inline-flex items-center gap-2 text-sm text-tech-muted cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={collection.autoSyncSkill || false}
+                  onChange={(e) => handleToggleAutoSync(e.target.checked)}
+                  className="h-4 w-4 rounded border-tech-border text-tech-purple focus:ring-tech-purple"
+                />
+                转录后自动更新
+              </label>
+            </div>
+          )}
+
+          {/* Skill 生成状态指示 */}
+          {collection.skillName && !collection.childJobProgress.transcribed && (
+            <div className="mt-3 border-t border-tech-border pt-3 flex items-center gap-3 text-xs text-tech-muted">
+              <Brain size={14} className="text-tech-purple" />
+              已生成 Skill「{collection.skillName}」
+              {collection.skillGeneratedAt && (
+                <span>· {new Date(collection.skillGeneratedAt).toLocaleString('zh-CN')}</span>
+              )}
+              <button
+                onClick={handleViewSkill}
+                className="text-tech-blue hover:underline"
+              >
+                查看
+              </button>
+              <span className="text-tech-muted">·</span>
+              <button
+                onClick={openSkillModal}
+                className="text-tech-blue hover:underline"
+              >
+                重新生成
+              </button>
+            </div>
+          )}
+
+          {/* Skill 状态指示（有转录同时也有 Skill 时） */}
+          {collection.skillName && collection.childJobProgress.transcribed > 0 && (
+            <div className="mt-3 border-t border-tech-border pt-3 flex items-center gap-3 text-xs text-tech-muted">
+              <Brain size={14} className="text-tech-purple" />
+              已有 Skill「{collection.skillName}」
+              <button
+                onClick={handleViewSkill}
+                className="text-tech-blue hover:underline"
+              >
+                查看
               </button>
             </div>
           )}
@@ -354,7 +520,9 @@ export function CollectionDetailPage() {
           </button>
         </div>
         <div className="divide-y divide-tech-border max-h-[600px] overflow-y-auto">
-          {collection.crawlResult.items.map((item, index) => {
+          {[...collection.crawlResult.items]
+            .sort((a, b) => b.createTime - a.createTime)
+            .map((item, index) => {
             const hasJob = index < collection.childJobIds.length;
             const isSelected = selectedIds.has(item.awemeId);
             const progress = collection.childJobProgress;
@@ -490,6 +658,30 @@ export function CollectionDetailPage() {
           data={transcriptsData}
           onCopy={handleCopyAllText}
           onClose={() => setTranscriptsData(null)}
+        />
+      )}
+
+      {/* Skill 生成 Modal */}
+      {skillModalOpen && (
+        <SkillGenModal
+          collection={collection}
+          focusPrompt={skillFocusPrompt}
+          onFocusPromptChange={setSkillFocusPrompt}
+          generating={generatingSkill}
+          result={skillResult}
+          error={skillError}
+          onGenerate={handleGenerateSkill}
+          onClose={() => setSkillModalOpen(false)}
+          onViewSkill={handleViewSkill}
+        />
+      )}
+
+      {/* Skill 内容查看 Modal */}
+      {skillContentData && (
+        <SkillViewModal
+          data={skillContentData}
+          loading={viewingSkill}
+          onClose={() => setSkillContentData(null)}
         />
       )}
     </Layout>
@@ -658,4 +850,426 @@ function TranscriptsModal({
       </div>
     </div>
   );
+}
+
+// ─── Skill 生成 Modal ────────────────────────────────────────────────
+
+function SkillGenModal({
+  collection,
+  focusPrompt,
+  onFocusPromptChange,
+  generating,
+  result,
+  error,
+  onGenerate,
+  onClose,
+  onViewSkill,
+}: {
+  collection: CollectionOverview;
+  focusPrompt: string;
+  onFocusPromptChange: (v: string) => void;
+  generating: boolean;
+  result: GenerateSkillResponse | null;
+  error: string;
+  onGenerate: () => void;
+  onClose: () => void;
+  onViewSkill: () => void;
+}) {
+  const existingSkill = collection.skillName;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="flex w-full max-w-lg flex-col rounded-xl bg-white shadow-2xl">
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-tech-border px-6 py-4">
+          <div className="flex items-center gap-2">
+            <Brain size={20} className="text-tech-purple" />
+            <h2 className="text-lg font-semibold text-tech-text">
+              {existingSkill ? '更新 Skill' : '生成 Skill'}
+            </h2>
+            {existingSkill && (
+              <span className="text-xs text-tech-muted">
+                （{existingSkill}）
+              </span>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-2 text-tech-muted hover:bg-tech-bg hover:text-tech-text transition-colors"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="shrink-0 px-6 py-4 space-y-4">
+          {/* 信息提示 */}
+          <div className="rounded-lg border border-tech-border bg-tech-bg p-3 text-xs text-tech-muted">
+            <p>
+              基于 <strong>{collection.childJobProgress.transcribed}</strong> 个已转录视频的内容，通过 AI 蒸馏生成结构化 Claude Code Skill（方法论、金句、术语、案例等）。
+            </p>
+            <p className="mt-1">
+              生成位置：<code className="text-tech-purple">~/.claude/skills/douyin-{slugify(collection.nickname)}/SKILL.md</code>
+            </p>
+            {existingSkill && (
+              <p className="mt-1 text-tech-blue">
+                已有 Skill「{existingSkill}」将被更新。
+              </p>
+            )}
+          </div>
+
+          {/* Focus prompt */}
+          <div>
+            <label className="block text-sm font-medium text-tech-text mb-1.5">
+              聚焦方向（可选）
+            </label>
+            <textarea
+              value={focusPrompt}
+              onChange={(e) => onFocusPromptChange(e.target.value)}
+              placeholder={
+                '留空则全面提取所有可复用知识。\n' +
+                '例如：「只提取关于人物冲突塑造的方法论，忽略其他内容」\n' +
+                '「聚焦世界观搭建和剧情节奏控制的框架」'
+              }
+              rows={4}
+              className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text placeholder-tech-muted focus:border-tech-purple focus:outline-none focus:ring-1 focus:ring-tech-purple resize-none"
+              disabled={generating}
+            />
+          </div>
+
+          {/* Result */}
+          {result && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+              <div className="flex items-center gap-2 text-emerald-700 text-sm font-medium">
+                <CheckCircle2 size={16} />
+                Skill 生成成功
+              </div>
+              <p className="mt-1 text-xs text-emerald-600">
+                名称：<strong>{result.skillName}</strong>
+              </p>
+              <p className="text-xs text-emerald-600 truncate">
+                路径：<code>{result.skillPath}</code>
+              </p>
+              <button
+                onClick={() => { onClose(); onViewSkill(); }}
+                className="mt-2 inline-flex items-center gap-1 text-xs text-tech-blue hover:underline"
+              >
+                <Eye size={12} />
+                查看 Skill 内容
+              </button>
+            </div>
+          )}
+
+          {/* Error */}
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex shrink-0 items-center justify-end gap-3 border-t border-tech-border px-6 py-4">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-tech-border px-4 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg transition-colors"
+            disabled={generating}
+          >
+            {result ? '关闭' : '取消'}
+          </button>
+          <button
+            onClick={onGenerate}
+            disabled={generating || collection.childJobProgress.transcribed === 0}
+            className="inline-flex items-center gap-2 rounded-lg bg-tech-purple px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 transition-all disabled:opacity-50"
+          >
+            {generating ? (
+              <>
+                <Loader2 size={14} className="animate-spin" />
+                生成中…
+              </>
+            ) : (
+              <>
+                <Brain size={14} />
+                {existingSkill ? '更新 Skill' : '生成 Skill'}
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function slugify(text: string): string {
+  return text
+    .replace(/[^\w一-鿿]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase()
+    .slice(0, 40);
+}
+
+// ─── Skill 内容查看 Modal ────────────────────────────────────────────
+
+function SkillViewModal({
+  data,
+  loading,
+  onClose,
+}: {
+  data: {
+    skillName: string;
+    skillPath: string;
+    skillMarkdown: string;
+    sourceMarkdown: string;
+    meta: any;
+  };
+  loading: boolean;
+  onClose: () => void;
+}) {
+  const [tab, setTab] = useState<'skill' | 'source' | 'meta'>('skill');
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    const text = tab === 'skill' ? data.skillMarkdown
+      : tab === 'source' ? data.sourceMarkdown
+      : JSON.stringify(data.meta, null, 2);
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div className="rounded-xl bg-white p-8 shadow-2xl flex items-center gap-3">
+          <Loader2 size={24} className="animate-spin text-tech-purple" />
+          <span className="text-tech-text">加载 Skill 内容…</span>
+        </div>
+      </div>
+    );
+  }
+
+  const tabs = [
+    { id: 'skill' as const, label: 'SKILL.md' },
+    { id: 'source' as const, label: '原始来源' },
+    { id: 'meta' as const, label: '元信息' },
+  ];
+
+  const content = tab === 'skill' ? data.skillMarkdown
+    : tab === 'source' ? data.sourceMarkdown
+    : JSON.stringify(data.meta, null, 2);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="flex h-[90vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl">
+        {/* Header */}
+        <div className="flex shrink-0 items-center justify-between border-b border-tech-border px-6 py-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <Brain size={20} className="text-tech-purple shrink-0" />
+            <div className="min-w-0">
+              <h2 className="text-lg font-semibold text-tech-text truncate">
+                {data.skillName}
+              </h2>
+              <p className="text-xs text-tech-muted truncate mt-0.5">
+                {data.skillPath}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCopy}
+              className="inline-flex items-center gap-2 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg transition-colors"
+            >
+              {copied ? <CheckCircle2 size={16} className="text-emerald-500" /> : <Copy size={16} />}
+              {copied ? '已复制' : '复制'}
+            </button>
+            <button
+              onClick={onClose}
+              className="rounded-lg p-2 text-tech-muted hover:bg-tech-bg hover:text-tech-text transition-colors"
+            >
+              <X size={20} />
+            </button>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex shrink-0 gap-1 border-b border-tech-border bg-tech-bg px-6 py-2">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                tab === t.id
+                  ? 'bg-white text-tech-text shadow-sm'
+                  : 'text-tech-muted hover:text-tech-text'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto">
+          {tab === 'skill' ? (
+            <div className="p-6">
+              <div className="prose prose-sm max-w-none">
+                <RenderMarkdown content={data.skillMarkdown} />
+              </div>
+            </div>
+          ) : tab === 'source' ? (
+            <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-tech-text p-6">
+              {data.sourceMarkdown || '(暂无原始来源)'}
+            </pre>
+          ) : (
+            <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-tech-text p-6">
+              {JSON.stringify(data.meta, null, 2) || '(暂无元信息)'}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RenderMarkdown({ content }: { content: string }) {
+  const lines = content.split('\n');
+  let inCodeBlock = false;
+  let codeContent = '';
+  let codeLang = '';
+
+  const elements: React.ReactNode[] = [];
+
+  const flushCodeBlock = () => {
+    if (codeContent) {
+      elements.push(
+        <pre key={elements.length} className="rounded-lg bg-tech-bg border border-tech-border p-4 my-3 overflow-x-auto">
+          <code className="text-sm font-mono">{codeContent.trim()}</code>
+        </pre>
+      );
+      codeContent = '';
+      codeLang = '';
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line.startsWith('```')) {
+      if (inCodeBlock) {
+        flushCodeBlock();
+        inCodeBlock = false;
+      } else {
+        codeLang = line.slice(3).trim();
+        inCodeBlock = true;
+      }
+      continue;
+    }
+
+    if (inCodeBlock) {
+      codeContent += (codeContent ? '\n' : '') + line;
+      continue;
+    }
+
+    // Frontmatter detection
+    if (i === 0 && line === '---') {
+      let j = i + 1;
+      while (j < lines.length && lines[j] !== '---') j++;
+      if (j < lines.length) {
+        const fmLines = lines.slice(i + 1, j);
+        elements.push(
+          <div key={elements.length} className="rounded-lg bg-tech-bg border border-tech-border p-3 my-3 font-mono text-sm text-tech-muted">
+            {fmLines.map((fl, fi) => (
+              <div key={fi}>{fl}</div>
+            ))}
+          </div>
+        );
+        i = j;
+        continue;
+      }
+    }
+
+    // Headings
+    if (line.startsWith('### ')) {
+      elements.push(<h3 key={elements.length} className="text-base font-semibold text-tech-text mt-5 mb-2">{line.slice(4)}</h3>);
+      continue;
+    }
+    if (line.startsWith('## ')) {
+      elements.push(<h2 key={elements.length} className="text-lg font-bold text-tech-text mt-6 mb-3 border-b border-tech-border pb-1">{line.slice(3)}</h2>);
+      continue;
+    }
+    if (line.startsWith('# ')) {
+      elements.push(<h1 key={elements.length} className="text-xl font-bold text-tech-text mt-6 mb-3">{line.slice(2)}</h1>);
+      continue;
+    }
+
+    // Ordered list item
+    const olMatch = line.match(/^(\d+)\.\s+(.+)/);
+    if (olMatch) {
+      elements.push(
+        <div key={elements.length} className="flex gap-2 text-sm text-tech-text ml-4 my-0.5">
+          <span className="text-tech-muted min-w-[1.5em] text-right">{olMatch[1]}.</span>
+          <span>{renderInline(olMatch[2])}</span>
+        </div>
+      );
+      continue;
+    }
+
+    // Unordered list item
+    if (/^[-*]\s+/.test(line)) {
+      const text = line.replace(/^[-*]\s+/, '');
+      elements.push(
+        <div key={elements.length} className="flex gap-2 text-sm text-tech-text ml-4 my-0.5">
+          <span className="text-tech-muted">•</span>
+          <span>{renderInline(text)}</span>
+        </div>
+      );
+      continue;
+    }
+
+    // Empty line
+    if (line.trim() === '') {
+      elements.push(<div key={elements.length} className="h-2" />);
+      continue;
+    }
+
+    // Bold text only
+    if (/^\*\*.+\*\*$/.test(line.trim())) {
+      elements.push(
+        <p key={elements.length} className="text-sm font-semibold text-tech-text my-1">
+          {line.trim().replace(/\*\*/g, '')}
+        </p>
+      );
+      continue;
+    }
+
+    // Regular paragraph
+    elements.push(
+      <p key={elements.length} className="text-sm text-tech-text leading-relaxed my-1">
+        {renderInline(line)}
+      </p>
+    );
+  }
+
+  flushCodeBlock();
+
+  return <>{elements}</>;
+}
+
+function renderInline(text: string): React.ReactNode {
+  // Bold
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>;
+    }
+    // Inline code
+    const codeParts = part.split(/(`[^`]+`)/g);
+    return codeParts.map((cp, j) => {
+      if (cp.startsWith('`') && cp.endsWith('`')) {
+        return <code key={j} className="bg-tech-bg px-1 py-0.5 rounded text-xs font-mono text-tech-purple">{cp.slice(1, -1)}</code>;
+      }
+      return cp;
+    });
+  });
 }
