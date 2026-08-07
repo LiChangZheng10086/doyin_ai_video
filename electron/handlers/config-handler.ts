@@ -15,7 +15,7 @@ function getConfigPath(): string {
 // 默认配置
 function getDefaultConfig(): AppConfig {
   return {
-    storagePath: path.join(app.getPath('documents'), '抖音AI视频'),
+    storagePath: path.join(app.getPath('userData'), 'storage'),
     aiKeys: [],
     app: {
       firstRun: true,

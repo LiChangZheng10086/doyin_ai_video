@@ -50,7 +50,7 @@ export interface AppConfig {
 
 function getDefaultConfig(): AppConfig {
   return {
-    storagePath: path.join(homedir(), "Documents", "抖音AI视频"),
+    storagePath: path.join(homedir(), ".douyin-ai-video", "storage"),
     aiKeys: [],
     app: {
       firstRun: true,
@@ -285,7 +285,7 @@ export function registerConfigRoutes(app: Express): void {
   // 获取应用路径信息
   app.get("/api/config/paths", async (_req, res) => {
     res.json({
-      storagePath: path.join(homedir(), "Documents", "抖音AI视频"),
+      storagePath: path.join(homedir(), ".douyin-ai-video", "storage"),
       configPath: CONFIG_PATH,
     });
   });
