@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Brain,
   CheckCircle2,
+  Copy,
   Edit3,
   Eye,
   Loader2,
@@ -31,6 +32,13 @@ export function SkillListPage() {
     skillMarkdown: string;
     sourceMarkdown: string;
     meta: any;
+    knowledgeBase?: string;
+    caseLibrary?: string;
+    quotesCollection?: string;
+    checklist?: string;
+    decisionFramework?: string;
+    evalCases?: string;
+    templates?: Array<{ name: string; content: string }>;
   } | null>(null);
   // 重命名状态
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -315,18 +323,42 @@ function SkillViewModal({
     skillMarkdown: string;
     sourceMarkdown: string;
     meta: any;
+    knowledgeBase?: string;
+    caseLibrary?: string;
+    quotesCollection?: string;
+    checklist?: string;
+    decisionFramework?: string;
+    evalCases?: string;
+    templates?: Array<{ name: string; content: string }>;
   };
   loading: boolean;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<'skill' | 'source' | 'meta'>('skill');
+  const [tab, setTab] = useState<string>('skill');
   const [copied, setCopied] = useState(false);
 
+  const getCurrentContent = () => {
+    switch (tab) {
+      case 'skill': return data.skillMarkdown;
+      case 'source': return data.sourceMarkdown;
+      case 'knowledge_base': return data.knowledgeBase || '';
+      case 'case_library': return data.caseLibrary || '';
+      case 'quotes': return data.quotesCollection || '';
+      case 'checklist': return data.checklist || '';
+      case 'decision': return data.decisionFramework || '';
+      case 'evals': return data.evalCases || '';
+      case 'meta': return JSON.stringify(data.meta, null, 2);
+      default:
+        if (tab.startsWith('tpl_') && data.templates) {
+          const tplName = tab.slice(4);
+          return data.templates.find(t => t.name === tplName)?.content || '';
+        }
+        return '';
+    }
+  };
+
   const handleCopy = () => {
-    const text = tab === 'skill' ? data.skillMarkdown
-      : tab === 'source' ? data.sourceMarkdown
-      : JSON.stringify(data.meta, null, 2);
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(getCurrentContent());
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -343,10 +375,19 @@ function SkillViewModal({
   }
 
   const tabs = [
-    { id: 'skill' as const, label: 'SKILL.md' },
-    { id: 'source' as const, label: '原始来源' },
-    { id: 'meta' as const, label: '元信息' },
+    { id: 'skill', label: 'SKILL.md' },
+    ...(data.knowledgeBase ? [{ id: 'knowledge_base', label: '知识库' }] : []),
+    ...(data.caseLibrary ? [{ id: 'case_library', label: '案例库' }] : []),
+    ...(data.quotesCollection ? [{ id: 'quotes', label: '金句集' }] : []),
+    ...(data.checklist ? [{ id: 'checklist', label: '检查清单' }] : []),
+    ...(data.decisionFramework ? [{ id: 'decision', label: '决策框架' }] : []),
+    ...(data.evalCases ? [{ id: 'evals', label: '验收用例' }] : []),
+    ...(data.templates || []).map(t => ({ id: `tpl_${t.name}`, label: t.name })),
+    { id: 'source', label: '原始来源' },
+    { id: 'meta', label: '元信息' },
   ];
+
+  const currentContent = getCurrentContent();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -382,12 +423,12 @@ function SkillViewModal({
         </div>
 
         {/* Tabs */}
-        <div className="flex shrink-0 gap-1 border-b border-tech-border bg-tech-bg px-6 py-2">
+        <div className="flex shrink-0 gap-1 border-b border-tech-border bg-tech-bg px-6 py-2 overflow-x-auto">
           {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors whitespace-nowrap ${
                 tab === t.id
                   ? 'bg-white text-tech-text shadow-sm'
                   : 'text-tech-muted hover:text-tech-text'
@@ -400,10 +441,10 @@ function SkillViewModal({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto">
-          {tab === 'skill' ? (
+          {tab === 'skill' || tab === 'knowledge_base' || tab === 'case_library' || tab === 'quotes' || tab === 'checklist' || tab === 'decision' || tab === 'evals' || tab.startsWith('tpl_') ? (
             <div className="p-6">
               <div className="prose prose-sm max-w-none">
-                <RenderMarkdown content={data.skillMarkdown} />
+                <RenderMarkdown content={currentContent} />
               </div>
             </div>
           ) : tab === 'source' ? (

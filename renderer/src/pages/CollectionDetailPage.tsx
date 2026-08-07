@@ -54,6 +54,19 @@ export function CollectionDetailPage() {
   const [generatingSkill, setGeneratingSkill] = useState(false);
   const [skillResult, setSkillResult] = useState<GenerateSkillResponse | null>(null);
   const [skillError, setSkillError] = useState("");
+  // Skill generation progress (streaming)
+  const [skillProgress, setSkillProgress] = useState<{
+    stage: string;
+    message: string;
+    progress: number;
+    current?: number;
+    total?: number;
+    itemId?: string;
+    itemLabel?: string;
+    generates?: Record<string, boolean>;
+    templates?: Array<{ name: string; topic: string }>;
+    totalTasks?: number;
+  } | null>(null);
   // Skill content view state
   const [viewingSkill, setViewingSkill] = useState(false);
   const [skillContentData, setSkillContentData] = useState<{
@@ -198,12 +211,31 @@ export function CollectionDetailPage() {
     setGeneratingSkill(true);
     setSkillError('');
     setSkillResult(null);
+    setSkillProgress(null);
     try {
-      const result = await apiClient.generateSkill(collection.id, {
-        focusPrompt: skillFocusPrompt.trim() || undefined,
-        mode: collection.skillName ? 'update' : 'create',
-      });
+      const result = await apiClient.generateSkill(
+        collection.id,
+        {
+          focusPrompt: skillFocusPrompt.trim() || undefined,
+          mode: collection.skillName ? 'update' : 'create',
+        },
+        (event) => {
+          setSkillProgress({
+            stage: event.stage || '',
+            message: event.message || '',
+            progress: Math.min(99, event.progress || 0),
+            current: event.current,
+            total: event.total,
+            itemId: event.itemId,
+            itemLabel: event.itemLabel,
+            generates: event.generates,
+            templates: event.templates,
+            totalTasks: event.totalTasks,
+          });
+        }
+      );
       setSkillResult(result);
+      setSkillProgress({ stage: 'done', message: result.message, progress: 100 });
       await refresh();
     } catch (err: any) {
       setSkillError(err.response?.data?.message || 'Skill 生成失败');
@@ -224,6 +256,7 @@ export function CollectionDetailPage() {
     setSkillFocusPrompt("");
     setSkillResult(null);
     setSkillError("");
+    setSkillProgress(null);
     setSkillModalOpen(true);
   };
 
@@ -303,7 +336,18 @@ export function CollectionDetailPage() {
       {/* 用户信息卡片 */}
       <div className="mb-6 rounded-lg border border-tech-border bg-tech-surface p-6">
         <div className="flex items-start gap-5">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-tech-purple to-tech-blue text-2xl font-bold text-white shrink-0">
+          {collection.avatarUrl ? (
+            <img
+              src={collection.avatarUrl}
+              alt={collection.nickname}
+              className="h-16 w-16 shrink-0 rounded-full object-cover ring-2 ring-tech-border"
+              onError={(e) => {
+                (e.target as HTMLImageElement).style.display = 'none';
+                (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
+              }}
+            />
+          ) : null}
+          <div className={`flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-tech-purple to-tech-blue text-2xl font-bold text-white shrink-0 ${collection.avatarUrl ? 'hidden' : ''}`}>
             {collection.nickname?.charAt(0) || 'U'}
           </div>
           <div className="min-w-0 flex-1">
@@ -563,19 +607,23 @@ export function CollectionDetailPage() {
                 )}
 
                 {/* 封面 */}
-                <div className="h-16 w-28 shrink-0 overflow-hidden rounded-md bg-tech-bg">
+                <div className="h-16 w-28 shrink-0 overflow-hidden rounded-md bg-tech-bg relative">
+                  {/* fallback icon — always there, behind the image */}
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Video size={20} className="text-tech-muted" />
+                  </div>
                   {item.coverUrl ? (
                     <img
                       src={item.coverUrl}
                       alt=""
-                      className="h-full w-full object-cover"
+                      className="absolute inset-0 h-full w-full object-cover"
                       loading="lazy"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).style.display = 'none';
+                      }}
                     />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center">
-                      <Video size={20} className="text-tech-muted" />
-                    </div>
-                  )}
+                  ) : null}
                 </div>
 
                 {/* 描述 */}
@@ -670,6 +718,7 @@ export function CollectionDetailPage() {
           generating={generatingSkill}
           result={skillResult}
           error={skillError}
+          progress={skillProgress}
           onGenerate={handleGenerateSkill}
           onClose={() => setSkillModalOpen(false)}
           onViewSkill={handleViewSkill}
@@ -852,6 +901,18 @@ function TranscriptsModal({
   );
 }
 
+
+// ─── Small planned-item badge used in progress panel ─────────────
+
+function PlannedItem({ label, active, icon }: { label: string; active: boolean; icon: string }) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 ${active ? 'text-tech-text' : 'text-tech-muted line-through'}`}>
+      <span>{icon}</span>
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
 // ─── Skill 生成 Modal ────────────────────────────────────────────────
 
 function SkillGenModal({
@@ -861,6 +922,7 @@ function SkillGenModal({
   generating,
   result,
   error,
+  progress,
   onGenerate,
   onClose,
   onViewSkill,
@@ -871,11 +933,34 @@ function SkillGenModal({
   generating: boolean;
   result: GenerateSkillResponse | null;
   error: string;
+  progress: {
+    stage: string;
+    message: string;
+    progress: number;
+    current?: number;
+    total?: number;
+    itemId?: string;
+    itemLabel?: string;
+    generates?: Record<string, boolean>;
+    templates?: Array<{ name: string; topic: string }>;
+    totalTasks?: number;
+  } | null;
   onGenerate: () => void;
   onClose: () => void;
   onViewSkill: () => void;
 }) {
   const existingSkill = collection.skillName;
+
+  // Progress phase labels
+  const productLabelMap: Record<string, string> = {
+    enhanced_skill_md: "增强 SKILL.md",
+    knowledge_base: "结构化知识库",
+    case_library: "案例库",
+    quotes_collection: "金句合集",
+    checklist: "执行检查清单",
+    decision_framework: "决策框架",
+    eval_cases: "验收用例",
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -904,52 +989,150 @@ function SkillGenModal({
         {/* Body */}
         <div className="shrink-0 px-6 py-4 space-y-4">
           {/* 信息提示 */}
-          <div className="rounded-lg border border-tech-border bg-tech-bg p-3 text-xs text-tech-muted">
-            <p>
-              基于 <strong>{collection.childJobProgress.transcribed}</strong> 个已转录视频的内容，通过 AI 蒸馏生成结构化 Claude Code Skill（方法论、金句、术语、案例等）。
-            </p>
-            <p className="mt-1">
-              生成位置：<code className="text-tech-purple">~/.claude/skills/douyin-{slugify(collection.nickname)}/SKILL.md</code>
-            </p>
-            {existingSkill && (
-              <p className="mt-1 text-tech-blue">
-                已有 Skill「{existingSkill}」将被更新。
+          {!generating && !result && (
+            <div className="rounded-lg border border-tech-border bg-tech-bg p-3 text-xs text-tech-muted">
+              <p>
+                基于 <strong>{collection.childJobProgress.transcribed}</strong> 个已转录视频，通过<strong>两阶段 AI 蒸馏</strong>生成知识增强型 Claude Code Skill。
               </p>
-            )}
-          </div>
+              <p className="mt-1">
+                阶段 1：分析转录 → 自动判断产物类型<br />
+                阶段 2：串行生成 → SKILL.md + 知识库 + 案例库 + 检查清单 + 模板 + 验收用例
+              </p>
+              <p className="mt-1">
+                生成位置：<code className="text-tech-purple">~/.claude/skills/douyin-{collection.id.slice(0, 8)}/</code>
+              </p>
+              {existingSkill && (
+                <p className="mt-1 text-tech-blue">
+                  已有 Skill「{existingSkill}」将被更新。
+                </p>
+              )}
+            </div>
+          )}
 
-          {/* Focus prompt */}
-          <div>
-            <label className="block text-sm font-medium text-tech-text mb-1.5">
-              聚焦方向（可选）
-            </label>
-            <textarea
-              value={focusPrompt}
-              onChange={(e) => onFocusPromptChange(e.target.value)}
-              placeholder={
-                '留空则全面提取所有可复用知识。\n' +
-                '例如：「只提取关于人物冲突塑造的方法论，忽略其他内容」\n' +
-                '「聚焦世界观搭建和剧情节奏控制的框架」'
-              }
-              rows={4}
-              className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text placeholder-tech-muted focus:border-tech-purple focus:outline-none focus:ring-1 focus:ring-tech-purple resize-none"
-              disabled={generating}
-            />
-          </div>
+          {/* 进度条 */}
+          {generating && progress && (
+            <div className="rounded-lg border border-tech-border bg-tech-bg p-4 space-y-3">
+              {/* 阶段指示器 */}
+              <div className="flex items-center gap-2 text-sm">
+                {progress.stage === 'analyze' || progress.stage === 'planned' ? (
+                  <Brain size={16} className="text-tech-purple animate-pulse" />
+                ) : progress.stage === 'done' ? (
+                  <CheckCircle2 size={16} className="text-emerald-500" />
+                ) : (
+                  <Loader2 size={16} className="text-tech-purple animate-spin" />
+                )}
+                <span className="text-tech-text font-medium">
+                  {progress.stage === 'analyze' && '阶段 1/2：分析转录内容'}
+                  {progress.stage === 'planned' && '阶段 1/2：分析完成'}
+                  {progress.stage === 'generating' && '阶段 2/2：生成产物'}
+                  {progress.stage === 'generating_item' && `阶段 2/2：${progress.itemLabel || '生成中…'}`}
+                  {progress.stage === 'item_done' && `阶段 2/2：${progress.itemLabel || ''} ✓`}
+                  {progress.stage === 'item_failed' && `阶段 2/2：${progress.itemLabel || ''} ✗`}
+                  {progress.stage === 'done' && '生成完成'}
+                  {!progress.stage && '准备中…'}
+                </span>
+                {progress.total != null && progress.current != null && (
+                  <span className="text-xs text-tech-muted ml-auto">
+                    {progress.current}/{progress.total}
+                  </span>
+                )}
+              </div>
+
+              {/* 进度条 */}
+              <div className="w-full bg-tech-border rounded-full h-2 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    progress.stage === 'done'
+                      ? 'bg-emerald-500'
+                      : 'bg-gradient-to-r from-tech-purple to-tech-blue'
+                  }`}
+                  style={{ width: `${progress.progress}%` }}
+                />
+              </div>
+
+              {/* 百分比 */}
+              <p className="text-xs text-tech-muted text-right">
+                {progress.progress}%
+              </p>
+
+              {/* 阶段 1 分析结果 */}
+              {progress.stage === 'planned' && progress.generates && (
+                <div className="text-xs space-y-1 pt-1 border-t border-tech-border">
+                  <p className="font-medium text-tech-text mb-1">将生成以下产物：</p>
+                  <div className="grid grid-cols-2 gap-1">
+                    <PlannedItem label="增强 SKILL.md" active icon="📄" />
+                    {Object.entries(progress.generates).map(([key, val]) => (
+                      <PlannedItem
+                        key={key}
+                        label={productLabelMap[key] || key}
+                        active={!!val}
+                        icon={val ? '✅' : '⏭️'}
+                      />
+                    ))}
+                    {progress.templates && progress.templates.length > 0 && (
+                      <PlannedItem
+                        label={`${progress.templates.length} 个模板`}
+                        active
+                        icon="📋"
+                      />
+                    )}
+                    <PlannedItem label="验收用例" active icon="🧪" />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Focus prompt - 只在非进行中显示 */}
+          {!generating && (
+            <div>
+              <label className="block text-sm font-medium text-tech-text mb-1.5">
+                聚焦方向（可选）
+              </label>
+              <textarea
+                value={focusPrompt}
+                onChange={(e) => onFocusPromptChange(e.target.value)}
+                placeholder={
+                  '留空则全面提取所有可复用知识。\n' +
+                  '例如：「只提取关于人物冲突塑造的方法论，忽略其他内容」\n' +
+                  '「聚焦世界观搭建和剧情节奏控制的框架」'
+                }
+                rows={4}
+                className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text placeholder-tech-muted focus:border-tech-purple focus:outline-none focus:ring-1 focus:ring-tech-purple resize-none"
+                disabled={generating}
+              />
+            </div>
+          )}
 
           {/* Result */}
           {result && (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 space-y-2">
               <div className="flex items-center gap-2 text-emerald-700 text-sm font-medium">
                 <CheckCircle2 size={16} />
                 Skill 生成成功
               </div>
-              <p className="mt-1 text-xs text-emerald-600">
+              <p className="text-xs text-emerald-600">
                 名称：<strong>{result.skillName}</strong>
+                {result.skillType === "knowledge" && (
+                  <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-purple-100 px-1.5 py-0.5 text-purple-700">
+                    <Brain size={10} />
+                    知识增强型
+                  </span>
+                )}
               </p>
               <p className="text-xs text-emerald-600 truncate">
                 路径：<code>{result.skillPath}</code>
               </p>
+              {result.generated && result.generated.length > 0 && (
+                <div className="text-xs text-emerald-600">
+                  <p className="font-medium mb-1">已生成 {result.generated.length} 项产物：</p>
+                  <ul className="list-disc list-inside space-y-0.5">
+                    {result.generated.map((g: string, i: number) => (
+                      <li key={i}>{g}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <button
                 onClick={() => { onClose(); onViewSkill(); }}
                 className="mt-2 inline-flex items-center gap-1 text-xs text-tech-blue hover:underline"
@@ -1000,15 +1183,6 @@ function SkillGenModal({
   );
 }
 
-function slugify(text: string): string {
-  return text
-    .replace(/[^\w一-鿿]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .toLowerCase()
-    .slice(0, 40);
-}
-
 // ─── Skill 内容查看 Modal ────────────────────────────────────────────
 
 function SkillViewModal({
@@ -1022,18 +1196,43 @@ function SkillViewModal({
     skillMarkdown: string;
     sourceMarkdown: string;
     meta: any;
+    knowledgeBase?: string;
+    caseLibrary?: string;
+    quotesCollection?: string;
+    checklist?: string;
+    decisionFramework?: string;
+    evalCases?: string;
+    templates?: Array<{ name: string; content: string }>;
   };
   loading: boolean;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<'skill' | 'source' | 'meta'>('skill');
+  const [tab, setTab] = useState<string>('skill');
   const [copied, setCopied] = useState(false);
 
+  const getCurrentContent = () => {
+    switch (tab) {
+      case 'skill': return data.skillMarkdown;
+      case 'source': return data.sourceMarkdown;
+      case 'knowledge_base': return data.knowledgeBase || '';
+      case 'case_library': return data.caseLibrary || '';
+      case 'quotes': return data.quotesCollection || '';
+      case 'checklist': return data.checklist || '';
+      case 'decision': return data.decisionFramework || '';
+      case 'evals': return data.evalCases || '';
+      case 'meta': return JSON.stringify(data.meta, null, 2);
+      default:
+        // 模板tab
+        if (tab.startsWith('tpl_') && data.templates) {
+          const tplName = tab.slice(4);
+          return data.templates.find(t => t.name === tplName)?.content || '';
+        }
+        return '';
+    }
+  };
+
   const handleCopy = () => {
-    const text = tab === 'skill' ? data.skillMarkdown
-      : tab === 'source' ? data.sourceMarkdown
-      : JSON.stringify(data.meta, null, 2);
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(getCurrentContent());
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -1050,14 +1249,19 @@ function SkillViewModal({
   }
 
   const tabs = [
-    { id: 'skill' as const, label: 'SKILL.md' },
-    { id: 'source' as const, label: '原始来源' },
-    { id: 'meta' as const, label: '元信息' },
+    { id: 'skill', label: 'SKILL.md' },
+    ...(data.knowledgeBase ? [{ id: 'knowledge_base', label: '知识库' }] : []),
+    ...(data.caseLibrary ? [{ id: 'case_library', label: '案例库' }] : []),
+    ...(data.quotesCollection ? [{ id: 'quotes', label: '金句集' }] : []),
+    ...(data.checklist ? [{ id: 'checklist', label: '检查清单' }] : []),
+    ...(data.decisionFramework ? [{ id: 'decision', label: '决策框架' }] : []),
+    ...(data.evalCases ? [{ id: 'evals', label: '验收用例' }] : []),
+    ...(data.templates || []).map(t => ({ id: `tpl_${t.name}`, label: t.name })),
+    { id: 'source', label: '原始来源' },
+    { id: 'meta', label: '元信息' },
   ];
 
-  const content = tab === 'skill' ? data.skillMarkdown
-    : tab === 'source' ? data.sourceMarkdown
-    : JSON.stringify(data.meta, null, 2);
+  const currentContent = getCurrentContent();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -1093,7 +1297,7 @@ function SkillViewModal({
         </div>
 
         {/* Tabs */}
-        <div className="flex shrink-0 gap-1 border-b border-tech-border bg-tech-bg px-6 py-2">
+        <div className="flex shrink-0 gap-1 border-b border-tech-border bg-tech-bg px-6 py-2 overflow-x-auto">
           {tabs.map((t) => (
             <button
               key={t.id}
@@ -1111,10 +1315,10 @@ function SkillViewModal({
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto">
-          {tab === 'skill' ? (
+          {tab === 'skill' || tab === 'knowledge_base' || tab === 'case_library' || tab === 'quotes' || tab === 'checklist' || tab === 'decision' || tab === 'evals' || tab.startsWith('tpl_') ? (
             <div className="p-6">
               <div className="prose prose-sm max-w-none">
-                <RenderMarkdown content={data.skillMarkdown} />
+                <RenderMarkdown content={currentContent} />
               </div>
             </div>
           ) : tab === 'source' ? (

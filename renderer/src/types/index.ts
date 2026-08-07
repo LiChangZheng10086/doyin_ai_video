@@ -357,6 +357,9 @@ export interface GenerateSkillResponse {
   skillName: string;
   skillPath: string;
   message: string;
+  generated: string[];
+  allGenerated: string[];
+  skillType: string;
 }
 
 // Skill 查看内容响应
@@ -372,7 +375,17 @@ export interface SkillContentResponse {
     generatedAt: string;
     videoCount: number;
     hasFocusPrompt: boolean;
+    skillType?: string;
+    generated?: string[];
   } | null;
+  // 增强产物
+  knowledgeBase: string;
+  caseLibrary: string;
+  quotesCollection: string;
+  checklist: string;
+  decisionFramework: string;
+  evalCases: string;
+  templates: Array<{ name: string; content: string }>;
 }
 
 // Skill 列表项

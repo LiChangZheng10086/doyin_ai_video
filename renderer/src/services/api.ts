@@ -222,11 +222,84 @@ class ApiClient {
     return response.data;
   }
 
-  // 生成/更新 Skill
-  async generateSkill(id: string, options: { focusPrompt?: string; mode?: 'create' | 'update' }): Promise<GenerateSkillResponse> {
+  // 生成/更新 Skill（流式进度回调）
+  async generateSkill(
+    id: string,
+    options: { focusPrompt?: string; mode?: 'create' | 'update' },
+    onProgress?: (event: SkillProgressEvent) => void
+  ): Promise<GenerateSkillResponse> {
     const client = await this.getClient();
-    const response = await client.post(`/api/collections/${id}/generate-skill`, options);
-    return response.data;
+    const port = this.serverPort;
+
+    type SkillProgressEvent = {
+      stage?: string;
+      message?: string;
+      progress?: number;
+      total?: number;
+      current?: number;
+      itemLabel?: string;
+      itemId?: string;
+      generates?: Record<string, boolean>;
+      templates?: Array<{ name: string; topic: string }>;
+      totalTasks?: number;
+      success?: boolean;
+      skillName?: string;
+      skillPath?: string;
+      generated?: string[];
+      allGenerated?: string[];
+      skillType?: string;
+      error?: string;
+    };
+
+    // 使用 fetch 以支持流式读取
+    const response = await fetch(`http://localhost:${port}/api/collections/${id}/generate-skill`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: `HTTP ${response.status}` }));
+      throw { response: { data: err } };
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text/plain') && !response.body) {
+      // Plain JSON response (error case handled above)
+      const data = await response.json();
+      return data as GenerateSkillResponse;
+    }
+
+    // 流式读取 NDJSON
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalResult: GenerateSkillResponse | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event: any = JSON.parse(line);
+          if (event.success) {
+            finalResult = event as GenerateSkillResponse;
+          }
+          onProgress?.(event as SkillProgressEvent);
+        } catch { /* skip malformed line */ }
+      }
+    }
+
+    if (finalResult) return finalResult;
+
+    // Should never reach here, but fallback
+    throw { response: { data: { message: '生成未返回结果' } } };
   }
 
   // 获取 Skill 内容

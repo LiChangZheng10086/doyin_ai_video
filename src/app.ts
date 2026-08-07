@@ -783,7 +783,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   // 生成/更新 Skill 文件
   app.post("/api/collections/:id/generate-skill", async (req, res) => {
-    // 此路由无超时限制：AI 蒸馏大量转录文本可能需要较长时间
+    // 此路由无超时限制：AI 两阶段蒸馏大量转录文本可能需要较长时间
     req.setTimeout(0);
     res.setTimeout(0);
     try {
@@ -822,77 +822,430 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
         .map((t) => `【${t.desc}】\n${t.transcript}`)
         .join("\n\n---\n\n");
 
-      // 2. 生成 Skill 名称（基于合集 ID，避免同名覆盖）
+      // Skill 名称（基于合集 ID，避免同名覆盖）
       const skillName = `douyin-${collection.id.slice(0, 8)}`;
       const skillsDir = path.join(homedir(), ".claude", "skills", skillName);
 
-      // 3. 调用 AI 蒸馏
-      const focusInstruction = focusPrompt?.trim()
-        ? `\n\n用户聚焦方向（只提取与此相关的知识，忽略无关内容）：${focusPrompt.trim()}`
-        : "";
+      // 获取 AI 配置
+      const aiConfig = config.resolveAiConfig
+        ? await config.resolveAiConfig()
+        : { provider: aiProvider, model: aiModel, apiKey: aiApiKey, baseURL: aiBaseURL };
 
-      const systemPrompt = `你是知识蒸馏专家。将以下视频转录文本提炼为可复用的 Claude Code Skill（SKILL.md）。
-
-输出格式：
-- frontmatter 包含 name: "${skillName}" 和 description（一行中文描述）
-- 正文按以下 section 组织（如果某个 section 没有实质内容可省略）：
-  ## 核心方法论 — 可复用的框架、步骤、原则
-  ## 金句与观点 — 可直接引用的精华语句
-  ## 术语表 — 领域术语及解释
-  ## 案例库 — 原文中的案例、故事及其教训
-  ## 适用场景 — 何时触发这个 Skill
-  ## 边界与注意事项 — 不适用的情况、局限性
-- SKILL.md 总体保持精炼（200-400行），方法论要有可执行性（不是摘要，是可操作的步骤）
-${focusInstruction}`;
-
-      const userPrompt = `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频的转录文本。
-
-${aggregatedText}`;
-
-      // 4. 调用 AI（复用现有 cleaner 的 OpenAI 客户端）
-      let skillContent: string;
-      try {
-        // 使用 RuntimeScriptCleaner 获取当前活跃的 AI 配置
-        const aiConfig = config.resolveAiConfig
-          ? await config.resolveAiConfig()
-          : { provider: aiProvider, model: aiModel, apiKey: aiApiKey, baseURL: aiBaseURL };
-
-        if (!aiConfig?.apiKey) {
-          res.status(400).json({ message: "未配置 AI API Key，请在设置中配置" });
-          return;
-        }
-
-        const OpenAI = (await import("openai")).default;
-        const client = new OpenAI({
-          apiKey: aiConfig.apiKey,
-          baseURL: aiConfig.baseURL || (aiConfig.provider === "deepseek" ? "https://api.deepseek.com" : undefined),
-        });
-
-        const completion = await client.chat.completions.create({
-          model: aiConfig.model || "deepseek-chat",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          max_tokens: 8000,
-          temperature: 0.7,
-        });
-
-        skillContent = completion.choices[0]?.message?.content || "";
-        if (!skillContent.trim()) {
-          throw new Error("AI 返回空内容");
-        }
-      } catch (err: any) {
-        const message = err?.message || "AI 调用失败";
-        res.status(500).json({ message: `Skill 生成失败：${message}` });
+      if (!aiConfig?.apiKey) {
+        res.status(400).json({ message: "未配置 AI API Key，请在设置中配置" });
         return;
       }
 
-      // 5. 写入文件
+      const OpenAI = (await import("openai")).default;
+      const client = new OpenAI({
+        apiKey: aiConfig.apiKey,
+        baseURL: aiConfig.baseURL || (aiConfig.provider === "deepseek" ? "https://api.deepseek.com" : undefined),
+      });
+
+      const model = aiConfig.model || "deepseek-chat";
+      const focusInstruction = focusPrompt?.trim()
+        ? `\n\n用户聚焦方向：${focusPrompt.trim()}`
+        : "";
+
+      const generated: string[] = [];
+
+      // 预写 SSE 响应头以启用流式进度汇报
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Transfer-Encoding": "chunked",
+        "Cache-Control": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+      });
+
+      const emit = (data: Record<string, unknown>) => {
+        res.write(JSON.stringify(data) + "\n");
+      };
+
+      const done = (data: Record<string, unknown>) => {
+        res.write(JSON.stringify(data) + "\n");
+        res.end();
+      };
+
+      // ─── 阶段 1：AI 分析转录内容，决定产物类型 ──────────────────────
+
+      emit({ stage: "analyze", message: "正在分析转录内容，判断产物类型…", progress: 0 });
+
+      const stage1SystemPrompt = `你是 Skill 设计专家。分析以下视频转录文本，判断适合生成哪些知识增强产物。
+
+返回纯 JSON（不要 markdown 包裹）：
+{
+  "skillType": "knowledge",
+  "title": "Skill 标题（10字以内）",
+  "description": "一行中文描述（30字以内）",
+  "generates": {
+    "knowledge_base": true/false,
+    "case_library": true/false,
+    "quotes_collection": true/false,
+    "checklist": true/false,
+    "templates": true/false,
+    "decision_framework": true/false
+  },
+  "templates": [{ "name": "模板名称", "topic": "适用场景" }]
+}
+
+判断标准：
+- knowledge_base：有 >= 5 个专有术语可定义时生成
+- case_library：有 >= 3 个可归纳的案例/故事时生成
+- quotes_collection：有 >= 8 条原创金句/观点时生成
+- checklist：内容有明确的可操作步骤/流程时生成
+- templates：有可复用的框架/公式/结构时生成（列出具体模板）
+- decision_framework：有需要决策树的复杂判断逻辑时生成
+- skillType 固定为 "knowledge"
+${focusInstruction}`;
+
+      let stage1Result: {
+        skillType: string;
+        title: string;
+        description: string;
+        generates: Record<string, boolean>;
+        templates: Array<{ name: string; topic: string }>;
+      };
+
+      try {
+        const stage1Completion = await client.chat.completions.create({
+          model,
+          messages: [
+            { role: "system", content: stage1SystemPrompt },
+            { role: "user", content: `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n${aggregatedText.slice(0, 8000)}` },
+          ],
+          max_tokens: 1000,
+          temperature: 0.3,
+        });
+
+        const rawJson = (stage1Completion.choices[0]?.message?.content || "").trim();
+        const jsonMatch = rawJson.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("阶段 1 返回格式异常");
+        stage1Result = JSON.parse(jsonMatch[0]);
+
+        // 报告阶段 1 分析结果
+        const generatingCount = Object.values(stage1Result.generates).filter(Boolean).length + 2; // +2: skill_md + eval
+        const templateCount = stage1Result.generates.templates ? (stage1Result.templates?.length || 0) : 0;
+        const totalTasks = generatingCount + templateCount;
+        emit({
+          stage: "planned",
+          message: `分析完成，将生成 ${totalTasks} 项产物`,
+          progress: 5,
+          totalTasks,
+          generates: stage1Result.generates,
+          templates: stage1Result.templates,
+        });
+      } catch (err: any) {
+        done({ error: `Skill 分析阶段失败：${err.message}` });
+        return;
+      }
+
+      // 准备目录
       mkdirSync(skillsDir, { recursive: true });
       mkdirSync(path.join(skillsDir, "references"), { recursive: true });
+      mkdirSync(path.join(skillsDir, "assets"), { recursive: true });
+      mkdirSync(path.join(skillsDir, "assets", "templates"), { recursive: true });
+      mkdirSync(path.join(skillsDir, "evals"), { recursive: true });
 
-      writeFileSync(path.join(skillsDir, "SKILL.md"), skillContent, "utf-8");
+      const writeFile = async (relativePath: string, content: string) => {
+        const filePath = path.join(skillsDir, relativePath);
+        mkdirSync(path.dirname(filePath), { recursive: true });
+        writeFileSync(filePath, content, "utf-8");
+      };
+
+      // 产物生成任务定义
+      interface GenerateTask {
+        id: string;
+        label: string;
+        shouldRun: boolean;
+        systemPrompt: string;
+        userPrompt: string;
+        outputFile: string;
+      }
+
+      const tasks: GenerateTask[] = [
+        // SKILL.md — 始终生成（增强版）
+        {
+          id: "enhanced_skill_md",
+          label: "增强 SKILL.md",
+          shouldRun: true,
+          systemPrompt: `你是 Claude Code Skill 创作专家。基于视频转录内容，创作一份**生产级**知识增强型 SKILL.md。
+
+必需的 frontmatter：
+---
+name: "${skillName}"
+description: "${stage1Result.description}"
+---
+
+正文必须包含以下 section（有实质内容才保留）：
+## 概述 — Skill 的用途、适用对象、输入输出
+## 触发条件 — 什么情况下 Claude 应该激活这个 Skill（明确的关键词、场景描述）
+## 多阶段执行指令 — Step-by-step 指导流程，每一阶段写明输入/输出/成功标准
+## 决策树 — 用文本流程图表示关键决策点（如 IF...THEN...ELSE...）
+## 核心方法论 — 可复用的框架、步骤、原则（要具体可操作，不是摘要）
+## 金句与观点索引 — 列出关键金句 + 引用指针（详见 references/quotes-collection.md）
+## 术语索引 — 列出术语 + 简要定义 + 引用指针（详见 references/knowledge-base.md）
+## 案例索引 — 列出案例名 + 一句话概要 + 引用指针（详见 references/case-library.md）
+## 执行检查清单 — 调用前/中/后的自检项（详见 assets/checklist.md）
+## 可复用模板 — 列出模板名 + 适用场景（详见 assets/templates/）
+## 对话示例 — 至少 2 组 User/Claude 交互示例（展示 Skill 的实际使用方式）
+## 边界与注意事项 — 不适用的情况、局限性、版本信息
+
+要求：
+- SKILL.md 是入口文件，正文方法论要精炼，详细内容放入 references/
+- 使用引用指针（详见 xxx.md）避免 SKILL.md 过于冗长
+- 方法论要有可执行性：不是 "分析冲突"，而是 "1. 列出角色 X 和 Y 的目标 2. 标注目标互斥点 3. 设计 escalate 节点..."
+- 决策树用文本缩进表示层级`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。
+
+已分析产物框架：
+${JSON.stringify(stage1Result, null, 2)}
+
+原始转录文本：
+${aggregatedText}`,
+          outputFile: "SKILL.md",
+        },
+        // Knowledge base
+        {
+          id: "knowledge_base",
+          label: "结构化知识库",
+          shouldRun: stage1Result.generates.knowledge_base,
+          systemPrompt: `你是知识整理专家。从视频转录中提取**所有专业术语、概念和领域知识**，生成结构化知识库。
+
+格式（Markdown）：
+# 知识库
+
+## 术语词典
+按字母/拼音排序，每条格式：
+### 术语名
+- **定义**：一句话定义
+- **出处**：来自哪个视频/谁说的
+- **相关术语**：关联的其他术语
+
+## 方法卡片
+每个方法论/技巧一张卡片：
+### 方法名
+- **一句话**：这是什么
+- **何时用**：触发场景
+- **怎么做**：步骤 1/2/3
+- **预期效果**：做对了会怎样
+- **常见错误**：做错了会怎样`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n请提取所有术语和方法论：\n\n${aggregatedText}`,
+          outputFile: "references/knowledge-base.md",
+        },
+        // Case library
+        {
+          id: "case_library",
+          label: "案例库",
+          shouldRun: stage1Result.generates.case_library,
+          systemPrompt: `你是案例分析专家。从转录中提取所有**案例、故事、实战经历**，生成结构化案例库。
+
+每个案例格式：
+## 案例 N：一句话标题
+- **来源视频**：描述
+- **背景/情境**：什么情况下发生的
+- **问题/挑战**：遇到了什么困难
+- **做法/应对**：怎么处理的
+- **结果**：最终怎样
+- **可复用教训**：3-5 条可迁移的行动指南
+- **适用条件**：什么情况下这个教训有效`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有案例：\n\n${aggregatedText}`,
+          outputFile: "references/case-library.md",
+        },
+        // Quotes collection
+        {
+          id: "quotes_collection",
+          label: "金句合集",
+          shouldRun: stage1Result.generates.quotes_collection,
+          systemPrompt: `你是一位编辑。从视频转录中提取**所有值得引用/转发/收藏的金句和观点**。
+
+格式：
+# 金句与观点合集
+
+## 金句（可直接引用的原句）
+> 金句原文
+- 出处：哪个视频
+- 适用语境：什么时候引用
+
+## 核心观点（概括性观点）
+### 观点标题
+- **核心论点**：用一段话概括
+- **支撑论据**：原文中怎么论证的
+- **反方观点**：原文是否提到了反对意见`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有金句和核心观点：\n\n${aggregatedText}`,
+          outputFile: "references/quotes-collection.md",
+        },
+        // Checklist
+        {
+          id: "checklist",
+          label: "执行检查清单",
+          shouldRun: stage1Result.generates.checklist,
+          systemPrompt: `你是一位流程优化专家。从视频转录中提取所有**可操作的检查清单和流程步骤**。
+
+格式：
+# 执行检查清单
+
+## 阶段 N：阶段名称
+### 开始前检查
+- [ ] 是否已满足前置条件 A？
+- [ ] 是否已准备 B 资源？
+
+### 执行中检查
+- [ ] 步骤 X 的输出是否符合预期 Y？
+- [ ] 是否已处理边界情况 Z？
+
+### 完成后验证
+- [ ] 最终结果满足标准 W 吗？
+- [ ] 是否有遗留问题需要追踪？
+
+## 常见踩坑清单
+- ❌ 错误做法 → 后果 → ✅ 正确做法`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有检查清单和流程：\n\n${aggregatedText}`,
+          outputFile: "assets/checklist.md",
+        },
+        // Decision framework
+        {
+          id: "decision_framework",
+          label: "决策框架",
+          shouldRun: stage1Result.generates.decision_framework,
+          systemPrompt: `你是一位决策分析专家。从视频转录中提取所有**需要多步骤判断和决策的框架**。
+
+格式：
+# 决策框架
+
+## 框架 N：框架名称
+### 适用场景
+### 决策树
+用文本缩进表示：
+1. 第一步判断：条件 A？
+   - YES → 进入路线 A-1
+     - 子判断 A1-1 → 选择 X
+     - 子判断 A1-2 → 选择 Y
+   - NO → 进入路线 B
+     - 子判断 B-1 → ....
+
+### 每个分支的详细说明
+### 常见误判与修正`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有决策框架：\n\n${aggregatedText}`,
+          outputFile: "assets/decision-framework.md",
+        },
+        // Eval cases — 始终生成
+        {
+          id: "eval_cases",
+          label: "验收用例",
+          shouldRun: true,
+          systemPrompt: `你是测试设计专家。为这个 Skill 设计验收测试用例。每个用例包含输入场景和预期行为。
+
+格式：
+# 验收测试用例
+
+## 用例 N：场景名称
+- **输入描述**：用户会对 Claude 说什么/问什么
+- **预期行为**：Claude 应该做什么
+- **成功标准**：怎么判断 Skill 被正确激活并执行了
+- **可能失败模式**：Claude 可能走偏的路径`,
+          userPrompt: `Skill 名称：${skillName}\nSkill 描述：${stage1Result.description}\nSkill 类型：${stage1Result.skillType}\n\n转录来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n请设计 5-8 个验收测试用例。\n\n参考转录：\n${aggregatedText.slice(0, 4000)}`,
+          outputFile: "evals/test-cases.md",
+        },
+      ];
+
+      // 模板生成任务（由阶段 1 决定）
+      if (stage1Result.generates.templates && stage1Result.templates.length > 0) {
+        for (const tpl of stage1Result.templates) {
+          const safeName = tpl.name.replace(/[/\\:*?"<>|]/g, "-").slice(0, 30);
+          tasks.push({
+            id: `template_${safeName}`,
+            label: `模板：${tpl.name}`,
+            shouldRun: true,
+            systemPrompt: `你是一位模板设计专家。基于视频转录内容，创建可复用的**「${tpl.name}」**模板。
+
+格式：
+# ${tpl.name}
+
+## 适用场景
+${tpl.topic}
+
+## 模板
+
+### 前置条件/准备工作
+
+### 主体内容框架
+（用填空/占位符形式，让用户填入自己的内容）
+
+### 完成标准
+
+### 使用示例
+（填入一个模拟例子展示模板如何使用）
+
+要求：模板必须可以直接使用，占位符用【xxx】标记。`,
+            userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请根据以下内容创建「${tpl.name}」模板：\n\n${aggregatedText.slice(0, 6000)}`,
+            outputFile: `assets/templates/${safeName}.md`,
+          });
+        }
+      }
+
+      // 阶段 2：实际需要运行的任务
+      const activeTasks = tasks.filter((t) => t.shouldRun);
+
+      emit({
+        stage: "generating",
+        message: `开始生成产物（共 ${activeTasks.length} 项）…`,
+        progress: 10,
+        current: 0,
+        total: activeTasks.length,
+      });
+
+      // 阶段 2：逐个串行执行（避免对 API 代理造成压力，也更稳定）
+      let completed = 0;
+      for (const task of activeTasks) {
+        emit({
+          stage: "generating_item",
+          message: `正在生成：${task.label}`,
+          progress: 10 + Math.round((completed / activeTasks.length) * 80),
+          current: completed,
+          total: activeTasks.length,
+          itemId: task.id,
+          itemLabel: task.label,
+        });
+
+        try {
+          const completion = await client.chat.completions.create({
+            model,
+            messages: [
+              { role: "system", content: task.systemPrompt },
+              { role: "user", content: task.userPrompt },
+            ],
+            max_tokens: task.id === "enhanced_skill_md" ? 8000 : 4000,
+            temperature: 0.7,
+          });
+
+          const content = completion.choices[0]?.message?.content || "";
+          if (content.trim()) {
+            await writeFile(task.outputFile, content.trim());
+            generated.push(task.id);
+            emit({
+              stage: "item_done",
+              message: `${task.label} — 完成`,
+              progress: 10 + Math.round(((completed + 1) / activeTasks.length) * 80),
+              current: completed + 1,
+              total: activeTasks.length,
+              itemId: task.id,
+            });
+          }
+        } catch (err: any) {
+          console.warn(`[generate-skill] 产物 "${task.id}" 生成失败:`, err.message);
+          emit({
+            stage: "item_failed",
+            message: `${task.label} — 失败：${err.message}`,
+            progress: 10 + Math.round(((completed + 1) / activeTasks.length) * 80),
+            current: completed + 1,
+            total: activeTasks.length,
+            itemId: task.id,
+          });
+        }
+        completed++;
+      }
+
+      // 始终写入 source.md 和 meta.json
       writeFileSync(
         path.join(skillsDir, "references", "source.md"),
         `# 原始转录来源\n\n合集：${collection.nickname}\n生成时间：${new Date().toISOString()}\n视频数：${transcripts.length}\n\n${aggregatedText}`,
@@ -907,26 +1260,58 @@ ${aggregatedText}`;
           generatedAt: new Date().toISOString(),
           videoCount: transcripts.length,
           hasFocusPrompt: !!focusPrompt?.trim(),
+          skillType: stage1Result.skillType,
+          generated,
+          stage1Analysis: stage1Result,
         }, null, 2),
         "utf-8"
       );
 
-      // 6. 更新合集 Skill 元信息
+      // 更新合集 Skill 元信息
       await collections.updateSkillMeta(collection.id, {
         skillName,
         skillPath: skillsDir,
         skillGeneratedAt: new Date().toISOString(),
       });
 
-      res.json({
+      const productLabels: Record<string, string> = {
+        enhanced_skill_md: "增强 SKILL.md",
+        knowledge_base: "结构化知识库",
+        case_library: "案例库",
+        quotes_collection: "金句合集",
+        checklist: "执行检查清单",
+        decision_framework: "决策框架",
+        eval_cases: "验收用例",
+      };
+
+      const generatedLabels = generated
+        .filter((g) => !g.startsWith("template_"))
+        .map((g) => productLabels[g] || g);
+      const templateCount = generated.filter((g) => g.startsWith("template_")).length;
+      if (templateCount > 0) {
+        generatedLabels.push(`${templateCount} 个模板`);
+      }
+
+      done({
+        stage: "done",
         success: true,
+        progress: 100,
         skillName,
         skillPath: skillsDir,
-        message: `Skill 已生成：${skillName}`,
+        message: `已生成 ${generatedLabels.length} 项产物`,
+        generated: generatedLabels,
+        allGenerated: generated,
+        skillType: stage1Result.skillType,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "generate skill failed";
-      res.status(500).json({ message });
+      // 如果还没开始写 response header（非流式模式），直接返回 JSON 错误
+      if (!res.headersSent) {
+        res.status(500).json({ message });
+      } else {
+        res.write(JSON.stringify({ error: message }) + "\n");
+        res.end();
+      }
     }
   });
 
@@ -953,11 +1338,38 @@ ${aggregatedText}`;
         }
       };
 
-      const [skillMarkdown, sourceMarkdown, metaRaw] = await Promise.all([
+      // 读取所有可能存在的产物
+      const [
+        skillMarkdown, sourceMarkdown, metaRaw,
+        knowledgeBase, caseLibrary, quotesCollection,
+        checklist, decisionFramework, evalCases,
+      ] = await Promise.all([
         readFileSafe(path.join(skillsDir, "SKILL.md")),
         readFileSafe(path.join(skillsDir, "references", "source.md")),
         readFileSafe(path.join(skillsDir, "references", "meta.json")),
+        readFileSafe(path.join(skillsDir, "references", "knowledge-base.md")),
+        readFileSafe(path.join(skillsDir, "references", "case-library.md")),
+        readFileSafe(path.join(skillsDir, "references", "quotes-collection.md")),
+        readFileSafe(path.join(skillsDir, "assets", "checklist.md")),
+        readFileSafe(path.join(skillsDir, "assets", "decision-framework.md")),
+        readFileSafe(path.join(skillsDir, "evals", "test-cases.md")),
       ]);
+
+      // 读取模板文件列表
+      let templates: Array<{ name: string; content: string }> = [];
+      try {
+        const templatesDir = path.join(skillsDir, "assets", "templates");
+        const { readdir } = await import("node:fs/promises");
+        const files = await readdir(templatesDir);
+        for (const file of files) {
+          if (file.endsWith(".md")) {
+            const content = await readFileSafe(path.join(templatesDir, file));
+            if (content) {
+              templates.push({ name: file.replace(/\.md$/, ""), content });
+            }
+          }
+        }
+      } catch { /* no templates */ }
 
       let meta = null;
       if (metaRaw) {
@@ -972,6 +1384,14 @@ ${aggregatedText}`;
         skillMarkdown: skillMarkdown || "",
         sourceMarkdown: sourceMarkdown || "",
         meta,
+        // 新增产物
+        knowledgeBase: knowledgeBase || "",
+        caseLibrary: caseLibrary || "",
+        quotesCollection: quotesCollection || "",
+        checklist: checklist || "",
+        decisionFramework: decisionFramework || "",
+        evalCases: evalCases || "",
+        templates,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "read skill failed";
