@@ -81,7 +81,7 @@ async function createWindow() {
     // 发送系统通知确认
     const { Notification } = require('electron');
     new Notification({
-      title: '抖音 AI 视频生成器',
+      title: '抖创工坊',
       body: 'Electron 应用已启动！',
     }).show();
   });

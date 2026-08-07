@@ -32,11 +32,11 @@ function Navigation() {
               </div>
               <div>
                 <h1 className="text-lg font-semibold text-tech-text">
-                  AI 视频创作中心
+                  抖创工坊
                 </h1>
                 <p className="text-xs text-tech-muted flex items-center gap-1">
                   <Sparkles size={12} className="text-tech-purple" />
-                  从视频到文稿、提示词与成片
+                   从采集到创作，AI 驱动的内容工坊
                 </p>
               </div>
             </div>
