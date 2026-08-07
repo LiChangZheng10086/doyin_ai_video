@@ -9,6 +9,8 @@
 ![Electron](https://img.shields.io/badge/electron-34.x-blue.svg)
 ![React](https://img.shields.io/badge/react-19.x-blue.svg)
 
+> ⚠️ **免责声明**：本项目仅供学习和技术研究使用。使用者应遵守相关平台的服务条款和法律法规，不得将本项目用于任何商业用途或侵犯第三方权益。作者不对使用本项目产生的任何后果承担责任。
+
 ## 🤝 寻找贡献者
 
 本项目目前由个人维护，欢迎一起完善！
