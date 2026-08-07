@@ -9,6 +9,19 @@
 ![Electron](https://img.shields.io/badge/electron-34.x-blue.svg)
 ![React](https://img.shields.io/badge/react-19.x-blue.svg)
 
+## 🤝 寻找贡献者
+
+本项目目前由个人维护，欢迎一起完善！
+
+**当前特别需要帮助的方向：**
+- 抖音签名（a_bogus / X-Bogus）稳定性维护
+- Whisper 模型体积与中文准确率优化
+- HyperFrames 视频样式 / TTS 配音
+- UI/UX 改进与 Windows 打包测试
+- 文档、测试用例、示例视频
+
+→ [查看贡献指南](CONTRIBUTING.md) | [提交 Issue](https://github.com/LiChangZheng10086/doyin_ai_video/issues) | [讨论区](https://github.com/LiChangZheng10086/doyin_ai_video/discussions)
+
 ## 核心功能
 
 ### 手动分步流程
@@ -118,9 +131,9 @@
              ┌─────────────────┐             ┌────────────┐
              │ AI / 本地 ASR    │             │ 文件存储    │
              │ - DeepSeek      │             │            │
-             │ - OpenAI        │             │ ~/Documents│
-             │ - 中转代理      │             │ /抖音AI视频 │
-             │ - whisper.cpp   │             │            │
+             │ - OpenAI        │             │ ~/.douyin  │
+             │ - 中转代理      │             │   -ai-video/│
+             │ - whisper.cpp   │             │   storage   │
              │ - ggml-small    │             │ ~/.claude  │
              └─────────────────┘             │ /skills/   │
                                              └────────────┘
@@ -387,10 +400,10 @@ HyperFrames 是本地 HTML/CSS/GSAP 到视频的渲染链路，不是 Sora、Rem
 
 ## 📂 数据存储
 
-所有数据存储在：`~/Documents/抖音AI视频/`
+所有数据存储在：`~/.douyin-ai-video/storage/`
 
 ```
-抖音AI视频/
+.douyin-ai-video/storage/
 ├── raw/                    # 原始数据
 │   ├── videos/            # 下载的视频
 │   ├── audio/             # 提取的音频
@@ -519,5 +532,5 @@ MIT License
 
 ---
 
-**最后更新**: 2026-08-06
+**最后更新**: 2026-08-07
 **仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git
