@@ -11,6 +11,7 @@ export interface DouyinPageInfo {
   videoId?: string;
   pageTitle?: string;
   pageDescription?: string;
+  coverUrl?: string;
   authorName?: string;
   publishTime?: string;
   isChallengePage: boolean;
@@ -40,6 +41,7 @@ export async function fetchDouyinPageInfo(requestedUrl: string): Promise<DouyinP
     videoId: extractVideoId(finalUrl) ?? extractVideoId(metadata.canonicalUrl ?? ""),
     pageTitle: metadata.title,
     pageDescription: metadata.description,
+    coverUrl: metadata.coverUrl,
     authorName: metadata.authorName,
     publishTime: metadata.publishTime,
     isChallengePage: looksLikeChallengePage(html),
@@ -97,6 +99,10 @@ function extractMetadata(html: string) {
       getMetaContent(html, "og:description") ??
       getMetaContent(html, "description") ??
       getMetaContent(html, "twitter:description"),
+    coverUrl:
+      getMetaContent(html, "og:image") ??
+      getMetaContent(html, "twitter:image") ??
+      getMetaContent(html, "twitter:image:src"),
     authorName:
       getMetaContent(html, "author") ?? getMetaContent(html, "og:video:director"),
     publishTime:

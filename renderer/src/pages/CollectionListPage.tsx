@@ -165,7 +165,9 @@ function CollectionCard({
   onOpen: () => void;
   onDelete: () => void;
 }) {
+  const [avatarFailed, setAvatarFailed] = useState(false);
   const progress = collection.childJobProgress;
+  const showAvatar = Boolean(collection.avatarUrl) && !avatarFailed;
   const overallPercent = progress.total > 0
     ? Math.round(
         ((progress.transcribed + progress.cleaned + progress.scripted + progress.rendered) /
@@ -181,8 +183,18 @@ function CollectionCard({
     >
       {/* 封面区域 */}
       <div className="flex items-center gap-4 bg-gradient-to-br from-tech-purple via-tech-purple-dark to-tech-blue p-5">
-        <div className="flex h-14 w-14 items-center justify-center rounded-full bg-white/20 text-2xl font-bold text-white">
+        <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full bg-white/20 text-2xl font-bold text-white">
           {collection.nickname?.charAt(0) || 'U'}
+          {showAvatar && (
+            <img
+              src={collection.avatarUrl}
+              alt={collection.nickname || '用户头像'}
+              className="absolute inset-0 h-full w-full object-cover"
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              onError={() => setAvatarFailed(true)}
+            />
+          )}
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="line-clamp-1 font-semibold text-white text-lg">

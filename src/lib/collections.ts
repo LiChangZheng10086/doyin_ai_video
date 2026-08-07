@@ -48,7 +48,7 @@ export class CollectionStore {
   constructor(
     private readonly storage: LocalStorage,
     private readonly jobStore: {
-      create(input: { sourceUrl?: string; shareText?: string; topic?: string }): Promise<JobRecord>;
+      create(input: { sourceUrl?: string; shareText?: string; topic?: string; coverUrl?: string }): Promise<JobRecord>;
       get(id: string): Promise<JobRecord | null>;
     },
     private readonly crawlerConfig: UserPageCrawlerConfig = {}
@@ -172,6 +172,7 @@ export class CollectionStore {
         const job = await this.jobStore.create({
           sourceUrl: videoShareUrl,
           topic: jobTopic,
+          coverUrl: item.coverUrl,
         });
         createdJobs.push(job);
         newJobIds.push(job.id);

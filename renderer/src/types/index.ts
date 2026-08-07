@@ -57,6 +57,7 @@ export interface JobPreview {
   authorName?: string;
   summary?: string;
   coverTitle?: string;
+  coverUrl?: string;
   hasTranscript: boolean;
   hasRewrite: boolean;
   hasVideoPrompts: boolean;
@@ -360,6 +361,7 @@ export interface GenerateSkillResponse {
   generated: string[];
   allGenerated: string[];
   skillType: string;
+  failed?: string[];
 }
 
 // Skill 查看内容响应

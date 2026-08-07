@@ -50,6 +50,7 @@ export interface JobRecord {
   id: string;
   sourceUrl: string;
   topic: string;
+  coverUrl?: string;
   status: JobStatus;
   stage: JobStage;
   workflowMode?: WorkflowMode;
@@ -81,6 +82,7 @@ export interface JobPreview {
   authorName?: string;
   summary?: string;
   coverTitle?: string;
+  coverUrl?: string;
   hasTranscript: boolean;
   hasRewrite: boolean;
   hasVideoPrompts: boolean;
@@ -238,6 +240,7 @@ export interface ScriptAsset {
   pageTitle?: string;
   pageDescription?: string;
   authorName?: string;
+  coverUrl?: string;
   publishTime?: string;
   topic: string;
   rawShareText?: string;

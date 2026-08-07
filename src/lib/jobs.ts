@@ -98,7 +98,7 @@ export class JobStore {
     await this.purgeExpiredTrash();
   }
 
-  async create(input: { sourceUrl?: string; shareText?: string; topic?: string }) {
+  async create(input: { sourceUrl?: string; shareText?: string; topic?: string; coverUrl?: string }) {
     const now = new Date().toISOString();
     const shareText = input.shareText?.trim() ?? "";
     const parsed = shareText ? parseDouyinShare({ shareText, sourceUrl: input.sourceUrl }) : null;
@@ -113,6 +113,7 @@ export class JobStore {
       id,
       sourceUrl,
       topic,
+      coverUrl: input.coverUrl?.trim() || undefined,
       status: "queued",
       stage: parsed ? "parsed" : "submitted",
       workflowMode: "manual",
@@ -582,6 +583,20 @@ export class JobStore {
     return this.readOptionalJson<PageInfoRecord>(path.join("raw", "page", `${id}.json`));
   }
 
+  private async readCollectionCoverUrl(record: JobRecord) {
+    const collections = await this.readOptionalJson<Record<string, {
+      crawlResult?: { items?: Array<{ awemeId?: string; coverUrl?: string }> };
+    }>>("cache/collections-index.json");
+    if (!collections) {
+      return undefined;
+    }
+
+    const matchedItem = Object.values(collections)
+      .flatMap((collection) => collection.crawlResult?.items ?? [])
+      .find((item) => item.awemeId && record.sourceUrl.includes(item.awemeId));
+    return matchedItem?.coverUrl;
+  }
+
   private async readTranscript(id: string) {
     return this.readOptionalJson<TranscriptAsset>(path.join("raw", "transcripts", `${id}.json`));
   }
@@ -595,14 +610,15 @@ export class JobStore {
   }
 
   private async buildPreview(record: JobRecord): Promise<JobPreview> {
-    const [pageInfo, cleaned, transcript] = await Promise.all([
+    const [pageInfo, cleaned, transcript, collectionCoverUrl] = await Promise.all([
       this.readPageInfo(record.id),
       this.readOptionalJson<{
         output?: Partial<ScriptAsset>;
         pageInfo?: PageInfoRecord | null;
         transcriptText?: string;
       }>(path.join("processed", "cleaned", `${record.id}.json`)),
-      this.readTranscript(record.id)
+      this.readTranscript(record.id),
+      this.readCollectionCoverUrl(record)
     ]);
     const output = cleaned?.output;
     const displayTitle = toSimplifiedChinese(
@@ -614,6 +630,7 @@ export class JobStore {
     const summary = summaryValue ? toSimplifiedChinese(summaryValue) : undefined;
     const subtitle = toSimplifiedChinese(firstText(authorName, pageInfo?.pageDescription, record.sourceUrl) || "等待内容生成");
     const coverTitleValue = firstText(output?.coverTitle, output?.title, pageInfo?.pageTitle, record.topic);
+    const coverUrl = firstText(record.coverUrl, output?.coverUrl, pageInfo?.coverUrl, collectionCoverUrl);
     const hasTranscript = Boolean(transcript?.transcript?.trim() || cleaned?.transcriptText?.trim());
     const hasRewrite = Boolean(output?.cleanScript?.trim() || output?.voiceoverScript?.trim());
     const hasVideoPrompts = Boolean(output?.shortVideoShots?.length || output?.videoPrompts?.length || output?.enhancedScenes?.length);
@@ -628,6 +645,7 @@ export class JobStore {
       authorName,
       summary,
       coverTitle: coverTitleValue ? toSimplifiedChinese(coverTitleValue) : undefined,
+      coverUrl,
       hasTranscript,
       hasRewrite,
       hasVideoPrompts,

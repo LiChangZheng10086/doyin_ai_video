@@ -66,7 +66,9 @@ export function CollectionDetailPage() {
     generates?: Record<string, boolean>;
     templates?: Array<{ name: string; topic: string }>;
     totalTasks?: number;
+    error?: string;
   } | null>(null);
+  const [skillElapsedSeconds, setSkillElapsedSeconds] = useState(0);
   // Skill content view state
   const [viewingSkill, setViewingSkill] = useState(false);
   const [skillContentData, setSkillContentData] = useState<{
@@ -99,6 +101,16 @@ export function CollectionDetailPage() {
     const timer = window.setInterval(refresh, 5000);
     return () => window.clearInterval(timer);
   }, [collection, refresh]);
+
+  useEffect(() => {
+    if (!generatingSkill) return;
+    const startedAt = Date.now();
+    setSkillElapsedSeconds(0);
+    const timer = window.setInterval(() => {
+      setSkillElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [generatingSkill]);
 
   const createdJobIds = useMemo(
     () => new Set(collection?.childJobIds ?? []),
@@ -212,6 +224,7 @@ export function CollectionDetailPage() {
     setSkillError('');
     setSkillResult(null);
     setSkillProgress(null);
+    setSkillElapsedSeconds(0);
     try {
       const result = await apiClient.generateSkill(
         collection.id,
@@ -231,6 +244,7 @@ export function CollectionDetailPage() {
             generates: event.generates,
             templates: event.templates,
             totalTasks: event.totalTasks,
+            error: event.error,
           });
         }
       );
@@ -238,7 +252,15 @@ export function CollectionDetailPage() {
       setSkillProgress({ stage: 'done', message: result.message, progress: 100 });
       await refresh();
     } catch (err: any) {
-      setSkillError(err.response?.data?.message || 'Skill 生成失败');
+      const message = err.response?.data?.message || err.message || 'Skill 生成失败';
+      setSkillError(message);
+      setSkillProgress((previous) => ({
+        stage: 'error',
+        message,
+        progress: 100,
+        current: previous?.current,
+        total: previous?.total,
+      }));
     } finally {
       setGeneratingSkill(false);
     }
@@ -719,6 +741,7 @@ export function CollectionDetailPage() {
           result={skillResult}
           error={skillError}
           progress={skillProgress}
+          elapsedSeconds={skillElapsedSeconds}
           onGenerate={handleGenerateSkill}
           onClose={() => setSkillModalOpen(false)}
           onViewSkill={handleViewSkill}
@@ -923,6 +946,7 @@ function SkillGenModal({
   result,
   error,
   progress,
+  elapsedSeconds,
   onGenerate,
   onClose,
   onViewSkill,
@@ -944,7 +968,9 @@ function SkillGenModal({
     generates?: Record<string, boolean>;
     templates?: Array<{ name: string; topic: string }>;
     totalTasks?: number;
+    error?: string;
   } | null;
+  elapsedSeconds: number;
   onGenerate: () => void;
   onClose: () => void;
   onViewSkill: () => void;
@@ -992,11 +1018,10 @@ function SkillGenModal({
           {!generating && !result && (
             <div className="rounded-lg border border-tech-border bg-tech-bg p-3 text-xs text-tech-muted">
               <p>
-                基于 <strong>{collection.childJobProgress.transcribed}</strong> 个已转录视频，通过<strong>两阶段 AI 蒸馏</strong>生成知识增强型 Claude Code Skill。
+                基于 <strong>{collection.childJobProgress.transcribed}</strong> 个已转录视频，通过<strong>逐视频提炼 + 汇总生成</strong>生成知识增强型 Claude Code Skill。
               </p>
               <p className="mt-1">
-                阶段 1：分析转录 → 自动判断产物类型<br />
-                阶段 2：串行生成 → SKILL.md + 知识库 + 案例库 + 检查清单 + 模板 + 验收用例
+                阶段 1：逐个视频提炼 → 阶段 2：汇总分析 → 阶段 3：生成产物
               </p>
               <p className="mt-1">
                 生成位置：<code className="text-tech-purple">~/.claude/skills/douyin-{collection.id.slice(0, 8)}/</code>
@@ -1010,11 +1035,13 @@ function SkillGenModal({
           )}
 
           {/* 进度条 */}
-          {generating && progress && (
+          {(generating || progress?.stage === 'error') && progress && (
             <div className="rounded-lg border border-tech-border bg-tech-bg p-4 space-y-3">
               {/* 阶段指示器 */}
               <div className="flex items-center gap-2 text-sm">
-                {progress.stage === 'analyze' || progress.stage === 'planned' ? (
+                {progress.stage === 'error' ? (
+                  <XCircle size={16} className="text-red-500" />
+                ) : progress.stage === 'analyze' || progress.stage === 'planned' ? (
                   <Brain size={16} className="text-tech-purple animate-pulse" />
                 ) : progress.stage === 'done' ? (
                   <CheckCircle2 size={16} className="text-emerald-500" />
@@ -1022,13 +1049,18 @@ function SkillGenModal({
                   <Loader2 size={16} className="text-tech-purple animate-spin" />
                 )}
                 <span className="text-tech-text font-medium">
-                  {progress.stage === 'analyze' && '阶段 1/2：分析转录内容'}
-                  {progress.stage === 'planned' && '阶段 1/2：分析完成'}
-                  {progress.stage === 'generating' && '阶段 2/2：生成产物'}
-                  {progress.stage === 'generating_item' && `阶段 2/2：${progress.itemLabel || '生成中…'}`}
-                  {progress.stage === 'item_done' && `阶段 2/2：${progress.itemLabel || ''} ✓`}
-                  {progress.stage === 'item_failed' && `阶段 2/2：${progress.itemLabel || ''} ✗`}
+                  {progress.stage === 'collecting' && '准备阶段：读取转录内容'}
+                  {progress.stage === 'extracting' && '阶段 1/3：逐个提炼视频'}
+                  {progress.stage === 'extracting_item' && `阶段 1/3：提炼第 ${progress.current ?? ''}/${progress.total ?? ''} 个视频`}
+                  {progress.stage === 'retrying' && '正在重试当前 AI 请求'}
+                  {progress.stage === 'analyze' && '阶段 2/3：汇总提炼结果'}
+                  {progress.stage === 'planned' && '阶段 2/3：分析完成'}
+                  {progress.stage === 'generating' && '阶段 3/3：生成 Skill 产物'}
+                  {progress.stage === 'generating_item' && `阶段 3/3：${progress.itemLabel || '生成中…'}`}
+                  {progress.stage === 'item_done' && `阶段 3/3：${progress.itemLabel || ''} ✓`}
+                  {progress.stage === 'item_failed' && `阶段 3/3：${progress.itemLabel || ''} ✗`}
                   {progress.stage === 'done' && '生成完成'}
+                  {progress.stage === 'error' && '生成失败'}
                   {!progress.stage && '准备中…'}
                 </span>
                 {progress.total != null && progress.current != null && (
@@ -1042,7 +1074,9 @@ function SkillGenModal({
               <div className="w-full bg-tech-border rounded-full h-2 overflow-hidden">
                 <div
                   className={`h-full rounded-full transition-all duration-500 ${
-                    progress.stage === 'done'
+                    progress.stage === 'error'
+                      ? 'bg-red-500'
+                      : progress.stage === 'done'
                       ? 'bg-emerald-500'
                       : 'bg-gradient-to-r from-tech-purple to-tech-blue'
                   }`}
@@ -1051,9 +1085,12 @@ function SkillGenModal({
               </div>
 
               {/* 百分比 */}
-              <p className="text-xs text-tech-muted text-right">
-                {progress.progress}%
-              </p>
+              <div className="flex items-center justify-between text-xs text-tech-muted">
+                <span className={progress.stage === 'error' ? 'text-red-600' : ''}>
+                  {progress.message}
+                </span>
+                <span>{progress.progress}%{generating && ` · 已用时 ${Math.floor(elapsedSeconds / 60)}分${elapsedSeconds % 60}秒`}</span>
+              </div>
 
               {/* 阶段 1 分析结果 */}
               {progress.stage === 'planned' && progress.generates && (

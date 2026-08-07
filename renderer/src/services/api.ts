@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput, CollectionOverview, CrawlUserPageResult, CollectionTranscriptsResponse, GenerateSkillResponse } from '../types';
+import { parseSkillProgressLine, type SkillProgressEvent } from '../utils/skill-progress';
 
 class ApiClient {
   private client: AxiosInstance | null = null;
@@ -231,26 +232,6 @@ class ApiClient {
     const client = await this.getClient();
     const port = this.serverPort;
 
-    type SkillProgressEvent = {
-      stage?: string;
-      message?: string;
-      progress?: number;
-      total?: number;
-      current?: number;
-      itemLabel?: string;
-      itemId?: string;
-      generates?: Record<string, boolean>;
-      templates?: Array<{ name: string; topic: string }>;
-      totalTasks?: number;
-      success?: boolean;
-      skillName?: string;
-      skillPath?: string;
-      generated?: string[];
-      allGenerated?: string[];
-      skillType?: string;
-      error?: string;
-    };
-
     // 使用 fetch 以支持流式读取
     const response = await fetch(`http://localhost:${port}/api/collections/${id}/generate-skill`, {
       method: 'POST',
@@ -286,13 +267,12 @@ class ApiClient {
 
       for (const line of lines) {
         if (!line.trim()) continue;
-        try {
-          const event: any = JSON.parse(line);
-          if (event.success) {
-            finalResult = event as GenerateSkillResponse;
-          }
-          onProgress?.(event as SkillProgressEvent);
-        } catch { /* skip malformed line */ }
+        const event = parseSkillProgressLine(line);
+        if (!event) continue;
+        onProgress?.(event);
+        if (event.success) {
+          finalResult = event as GenerateSkillResponse;
+        }
       }
     }
 

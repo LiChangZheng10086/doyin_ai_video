@@ -11,6 +11,7 @@ import { CollectionStore } from "./lib/collections.js";
 import { registerConfigRoutes } from "./lib/config-server.js";
 import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import { simplifyChineseValue } from "./lib/chinese.js";
+import { buildSkillContext, getSkillErrorMessage, isRetryableSkillError } from "./lib/skill-generation.js";
 import type { CollectionRecord, PipelineStep, ScriptAsset } from "./types.js";
 
 export interface ServerConfig {
@@ -786,6 +787,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     // 此路由无超时限制：AI 两阶段蒸馏大量转录文本可能需要较长时间
     req.setTimeout(0);
     res.setTimeout(0);
+    let streamStarted = false;
     try {
       const collection = await collections.get(req.params.id);
       if (!collection) {
@@ -797,6 +799,35 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
         focusPrompt?: string;
         mode?: "create" | "update";
       };
+
+      // 先打开流并发送准备状态，避免收集大量转录时界面长时间没有反馈。
+      res.writeHead(200, {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Transfer-Encoding": "chunked",
+        "Cache-Control": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+      });
+      streamStarted = true;
+
+      const emit = (data: Record<string, unknown>) => {
+        if (!res.writableEnded) {
+          res.write(JSON.stringify(data) + "\n");
+        }
+      };
+
+      const done = (data: Record<string, unknown>) => {
+        if (res.writableEnded) return;
+        res.write(JSON.stringify(data) + "\n");
+        res.end();
+      };
+
+      emit({
+        stage: "collecting",
+        message: "正在读取已转录视频…",
+        progress: 0,
+        current: 0,
+        total: collection.childJobIds.length,
+      });
 
       // 1. 收集全部转录文本
       const transcripts: Array<{ desc: string; transcript: string }> = [];
@@ -811,10 +842,19 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
             transcripts.push({ desc: item?.desc || "(无描述)", transcript: t.transcript });
           }
         } catch { /* skip */ }
+        emit({
+          stage: "collecting",
+          message: `已读取 ${i + 1}/${collection.childJobIds.length} 个视频`,
+          progress: collection.childJobIds.length > 0
+            ? Math.round(((i + 1) / collection.childJobIds.length) * 5)
+            : 5,
+          current: i + 1,
+          total: collection.childJobIds.length,
+        });
       }
 
       if (transcripts.length === 0) {
-        res.status(400).json({ message: "没有已转录的文本，请先执行批量转录" });
+        done({ stage: "error", success: false, progress: 100, error: "没有已转录的文本，请先执行批量转录" });
         return;
       }
 
@@ -832,7 +872,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
         : { provider: aiProvider, model: aiModel, apiKey: aiApiKey, baseURL: aiBaseURL };
 
       if (!aiConfig?.apiKey) {
-        res.status(400).json({ message: "未配置 AI API Key，请在设置中配置" });
+        done({ stage: "error", success: false, progress: 100, error: "未配置 AI API Key，请在设置中配置" });
         return;
       }
 
@@ -840,6 +880,8 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       const client = new OpenAI({
         apiKey: aiConfig.apiKey,
         baseURL: aiConfig.baseURL || (aiConfig.provider === "deepseek" ? "https://api.deepseek.com" : undefined),
+        timeout: 90_000,
+        maxRetries: 0,
       });
 
       const model = aiConfig.model || "deepseek-chat";
@@ -849,26 +891,140 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
       const generated: string[] = [];
 
-      // 预写 SSE 响应头以启用流式进度汇报
-      res.writeHead(200, {
-        "Content-Type": "text/plain; charset=utf-8",
-        "Transfer-Encoding": "chunked",
-        "Cache-Control": "no-cache",
-        "X-Content-Type-Options": "nosniff",
+      const requestAi = async (
+        systemPrompt: string,
+        userPrompt: string,
+        compactUserPrompt: string,
+        maxTokens: number,
+        onRetry?: () => void,
+      ) => {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const completion = await client.chat.completions.create({
+              model,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: attempt === 0 ? userPrompt : compactUserPrompt },
+              ],
+              max_tokens: maxTokens,
+              temperature: 0.7,
+            });
+            return completion.choices[0]?.message?.content || "";
+          } catch (error) {
+            if (attempt === 0 && isRetryableSkillError(error)) {
+              onRetry?.();
+              continue;
+            }
+            throw error;
+          }
+        }
+        return "";
+      };
+
+      // ─── 阶段 1：逐个视频提炼可复用知识 ──────────────────────────────
+      const extractedInsights: Array<{ desc: string; transcript: string }> = [];
+      const extractionSystemPrompt = `你是知识提炼专家。只处理当前这一个视频的转录，提炼未来生成 Claude Code Skill 有用的事实和方法。
+
+输出简洁的中文 Markdown，不要复述全文，必须包含：
+- 核心主题
+- 可复用的方法、步骤或原则
+- 关键术语/概念
+- 案例、数字或边界条件（如果有）
+
+只使用原文信息，不要编造。控制在 300-600 字。${focusInstruction}`;
+      let extractionCompleted = 0;
+      let extractionFailed = 0;
+      let extractionCursor = 0;
+      const extractionConcurrency = Math.min(3, transcripts.length);
+
+      emit({
+        stage: "extracting",
+        message: `开始逐个提炼 ${transcripts.length} 个视频…`,
+        progress: 5,
+        current: 0,
+        total: transcripts.length,
       });
 
-      const emit = (data: Record<string, unknown>) => {
-        res.write(JSON.stringify(data) + "\n");
+      const extractWorker = async () => {
+        while (extractionCursor < transcripts.length) {
+          const index = extractionCursor++;
+          const item = transcripts[index];
+          const sourceText = item.transcript.slice(0, 6000);
+          emit({
+            stage: "extracting_item",
+            message: `正在提炼第 ${index + 1}/${transcripts.length} 个视频`,
+            progress: 5 + Math.round((extractionCompleted / transcripts.length) * 55),
+            current: extractionCompleted,
+            total: transcripts.length,
+            itemLabel: item.desc,
+          });
+
+          try {
+            const insight = await requestAi(
+              extractionSystemPrompt,
+              `视频描述：${item.desc}\n\n转录文本：\n${sourceText}`,
+              `视频描述：${item.desc}\n\n转录文本摘要：\n${sourceText.slice(0, 3000)}`,
+              1000,
+              () => emit({
+                stage: "retrying",
+                message: `第 ${index + 1} 个视频请求较慢，正在用精简内容重试`,
+                progress: 5 + Math.round((extractionCompleted / transcripts.length) * 55),
+                current: extractionCompleted,
+                total: transcripts.length,
+                itemLabel: item.desc,
+              }),
+            );
+            if (!insight.trim()) {
+              throw new Error("AI 没有返回有效提炼内容");
+            }
+            extractedInsights[index] = { desc: item.desc, transcript: insight.trim() };
+          } catch (error) {
+            extractionFailed += 1;
+            emit({
+              stage: "item_failed",
+              message: `第 ${index + 1} 个视频提炼失败：${getSkillErrorMessage(error)}`,
+              progress: 5 + Math.round(((extractionCompleted + 1) / transcripts.length) * 55),
+              current: extractionCompleted + 1,
+              total: transcripts.length,
+              itemLabel: item.desc,
+            });
+          }
+
+          extractionCompleted += 1;
+          emit({
+            stage: "item_done",
+            message: `已完成 ${extractionCompleted}/${transcripts.length} 个视频提炼`,
+            progress: 5 + Math.round((extractionCompleted / transcripts.length) * 55),
+            current: extractionCompleted,
+            total: transcripts.length,
+            itemLabel: item.desc,
+          });
+        }
       };
 
-      const done = (data: Record<string, unknown>) => {
-        res.write(JSON.stringify(data) + "\n");
-        res.end();
-      };
+      await Promise.all(Array.from({ length: extractionConcurrency }, () => extractWorker()));
+      const successfulInsights = extractedInsights.filter(Boolean);
+      if (successfulInsights.length === 0) {
+        done({
+          stage: "error",
+          success: false,
+          progress: 100,
+          error: "所有视频提炼都失败，未生成 Skill。请检查 AI 中转服务后重试。",
+        });
+        return;
+      }
+      const skillContext = buildSkillContext(successfulInsights);
+      const compactSkillContext = buildSkillContext(successfulInsights, 6000);
 
-      // ─── 阶段 1：AI 分析转录内容，决定产物类型 ──────────────────────
+      // ─── 阶段 2：汇总每个视频的提炼结果，决定产物类型 ────────────────
 
-      emit({ stage: "analyze", message: "正在分析转录内容，判断产物类型…", progress: 0 });
+      emit({
+        stage: "analyze",
+        message: extractionFailed > 0
+          ? `正在汇总 ${successfulInsights.length} 个成功结果（${extractionFailed} 个视频提炼失败）…`
+          : "正在汇总视频提炼结果，判断产物类型…",
+        progress: 62,
+      });
 
       const stage1SystemPrompt = `你是 Skill 设计专家。分析以下视频转录文本，判断适合生成哪些知识增强产物。
 
@@ -907,17 +1063,17 @@ ${focusInstruction}`;
       };
 
       try {
-        const stage1Completion = await client.chat.completions.create({
-          model,
-          messages: [
-            { role: "system", content: stage1SystemPrompt },
-            { role: "user", content: `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n${aggregatedText.slice(0, 8000)}` },
-          ],
-          max_tokens: 1000,
-          temperature: 0.3,
-        });
-
-        const rawJson = (stage1Completion.choices[0]?.message?.content || "").trim();
+        const rawJson = (await requestAi(
+          stage1SystemPrompt,
+          `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n${skillContext}`,
+          `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n${compactSkillContext}`,
+          1000,
+          () => emit({
+            stage: "retrying",
+            message: "汇总请求较慢，正在用精简知识重试",
+            progress: 62,
+          }),
+        )).trim();
         const jsonMatch = rawJson.match(/\{[\s\S]*\}/);
         if (!jsonMatch) throw new Error("阶段 1 返回格式异常");
         stage1Result = JSON.parse(jsonMatch[0]);
@@ -929,13 +1085,18 @@ ${focusInstruction}`;
         emit({
           stage: "planned",
           message: `分析完成，将生成 ${totalTasks} 项产物`,
-          progress: 5,
+          progress: 65,
           totalTasks,
           generates: stage1Result.generates,
           templates: stage1Result.templates,
         });
       } catch (err: any) {
-        done({ error: `Skill 分析阶段失败：${err.message}` });
+        done({
+          stage: "error",
+          success: false,
+          progress: 100,
+          error: `Skill 分析阶段失败：${getSkillErrorMessage(err)}`
+        });
         return;
       }
 
@@ -1000,8 +1161,8 @@ description: "${stage1Result.description}"
 已分析产物框架：
 ${JSON.stringify(stage1Result, null, 2)}
 
-原始转录文本：
-${aggregatedText}`,
+原始转录文本（已按视频均衡压缩，完整原文保存在本地 references/source.md）：
+${skillContext}`,
           outputFile: "SKILL.md",
         },
         // Knowledge base
@@ -1029,7 +1190,7 @@ ${aggregatedText}`,
 - **怎么做**：步骤 1/2/3
 - **预期效果**：做对了会怎样
 - **常见错误**：做错了会怎样`,
-          userPrompt: `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n请提取所有术语和方法论：\n\n${aggregatedText}`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n请提取所有术语和方法论：\n\n${skillContext}`,
           outputFile: "references/knowledge-base.md",
         },
         // Case library
@@ -1048,7 +1209,7 @@ ${aggregatedText}`,
 - **结果**：最终怎样
 - **可复用教训**：3-5 条可迁移的行动指南
 - **适用条件**：什么情况下这个教训有效`,
-          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有案例：\n\n${aggregatedText}`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有案例：\n\n${skillContext}`,
           outputFile: "references/case-library.md",
         },
         // Quotes collection
@@ -1071,7 +1232,7 @@ ${aggregatedText}`,
 - **核心论点**：用一段话概括
 - **支撑论据**：原文中怎么论证的
 - **反方观点**：原文是否提到了反对意见`,
-          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有金句和核心观点：\n\n${aggregatedText}`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有金句和核心观点：\n\n${skillContext}`,
           outputFile: "references/quotes-collection.md",
         },
         // Checklist
@@ -1099,7 +1260,7 @@ ${aggregatedText}`,
 
 ## 常见踩坑清单
 - ❌ 错误做法 → 后果 → ✅ 正确做法`,
-          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有检查清单和流程：\n\n${aggregatedText}`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有检查清单和流程：\n\n${skillContext}`,
           outputFile: "assets/checklist.md",
         },
         // Decision framework
@@ -1125,7 +1286,7 @@ ${aggregatedText}`,
 
 ### 每个分支的详细说明
 ### 常见误判与修正`,
-          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有决策框架：\n\n${aggregatedText}`,
+          userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请提取所有决策框架：\n\n${skillContext}`,
           outputFile: "assets/decision-framework.md",
         },
         // Eval cases — 始终生成
@@ -1143,7 +1304,7 @@ ${aggregatedText}`,
 - **预期行为**：Claude 应该做什么
 - **成功标准**：怎么判断 Skill 被正确激活并执行了
 - **可能失败模式**：Claude 可能走偏的路径`,
-          userPrompt: `Skill 名称：${skillName}\nSkill 描述：${stage1Result.description}\nSkill 类型：${stage1Result.skillType}\n\n转录来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n请设计 5-8 个验收测试用例。\n\n参考转录：\n${aggregatedText.slice(0, 4000)}`,
+          userPrompt: `Skill 名称：${skillName}\nSkill 描述：${stage1Result.description}\nSkill 类型：${stage1Result.skillType}\n\n转录来源：抖音合集「${collection.nickname}」，共 ${transcripts.length} 个视频。\n\n请设计 5-8 个验收测试用例。\n\n参考提炼结果：\n${skillContext}`,
           outputFile: "evals/test-cases.md",
         },
       ];
@@ -1177,30 +1338,31 @@ ${tpl.topic}
 （填入一个模拟例子展示模板如何使用）
 
 要求：模板必须可以直接使用，占位符用【xxx】标记。`,
-            userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请根据以下内容创建「${tpl.name}」模板：\n\n${aggregatedText.slice(0, 6000)}`,
+            userPrompt: `来源：抖音合集「${collection.nickname}」。\n\n请根据以下提炼结果创建「${tpl.name}」模板：\n\n${skillContext}`,
             outputFile: `assets/templates/${safeName}.md`,
           });
         }
       }
 
-      // 阶段 2：实际需要运行的任务
+      // 阶段 3：实际需要运行的任务
       const activeTasks = tasks.filter((t) => t.shouldRun);
 
       emit({
         stage: "generating",
         message: `开始生成产物（共 ${activeTasks.length} 项）…`,
-        progress: 10,
+        progress: 65,
         current: 0,
         total: activeTasks.length,
       });
 
-      // 阶段 2：逐个串行执行（避免对 API 代理造成压力，也更稳定）
+      // 阶段 3：逐个串行执行（避免对 API 代理造成压力，也更稳定）
       let completed = 0;
+      const failed: string[] = [];
       for (const task of activeTasks) {
         emit({
           stage: "generating_item",
           message: `正在生成：${task.label}`,
-          progress: 10 + Math.round((completed / activeTasks.length) * 80),
+          progress: 65 + Math.round((completed / activeTasks.length) * 34),
           current: completed,
           total: activeTasks.length,
           itemId: task.id,
@@ -1208,24 +1370,41 @@ ${tpl.topic}
         });
 
         try {
-          const completion = await client.chat.completions.create({
-            model,
-            messages: [
-              { role: "system", content: task.systemPrompt },
-              { role: "user", content: task.userPrompt },
-            ],
-            max_tokens: task.id === "enhanced_skill_md" ? 8000 : 4000,
-            temperature: 0.7,
-          });
-
-          const content = completion.choices[0]?.message?.content || "";
+          const maxTokens = task.id === "enhanced_skill_md"
+            ? 5000
+            : task.id.startsWith("template_") ? 2200 : 2600;
+          const content = await requestAi(
+            task.systemPrompt,
+            task.userPrompt,
+            task.userPrompt.replace(skillContext, compactSkillContext),
+            maxTokens,
+            () => emit({
+              stage: "retrying",
+              message: `${task.label} 请求较慢，正在用精简知识重试`,
+              progress: 65 + Math.round((completed / activeTasks.length) * 34),
+              current: completed,
+              total: activeTasks.length,
+              itemId: task.id,
+              itemLabel: task.label,
+            }),
+          );
           if (content.trim()) {
             await writeFile(task.outputFile, content.trim());
             generated.push(task.id);
             emit({
               stage: "item_done",
               message: `${task.label} — 完成`,
-              progress: 10 + Math.round(((completed + 1) / activeTasks.length) * 80),
+              progress: 65 + Math.round(((completed + 1) / activeTasks.length) * 34),
+              current: completed + 1,
+              total: activeTasks.length,
+              itemId: task.id,
+            });
+          } else {
+            failed.push(task.label);
+            emit({
+              stage: "item_failed",
+              message: `${task.label} — AI 未返回内容`,
+              progress: 65 + Math.round(((completed + 1) / activeTasks.length) * 34),
               current: completed + 1,
               total: activeTasks.length,
               itemId: task.id,
@@ -1233,10 +1412,11 @@ ${tpl.topic}
           }
         } catch (err: any) {
           console.warn(`[generate-skill] 产物 "${task.id}" 生成失败:`, err.message);
+          failed.push(task.label);
           emit({
             stage: "item_failed",
-            message: `${task.label} — 失败：${err.message}`,
-            progress: 10 + Math.round(((completed + 1) / activeTasks.length) * 80),
+            message: `${task.label} — 失败：${getSkillErrorMessage(err)}`,
+            progress: 65 + Math.round(((completed + 1) / activeTasks.length) * 34),
             current: completed + 1,
             total: activeTasks.length,
             itemId: task.id,
@@ -1292,24 +1472,34 @@ ${tpl.topic}
         generatedLabels.push(`${templateCount} 个模板`);
       }
 
+      if (generated.length === 0) {
+        done({
+          stage: "error",
+          success: false,
+          progress: 100,
+          error: `所有 Skill 产物生成失败：${failed.join("、") || "未知错误"}`,
+        });
+        return;
+      }
+
       done({
         stage: "done",
         success: true,
         progress: 100,
         skillName,
         skillPath: skillsDir,
-        message: `已生成 ${generatedLabels.length} 项产物`,
+        message: `已生成 ${generatedLabels.length} 项产物${failed.length ? `，${failed.length} 项失败` : ""}`,
         generated: generatedLabels,
         allGenerated: generated,
         skillType: stage1Result.skillType,
+        failed,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "generate skill failed";
-      // 如果还没开始写 response header（非流式模式），直接返回 JSON 错误
-      if (!res.headersSent) {
+      const message = getSkillErrorMessage(error);
+      if (!streamStarted && !res.headersSent) {
         res.status(500).json({ message });
-      } else {
-        res.write(JSON.stringify({ error: message }) + "\n");
+      } else if (!res.writableEnded) {
+        res.write(JSON.stringify({ stage: "error", success: false, progress: 100, error: message }) + "\n");
         res.end();
       }
     }

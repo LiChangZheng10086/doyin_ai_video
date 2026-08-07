@@ -324,7 +324,11 @@ function JobOverviewTable({
             className="grid w-full grid-cols-1 gap-4 px-4 py-4 text-left transition-all hover:bg-tech-bg lg:grid-cols-[minmax(260px,1.6fr)_minmax(150px,0.9fr)_minmax(130px,0.7fr)_minmax(160px,0.9fr)_112px] lg:items-center"
           >
             <div className="flex min-w-0 items-center gap-4">
-              <PreviewCover title={job.preview.coverTitle || job.preview.displayTitle} compact />
+              <PreviewCover
+                title={job.preview.coverTitle || job.preview.displayTitle}
+                imageUrl={job.preview.coverUrl}
+                compact
+              />
               <div className="min-w-0">
                 <h3 className="line-clamp-1 font-semibold text-tech-text">{job.preview.displayTitle}</h3>
                 <p className="mt-1 line-clamp-1 text-sm text-tech-muted">
@@ -386,7 +390,7 @@ function JobOverviewCard({
       onClick={() => onOpen(job.id)}
       className="cursor-pointer overflow-hidden rounded-lg border border-tech-border bg-tech-surface transition-all hover:border-tech-blue hover:shadow-lg"
     >
-      <PreviewCover title={job.preview.coverTitle || job.preview.displayTitle} />
+      <PreviewCover title={job.preview.coverTitle || job.preview.displayTitle} imageUrl={job.preview.coverUrl} />
       <div className="p-4">
         <div className="mb-3 flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -431,14 +435,28 @@ function JobOverviewCard({
   );
 }
 
-function PreviewCover({ title, compact = false }: { title: string; compact?: boolean }) {
+function PreviewCover({ title, imageUrl, compact = false }: { title: string; imageUrl?: string; compact?: boolean }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  useEffect(() => setImageFailed(false), [imageUrl]);
+  const showImage = Boolean(imageUrl) && !imageFailed;
+
   return (
     <div
       className={`shrink-0 overflow-hidden rounded-lg bg-gradient-to-br from-tech-blue via-tech-purple to-tech-purple-dark text-white ${
-        compact ? 'h-14 w-24' : 'flex aspect-video w-full items-end'
+        compact ? 'relative h-14 w-24' : 'relative flex aspect-video w-full items-end'
       }`}
     >
-      <div className={`${compact ? 'flex h-full items-center p-2' : 'w-full p-4'}`}>
+      {showImage && (
+        <img
+          src={imageUrl}
+          alt=""
+          className="absolute inset-0 h-full w-full object-cover"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setImageFailed(true)}
+        />
+      )}
+      <div className={`relative z-10 ${showImage ? 'bg-gradient-to-t from-black/75 via-black/20 to-transparent' : ''} ${compact ? 'flex h-full w-full items-center p-2' : 'w-full p-4'}`}>
         <div className="flex items-center gap-2">
           <Video size={compact ? 14 : 18} className="shrink-0 opacity-90" />
           <p className={`line-clamp-2 font-semibold leading-tight ${compact ? 'text-xs' : 'text-lg'}`}>

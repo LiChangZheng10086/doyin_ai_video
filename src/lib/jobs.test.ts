@@ -11,6 +11,51 @@ import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import { LocalStorage } from "./storage.js";
 import type { ScriptAsset } from "../types.js";
 
+test("JobStore overview restores cover URLs for legacy collection jobs", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-cover-overview-"));
+  const storage = new LocalStorage(storageRoot);
+  const jobs = new JobStore(
+    storage,
+    { async clean(input) { return input.draft; } },
+    {} as MediaService,
+    {} as AsrService
+  );
+  await jobs.init();
+
+  await storage.writeJson("cache/jobs-index.json", {
+    legacy: {
+      id: "legacy",
+      sourceUrl: "https://www.douyin.com/video/7665199025906320357",
+      topic: "合集视频",
+      status: "queued",
+      stage: "submitted",
+      workflowMode: "manual",
+      steps: {
+        transcribe: { status: "pending", attempts: 0 },
+        clean: { status: "pending", attempts: 0 },
+        generate_video_prompts: { status: "pending", attempts: 0 },
+        generate_video: { status: "pending", attempts: 0 }
+      },
+      storagePath: "processed/scripts/legacy.json",
+      createdAt: "2026-07-10T00:00:00.000Z",
+      updatedAt: "2026-07-10T00:00:00.000Z"
+    }
+  });
+  await storage.writeJson("cache/collections-index.json", {
+    collection: {
+      crawlResult: {
+        items: [{
+          awemeId: "7665199025906320357",
+          coverUrl: "https://cdn.example.com/cover.jpg"
+        }]
+      }
+    }
+  });
+
+  const [overview] = await jobs.listOverview();
+  assert.equal(overview?.preview.coverUrl, "https://cdn.example.com/cover.jpg");
+});
+
 test("JobStore re-extracts old mp3 audio before bundled Whisper transcription", async () => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-old-mp3-"));
   const storage = new LocalStorage(storageRoot);
