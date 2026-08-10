@@ -1,6 +1,54 @@
 import axios, { AxiosInstance } from 'axios';
-import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput, CollectionOverview, CrawlUserPageResult, CollectionTranscriptsResponse, GenerateSkillResponse, LocalSessionResponse, LocalUserResponse, LocalUsersResponse, LocalUserSessionResponse, LocalUserRole } from '../types';
+import type {
+  ApiResponse,
+  CleanedScript,
+  CollectionOverview,
+  CollectionTranscriptsResponse,
+  ConfirmedPublishingAction,
+  CreatePublishingPackageInput,
+  CreatePublishingVersionInput,
+  CrawlUserPageResult,
+  DeliveryPackage,
+  DueNotification,
+  GenerateSkillResponse,
+  HyperframesVideoOutput,
+  Job,
+  JobOverview,
+  LocalSessionResponse,
+  LocalUserResponse,
+  LocalUsersResponse,
+  LocalUserSessionResponse,
+  LocalUserRole,
+  ParsedApiError,
+  PipelineStep,
+  PublishPlatform,
+  PublishingActionErrorType,
+  PublishingListFilters,
+  PublishingPackageDetail,
+  PublishingPreview,
+  PublishTask,
+  RawTranscript,
+  RestoredPublishingPackage,
+  UpdatePublishingContentInput,
+} from '../types';
 import { parseSkillProgressLine, type SkillProgressEvent } from '../utils/skill-progress';
+
+export function parseApiError(error: unknown): ParsedApiError {
+  const response = (error as {
+    response?: { status?: unknown; data?: { code?: unknown; message?: unknown; details?: unknown } };
+  })?.response;
+  const fallbackMessage = error instanceof Error && error.message.trim()
+    ? error.message
+    : '请求失败，请稍后重试';
+  return {
+    code: typeof response?.data?.code === 'string' ? response.data.code : 'request_failed',
+    message: typeof response?.data?.message === 'string' && response.data.message.trim()
+      ? response.data.message
+      : fallbackMessage,
+    ...(response?.data?.details === undefined ? {} : { details: response.data.details }),
+    ...(typeof response?.status === 'number' ? { status: response.status } : {}),
+  };
+}
 
 class ApiClient {
   private client: AxiosInstance | null = null;
@@ -84,6 +132,171 @@ class ApiClient {
   async resetLocalUserPin(id: string, pin: string): Promise<void> {
     const client = await this.getClient();
     await client.post(`/api/local-users/${id}/reset-pin`, { pin });
+  }
+
+  async previewPublishing(id: string, platforms: PublishPlatform[]): Promise<PublishingPreview> {
+    const client = await this.getClient();
+    const response = await client.post<{ preview: PublishingPreview }>(
+      `/api/jobs/${id}/publishing/preview`,
+      { platforms },
+    );
+    return response.data.preview;
+  }
+
+  async createPublishingPackage(
+    input: CreatePublishingPackageInput,
+  ): Promise<PublishingPackageDetail> {
+    const client = await this.getClient();
+    const response = await client.post<{ package: PublishingPackageDetail }>(
+      '/api/publishing/packages',
+      input,
+    );
+    return response.data.package;
+  }
+
+  async listPublishingPackages(
+    filters: PublishingListFilters = {},
+  ): Promise<PublishingPackageDetail[]> {
+    const client = await this.getClient();
+    const response = await client.get<{ packages: PublishingPackageDetail[] }>(
+      '/api/publishing/packages',
+      { params: filters },
+    );
+    return response.data.packages;
+  }
+
+  async getPublishingPackage(id: string): Promise<PublishingPackageDetail> {
+    const client = await this.getClient();
+    const response = await client.get<{ package: PublishingPackageDetail }>(
+      `/api/publishing/packages/${id}`,
+    );
+    return response.data.package;
+  }
+
+  async checkPublishingDue(): Promise<{ notifications: DueNotification[] }> {
+    const client = await this.getClient();
+    const response = await client.post<{ notifications: DueNotification[] }>(
+      '/api/publishing/due/check',
+      {},
+    );
+    return response.data;
+  }
+
+  async createPublishingVersion(
+    packageId: string,
+    input: CreatePublishingVersionInput,
+  ): Promise<PublishingPackageDetail> {
+    const client = await this.getClient();
+    const response = await client.post<{ package: PublishingPackageDetail }>(
+      `/api/publishing/packages/${packageId}/versions`,
+      input,
+    );
+    return response.data.package;
+  }
+
+  async updatePublishingContent(
+    taskId: string,
+    input: UpdatePublishingContentInput,
+  ): Promise<PublishTask> {
+    const client = await this.getClient();
+    const response = await client.patch<{ task: PublishTask }>(
+      `/api/publishing/tasks/${taskId}/content`,
+      input,
+    );
+    return response.data.task;
+  }
+
+  async updatePublishingSchedule(taskId: string, scheduledAt: string | null): Promise<PublishTask> {
+    const client = await this.getClient();
+    const response = await client.patch<{ task: PublishTask }>(
+      `/api/publishing/tasks/${taskId}/schedule`,
+      { scheduledAt },
+    );
+    return response.data.task;
+  }
+
+  async cancelPublishingTask(
+    taskId: string,
+    input: ConfirmedPublishingAction,
+  ): Promise<PublishTask> {
+    const client = await this.getClient();
+    const response = await client.post<{ task: PublishTask }>(
+      `/api/publishing/tasks/${taskId}/cancel`,
+      input,
+    );
+    return response.data.task;
+  }
+
+  async restorePublishingTask(taskId: string, scheduledAt: string | null): Promise<PublishTask> {
+    const client = await this.getClient();
+    const response = await client.post<{ task: PublishTask }>(
+      `/api/publishing/tasks/${taskId}/restore`,
+      { scheduledAt },
+    );
+    return response.data.task;
+  }
+
+  async markPublishingTaskPublished(
+    taskId: string,
+    input: ConfirmedPublishingAction,
+  ): Promise<PublishTask> {
+    const client = await this.getClient();
+    const response = await client.post<{ task: PublishTask }>(
+      `/api/publishing/tasks/${taskId}/mark-published`,
+      input,
+    );
+    return response.data.task;
+  }
+
+  async withdrawPublishingTask(
+    taskId: string,
+    input: ConfirmedPublishingAction & { reason: string },
+  ): Promise<PublishTask> {
+    const client = await this.getClient();
+    const response = await client.post<{ task: PublishTask }>(
+      `/api/publishing/tasks/${taskId}/withdraw`,
+      input,
+    );
+    return response.data.task;
+  }
+
+  async recordPublishingFailure(taskId: string, reason: string): Promise<PublishTask> {
+    const client = await this.getClient();
+    const response = await client.post<{ task: PublishTask }>(
+      `/api/publishing/tasks/${taskId}/record-failure`,
+      { reason },
+    );
+    return response.data.task;
+  }
+
+  async recordPublishingActionError(
+    taskId: string,
+    action: PublishingActionErrorType,
+    message: string,
+  ): Promise<void> {
+    const client = await this.getClient();
+    await client.post(`/api/publishing/tasks/${taskId}/action-error`, { action, message });
+  }
+
+  async trashPublishingPackage(
+    packageId: string,
+    input: ConfirmedPublishingAction,
+  ): Promise<DeliveryPackage> {
+    const client = await this.getClient();
+    const response = await client.delete<{ package: DeliveryPackage }>(
+      `/api/publishing/packages/${packageId}`,
+      { data: input },
+    );
+    return response.data.package;
+  }
+
+  async restorePublishingPackage(packageId: string): Promise<RestoredPublishingPackage> {
+    const client = await this.getClient();
+    const response = await client.post<RestoredPublishingPackage>(
+      `/api/publishing/packages/${packageId}/restore`,
+      {},
+    );
+    return response.data;
   }
 
   // 通用 GET 请求

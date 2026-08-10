@@ -17,11 +17,51 @@ declare global {
       testApiKey: (key: any) => Promise<any>;
       retestApiKey: (id: string) => Promise<any>;
       getAppPaths: () => Promise<any>;
+      openExternal?: (url: string) => Promise<void>;
+      showItemInFolder?: (path: string) => Promise<void>;
+      showNotification?: (title: string, body: string) => Promise<void>;
     };
   }
 }
 
-if (!(window as any).electron) {
+const browserWindow = typeof window === 'undefined' ? undefined : window;
+const injectedElectron = browserWindow?.electron;
+
+export type DesktopCapabilities = {
+  openExternal: boolean;
+  showItemInFolder: boolean;
+  showNotification: boolean;
+};
+
+export type DesktopActionResult = { available: true } | { available: false };
+
+export const desktop = {
+  capabilities: {
+    openExternal: typeof injectedElectron?.openExternal === 'function',
+    showItemInFolder: typeof injectedElectron?.showItemInFolder === 'function',
+    showNotification: typeof injectedElectron?.showNotification === 'function',
+  } satisfies DesktopCapabilities,
+
+  async openExternal(url: string): Promise<DesktopActionResult> {
+    if (!injectedElectron?.openExternal) return { available: false };
+    await injectedElectron.openExternal(url);
+    return { available: true };
+  },
+
+  async showItemInFolder(path: string): Promise<DesktopActionResult> {
+    if (!injectedElectron?.showItemInFolder) return { available: false };
+    await injectedElectron.showItemInFolder(path);
+    return { available: true };
+  },
+
+  async showNotification(title: string, body: string): Promise<DesktopActionResult> {
+    if (!injectedElectron?.showNotification) return { available: false };
+    await injectedElectron.showNotification(title, body);
+    return { available: true };
+  },
+};
+
+if (browserWindow && !browserWindow.electron) {
   const API_BASE = '';
 
   async function apiFetch<T = any>(url: string, init?: RequestInit): Promise<T> {
@@ -30,7 +70,7 @@ if (!(window as any).electron) {
     return res.json();
   }
 
-  (window as any).electron = {
+  (browserWindow as any).electron = {
     getServerPort: async () => 5173,
 
     getConfig: async () => {

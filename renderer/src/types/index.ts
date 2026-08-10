@@ -147,6 +147,34 @@ export interface CreatePublishingPackageInput {
   }>;
 }
 
+export interface CreatePublishingVersionPlatformInput {
+  platform: PublishPlatform;
+  copy?: PlatformCopy;
+  copySource?: PublishCopySource;
+  scheduledAt?: string | null;
+}
+
+export interface CreatePublishingVersionInput {
+  title?: string;
+  platforms?: PublishPlatform[] | CreatePublishingVersionPlatformInput[];
+  schedules?: Partial<Record<PublishPlatform, string | null>>;
+}
+
+export interface UpdatePublishingContentInput extends PlatformCopy {
+  expectedRevision: number;
+}
+
+export type PublishingActionErrorType = 'open_platform' | 'show_in_finder';
+
+export interface ConfirmedPublishingAction {
+  confirmation: true;
+}
+
+export interface RestoredPublishingPackage {
+  package: DeliveryPackage;
+  notifications: DueNotification[];
+}
+
 export interface PublishingListFilters {
   status?: PublishingListStatus;
   platform?: PublishPlatform;
@@ -160,6 +188,10 @@ export interface PublishingErrorBody {
   code: string;
   message: string;
   details?: unknown;
+}
+
+export interface ParsedApiError extends PublishingErrorBody {
+  status?: number;
 }
 
 export interface LocalUsersResponse {
