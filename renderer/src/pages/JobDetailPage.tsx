@@ -11,6 +11,7 @@ import {
   Mic,
   Play,
   RotateCcw,
+  Send,
   Sparkles,
   Trash2,
   Video,
@@ -19,8 +20,11 @@ import {
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { CookieHint } from '../components/CookieHint';
+import { CreatePublishPackageDialog } from '../components/CreatePublishPackageDialog';
 import { apiClient } from '../services/api';
+import { useOperatorStore } from '../store/operator';
 import { getCleanArtifactDecision, getCleanArtifactLoadError } from '../utils/jobArtifacts';
+import { isPublishingEligibleVideo } from '../utils/publishing';
 import type {
   Job,
   CleanedScript,
@@ -321,7 +325,12 @@ export function JobDetailPage() {
               <VideoPromptsContent cleaned={cleaned} />
             )}
             {activeOutcome.id === 'video' && (
-              <VideoContentView output={videoOutput} jobId={job.id} videoError={videoError} />
+              <VideoContentView
+                output={videoOutput}
+                jobId={job.id}
+                title={cleaned?.output?.title || job.topic || '未命名作品'}
+                videoError={videoError}
+              />
             )}
           </div>
         </div>
@@ -629,15 +638,20 @@ function ShotCard({ shot }: { shot: ShortVideoShot }) {
 function VideoContentView({
   output,
   jobId,
+  title,
   videoError,
 }: {
   output: HyperframesVideoOutput | null;
   jobId: string;
+  title: string;
   videoError: string | null;
 }) {
+  const currentUser = useOperatorStore((state) => state.currentUser);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [streamError, setStreamError] = useState(false);
+  const [showPublishDialog, setShowPublishDialog] = useState(false);
+  const [publishError, setPublishError] = useState('');
 
   useEffect(() => {
     if (!output) {
@@ -667,6 +681,16 @@ function VideoContentView({
     return <EmptyContent title="视频还没生成" description="完成生成分镜后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。" />;
   }
 
+  const openPublishingDialog = () => {
+    if (!currentUser) {
+      setPublishError('请先在顶部选择操作者');
+      document.getElementById('operator-switcher')?.focus();
+      return;
+    }
+    setPublishError('');
+    setShowPublishDialog(true);
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -674,18 +698,32 @@ function VideoContentView({
           <h3 className="text-lg font-semibold text-tech-text">视频成片</h3>
           <p className="mt-1 text-sm text-tech-muted">HyperFrames 本地渲染的 9:16 无声动效版。</p>
         </div>
-        {videoUrl && (
-          <a
-            href={videoUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
-          >
-            <Download size={17} />
-            下载 MP4
-          </a>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {isPublishingEligibleVideo(output) && (
+            <button
+              type="button"
+              onClick={openPublishingDialog}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-purple px-4 py-2.5 font-medium text-white transition-all hover:opacity-90"
+            >
+              <Send size={17} />
+              加入发布中心
+            </button>
+          )}
+          {videoUrl && (
+            <a
+              href={videoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
+            >
+              <Download size={17} />
+              下载 MP4
+            </a>
+          )}
+        </div>
       </div>
+
+      {publishError && <Notice tone="warning" title="需要选择操作者">{publishError}</Notice>}
 
       {videoError && <Notice tone="warning" title="本次渲染失败，正在显示上一版成片">{videoError}</Notice>}
 
@@ -756,6 +794,15 @@ function VideoContentView({
             ))}
           </div>
         </div>
+      )}
+
+      {showPublishDialog && isPublishingEligibleVideo(output) && (
+        <CreatePublishPackageDialog
+          jobId={jobId}
+          title={title}
+          output={output}
+          onClose={() => setShowPublishDialog(false)}
+        />
       )}
     </div>
   );
