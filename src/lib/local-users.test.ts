@@ -63,6 +63,27 @@ test("bootstrap creates the first admin without persisting plaintext pin", async
   assert.equal("pinHash" in (await store.list())[0], false);
 });
 
+test("created user profiles have unique ids and complete timestamped fields", async () => {
+  const { store } = await adminFixture();
+  const firstPublisher = await store.create(ADMIN, { displayName: "发布者一", role: "publisher" });
+  const secondPublisher = await store.create(ADMIN, { displayName: "发布者二", role: "publisher" });
+  const users = await store.list();
+
+  assert.equal(new Set(users.map((user) => user.id)).size, users.length);
+  assert.notEqual(firstPublisher.id, secondPublisher.id);
+  for (const user of users) {
+    assert.equal(typeof user.id, "string");
+    assert.notEqual(user.id, "");
+    assert.equal(typeof user.displayName, "string");
+    assert.ok(user.role === "admin" || user.role === "publisher");
+    assert.equal(typeof user.isActive, "boolean");
+    assert.match(user.createdAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.match(user.updatedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.equal(new Date(user.createdAt).toISOString(), user.createdAt);
+    assert.equal(new Date(user.updatedAt).toISOString(), user.updatedAt);
+  }
+});
+
 test("rejects invalid pins and a second bootstrap", async () => {
   const { store } = await fixture();
 
@@ -174,7 +195,25 @@ test("concurrent user mutations retain each created user", async () => {
 
 test("recovery leaves publishing data byte-for-byte unchanged", async () => {
   const { store, storage, readPublishingBytes } = await adminFixture();
-  await storage.writeJsonAtomic("cache/publishing-index.json", { schemaVersion: 1, marker: "keep" });
+  const originalActor: ActorSnapshot = {
+    userId: "publisher-original",
+    displayName: "原发布者",
+    role: "publisher",
+  };
+  await storage.writeJsonAtomic("cache/publishing-index.json", {
+    schemaVersion: 1,
+    packages: {
+      "package-1": {
+        id: "package-1",
+        audit: [{
+          id: "audit-1",
+          action: "created",
+          actor: originalActor,
+          createdAt: "2026-08-09T12:00:00.000Z",
+        }],
+      },
+    },
+  });
   const before = await readPublishingBytes();
 
   const admin = await store.recover({ confirmation: "重置本地用户", displayName: "新管理员", pin: "654321" });

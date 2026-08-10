@@ -11,6 +11,22 @@ type JsonResponse = {
   body: Record<string, any>;
 };
 
+async function serveApp(storageRoot: string) {
+  const app = await createExpressApp({ storagePath: storageRoot, rootDir: storageRoot });
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  return {
+    app,
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    async close() {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    },
+  };
+}
+
 async function appFixture(options: { publishingIndex?: unknown } = {}) {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "app-local-users-"));
   if (options.publishingIndex !== undefined) {
@@ -22,21 +38,16 @@ async function appFixture(options: { publishingIndex?: unknown } = {}) {
     );
   }
 
-  const app = await createExpressApp({ storagePath: storageRoot, rootDir: storageRoot });
-  const server = createServer(app);
-  await new Promise<void>((resolve) => server.listen(0, resolve));
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
+  const served = await serveApp(storageRoot);
 
   return {
-    app,
+    ...served,
     storageRoot,
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    async readUserIndexBytes() {
+      return readFile(path.join(storageRoot, "cache", "local-users.json"));
+    },
     async readPublishingBytes() {
       return readFile(path.join(storageRoot, "cache", "publishing-index.json"));
-    },
-    async close() {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     },
   };
 }
@@ -142,16 +153,49 @@ test("local user api bootstraps once and switches publisher/admin sessions", asy
   }
 });
 
+test("rebuilding the app invalidates an old administrator token", async () => {
+  const fixture = await appFixture();
+  let originalClosed = false;
+  let restarted: Awaited<ReturnType<typeof serveApp>> | undefined;
+  try {
+    const boot = await jsonFetch(fixture.baseUrl, "/api/local-users/bootstrap", {
+      method: "POST",
+      body: { displayName: "主管", pin: "123456" },
+    });
+    assert.equal(boot.response.status, 201);
+    const oldToken = boot.body.session.token as string;
+
+    await fixture.close();
+    originalClosed = true;
+    restarted = await serveApp(fixture.storageRoot);
+
+    const current = await jsonFetch(restarted.baseUrl, "/api/local-sessions/current", { token: oldToken });
+    assert.equal(current.response.status, 401);
+    assert.deepEqual(current.body, {
+      code: "local_session_required",
+      message: "请选择当前操作者",
+    });
+  } finally {
+    if (restarted) await restarted.close();
+    else if (!originalClosed) await fixture.close();
+  }
+});
+
 test("publisher cannot manage users and admin can", async () => {
   const fixture = await identityApiFixture();
   try {
+    const before = await fixture.readUserIndexBytes();
     const denied = await jsonFetch(fixture.baseUrl, "/api/local-users", {
       method: "POST",
       token: fixture.publisherToken,
       body: { displayName: "新用户", role: "publisher" },
     });
     assert.equal(denied.response.status, 403);
-    assert.equal(denied.body.code, "local_role_forbidden");
+    assert.deepEqual(denied.body, {
+      code: "local_role_forbidden",
+      message: "当前操作者无权执行此操作",
+    });
+    assert.deepEqual(await fixture.readUserIndexBytes(), before);
 
     const adminSession = await fixture.openAdmin();
     assert.equal(adminSession.response.status, 201);
@@ -161,6 +205,33 @@ test("publisher cannot manage users and admin can", async () => {
       body: { displayName: "新用户", role: "publisher" },
     });
     assert.equal(created.response.status, 201);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("last active administrator demotion returns 409 without changing user bytes", async () => {
+  const fixture = await appFixture();
+  try {
+    const boot = await jsonFetch(fixture.baseUrl, "/api/local-users/bootstrap", {
+      method: "POST",
+      body: { displayName: "唯一管理员", pin: "123456" },
+    });
+    assert.equal(boot.response.status, 201);
+    const before = await fixture.readUserIndexBytes();
+
+    const denied = await jsonFetch(fixture.baseUrl, `/api/local-users/${boot.body.user.id}`, {
+      method: "PATCH",
+      token: boot.body.session.token,
+      body: { role: "publisher" },
+    });
+
+    assert.equal(denied.response.status, 409);
+    assert.deepEqual(denied.body, {
+      code: "local_user_last_admin",
+      message: "至少保留一个启用的管理员",
+    });
+    assert.deepEqual(await fixture.readUserIndexBytes(), before);
   } finally {
     await fixture.close();
   }
@@ -207,7 +278,26 @@ test("user routes enforce the secure role-change contract and session close is i
 });
 
 test("recovery invalidates the old session and preserves publishing bytes", async () => {
-  const fixture = await identityApiFixture({ publishingIndex: { marker: "keep" } });
+  const fixture = await identityApiFixture({
+    publishingIndex: {
+      schemaVersion: 1,
+      packages: {
+        "package-1": {
+          id: "package-1",
+          audit: [{
+            id: "audit-1",
+            action: "created",
+            actor: {
+              userId: "publisher-original",
+              displayName: "原发布者",
+              role: "publisher",
+            },
+            createdAt: "2026-08-09T12:00:00.000Z",
+          }],
+        },
+      },
+    },
+  });
   try {
     const adminSession = await fixture.openAdmin();
     assert.equal(adminSession.response.status, 201);
@@ -236,7 +326,10 @@ test("identity responses never expose pin secrets and CORS allows identity reque
       body: { userId: fixture.admin.id, pin: "000000" },
     });
     assert.equal(invalidPin.response.status, 401);
-    assert.equal(invalidPin.body.code, "local_user_pin_invalid");
+    assert.deepEqual(invalidPin.body, {
+      code: "local_user_pin_invalid",
+      message: "PIN 不正确",
+    });
 
     for (const body of [users.body, current.body, invalidPin.body]) {
       const serialized = JSON.stringify(body);
