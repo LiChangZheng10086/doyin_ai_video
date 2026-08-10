@@ -8,13 +8,53 @@ import { test } from "node:test";
 import { getActor, LocalAuthError, LocalSessionStore, requireActor } from "./local-auth.js";
 import { LocalUserStore } from "./local-users.js";
 import { LocalStorage } from "./storage.js";
-import type { ActorSnapshot } from "../types.js";
+import type { ActorSnapshot, LocalUserView } from "../types.js";
 
 const ADMIN: ActorSnapshot = {
   userId: "admin",
   displayName: "管理员",
   role: "admin",
 };
+
+type Gate = {
+  started: Promise<void>;
+  markStarted: () => void;
+  release: () => void;
+  released: Promise<void>;
+};
+
+class GatedLocalUserStore {
+  private nextGetActiveGate?: Gate;
+
+  constructor(private readonly activeUsers: Map<string, LocalUserView>) {}
+
+  blockNextGetActive(): Gate {
+    let start!: () => void;
+    let release!: () => void;
+    const gate = {
+      started: new Promise<void>((resolve) => { start = resolve; }),
+      markStarted: () => start(),
+      release: () => release(),
+      released: new Promise<void>((resolve) => { release = resolve; }),
+    };
+    this.nextGetActiveGate = gate;
+    return gate;
+  }
+
+  async getActive(id: string): Promise<LocalUserView | null> {
+    const gate = this.nextGetActiveGate;
+    if (gate) {
+      this.nextGetActiveGate = undefined;
+      gate.markStarted();
+      await gate.released;
+    }
+    return this.activeUsers.get(id) ?? null;
+  }
+
+  async verifyPin(): Promise<boolean> {
+    return true;
+  }
+}
 
 async function userFixture() {
   const root = await mkdtemp(path.join(tmpdir(), "local-auth-"));
@@ -29,6 +69,17 @@ async function sessionFixture() {
   const fixture = await userFixture();
   let nextToken = 0;
   return { ...fixture, sessions: new LocalSessionStore(fixture.users, () => `token-${++nextToken}`) };
+}
+
+function publisher(id: string, displayName: string): LocalUserView {
+  return {
+    id,
+    displayName,
+    role: "publisher",
+    isActive: true,
+    createdAt: "2026-08-10T00:00:00.000Z",
+    updatedAt: "2026-08-10T00:00:00.000Z",
+  };
 }
 
 async function authHttpFixture() {
@@ -106,6 +157,43 @@ test("a successful switch invalidates the previous token", async () => {
   assert.equal((await sessions.resolve(publisherSession.token))?.id, publisher.id);
   sessions.close(publisherSession.token);
   assert.equal(await sessions.resolve(publisherSession.token), null);
+});
+
+test("resolve returns null when close invalidates its captured session during user lookup", async () => {
+  const activePublisher = publisher("publisher-1", "发布者一");
+  const users = new GatedLocalUserStore(new Map([[activePublisher.id, activePublisher]]));
+  let nextToken = 0;
+  const sessions = new LocalSessionStore(users as unknown as LocalUserStore, () => `token-${++nextToken}`);
+  const session = await sessions.open({ userId: activePublisher.id });
+  const gate = users.blockNextGetActive();
+  const resolving = sessions.resolve(session.token);
+
+  await gate.started;
+  sessions.close(session.token);
+  gate.release();
+
+  assert.equal(await resolving, null);
+});
+
+test("resolve returns null when a switch invalidates its captured session during user lookup", async () => {
+  const firstPublisher = publisher("publisher-1", "发布者一");
+  const replacementPublisher = publisher("publisher-2", "发布者二");
+  const users = new GatedLocalUserStore(new Map([
+    [firstPublisher.id, firstPublisher],
+    [replacementPublisher.id, replacementPublisher],
+  ]));
+  let nextToken = 0;
+  const sessions = new LocalSessionStore(users as unknown as LocalUserStore, () => `token-${++nextToken}`);
+  const firstSession = await sessions.open({ userId: firstPublisher.id });
+  const gate = users.blockNextGetActive();
+  const resolving = sessions.resolve(firstSession.token);
+
+  await gate.started;
+  const replacementSession = await sessions.open({ userId: replacementPublisher.id });
+  gate.release();
+
+  assert.equal(await resolving, null);
+  assert.equal((await sessions.resolve(replacementSession.token))?.id, replacementPublisher.id);
 });
 
 test("clearAll invalidates the one current session", async () => {

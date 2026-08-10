@@ -55,6 +55,7 @@ export class LocalSessionStore {
     if (!session) return null;
 
     const user = await this.users.getActive(session.userId);
+    if (this.sessions.get(token) !== session) return null;
     if (!user) this.sessions.delete(token);
     return user;
   }
