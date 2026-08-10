@@ -396,6 +396,7 @@ POST   /api/publishing/packages/:id/restore
 ```
 
 - `preview` 做资格检查和 AI/回退文案预览，不写正式包或平台任务。
+- `preview` 返回 `previewRevision`，它是源任务 ID、规范 MP4 路径/大小/修改时间、cleaned 产物修改时间和所选平台的 SHA-256；正式创建必须提交该值并在资产操作前重新计算，不一致返回 409 `publish_revision_conflict`。
 - `due/check` 不要求用户会话，只允许使用固定系统身份执行 `scheduled -> ready`、设置 `dueNotifiedAt` 并返回本次通知项；它不能执行其他迁移。
 - `action-error` 只接受 `open_platform` 或 `show_in_finder` 动作及安全错误摘要，追加审计但不得改变平台任务状态。
 - 创建正式包时再次验证源 MP4、平台、文案、排期和客户端 revision，不能信任旧预览。
