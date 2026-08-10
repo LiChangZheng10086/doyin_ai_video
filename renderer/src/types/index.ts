@@ -1,6 +1,37 @@
 // 任务状态
 export type JobStatus = 'queued' | 'processing' | 'done' | 'failed';
 
+export type LocalUserRole = 'admin' | 'publisher';
+
+export interface LocalUser {
+  id: string;
+  displayName: string;
+  role: LocalUserRole;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LocalSession {
+  token: string;
+  user: LocalUser;
+}
+
+export interface LocalUsersResponse {
+  users: LocalUser[];
+  needsBootstrap: boolean;
+}
+
+export interface LocalUserResponse {
+  user: LocalUser;
+}
+
+export interface LocalSessionResponse {
+  session: LocalSession;
+}
+
+export interface LocalUserSessionResponse extends LocalUserResponse, LocalSessionResponse {}
+
 // 任务阶段
 export type JobStage =
   | 'submitted'

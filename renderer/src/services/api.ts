@@ -1,10 +1,11 @@
 import axios, { AxiosInstance } from 'axios';
-import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput, CollectionOverview, CrawlUserPageResult, CollectionTranscriptsResponse, GenerateSkillResponse } from '../types';
+import type { Job, ApiResponse, CleanedScript, RawTranscript, PipelineStep, JobOverview, HyperframesVideoOutput, CollectionOverview, CrawlUserPageResult, CollectionTranscriptsResponse, GenerateSkillResponse, LocalSessionResponse, LocalUserResponse, LocalUsersResponse, LocalUserSessionResponse, LocalUserRole } from '../types';
 import { parseSkillProgressLine, type SkillProgressEvent } from '../utils/skill-progress';
 
 class ApiClient {
   private client: AxiosInstance | null = null;
   private serverPort: number | null = null;
+  private localSessionToken: string | null = null;
 
   async initialize() {
     if (!this.serverPort) {
@@ -18,6 +19,12 @@ class ApiClient {
         baseURL: `http://localhost:${this.serverPort}`,
         timeout: 960000,
       });
+      this.client.interceptors.request.use((request) => {
+        if (this.localSessionToken) {
+          request.headers.set('X-Local-Session', this.localSessionToken);
+        }
+        return request;
+      });
     }
     return this.client!;
   }
@@ -27,6 +34,56 @@ class ApiClient {
       await this.initialize();
     }
     return this.client!;
+  }
+
+  setLocalSession(token: string | null): void {
+    this.localSessionToken = token;
+  }
+
+  async getLocalUsers(): Promise<LocalUsersResponse> {
+    const client = await this.getClient();
+    const response = await client.get<LocalUsersResponse>('/api/local-users');
+    return response.data;
+  }
+
+  async bootstrapLocalAdmin(displayName: string, pin: string): Promise<LocalUserSessionResponse> {
+    const client = await this.getClient();
+    const response = await client.post<LocalUserSessionResponse>('/api/local-users/bootstrap', { displayName, pin });
+    return response.data;
+  }
+
+  async recoverLocalIdentity(confirmation: string, displayName: string, pin: string): Promise<LocalUserSessionResponse> {
+    const client = await this.getClient();
+    const response = await client.post<LocalUserSessionResponse>('/api/local-users/recover', { confirmation, displayName, pin });
+    return response.data;
+  }
+
+  async openLocalSession(userId: string, pin?: string): Promise<LocalSessionResponse> {
+    const client = await this.getClient();
+    const response = await client.post<LocalSessionResponse>('/api/local-sessions', { userId, ...(pin === undefined ? {} : { pin }) });
+    return response.data;
+  }
+
+  async closeLocalSession(): Promise<void> {
+    const client = await this.getClient();
+    await client.delete('/api/local-sessions/current');
+  }
+
+  async createLocalUser(input: { displayName: string; role: LocalUserRole; pin?: string }): Promise<LocalUserResponse> {
+    const client = await this.getClient();
+    const response = await client.post<LocalUserResponse>('/api/local-users', input);
+    return response.data;
+  }
+
+  async updateLocalUser(id: string, input: { displayName?: string; role?: LocalUserRole; isActive?: boolean; pin?: string }): Promise<LocalUserResponse> {
+    const client = await this.getClient();
+    const response = await client.patch<LocalUserResponse>(`/api/local-users/${id}`, input);
+    return response.data;
+  }
+
+  async resetLocalUserPin(id: string, pin: string): Promise<void> {
+    const client = await this.getClient();
+    await client.post(`/api/local-users/${id}/reset-pin`, { pin });
   }
 
   // 通用 GET 请求
