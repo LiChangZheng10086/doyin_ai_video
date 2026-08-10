@@ -7,7 +7,7 @@ import { OpenAiScriptCleaner, RuntimeScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
 import { LocalSessionStore } from "./lib/local-auth.js";
-import { registerLocalUserRoutes } from "./lib/local-user-routes.js";
+import { registerLocalUserErrorBoundary, registerLocalUserRoutes } from "./lib/local-user-routes.js";
 import { LocalUserStore } from "./lib/local-users.js";
 import { JobStepError, JobStore } from "./lib/jobs.js";
 import { CollectionStore } from "./lib/collections.js";
@@ -135,6 +135,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   app.use(express.json({ limit: "2mb" }));
   registerLocalUserRoutes(app, { users: localUsers, sessions: localSessions });
+  registerLocalUserErrorBoundary(app);
 
   // 静态文件（开发环境可能不需要）
   const publicDir = path.join(config.rootDir, "public");

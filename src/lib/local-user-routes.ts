@@ -105,11 +105,18 @@ export function registerLocalUserRoutes(app: Express, deps: LocalUserRouteDeps):
     }
   });
 
-  router.use(identityErrorMapper);
   app.use("/api", router);
 }
 
-function identityErrorMapper(error: unknown, _req: Request, res: Response, next: NextFunction): void {
+export function registerLocalUserErrorBoundary(app: Express): void {
+  app.use(identityErrorMapper);
+}
+
+function identityErrorMapper(error: unknown, req: Request, res: Response, next: NextFunction): void {
+  if (isMalformedIdentityJson(error, req)) {
+    res.status(400).json({ code: "local_user_invalid_json", message: "请求 JSON 格式无效" });
+    return;
+  }
   if (error instanceof LocalAuthError) {
     res.status(error.status).json({ code: error.code, message: error.message });
     return;
@@ -122,7 +129,25 @@ function identityErrorMapper(error: unknown, _req: Request, res: Response, next:
     res.status(400).json({ code: "local_user_invalid_input", message: error.message });
     return;
   }
+  if (isIdentityRequest(req)) {
+    res.status(500).json({ code: "local_user_service_unavailable", message: "本地用户服务暂时不可用" });
+    return;
+  }
   next(error);
+}
+
+function isMalformedIdentityJson(error: unknown, req: Request): boolean {
+  return isIdentityRequest(req)
+    && error instanceof SyntaxError
+    && "status" in error
+    && error.status === 400;
+}
+
+function isIdentityRequest(req: Request): boolean {
+  return req.path === "/api/local-users"
+    || req.path.startsWith("/api/local-users/")
+    || req.path === "/api/local-sessions"
+    || req.path.startsWith("/api/local-sessions/");
 }
 
 function localUserErrorStatus(error: LocalUserError): number {

@@ -254,6 +254,45 @@ test("identity responses never expose pin secrets and CORS allows identity reque
   }
 });
 
+test("identity error boundary returns safe JSON for malformed request bodies", async () => {
+  const fixture = await appFixture();
+  try {
+    const response = await fetch(`${fixture.baseUrl}/api/local-users/bootstrap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: '{"displayName":',
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 400);
+    assert.match(response.headers.get("content-type") ?? "", /application\/json/);
+    const body = JSON.parse(text) as Record<string, unknown>;
+    assert.equal(body.code, "local_user_invalid_json");
+    assert.equal(body.message, "请求 JSON 格式无效");
+    assert.doesNotMatch(text, /SyntaxError|body-parser|<html|stack/i);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("identity error boundary hides local user storage failures", async () => {
+  const fixture = await appFixture();
+  try {
+    await writeFile(path.join(fixture.storageRoot, "cache", "local-users.json"), "{invalid", "utf8");
+    const response = await fetch(`${fixture.baseUrl}/api/local-users`);
+    const text = await response.text();
+
+    assert.equal(response.status, 500);
+    assert.match(response.headers.get("content-type") ?? "", /application\/json/);
+    const body = JSON.parse(text) as Record<string, unknown>;
+    assert.equal(body.code, "local_user_service_unavailable");
+    assert.equal(body.message, "本地用户服务暂时不可用");
+    assert.doesNotMatch(text, /local-users\.json|SyntaxError|<html|stack/i);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("video stream endpoint plays mp4 inline while download stays attachment", async () => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "app-video-stream-"));
   const app = await createExpressApp({ storagePath: storageRoot, rootDir: storageRoot });
