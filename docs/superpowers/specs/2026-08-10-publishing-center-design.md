@@ -390,12 +390,14 @@ POST   /api/publishing/tasks/:id/restore
 POST   /api/publishing/tasks/:id/mark-published
 POST   /api/publishing/tasks/:id/withdraw
 POST   /api/publishing/tasks/:id/record-failure
+POST   /api/publishing/tasks/:id/action-error
 DELETE /api/publishing/packages/:id
 POST   /api/publishing/packages/:id/restore
 ```
 
 - `preview` 做资格检查和 AI/回退文案预览，不写正式包或平台任务。
 - `due/check` 不要求用户会话，只允许使用固定系统身份执行 `scheduled -> ready`、设置 `dueNotifiedAt` 并返回本次通知项；它不能执行其他迁移。
+- `action-error` 只接受 `open_platform` 或 `show_in_finder` 动作及安全错误摘要，追加审计但不得改变平台任务状态。
 - 创建正式包时再次验证源 MP4、平台、文案、排期和客户端 revision，不能信任旧预览。
 - 列表支持状态、平台、源任务、版本、创建者和文本搜索过滤。
 - 400 表示输入校验，401 表示没有有效本地会话，403 表示角色无权，404 表示实体不存在，409 表示状态/revision/版本冲突，422 表示资产不可交付，500 表示本地持久化错误。
