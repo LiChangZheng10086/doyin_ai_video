@@ -61,7 +61,7 @@ function Navigation({ onRequestRecovery }: { onRequestRecovery: () => void }) {
                   <Link
                     key={item.to}
                     to={item.to}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium transition-all inline-flex items-center gap-2 ${
+                    className={`inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-medium transition-all ${
                       active
                         ? 'bg-blue-50 text-tech-blue'
                         : 'text-tech-muted hover:text-tech-text hover:bg-tech-bg'

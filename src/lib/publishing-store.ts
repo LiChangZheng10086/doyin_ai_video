@@ -391,6 +391,13 @@ export class PublishingStore {
         });
       }
       const restoredAt = this.now();
+      if (packageRecord.purgeAt && new Date(packageRecord.purgeAt).getTime() <= restoredAt.getTime()) {
+        throw new PublishingError("publish_invalid_transition", {
+          packageState: packageRecord.state,
+          targetState: "active",
+          reason: "trash_expired",
+        });
+      }
       packageRecord.state = "active";
       delete packageRecord.deletedAt;
       delete packageRecord.purgeAt;

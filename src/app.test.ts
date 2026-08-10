@@ -528,6 +528,35 @@ test("due check is session-free, deduplicates each schedule cycle and records th
   }
 });
 
+test("delivers due notifications recovered during startup exactly once", async () => {
+  const fixture = await publishingApiFixture();
+  const created = await previewAndCreatePackage(fixture);
+  const taskId = created.tasks[0].id as string;
+  const scheduledAt = new Date(Date.now() + 50).toISOString();
+  const scheduled = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/schedule`, {
+    method: "PATCH",
+    token: fixture.publisherToken,
+    body: { scheduledAt },
+  });
+  assert.equal(scheduled.response.status, 200);
+  await fixture.close();
+  await new Promise((resolve) => setTimeout(resolve, 75));
+
+  const restarted = await serveApp(fixture.storageRoot);
+  try {
+    const first = await jsonFetch(restarted.baseUrl, "/api/publishing/due/check", { method: "POST" });
+    assert.equal(first.response.status, 200);
+    assert.equal(first.body.notifications.length, 1);
+    assert.equal(first.body.notifications[0].taskId, taskId);
+
+    const second = await jsonFetch(restarted.baseUrl, "/api/publishing/due/check", { method: "POST" });
+    assert.equal(second.response.status, 200);
+    assert.deepEqual(second.body.notifications, []);
+  } finally {
+    await restarted.close();
+  }
+});
+
 test("due check leaves cancelled and trashed scheduled tasks untouched", async () => {
   const fixture = await publishingApiFixture();
   try {

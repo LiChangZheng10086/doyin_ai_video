@@ -368,6 +368,35 @@ test("preserves task states in trash and catches up overdue tasks on restore", a
   );
 });
 
+test("rejects restoring expired trash without writing", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "publishing-store-expired-restore-"));
+  const storage = new LocalStorage(root);
+  await storage.writeJsonAtomic(
+    "cache/publishing-index.json",
+    seededIndex([
+      packageRecord({
+        state: "trashed",
+        deletedAt: "2026-07-01T08:00:00.000Z",
+        purgeAt: "2026-08-10T08:00:00.000Z",
+      }),
+    ], [taskRecord("scheduled", { scheduledAt: "2026-08-10T07:55:00.000Z" })])
+  );
+  const store = new PublishingStore(storage, () => new Date(NOW));
+  await store.init();
+  const indexPath = path.join(root, "cache", "publishing-index.json");
+  const before = await readFile(indexPath);
+
+  await assert.rejects(
+    () => store.restorePackage("package-1", ACTOR),
+    (error: PublishingError) => (
+      error.code === "publish_invalid_transition"
+      && error.details?.reason === "trash_expired"
+    )
+  );
+
+  assert.deepEqual(await readFile(indexPath), before);
+});
+
 test("uses the transaction clock after a queued restore starts executing", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "publishing-store-queued-restore-"));
   const storage = new LocalStorage(root);

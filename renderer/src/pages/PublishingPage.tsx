@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AlertTriangle,
   Check,
@@ -22,6 +22,7 @@ import { useOperatorStore } from '../store/operator';
 import type { PublishPlatform, PublishTask, PublishingListFilters, PublishingListStatus, PublishingPackageDetail } from '../types';
 import {
   formatPublishingCopy,
+  formatDueNotification,
   getPublishingActionIds,
   groupPublishingPackages,
   PUBLISH_FILTERS,
@@ -42,8 +43,11 @@ export function PublishingPage() {
   const [packages, setPackages] = useState<PublishingPackageDetail[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [busyAction, setBusyAction] = useState(false);
   const [error, setError] = useState('');
   const [feedback, setFeedback] = useState('');
+  const loadSequence = useRef(0);
+  const actionLock = useRef(false);
 
   const filters = useMemo<PublishingListFilters>(() => ({
     status,
@@ -55,6 +59,7 @@ export function PublishingPage() {
   }), [createdBy, platform, search, sourceJobId, status, version]);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     if (!currentUser) {
       setPackages([]);
       return;
@@ -62,25 +67,34 @@ export function PublishingPage() {
     setLoading(true);
     setError('');
     try {
-      setPackages(await apiClient.listPublishingPackages(filters));
+      const result = await apiClient.listPublishingPackages(filters);
+      if (sequence === loadSequence.current) setPackages(result);
     } catch (requestError) {
-      setError(parseApiError(requestError).message);
+      if (sequence === loadSequence.current) setError(parseApiError(requestError).message);
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
   }, [currentUser, filters]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const run = async (operation: () => Promise<unknown>, success: string) => {
+  const run = async <T,>(operation: () => Promise<T>, success: string): Promise<T | undefined> => {
+    if (actionLock.current) return undefined;
+    actionLock.current = true;
+    setBusyAction(true);
     setError('');
     setFeedback('');
     try {
-      await operation();
+      const result = await operation();
       setFeedback(success);
       await load();
+      return result;
     } catch (requestError) {
       setError(parseApiError(requestError).message);
+      return undefined;
+    } finally {
+      actionLock.current = false;
+      setBusyAction(false);
     }
   };
 
@@ -136,7 +150,7 @@ export function PublishingPage() {
       return;
     }
     if (action === 'schedule' || action === 'restore') {
-      const value = window.prompt('输入未来排期时间（YYYY-MM-DDTHH:mm），留空表示立即待发布', task.scheduledAt?.slice(0, 16) ?? '');
+      const value = window.prompt('输入未来排期时间（YYYY-MM-DDTHH:mm），留空表示立即待发布', task.scheduledAt ? toLocalDateTimeValue(task.scheduledAt) : '');
       if (value === null) return;
       await run(
         () => action === 'restore' ? apiClient.restorePublishingTask(task.id, value || null) : apiClient.updatePublishingSchedule(task.id, value || null),
@@ -175,7 +189,18 @@ export function PublishingPage() {
       return;
     }
     if (action === 'restore-package') {
-      await run(() => apiClient.restorePublishingPackage(detail.package.id), '发布包已恢复');
+      const result = await run(() => apiClient.restorePublishingPackage(detail.package.id), '发布包已恢复');
+      if (!result?.notifications.length) return;
+      if (!desktop.capabilities.showNotification) {
+        setFeedback(`发布包已恢复，${result.notifications.length} 个任务已经到期`);
+        return;
+      }
+      for (const notification of result.notifications) {
+        await desktop.showNotification(
+          `${notification.platformLabel} 待发布`,
+          `${notification.title}，${formatDueNotification(notification)}`,
+        ).catch(() => undefined);
+      }
     }
   };
 
@@ -215,7 +240,7 @@ export function PublishingPage() {
           {feedback && <p className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700"><Check size={16} />{feedback}</p>}
           {loading ? <div className="flex justify-center py-20"><Loader2 className="animate-spin text-tech-blue" size={32} /></div> : groups.length === 0 ? <div className="border-y border-tech-border py-16 text-center"><p className="font-semibold text-tech-text">没有符合条件的发布包</p><p className="mt-2 text-sm text-tech-muted">可从已生成成片的作品详情加入发布中心。</p></div> : (
             <div className="space-y-6">
-              {groups.map((group) => <section key={group.sourceJobId} className="overflow-hidden rounded-lg border border-tech-border bg-tech-surface"><header className="flex flex-col gap-1 border-b border-tech-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-tech-text">{group.title}</h2><p className="text-xs text-tech-muted">源任务 {group.sourceJobId}</p></div><span className="text-sm text-tech-muted">{group.versions.length} 个版本</span></header><div className="divide-y divide-tech-border">{group.versions.map((detail) => <PackageRow key={detail.package.id} detail={detail} role={currentUser.role} expanded={expanded.has(detail.package.id)} onToggle={() => setExpanded((value) => { const next = new Set(value); next.has(detail.package.id) ? next.delete(detail.package.id) : next.add(detail.package.id); return next; })} onAction={handleTaskAction} />)}</div></section>)}
+              {groups.map((group) => <section key={group.sourceJobId} className="overflow-hidden rounded-lg border border-tech-border bg-tech-surface"><header className="flex flex-col gap-1 border-b border-tech-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-tech-text">{group.title}</h2><p className="text-xs text-tech-muted">源任务 {group.sourceJobId}</p></div><span className="text-sm text-tech-muted">{group.versions.length} 个版本</span></header><div className="divide-y divide-tech-border">{group.versions.map((detail) => <PackageRow key={detail.package.id} detail={detail} role={currentUser.role} expanded={expanded.has(detail.package.id)} busy={busyAction} onToggle={() => setExpanded((value) => { const next = new Set(value); next.has(detail.package.id) ? next.delete(detail.package.id) : next.add(detail.package.id); return next; })} onAction={handleTaskAction} />)}</div></section>)}
             </div>
           )}
         </>
@@ -224,18 +249,19 @@ export function PublishingPage() {
   );
 }
 
-function PackageRow({ detail, role, expanded, onToggle, onAction }: { detail: PublishingPackageDetail; role: 'admin' | 'publisher'; expanded: boolean; onToggle: () => void; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
+function PackageRow({ detail, role, expanded, busy, onToggle, onAction }: { detail: PublishingPackageDetail; role: 'admin' | 'publisher'; expanded: boolean; busy: boolean; onToggle: () => void; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const pkg = detail.package;
-  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-tech-bg"><span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-purple-50 text-sm font-bold text-tech-purple">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-tech-text">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">垃圾桶</span>}</div><p className="mt-1 text-xs text-tech-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-tech-border bg-tech-bg/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} onAction={onAction} />)}</div><details className="mt-4 border-t border-tech-border pt-4"><summary className="cursor-pointer text-sm font-medium text-tech-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-tech-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-tech-text">{event.actor.displayName} · {event.action}{event.reason ? ` · ${event.reason}` : ''}</span></li>)}</ol></details></div>}</div>;
+  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-tech-bg"><span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-purple-50 text-sm font-bold text-tech-purple">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-tech-text">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">垃圾桶</span>}</div><p className="mt-1 text-xs text-tech-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-tech-border bg-tech-bg/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} busy={busy} onAction={onAction} />)}</div><details className="mt-4 border-t border-tech-border pt-4"><summary className="cursor-pointer text-sm font-medium text-tech-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-tech-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-tech-text">{event.actor.displayName} · {event.action}{event.reason ? ` · ${event.reason}` : ''}</span></li>)}</ol></details></div>}</div>;
 }
 
-function TaskRow({ detail, task, role, onAction }: { detail: PublishingPackageDetail; task: PublishTask; role: 'admin' | 'publisher'; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
+function TaskRow({ detail, task, role, busy, onAction }: { detail: PublishingPackageDetail; task: PublishTask; role: 'admin' | 'publisher'; busy: boolean; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const policy = PUBLISHING_PLATFORMS.find((item) => item.id === task.platform)!;
   const actions = getPublishingActionIds(detail, task, role);
   const labels: Record<string, string> = { 'copy-title': '复制标题', 'copy-description': '复制正文', 'copy-hashtags': '复制标签', 'copy-full': '复制全部', 'show-in-finder': 'Finder', 'open-platform': '打开平台', 'edit-content': '编辑文案', schedule: '修改排期', 'mark-published': '标记已发布', 'record-failure': '记录失败', cancel: '取消任务', restore: '恢复任务', 'create-version': '创建新版本', withdraw: '撤回本地状态', 'trash-package': '删除发布包', 'restore-package': '恢复发布包' };
-  return <div className="rounded-lg border border-tech-border bg-tech-surface p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-tech-text">{policy.label}</span><StatusBadge task={task} /><span className="text-xs text-tech-muted">revision {task.contentRevision} · {task.copySource === 'user_edited' ? '已编辑' : task.copySource === 'ai' ? 'AI' : '洗稿回退'}</span></div><p className="mt-2 font-medium text-tech-text">{task.title}</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-tech-muted">{task.description}</p><p className="mt-2 text-sm text-tech-purple">{formatPublishingCopy(task).hashtags}</p>{task.scheduledAt && <p className="mt-2 text-xs text-tech-muted">计划 {new Date(task.scheduledAt).toLocaleString('zh-CN')}</p>}{task.publishedAt && <p className="mt-1 text-xs text-emerald-600">发布于 {new Date(task.publishedAt).toLocaleString('zh-CN')}</p>}{task.lastError && <p className="mt-2 text-sm text-red-600">{task.lastError}</p>}</div><div className="flex max-w-md flex-wrap gap-2 lg:justify-end">{actions.map((action) => <button key={action} type="button" title={labels[action]} onClick={() => void onAction(detail, task, action)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium ${action === 'mark-published' || action === 'open-platform' ? 'border-tech-blue bg-blue-50 text-tech-blue' : action === 'trash-package' || action === 'withdraw' ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-tech-border text-tech-muted hover:bg-tech-bg hover:text-tech-text'}`}>{action.startsWith('copy-') ? <Clipboard size={14} aria-label={labels[action]} /> : action === 'show-in-finder' ? <FolderOpen size={14} aria-label={labels[action]} /> : action === 'open-platform' ? <ExternalLink size={14} aria-label={labels[action]} /> : action === 'trash-package' ? <Trash2 size={14} aria-label={labels[action]} /> : action === 'restore-package' || action === 'restore' ? <RotateCcw size={14} aria-label={labels[action]} /> : labels[action]}</button>)}</div></div></div>;
+  return <div className="rounded-lg border border-tech-border bg-tech-surface p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-tech-text">{policy.label}</span><StatusBadge task={task} /><span className="text-xs text-tech-muted">revision {task.contentRevision} · {task.copySource === 'user_edited' ? '已编辑' : task.copySource === 'ai' ? 'AI' : '洗稿回退'}</span></div><p className="mt-2 font-medium text-tech-text">{task.title}</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-tech-muted">{task.description}</p><p className="mt-2 text-sm text-tech-purple">{formatPublishingCopy(task).hashtags}</p>{task.scheduledAt && <p className="mt-2 text-xs text-tech-muted">计划 {new Date(task.scheduledAt).toLocaleString('zh-CN')}</p>}{task.publishedAt && <p className="mt-1 text-xs text-emerald-600">发布于 {new Date(task.publishedAt).toLocaleString('zh-CN')}</p>}{task.lastError && <p className="mt-2 text-sm text-red-600">{task.lastError}</p>}</div><div className="flex max-w-md flex-wrap gap-2 lg:justify-end">{actions.map((action) => <button key={action} type="button" title={labels[action]} disabled={busy} onClick={() => void onAction(detail, task, action)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${action === 'mark-published' || action === 'open-platform' ? 'border-tech-blue bg-blue-50 text-tech-blue' : action === 'trash-package' || action === 'withdraw' ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-tech-border text-tech-muted hover:bg-tech-bg hover:text-tech-text'}`}>{action.startsWith('copy-') ? <Clipboard size={14} aria-label={labels[action]} /> : action === 'show-in-finder' ? <FolderOpen size={14} aria-label={labels[action]} /> : action === 'open-platform' ? <ExternalLink size={14} aria-label={labels[action]} /> : action === 'trash-package' ? <Trash2 size={14} aria-label={labels[action]} /> : action === 'restore-package' || action === 'restore' ? <RotateCcw size={14} aria-label={labels[action]} /> : labels[action]}</button>)}</div></div></div>;
 }
 
 function StatusBadge({ task }: { task: PublishTask }) { const colors = { scheduled: 'bg-cyan-50 text-cyan-700', ready: 'bg-blue-50 text-blue-700', published: 'bg-emerald-50 text-emerald-700', failed: 'bg-red-50 text-red-700', cancelled: 'bg-gray-100 text-gray-600' }; return <span className={`rounded-full px-2 py-1 text-xs font-medium ${colors[task.status]}`}>{PUBLISH_STATUS_LABELS[task.status]}</span>; }
 function AssetBadge({ health }: { health: PublishingPackageDetail['package']['assetHealth'] }) { const text = health === 'healthy' ? '资产正常' : health === 'missing_cover' ? '缺少封面' : '视频异常'; return <span className={`rounded-full px-2 py-1 text-xs ${health === 'broken_video' ? 'bg-red-50 text-red-700' : health === 'missing_cover' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>{text}</span>; }
 function FilterInput({ icon, value, onChange, placeholder, type = 'text' }: { icon?: ReactNode; value: string; onChange: (value: string) => void; placeholder: string; type?: string }) { return <label className="flex items-center gap-2 rounded-lg border border-tech-border bg-tech-surface px-3"><span className="text-tech-muted">{icon}</span><input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="min-w-0 flex-1 bg-transparent py-2 text-sm text-tech-text outline-none" /></label>; }
+function toLocalDateTimeValue(value: string): string { const date = new Date(value); const offset = date.getTimezoneOffset() * 60_000; return new Date(date.getTime() - offset).toISOString().slice(0, 16); }

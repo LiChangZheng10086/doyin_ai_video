@@ -21,7 +21,7 @@ import { PublishingCopyService } from "./lib/publishing-copy.js";
 import { PublishingAssetService } from "./lib/publishing-assets.js";
 import { PublishingService } from "./lib/publishing-service.js";
 import { registerPublishingRoutes } from "./lib/publishing-routes.js";
-import type { CollectionRecord, PipelineStep, ScriptAsset } from "./types.js";
+import type { CollectionRecord, DueNotification, PipelineStep, ScriptAsset } from "./types.js";
 
 export interface ServerConfig {
   storagePath: string;
@@ -145,14 +145,21 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     copy: publishingCopy,
     resolveVideo,
   });
+  const checkPublishingDue = publishingService.checkDue.bind(publishingService);
+  let startupDueNotifications: DueNotification[] = [];
   const publishing = Object.assign(publishingService, {
     list: publishingStore.list.bind(publishingStore),
     getPackage: publishingStore.getPackage.bind(publishingStore),
+    checkDue: async () => {
+      const current = await checkPublishingDue();
+      return [...startupDueNotifications.splice(0), ...current];
+    },
   });
   let publishingRecoveryError: string | undefined;
   try {
     await publishingStore.init();
-    await publishingService.recoverOnStartup();
+    const recovery = await publishingService.recoverOnStartup();
+    startupDueNotifications = recovery.notifications;
   } catch (error) {
     publishingRecoveryError = "发布数据恢复失败，当前发布中心处于只读保护状态";
     console.error(publishingRecoveryError, error);

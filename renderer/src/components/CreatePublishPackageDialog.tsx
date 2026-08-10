@@ -1,4 +1,5 @@
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Check, ChevronLeft, ChevronRight, Loader2, Send, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { apiClient, parseApiError } from '../services/api';
@@ -34,14 +35,42 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [created, setCreated] = useState<PublishingPackageDetail | null>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const previousFocus = useRef<HTMLElement | null>(null);
+  const busyRef = useRef(busy);
+  const onCloseRef = useRef(onClose);
+  busyRef.current = busy;
+  onCloseRef.current = onClose;
 
   useEffect(() => {
+    previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const appRoot = document.getElementById('root');
+    appRoot?.setAttribute('aria-hidden', 'true');
+    appRoot?.setAttribute('inert', '');
+    dialogRef.current?.querySelector<HTMLElement>('button:not([disabled])')?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) onClose();
+      if (event.key === 'Escape' && !busyRef.current) onCloseRef.current();
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled])')];
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [busy, onClose]);
+    return () => {
+      appRoot?.removeAttribute('aria-hidden');
+      appRoot?.removeAttribute('inert');
+      document.removeEventListener('keydown', onKeyDown);
+      requestAnimationFrame(() => previousFocus.current?.focus());
+    };
+  }, []);
 
   const advance = async () => {
     setError('');
@@ -69,7 +98,7 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
     setBusy(true);
     setError('');
     try {
-      const preview = await apiClient.previewPublishing(jobId, state.selectedPlatforms);
+      const preview = await apiClient.previewPublishing(jobId, [platform]);
       const generated = preview.copies[platform];
       if (!generated) throw new Error('未生成该平台文案');
       dispatch({
@@ -81,7 +110,6 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
           scheduledAt: state.drafts[platform]?.scheduledAt ?? '',
         },
       });
-      dispatch({ type: 'update-preview', preview });
     } catch (requestError) {
       setError(parseApiError(requestError).message);
     } finally {
@@ -104,9 +132,9 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
     }
   };
 
-  return (
+  const dialog = (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" onMouseDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
-      <section role="dialog" aria-modal="true" aria-labelledby="publish-dialog-title" className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-tech-border bg-tech-surface shadow-2xl">
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="publish-dialog-title" className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-tech-border bg-tech-surface shadow-2xl">
         <header className="flex items-center justify-between border-b border-tech-border px-5 py-4">
           <div>
             <h2 id="publish-dialog-title" className="text-lg font-semibold text-tech-text">加入发布中心</h2>
@@ -174,6 +202,7 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
       </section>
     </div>
   );
+  return typeof document === 'undefined' ? null : createPortal(dialog, document.body);
 }
 
 function AssetStep({ output }: { output: HyperframesVideoOutput }) {
@@ -188,8 +217,8 @@ function AssetStep({ output }: { output: HyperframesVideoOutput }) {
         <Info label="尺寸" value={`${output.width} x ${output.height}`} />
         <Info label="时长" value={`${Math.round(output.duration)} 秒`} />
         <Info label="比例" value={output.aspectRatio} />
-        <Info label="额外空间" value="约等于当前 MP4 大小" />
-        <Info label="封面" value="有则复制，无则使用占位" />
+        <Info label="额外空间" value="创建预览时计算" />
+        <Info label="封面" value="创建时检测真实封面" />
       </dl>
     </div>
   );
@@ -258,7 +287,13 @@ function ScheduleStep({ state, onChange }: { state: ReturnType<typeof createPubl
 }
 
 function ConfirmStep({ title, state }: { title: string; state: ReturnType<typeof createPublishingWizardState> }) {
-  return <div className="space-y-4"><h3 className="text-base font-semibold text-tech-text">确认发布包</h3><dl className="divide-y divide-tech-border rounded-lg border border-tech-border px-4"><InfoRow label="作品" value={title} /><InfoRow label="版本" value={`v${state.preview?.nextVersion ?? '-'}`} /><InfoRow label="平台" value={state.selectedPlatforms.map((id) => PUBLISHING_PLATFORMS.find((item) => item.id === id)?.label).join('、')} /><InfoRow label="保存位置" value={state.preview?.expectedPackagePath ?? '-'} /></dl><p className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">创建后请在发布中心复制文案、打开官方平台并手动发布。本应用不会保存平台账号或自动上传。</p></div>;
+  const schedules = state.selectedPlatforms.map((id) => {
+    const label = PUBLISHING_PLATFORMS.find((item) => item.id === id)?.label;
+    const value = state.drafts[id]?.scheduledAt;
+    return `${label}：${value && getPublishingScheduleStatus(value) === 'scheduled' ? new Date(value).toLocaleString('zh-CN') : '立即待发布'}`;
+  }).join('；');
+  const video = state.preview?.video;
+  return <div className="space-y-4"><h3 className="text-base font-semibold text-tech-text">确认发布包</h3><dl className="divide-y divide-tech-border rounded-lg border border-tech-border px-4"><InfoRow label="作品" value={title} /><InfoRow label="版本" value={`v${state.preview?.nextVersion ?? '-'}`} /><InfoRow label="平台" value={state.selectedPlatforms.map((id) => PUBLISHING_PLATFORMS.find((item) => item.id === id)?.label).join('、')} /><InfoRow label="视频大小" value={video ? formatBytes(video.size) : '-'} /><InfoRow label="真实封面" value={video?.coverAvailable ? '已找到，将复制到发布包' : '未找到，请在发布平台内选择封面'} /><InfoRow label="排期" value={schedules} /><InfoRow label="保存位置" value={state.preview?.expectedPackagePath ?? '-'} /></dl><p className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">创建后请在发布中心复制文案、打开官方平台并手动发布。本应用不会保存平台账号或自动上传。</p></div>;
 }
 
 function SuccessView({ detail, onClose, onOpen }: { detail: PublishingPackageDetail; onClose: () => void; onOpen: () => void }) {
@@ -268,3 +303,4 @@ function SuccessView({ detail, onClose, onOpen }: { detail: PublishingPackageDet
 function Info({ label, value }: { label: string; value: string }) { return <div><dt className="text-xs text-tech-muted">{label}</dt><dd className="mt-1 break-all text-sm font-medium text-tech-text">{value}</dd></div>; }
 function InfoRow({ label, value }: { label: string; value: string }) { return <div className="grid gap-1 py-3 sm:grid-cols-[7rem_1fr]"><dt className="text-sm text-tech-muted">{label}</dt><dd className="break-all text-sm font-medium text-tech-text">{value}</dd></div>; }
 function TextField({ label, value, count, limit, onChange }: { label: string; value: string; count: number; limit: number; onChange: (value: string) => void }) { return <label className="block text-sm font-medium text-tech-text">{label}<span className={`float-right text-xs font-normal ${count > limit ? 'text-red-600' : 'text-tech-muted'}`}>{count}/{limit}</span><input value={value} onChange={(event) => onChange(event.target.value)} className="mt-2 w-full rounded-lg border border-tech-border px-3 py-2 text-sm outline-none focus:border-tech-blue focus:ring-2 focus:ring-blue-100" /></label>; }
+function formatBytes(value: number) { return value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1024))} KB`; }
