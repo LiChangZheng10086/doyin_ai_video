@@ -1,8 +1,22 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+
+type StorageFileOps = {
+  open: typeof open;
+  rename: typeof rename;
+  rm: typeof rm;
+};
 
 export class LocalStorage {
-  constructor(private readonly baseDir: string) {}
+  private readonly fileOps: StorageFileOps;
+
+  constructor(
+    private readonly baseDir: string,
+    fileOps: Partial<StorageFileOps> = {}
+  ) {
+    this.fileOps = { open, rename, rm, ...fileOps };
+  }
 
   async ensureBaseDirs() {
     await Promise.all([
@@ -32,6 +46,24 @@ export class LocalStorage {
     await mkdir(path.dirname(fullPath), { recursive: true });
     await writeFile(fullPath, JSON.stringify(data, null, 2), "utf8");
     return fullPath;
+  }
+
+  async writeJsonAtomic(relativePath: string, data: unknown) {
+    const fullPath = this.resolve(relativePath);
+    const tempPath = `${fullPath}.next-${randomUUID()}`;
+    await mkdir(path.dirname(fullPath), { recursive: true });
+    const handle = await this.fileOps.open(tempPath, "w");
+    try {
+      await handle.writeFile(JSON.stringify(data, null, 2), "utf8");
+      await handle.sync();
+      await handle.close();
+      await this.fileOps.rename(tempPath, fullPath);
+      return fullPath;
+    } catch (error) {
+      await handle.close().catch(() => undefined);
+      await this.fileOps.rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async readJson<T>(relativePath: string) {
