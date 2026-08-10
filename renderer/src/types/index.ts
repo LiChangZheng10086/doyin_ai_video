@@ -2,6 +2,7 @@
 export type JobStatus = 'queued' | 'processing' | 'done' | 'failed';
 
 export type LocalUserRole = 'admin' | 'publisher';
+export type ActorRole = LocalUserRole | 'system';
 
 export interface LocalUser {
   id: string;
@@ -15,6 +16,150 @@ export interface LocalUser {
 export interface LocalSession {
   token: string;
   user: LocalUser;
+}
+
+export interface ActorSnapshot {
+  userId: string;
+  displayName: string;
+  role: ActorRole;
+}
+
+export type PublishPlatform = 'douyin' | 'xiaohongshu' | 'wechat_channels' | 'bilibili';
+export type PublishTaskStatus = 'scheduled' | 'ready' | 'published' | 'failed' | 'cancelled';
+export type PublishPackageState = 'active' | 'trashed' | 'purged';
+export type PublishCopySource = 'ai' | 'cleaned_fallback' | 'user_edited';
+export type PackageVideoMethod = 'clone' | 'copy';
+export type PublishAssetHealth = 'healthy' | 'missing_cover' | 'broken_video';
+export type PublishingListStatus = 'action' | 'all' | PublishTaskStatus | 'broken' | 'trash';
+
+export interface PlatformCopy {
+  title: string;
+  description: string;
+  hashtags: string[];
+}
+
+export interface DeliveryPackage {
+  id: string;
+  sourceJobId: string;
+  version: number;
+  state: PublishPackageState;
+  title: string;
+  packagePath: string;
+  videoPath?: string;
+  coverPath?: string;
+  videoSha256: string;
+  videoSize: number;
+  videoMethod: PackageVideoMethod;
+  assetHealth: PublishAssetHealth;
+  createdBy: ActorSnapshot;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt?: string;
+  purgeAt?: string;
+  purgedAt?: string;
+}
+
+export interface PublishTask extends PlatformCopy {
+  id: string;
+  packageId: string;
+  platform: PublishPlatform;
+  copySource: PublishCopySource;
+  status: PublishTaskStatus;
+  scheduledAt?: string;
+  dueNotifiedAt?: string;
+  publishedAt?: string;
+  lastError?: string;
+  contentRevision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PublishAuditEvent {
+  id: string;
+  packageId: string;
+  taskId?: string;
+  action: string;
+  actor: ActorSnapshot;
+  fromStatus?: PublishTaskStatus;
+  toStatus?: PublishTaskStatus;
+  reason?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface PublishingTombstone {
+  packageId: string;
+  sourceJobId: string;
+  version: number;
+  platforms: Array<{ platform: PublishPlatform; finalStatus: PublishTaskStatus }>;
+  createdAt: string;
+  publishedAt?: string;
+  deletedAt: string;
+  purgedAt: string;
+  videoSha256: string;
+  auditSummary: Array<{ action: string; actor: ActorSnapshot; createdAt: string }>;
+}
+
+export interface PublishingPackageDetail {
+  package: DeliveryPackage;
+  tasks: PublishTask[];
+  audit: PublishAuditEvent[];
+  tombstone?: PublishingTombstone;
+}
+
+export interface DueNotification {
+  taskId: string;
+  packageId: string;
+  platform: PublishPlatform;
+  platformLabel: string;
+  title: string;
+  scheduledAt: string;
+  becameReadyAt: string;
+  overdueMs: number;
+}
+
+export interface PublishingPreview {
+  sourceJobId: string;
+  nextVersion: number;
+  previewRevision: string;
+  video: {
+    filename: string;
+    size: number;
+    width: number;
+    height: number;
+    duration: number;
+    coverAvailable: boolean;
+  };
+  copies: Partial<Record<PublishPlatform, PlatformCopy & { copySource: PublishCopySource }>>;
+  warning?: { code: string; message: string };
+  expectedPackagePath: string;
+}
+
+export interface CreatePublishingPackageInput {
+  sourceJobId: string;
+  previewRevision: string;
+  title: string;
+  platforms: Array<{
+    platform: PublishPlatform;
+    copy: PlatformCopy;
+    copySource: PublishCopySource;
+    scheduledAt?: string;
+  }>;
+}
+
+export interface PublishingListFilters {
+  status?: PublishingListStatus;
+  platform?: PublishPlatform;
+  sourceJobId?: string;
+  version?: number;
+  createdBy?: string;
+  search?: string;
+}
+
+export interface PublishingErrorBody {
+  code: string;
+  message: string;
+  details?: unknown;
 }
 
 export interface LocalUsersResponse {
