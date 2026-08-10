@@ -51,19 +51,50 @@ function replaceUser(users: LocalUser[], user: LocalUser): LocalUser[] {
   return users.map((candidate) => candidate.id === user.id ? user : candidate);
 }
 
+function readStorage(storage: OperatorStorage | null, key: string): string | null {
+  try {
+    return storage?.getItem(key) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(storage: OperatorStorage | null, key: string, value: string): void {
+  try {
+    storage?.setItem(key, value);
+  } catch {
+    // Browser storage can fail in private contexts or when quota is exhausted.
+  }
+}
+
+function removeStorage(storage: OperatorStorage | null, key: string): void {
+  try {
+    storage?.removeItem(key);
+  } catch {
+    // Browser storage cleanup must not block a local session transition.
+  }
+}
+
 export function createOperatorStore(client: LocalIdentityClient = apiClient, storage: OperatorStorage | null = browserStorage()) {
+  let transitionQueue = Promise.resolve();
+  const enqueueTransition = <T>(operation: () => Promise<T>): Promise<T> => {
+    const transition = transitionQueue.then(operation, operation);
+    transitionQueue = transition.then(() => undefined, () => undefined);
+    return transition;
+  };
+
   const applySession = (session: LocalSession, set: (state: Partial<OperatorState>) => void, get: () => OperatorState) => {
     client.setLocalSession(session.token);
-    if (session.user.role === 'publisher') {
-      storage?.setItem(LAST_PUBLISHER_ID_KEY, session.user.id);
-    } else {
-      storage?.removeItem(LAST_PUBLISHER_ID_KEY);
-    }
     set({
       users: replaceUser(get().users, session.user),
       currentUser: session.user,
       token: session.token,
     });
+    if (session.user.role === 'publisher') {
+      writeStorage(storage, LAST_PUBLISHER_ID_KEY, session.user.id);
+    } else {
+      removeStorage(storage, LAST_PUBLISHER_ID_KEY);
+    }
   };
 
   return create<OperatorState>((set, get) => ({
@@ -73,43 +104,43 @@ export function createOperatorStore(client: LocalIdentityClient = apiClient, sto
     needsBootstrap: false,
     initialized: false,
 
-    initialize: async () => {
+    initialize: () => enqueueTransition(async () => {
       const result = await client.getLocalUsers();
       set({ users: result.users, needsBootstrap: result.needsBootstrap, initialized: true });
 
-      const publisher = findRestorablePublisher(result.users, storage?.getItem(LAST_PUBLISHER_ID_KEY) ?? null);
+      const publisher = findRestorablePublisher(result.users, readStorage(storage, LAST_PUBLISHER_ID_KEY));
       if (!publisher) {
-        storage?.removeItem(LAST_PUBLISHER_ID_KEY);
+        removeStorage(storage, LAST_PUBLISHER_ID_KEY);
         return;
       }
 
       const { session } = await client.openLocalSession(publisher.id);
       applySession(session, set, get);
-    },
+    }),
 
-    bootstrap: async (displayName, pin) => {
+    bootstrap: (displayName, pin) => enqueueTransition(async () => {
       const { user, session } = await client.bootstrapLocalAdmin(displayName, pin);
       client.setLocalSession(session.token);
-      storage?.removeItem(LAST_PUBLISHER_ID_KEY);
       set({ users: [user], currentUser: session.user, token: session.token, needsBootstrap: false, initialized: true });
-    },
+      removeStorage(storage, LAST_PUBLISHER_ID_KEY);
+    }),
 
-    switchUser: async (userId, pin) => {
+    switchUser: (userId, pin) => enqueueTransition(async () => {
       const { session } = await client.openLocalSession(userId, pin);
       applySession(session, set, get);
-    },
+    }),
 
-    signOut: async () => {
+    signOut: () => enqueueTransition(async () => {
       try {
         await client.closeLocalSession();
       } catch {
         // Local cleanup still completes when the server cannot be reached.
       } finally {
         client.setLocalSession(null);
-        storage?.removeItem(LAST_PUBLISHER_ID_KEY);
         set({ currentUser: null, token: null });
+        removeStorage(storage, LAST_PUBLISHER_ID_KEY);
       }
-    },
+    }),
 
     refreshUsers: async () => {
       const result = await client.getLocalUsers();
