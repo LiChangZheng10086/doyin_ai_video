@@ -1,5 +1,28 @@
 export type JobStatus = "queued" | "processing" | "done" | "failed";
 
+export type LocalUserRole = "admin" | "publisher";
+export type ActorRole = LocalUserRole | "system";
+
+export interface LocalUserView {
+  id: string;
+  displayName: string;
+  role: LocalUserRole;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ActorSnapshot {
+  userId: string;
+  displayName: string;
+  role: ActorRole;
+}
+
+export interface LocalSessionView {
+  token: string;
+  user: LocalUserView;
+}
+
 export type JobStage =
   | "submitted"
   | "parsed"
