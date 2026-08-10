@@ -6,6 +6,9 @@ import { AsrService } from "./lib/asr.js";
 import { OpenAiScriptCleaner, RuntimeScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
+import { LocalSessionStore } from "./lib/local-auth.js";
+import { registerLocalUserRoutes } from "./lib/local-user-routes.js";
+import { LocalUserStore } from "./lib/local-users.js";
 import { JobStepError, JobStore } from "./lib/jobs.js";
 import { CollectionStore } from "./lib/collections.js";
 import { registerConfigRoutes } from "./lib/config-server.js";
@@ -53,6 +56,12 @@ function isMissingFileError(error: unknown) {
  */
 export async function createExpressApp(config: ServerConfig): Promise<Express> {
   const storage = new LocalStorage(config.storagePath);
+  const localUsers = new LocalUserStore(storage);
+  await localUsers.init();
+  const localSessions = new LocalSessionStore(localUsers);
+  const app = express();
+  app.locals.localUsers = localUsers;
+  app.locals.localSessions = localSessions;
 
   const aiProvider = config.aiProvider ?? "deepseek";
   const aiModel = config.aiModel ?? "deepseek-chat";
@@ -112,13 +121,11 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   });
   await collections.init();
 
-  const app = express();
-
   // CORS 中间件（开发环境）
   app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Local-Session');
     if (req.method === 'OPTIONS') {
       res.sendStatus(200);
       return;
@@ -127,6 +134,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   });
 
   app.use(express.json({ limit: "2mb" }));
+  registerLocalUserRoutes(app, { users: localUsers, sessions: localSessions });
 
   // 静态文件（开发环境可能不需要）
   const publicDir = path.join(config.rootDir, "public");

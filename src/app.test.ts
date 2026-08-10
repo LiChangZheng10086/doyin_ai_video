@@ -1,10 +1,258 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { createExpressApp } from "./app.js";
+
+type JsonResponse = {
+  response: Response;
+  body: Record<string, any>;
+};
+
+async function appFixture(options: { publishingIndex?: unknown } = {}) {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "app-local-users-"));
+  if (options.publishingIndex !== undefined) {
+    await mkdir(path.join(storageRoot, "cache"), { recursive: true });
+    await writeFile(
+      path.join(storageRoot, "cache", "publishing-index.json"),
+      JSON.stringify(options.publishingIndex),
+      "utf8"
+    );
+  }
+
+  const app = await createExpressApp({ storagePath: storageRoot, rootDir: storageRoot });
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  return {
+    app,
+    storageRoot,
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    async readPublishingBytes() {
+      return readFile(path.join(storageRoot, "cache", "publishing-index.json"));
+    },
+    async close() {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    },
+  };
+}
+
+async function jsonFetch(
+  baseUrl: string,
+  pathname: string,
+  options: { method?: string; token?: string; body?: unknown } = {}
+): Promise<JsonResponse> {
+  const response = await fetch(`${baseUrl}${pathname}`, {
+    method: options.method ?? "GET",
+    headers: {
+      ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...(options.token ? { "X-Local-Session": options.token } : {}),
+    },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+  const text = await response.text();
+  return {
+    response,
+    body: response.headers.get("content-type")?.includes("application/json") && text
+      ? JSON.parse(text) as Record<string, any>
+      : {},
+  };
+}
+
+async function identityApiFixture(options: { publishingIndex?: unknown } = {}) {
+  const fixture = await appFixture(options);
+  const boot = await jsonFetch(fixture.baseUrl, "/api/local-users/bootstrap", {
+    method: "POST",
+    body: { displayName: "主管", pin: "123456" },
+  });
+  assert.equal(boot.response.status, 201);
+  const adminToken = boot.body.session.token as string;
+  const publisher = await jsonFetch(fixture.baseUrl, "/api/local-users", {
+    method: "POST",
+    token: adminToken,
+    body: { displayName: "发布者", role: "publisher" },
+  });
+  assert.equal(publisher.response.status, 201);
+  const publisherSession = await jsonFetch(fixture.baseUrl, "/api/local-sessions", {
+    method: "POST",
+    body: { userId: publisher.body.user.id },
+  });
+  assert.equal(publisherSession.response.status, 201);
+
+  return {
+    ...fixture,
+    admin: boot.body.user as { id: string },
+    publisher: publisher.body.user as { id: string },
+    adminToken,
+    publisherToken: publisherSession.body.session.token as string,
+    openAdmin() {
+      return jsonFetch(fixture.baseUrl, "/api/local-sessions", {
+        method: "POST",
+        body: { userId: boot.body.user.id, pin: "123456" },
+      });
+    },
+    getCurrent(token: string) {
+      return jsonFetch(fixture.baseUrl, "/api/local-sessions/current", { token });
+    },
+  };
+}
+
+test("local user api bootstraps once and switches publisher/admin sessions", async () => {
+  const fixture = await appFixture();
+  try {
+    const boot = await jsonFetch(fixture.baseUrl, "/api/local-users/bootstrap", {
+      method: "POST",
+      body: { displayName: "主管", pin: "123456" },
+    });
+    assert.equal(boot.response.status, 201);
+    assert.equal(boot.body.user.role, "admin");
+    assert.ok(boot.body.session.token);
+
+    const duplicate = await jsonFetch(fixture.baseUrl, "/api/local-users/bootstrap", {
+      method: "POST",
+      body: { displayName: "第二位主管", pin: "654321" },
+    });
+    assert.equal(duplicate.response.status, 409);
+
+    const publisher = await jsonFetch(fixture.baseUrl, "/api/local-users", {
+      method: "POST",
+      token: boot.body.session.token,
+      body: { displayName: "发布者", role: "publisher" },
+    });
+    const publisherSession = await jsonFetch(fixture.baseUrl, "/api/local-sessions", {
+      method: "POST",
+      body: { userId: publisher.body.user.id },
+    });
+    assert.equal(publisherSession.response.status, 201);
+
+    const adminSession = await jsonFetch(fixture.baseUrl, "/api/local-sessions", {
+      method: "POST",
+      body: { userId: boot.body.user.id, pin: "123456" },
+    });
+    assert.equal(adminSession.response.status, 201);
+    assert.equal((await jsonFetch(fixture.baseUrl, "/api/local-sessions/current", {
+      token: publisherSession.body.session.token,
+    })).response.status, 401);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("publisher cannot manage users and admin can", async () => {
+  const fixture = await identityApiFixture();
+  try {
+    const denied = await jsonFetch(fixture.baseUrl, "/api/local-users", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { displayName: "新用户", role: "publisher" },
+    });
+    assert.equal(denied.response.status, 403);
+    assert.equal(denied.body.code, "local_role_forbidden");
+
+    const adminSession = await fixture.openAdmin();
+    assert.equal(adminSession.response.status, 201);
+    const created = await jsonFetch(fixture.baseUrl, "/api/local-users", {
+      method: "POST",
+      token: adminSession.body.session.token,
+      body: { displayName: "新用户", role: "publisher" },
+    });
+    assert.equal(created.response.status, 201);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("user routes enforce the secure role-change contract and session close is idempotent", async () => {
+  const fixture = await identityApiFixture();
+  try {
+    const adminSession = await fixture.openAdmin();
+    assert.equal(adminSession.response.status, 201);
+    const missingPin = await jsonFetch(fixture.baseUrl, `/api/local-users/${fixture.publisher.id}`, {
+      method: "PATCH",
+      token: adminSession.body.session.token,
+      body: { role: "admin" },
+    });
+    assert.equal(missingPin.response.status, 400);
+    assert.equal(missingPin.body.code, "local_user_admin_pin_required");
+
+    const promoted = await jsonFetch(fixture.baseUrl, `/api/local-users/${fixture.publisher.id}`, {
+      method: "PATCH",
+      token: adminSession.body.session.token,
+      body: { role: "admin", pin: "654321" },
+    });
+    assert.equal(promoted.response.status, 200);
+    assert.equal(promoted.body.user.role, "admin");
+
+    const reset = await jsonFetch(fixture.baseUrl, `/api/local-users/${fixture.publisher.id}/reset-pin`, {
+      method: "POST",
+      token: adminSession.body.session.token,
+      body: { pin: "111111" },
+    });
+    assert.equal(reset.response.status, 204);
+
+    const closed = await fetch(`${fixture.baseUrl}/api/local-sessions/current`, {
+      method: "DELETE",
+      headers: { "X-Local-Session": fixture.publisherToken },
+    });
+    assert.equal(closed.status, 204);
+    const closedAgain = await fetch(`${fixture.baseUrl}/api/local-sessions/current`, { method: "DELETE" });
+    assert.equal(closedAgain.status, 204);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("recovery invalidates the old session and preserves publishing bytes", async () => {
+  const fixture = await identityApiFixture({ publishingIndex: { marker: "keep" } });
+  try {
+    const adminSession = await fixture.openAdmin();
+    assert.equal(adminSession.response.status, 201);
+    const before = await fixture.readPublishingBytes();
+    const recovered = await jsonFetch(fixture.baseUrl, "/api/local-users/recover", {
+      method: "POST",
+      body: { confirmation: "重置本地用户", displayName: "恢复管理员", pin: "654321" },
+    });
+    assert.equal(recovered.response.status, 201);
+    assert.equal(recovered.body.user.role, "admin");
+    assert.ok(recovered.body.session.token);
+    assert.equal((await fixture.getCurrent(adminSession.body.session.token)).response.status, 401);
+    assert.deepEqual(await fixture.readPublishingBytes(), before);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("identity responses never expose pin secrets and CORS allows identity requests", async () => {
+  const fixture = await identityApiFixture();
+  try {
+    const users = await jsonFetch(fixture.baseUrl, "/api/local-users");
+    const current = await fixture.getCurrent(fixture.publisherToken);
+    const invalidPin = await jsonFetch(fixture.baseUrl, "/api/local-sessions", {
+      method: "POST",
+      body: { userId: fixture.admin.id, pin: "000000" },
+    });
+    assert.equal(invalidPin.response.status, 401);
+    assert.equal(invalidPin.body.code, "local_user_pin_invalid");
+
+    for (const body of [users.body, current.body, invalidPin.body]) {
+      const serialized = JSON.stringify(body);
+      assert.doesNotMatch(serialized, /123456|pinHash|pinSalt/);
+    }
+
+    const options = await fetch(`${fixture.baseUrl}/api/local-users`, {
+      method: "OPTIONS",
+      headers: { Origin: "http://localhost:5173" },
+    });
+    assert.match(options.headers.get("access-control-allow-methods") ?? "", /PATCH/);
+    assert.match(options.headers.get("access-control-allow-headers") ?? "", /X-Local-Session/);
+  } finally {
+    await fixture.close();
+  }
+});
 
 test("video stream endpoint plays mp4 inline while download stays attachment", async () => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "app-video-stream-"));
