@@ -35,6 +35,7 @@ export interface OperatorState {
   switchUser(userId: string, pin?: string): Promise<void>;
   signOut(): Promise<void>;
   refreshUsers(): Promise<void>;
+  syncUser(user: LocalUser): void;
 }
 
 function browserStorage(): OperatorStorage | null {
@@ -91,8 +92,12 @@ export function createOperatorStore(client: LocalIdentityClient = apiClient, sto
       currentUser: session.user,
       token: session.token,
     });
-    if (session.user.role === 'publisher') {
-      writeStorage(storage, LAST_PUBLISHER_ID_KEY, session.user.id);
+    syncPublisherPersistence(session.user);
+  };
+
+  const syncPublisherPersistence = (user: LocalUser) => {
+    if (user.role === 'publisher' && user.isActive) {
+      writeStorage(storage, LAST_PUBLISHER_ID_KEY, user.id);
     } else {
       removeStorage(storage, LAST_PUBLISHER_ID_KEY);
     }
@@ -160,7 +165,25 @@ export function createOperatorStore(client: LocalIdentityClient = apiClient, sto
 
     refreshUsers: async () => {
       const result = await client.getLocalUsers();
-      set({ users: result.users, needsBootstrap: result.needsBootstrap });
+      const currentUser = get().currentUser;
+      const refreshedCurrentUser = currentUser
+        ? result.users.find((user) => user.id === currentUser.id) ?? currentUser
+        : null;
+      set({
+        users: result.users,
+        currentUser: refreshedCurrentUser,
+        needsBootstrap: result.needsBootstrap,
+      });
+      if (refreshedCurrentUser) syncPublisherPersistence(refreshedCurrentUser);
+    },
+
+    syncUser: (user) => {
+      const currentUser = get().currentUser;
+      set({
+        users: replaceUser(get().users, user),
+        currentUser: currentUser?.id === user.id ? user : currentUser,
+      });
+      if (currentUser?.id === user.id) syncPublisherPersistence(user);
     },
   }));
 }

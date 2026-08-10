@@ -1,4 +1,5 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   Check,
@@ -13,7 +14,12 @@ import {
 import { apiClient } from '../services/api';
 import { useOperatorStore } from '../store/operator';
 import type { LocalUser, LocalUserRole } from '../types';
-import { canManageUsers, localIdentityErrorMessage } from '../utils/localUsers';
+import {
+  canManageUsers,
+  createLocalUserMutationLock,
+  localIdentityErrorMessage,
+  runLocalUserMutation,
+} from '../utils/localUsers';
 
 type NewUserForm = {
   displayName: string;
@@ -25,6 +31,14 @@ type NewUserForm = {
 type PinAction = {
   kind: 'promote' | 'reset';
   user: LocalUser;
+};
+
+type MutationRequest<T> = {
+  targetUserId?: string;
+  mutate(): Promise<T>;
+  applySavedValue(value: T): void;
+  savedUserId(value: T): string;
+  onFailure(message: string): void;
 };
 
 const emptyNewUserForm = (): NewUserForm => ({
@@ -43,13 +57,15 @@ export function LocalUsersSettings() {
   const users = useOperatorStore((state) => state.users);
   const currentUser = useOperatorStore((state) => state.currentUser);
   const refreshUsers = useOperatorStore((state) => state.refreshUsers);
+  const syncUser = useOperatorStore((state) => state.syncUser);
   const isAdmin = canManageUsers(currentUser);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [newUser, setNewUser] = useState<NewUserForm>(emptyNewUserForm);
   const [createError, setCreateError] = useState('');
-  const [isCreating, setIsCreating] = useState(false);
-  const [busyUserId, setBusyUserId] = useState<string | null>(null);
+  const [isMutating, setIsMutating] = useState(false);
+  const [mutatingUserId, setMutatingUserId] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [rowWarnings, setRowWarnings] = useState<Record<string, string>>({});
   const [renamingUserId, setRenamingUserId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [pinAction, setPinAction] = useState<PinAction | null>(null);
@@ -57,6 +73,10 @@ export function LocalUsersSettings() {
   const [pinConfirmation, setPinConfirmation] = useState('');
   const [pinError, setPinError] = useState('');
   const [loadError, setLoadError] = useState('');
+  const mutationLockRef = useRef(createLocalUserMutationLock());
+  const pinModalRootRef = useRef<HTMLDivElement>(null);
+  const pinDialogRef = useRef<HTMLFormElement>(null);
+  const pinTriggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -68,27 +88,111 @@ export function LocalUsersSettings() {
     };
   }, [refreshUsers]);
 
-  const mutateUser = async (userId: string, mutation: () => Promise<unknown>): Promise<string | null> => {
-    setBusyUserId(userId);
-    setRowErrors((current) => ({ ...current, [userId]: '' }));
-    try {
-      await mutation();
-      await refreshUsers();
-      return null;
-    } catch (error) {
-      const message = localIdentityErrorMessage(error, '用户信息更新失败');
-      setRowErrors((current) => ({
-        ...current,
-        [userId]: message,
+  const dismissPinAction = useCallback(() => {
+    setPinAction(null);
+    setPin('');
+    setPinConfirmation('');
+    setPinError('');
+  }, []);
+
+  useEffect(() => {
+    if (!pinAction) return;
+    const modalRoot = pinModalRootRef.current;
+    const dialog = pinDialogRef.current;
+    if (!modalRoot || !dialog) return;
+
+    const background = Array.from(document.body.children)
+      .filter((element): element is HTMLElement => element instanceof HTMLElement && element !== modalRoot)
+      .map((element) => ({
+        element,
+        ariaHidden: element.getAttribute('aria-hidden'),
+        inert: element.inert,
       }));
-      return message;
-    } finally {
-      setBusyUserId(null);
-    }
+    background.forEach(({ element }) => {
+      element.inert = true;
+      element.setAttribute('aria-hidden', 'true');
+    });
+
+    const focusableElements = () => Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    ));
+    focusableElements()[0]?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !mutationLockRef.current.locked) {
+        event.preventDefault();
+        event.stopPropagation();
+        dismissPinAction();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+
+      const focusable = focusableElements();
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!dialog.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      background.forEach(({ element, ariaHidden, inert }) => {
+        element.inert = inert;
+        if (ariaHidden === null) element.removeAttribute('aria-hidden');
+        else element.setAttribute('aria-hidden', ariaHidden);
+      });
+      pinTriggerRef.current?.focus();
+      pinTriggerRef.current = null;
+    };
+  }, [dismissPinAction, pinAction]);
+
+  const executeMutation = async <T,>(request: MutationRequest<T>): Promise<void> => {
+    await mutationLockRef.current.run(async () => {
+      setIsMutating(true);
+      setMutatingUserId(request.targetUserId ?? null);
+      if (request.targetUserId) {
+        setRowErrors((current) => ({ ...current, [request.targetUserId!]: '' }));
+        setRowWarnings((current) => ({ ...current, [request.targetUserId!]: '' }));
+      }
+
+      try {
+        const outcome = await runLocalUserMutation(
+          request.mutate,
+          request.applySavedValue,
+          refreshUsers
+        );
+        if (outcome.status === 'failed') {
+          request.onFailure(localIdentityErrorMessage(outcome.error, '用户信息更新失败'));
+          return;
+        }
+        if (outcome.refreshError) {
+          const userId = request.savedUserId(outcome.value);
+          setRowWarnings((current) => ({ ...current, [userId]: '已保存，但列表刷新失败' }));
+        }
+      } finally {
+        setIsMutating(false);
+        setMutatingUserId(null);
+      }
+    });
   };
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (mutationLockRef.current.locked) return;
     const displayName = newUser.displayName.trim();
     if (!displayName) {
       setCreateError('请输入用户姓名');
@@ -103,21 +207,20 @@ export function LocalUsersSettings() {
     }
 
     setCreateError('');
-    setIsCreating(true);
-    try {
-      await apiClient.createLocalUser({
+    await executeMutation({
+      mutate: () => apiClient.createLocalUser({
         displayName,
         role: newUser.role,
         ...(newUser.role === 'admin' ? { pin: newUser.pin } : {}),
-      });
-      await refreshUsers();
-      setNewUser(emptyNewUserForm());
-      setIsCreateOpen(false);
-    } catch (error) {
-      setCreateError(localIdentityErrorMessage(error, '新建用户失败'));
-    } finally {
-      setIsCreating(false);
-    }
+      }),
+      applySavedValue: ({ user }) => {
+        syncUser(user);
+        setNewUser(emptyNewUserForm());
+        setIsCreateOpen(false);
+      },
+      savedUserId: ({ user }) => user.id,
+      onFailure: setCreateError,
+    });
   };
 
   const startRename = (user: LocalUser) => {
@@ -128,25 +231,40 @@ export function LocalUsersSettings() {
 
   const handleRename = async (event: FormEvent<HTMLFormElement>, user: LocalUser) => {
     event.preventDefault();
+    if (mutationLockRef.current.locked) return;
     const displayName = renameValue.trim();
     if (!displayName) {
       setRowErrors((current) => ({ ...current, [user.id]: '请输入用户姓名' }));
       return;
     }
-    const mutationError = await mutateUser(user.id, () => apiClient.updateLocalUser(user.id, { displayName }));
-    if (!mutationError) {
-      setRenamingUserId(null);
-      setRenameValue('');
-    }
+    await executeMutation({
+      targetUserId: user.id,
+      mutate: () => apiClient.updateLocalUser(user.id, { displayName }),
+      applySavedValue: ({ user: savedUser }) => {
+        syncUser(savedUser);
+        setRenamingUserId(null);
+        setRenameValue('');
+      },
+      savedUserId: ({ user: savedUser }) => savedUser.id,
+      onFailure: (message) => setRowErrors((current) => ({ ...current, [user.id]: message })),
+    });
   };
 
   const handleActiveChange = async (user: LocalUser) => {
+    if (mutationLockRef.current.locked) return;
     if (user.isActive && user.id === currentUser?.id && currentUser.role === 'admin') return;
     if (user.isActive && !window.confirm(`确定要停用“${user.displayName}”吗？`)) return;
-    await mutateUser(user.id, () => apiClient.updateLocalUser(user.id, { isActive: !user.isActive }));
+    await executeMutation({
+      targetUserId: user.id,
+      mutate: () => apiClient.updateLocalUser(user.id, { isActive: !user.isActive }),
+      applySavedValue: ({ user: savedUser }) => syncUser(savedUser),
+      savedUserId: ({ user: savedUser }) => savedUser.id,
+      onFailure: (message) => setRowErrors((current) => ({ ...current, [user.id]: message })),
+    });
   };
 
   const handleRoleChange = async (user: LocalUser) => {
+    if (mutationLockRef.current.locked) return;
     if (user.role === 'publisher') {
       openPinAction({ kind: 'promote', user });
       return;
@@ -156,10 +274,18 @@ export function LocalUsersSettings() {
       `确定要将“${user.displayName}”改为发布者吗？确认后将移除该用户的管理员 PIN。`
     );
     if (!confirmed) return;
-    await mutateUser(user.id, () => apiClient.updateLocalUser(user.id, { role: 'publisher' }));
+    await executeMutation({
+      targetUserId: user.id,
+      mutate: () => apiClient.updateLocalUser(user.id, { role: 'publisher' }),
+      applySavedValue: ({ user: savedUser }) => syncUser(savedUser),
+      savedUserId: ({ user: savedUser }) => savedUser.id,
+      onFailure: (message) => setRowErrors((current) => ({ ...current, [user.id]: message })),
+    });
   };
 
   const openPinAction = (action: PinAction) => {
+    if (mutationLockRef.current.locked) return;
+    pinTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setRowErrors((current) => ({ ...current, [action.user.id]: '' }));
     setPinAction(action);
     setPin('');
@@ -168,16 +294,12 @@ export function LocalUsersSettings() {
   };
 
   const closePinAction = () => {
-    if (busyUserId) return;
-    setPinAction(null);
-    setPin('');
-    setPinConfirmation('');
-    setPinError('');
+    if (!mutationLockRef.current.locked) dismissPinAction();
   };
 
   const handlePinAction = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!pinAction) return;
+    if (!pinAction || mutationLockRef.current.locked) return;
     const validationError = validatePinPair(pin, pinConfirmation);
     if (validationError) {
       setPinError(validationError);
@@ -185,12 +307,32 @@ export function LocalUsersSettings() {
     }
 
     setPinError('');
-    const mutation = pinAction.kind === 'promote'
-      ? () => apiClient.updateLocalUser(pinAction.user.id, { role: 'admin', pin })
-      : () => apiClient.resetLocalUserPin(pinAction.user.id, pin);
-    const mutationError = await mutateUser(pinAction.user.id, mutation);
-    if (mutationError) setPinError(mutationError);
-    else closePinAction();
+    const userId = pinAction.user.id;
+    const onFailure = (message: string) => {
+      setPinError(message);
+      setRowErrors((current) => ({ ...current, [userId]: message }));
+    };
+    if (pinAction.kind === 'promote') {
+      await executeMutation({
+        targetUserId: userId,
+        mutate: () => apiClient.updateLocalUser(userId, { role: 'admin', pin }),
+        applySavedValue: ({ user }) => {
+          syncUser(user);
+          dismissPinAction();
+        },
+        savedUserId: ({ user }) => user.id,
+        onFailure,
+      });
+      return;
+    }
+
+    await executeMutation({
+      targetUserId: userId,
+      mutate: () => apiClient.resetLocalUserPin(userId, pin),
+      applySavedValue: dismissPinAction,
+      savedUserId: () => userId,
+      onFailure,
+    });
   };
 
   return (
@@ -215,6 +357,7 @@ export function LocalUsersSettings() {
               setCreateError('');
               setIsCreateOpen(true);
             }}
+            disabled={isMutating}
             className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-tech-blue-dark"
           >
             <UserPlus size={16} aria-hidden="true" />
@@ -232,6 +375,7 @@ export function LocalUsersSettings() {
             <button
               type="button"
               onClick={() => setIsCreateOpen(false)}
+              disabled={isMutating}
               className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-tech-muted transition hover:bg-tech-bg hover:text-tech-text"
               aria-label="关闭新建用户表单"
               title="关闭"
@@ -287,18 +431,18 @@ export function LocalUsersSettings() {
             <button
               type="button"
               onClick={() => setIsCreateOpen(false)}
-              disabled={isCreating}
+              disabled={isMutating}
               className="rounded-lg px-4 py-2 text-sm font-medium text-tech-muted transition hover:bg-tech-bg hover:text-tech-text disabled:opacity-60"
             >
               取消
             </button>
             <button
               type="submit"
-              disabled={isCreating}
+              disabled={isMutating}
               className="inline-flex items-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-tech-blue-dark disabled:cursor-not-allowed disabled:opacity-60"
             >
               <UserPlus size={16} aria-hidden="true" />
-              {isCreating ? '正在创建...' : '创建用户'}
+              {isMutating ? '正在创建...' : '创建用户'}
             </button>
           </div>
         </form>
@@ -307,10 +451,10 @@ export function LocalUsersSettings() {
       <div className="space-y-3">
         {users.map((user) => {
           const isCurrent = user.id === currentUser?.id;
-          const isBusy = busyUserId === user.id;
+          const isBusy = mutatingUserId === user.id;
           const cannotDisableCurrentAdmin = isCurrent && currentUser?.role === 'admin' && user.isActive;
           return (
-            <div key={user.id} className="rounded-lg border border-tech-border bg-tech-surface p-5">
+            <div key={user.id} aria-busy={isBusy} className="rounded-lg border border-tech-border bg-tech-surface p-5">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
@@ -340,7 +484,7 @@ export function LocalUsersSettings() {
                     <button
                       type="button"
                       onClick={() => startRename(user)}
-                      disabled={isBusy}
+                      disabled={isMutating}
                       className={secondaryButtonClassName}
                     >
                       <Pencil size={15} aria-hidden="true" />
@@ -349,7 +493,7 @@ export function LocalUsersSettings() {
                     <button
                       type="button"
                       onClick={() => void handleRoleChange(user)}
-                      disabled={isBusy}
+                      disabled={isMutating}
                       className={secondaryButtonClassName}
                     >
                       <ShieldCheck size={15} aria-hidden="true" />
@@ -359,7 +503,7 @@ export function LocalUsersSettings() {
                       <button
                         type="button"
                         onClick={() => openPinAction({ kind: 'reset', user })}
-                        disabled={isBusy}
+                        disabled={isMutating}
                         className={secondaryButtonClassName}
                       >
                         <KeyRound size={15} aria-hidden="true" />
@@ -369,7 +513,7 @@ export function LocalUsersSettings() {
                     <button
                       type="button"
                       onClick={() => void handleActiveChange(user)}
-                      disabled={isBusy || cannotDisableCurrentAdmin}
+                      disabled={isMutating || cannotDisableCurrentAdmin}
                       title={cannotDisableCurrentAdmin ? '当前管理员会话中不能停用自己的用户' : user.isActive ? '停用用户' : '启用用户'}
                       className={user.isActive ? dangerButtonClassName : secondaryButtonClassName}
                     >
@@ -390,13 +534,13 @@ export function LocalUsersSettings() {
                     onChange={(event) => setRenameValue(event.target.value)}
                     className={`${inputClassName} sm:max-w-sm`}
                   />
-                  <button type="submit" disabled={isBusy} className="rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-tech-blue-dark disabled:opacity-60">
+                  <button type="submit" disabled={isMutating} className="rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-tech-blue-dark disabled:opacity-60">
                     保存
                   </button>
                   <button
                     type="button"
                     onClick={() => setRenamingUserId(null)}
-                    disabled={isBusy}
+                    disabled={isMutating}
                     className="rounded-lg px-4 py-2 text-sm font-medium text-tech-muted transition hover:bg-tech-bg hover:text-tech-text disabled:opacity-60"
                   >
                     取消
@@ -404,18 +548,22 @@ export function LocalUsersSettings() {
                 </form>
               )}
               {rowErrors[user.id] && <div className="mt-4"><InlineError message={rowErrors[user.id]} /></div>}
+              {rowWarnings[user.id] && <div className="mt-4"><InlineWarning message={rowWarnings[user.id]} /></div>}
             </div>
           );
         })}
       </div>
 
-      {pinAction && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      {pinAction && createPortal(
+        <div ref={pinModalRootRef} className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <form
+            ref={pinDialogRef}
             onSubmit={handlePinAction}
             role="dialog"
             aria-modal="true"
             aria-labelledby="local-user-pin-action-title"
+            aria-describedby="local-user-pin-action-description"
+            tabIndex={-1}
             className="w-full max-w-sm rounded-lg border border-tech-border bg-tech-surface shadow-xl"
           >
             <div className="border-b border-tech-border px-5 py-4">
@@ -425,32 +573,33 @@ export function LocalUsersSettings() {
                   {pinAction.kind === 'promote' ? '设置新管理员 PIN' : '重置管理员 PIN'}
                 </h4>
               </div>
-              <p className="mt-1 text-sm text-tech-muted">{pinAction.user.displayName}</p>
+              <p id="local-user-pin-action-description" className="mt-1 text-sm text-tech-muted">{pinAction.user.displayName}</p>
             </div>
             <div className="space-y-4 px-5 py-5">
-              <PinField label="新 PIN" inputId="local-user-new-pin" value={pin} onChange={setPin} autoFocus />
+              <PinField label="新 PIN" inputId="local-user-new-pin" value={pin} onChange={setPin} />
               <PinField label="确认新 PIN" inputId="local-user-new-pin-confirmation" value={pinConfirmation} onChange={setPinConfirmation} />
               {pinError && <InlineError message={pinError} />}
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={closePinAction}
-                  disabled={Boolean(busyUserId)}
+                  disabled={isMutating}
                   className="rounded-lg px-4 py-2 text-sm font-medium text-tech-muted transition hover:bg-tech-bg hover:text-tech-text disabled:opacity-60"
                 >
                   取消
                 </button>
                 <button
                   type="submit"
-                  disabled={Boolean(busyUserId)}
+                  disabled={isMutating}
                   className="rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-tech-blue-dark disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {busyUserId ? '正在保存...' : '确认保存'}
+                  {isMutating ? '正在保存...' : '确认保存'}
                 </button>
               </div>
             </div>
           </form>
-        </div>
+        </div>,
+        document.body
       )}
     </section>
   );
@@ -470,13 +619,11 @@ function PinField({
   inputId,
   value,
   onChange,
-  autoFocus = false,
 }: {
   label: string;
   inputId: string;
   value: string;
   onChange(value: string): void;
-  autoFocus?: boolean;
 }) {
   return (
     <FormField label={label} inputId={inputId}>
@@ -485,7 +632,6 @@ function PinField({
         type="password"
         inputMode="numeric"
         autoComplete="new-password"
-        autoFocus={autoFocus}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className={inputClassName}
@@ -497,6 +643,15 @@ function PinField({
 function InlineError({ message }: { message: string }) {
   return (
     <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2.5 text-sm text-red-700" role="alert">
+      <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+      <span>{message}</span>
+    </div>
+  );
+}
+
+function InlineWarning({ message }: { message: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800" role="status">
       <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
       <span>{message}</span>
     </div>

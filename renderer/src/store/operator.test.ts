@@ -80,3 +80,41 @@ test('initialization remains unresolved when saved publisher restoration fails',
   assert.equal(store.getState().currentUser, null);
   assert.equal(store.getState().token, null);
 });
+
+test('syncUser immediately adopts a current administrator demotion and publisher persistence', async () => {
+  const storage = memoryStorage();
+  const store = createOperatorStore(identityClient(), storage);
+  await store.getState().bootstrap('管理员', '123456');
+  const demoted: LocalUser = {
+    ...recoveredAdmin,
+    displayName: '已改名的发布者',
+    role: 'publisher',
+    updatedAt: '2026-08-10T01:00:00.000Z',
+  };
+
+  store.getState().syncUser(demoted);
+
+  assert.equal(store.getState().currentUser, demoted);
+  assert.equal(store.getState().users[0], demoted);
+  assert.equal(storage.getItem('douyin-ai-video.last-publisher-id'), demoted.id);
+});
+
+test('refreshUsers reconciles the latest same-id current user and clears publisher persistence after promotion', async () => {
+  const promoted: LocalUser = {
+    ...publisher,
+    displayName: '已改名的管理员',
+    role: 'admin',
+    updatedAt: '2026-08-10T02:00:00.000Z',
+  };
+  const storage = memoryStorage({ 'douyin-ai-video.last-publisher-id': publisher.id });
+  const store = createOperatorStore(identityClient({
+    getLocalUsers: async () => ({ users: [promoted], needsBootstrap: false }),
+  }), storage);
+  await store.getState().switchUser(publisher.id);
+
+  await store.getState().refreshUsers();
+
+  assert.equal(store.getState().currentUser, promoted);
+  assert.equal(store.getState().users[0], promoted);
+  assert.equal(storage.getItem('douyin-ai-video.last-publisher-id'), null);
+});

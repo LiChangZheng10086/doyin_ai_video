@@ -5,7 +5,9 @@ import type { LocalSession, LocalSessionResponse, LocalUser, LocalUsersResponse 
 import {
   canManageUsers,
   canWithdrawPublished,
+  createLocalUserMutationLock,
   localIdentityErrorMessage,
+  runLocalUserMutation,
   settingsSections,
   validateAdminSetup,
 } from "./localUsers.js";
@@ -69,11 +71,49 @@ function identityClient(overrides: Partial<LocalIdentityClient> = {}): LocalIden
   };
 }
 
-test("admin-only permissions stay server-aligned", () => {
+test("publisher permissions filter administrator-only actions", () => {
   assert.equal(canManageUsers(admin), true);
   assert.equal(canManageUsers(publisher), false);
   assert.equal(canWithdrawPublished(admin), true);
   assert.equal(canWithdrawPublished(publisher), false);
+});
+
+test("a saved mutation remains successful when its follow-up refresh fails", async () => {
+  const events: string[] = [];
+
+  const outcome = await runLocalUserMutation(
+    async () => {
+      events.push("mutated");
+      return publisher;
+    },
+    (user) => {
+      events.push(`applied:${user.id}`);
+    },
+    async () => {
+      events.push("refresh");
+      throw new Error("offline");
+    }
+  );
+
+  assert.equal(outcome.status, "saved");
+  assert.match(String(outcome.refreshError), /offline/);
+  assert.deepEqual(events, ["mutated", `applied:${publisher.id}`, "refresh"]);
+});
+
+test("the local-user mutation lock rejects overlapping operations and unlocks afterwards", async () => {
+  const lock = createLocalUserMutationLock();
+  const pending = deferred<void>();
+  const first = lock.run(async () => {
+    await pending.promise;
+    return "first";
+  });
+
+  const overlapping = await lock.run(async () => "second");
+  assert.deepEqual(overlapping, { acquired: false });
+
+  pending.resolve();
+  assert.deepEqual(await first, { acquired: true, value: "first" });
+  assert.deepEqual(await lock.run(async () => "third"), { acquired: true, value: "third" });
 });
 
 test("validateAdminSetup requires a name, matching 6-12 digit pins", () => {

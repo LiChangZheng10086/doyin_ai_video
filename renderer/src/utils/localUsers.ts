@@ -27,6 +27,50 @@ export const settingsSections = [
   { id: 'advanced', label: 'Advanced', description: '安全与提示' },
 ] as const;
 
+export type LocalUserMutationOutcome<T = unknown> =
+  | { status: 'saved'; value: T; refreshError?: unknown }
+  | { status: 'failed'; error: unknown };
+
+export async function runLocalUserMutation<T>(
+  mutate: () => Promise<T>,
+  applySavedValue: (value: T) => void,
+  refresh: () => Promise<void>
+): Promise<LocalUserMutationOutcome<T>> {
+  let value: T;
+  try {
+    value = await mutate();
+  } catch (error) {
+    return { status: 'failed', error };
+  }
+
+  applySavedValue(value);
+  try {
+    await refresh();
+    return { status: 'saved', value };
+  } catch (refreshError) {
+    return { status: 'saved', value, refreshError };
+  }
+}
+
+export function createLocalUserMutationLock() {
+  let locked = false;
+
+  return {
+    get locked(): boolean {
+      return locked;
+    },
+    async run<T>(operation: () => Promise<T>): Promise<{ acquired: true; value: T } | { acquired: false }> {
+      if (locked) return { acquired: false };
+      locked = true;
+      try {
+        return { acquired: true, value: await operation() };
+      } finally {
+        locked = false;
+      }
+    },
+  };
+}
+
 export function validateAdminSetup(
   displayName: string,
   pin: string,
