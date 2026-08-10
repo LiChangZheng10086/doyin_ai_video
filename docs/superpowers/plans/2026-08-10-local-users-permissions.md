@@ -497,6 +497,7 @@ registerLocalUserRoutes(app, { users: localUsers, sessions: localSessions });
 Update CORS:
 
 ```typescript
+res.header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS");
 res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Local-Session");
 ```
 
