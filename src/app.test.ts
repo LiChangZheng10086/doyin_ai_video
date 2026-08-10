@@ -466,20 +466,21 @@ test("publisher admin-only requests are byte-stable while admin can publish, wit
   }
 });
 
-test("due check is session-free, rejects actor overrides and records the system actor once", async () => {
+test("due check is session-free, deduplicates each schedule cycle and records the system actor", async () => {
   const fixture = await publishingApiFixture();
   try {
     const created = await previewAndCreatePackage(fixture);
     const taskId = created.tasks[0].id as string;
-    const scheduledAt = new Date(Date.now() + 25).toISOString();
+    const scheduledAt = new Date(Date.now() + 50).toISOString();
     const scheduled = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/schedule`, {
       method: "PATCH",
       token: fixture.publisherToken,
       body: { scheduledAt },
     });
     assert.equal(scheduled.response.status, 200);
+    assert.equal(scheduled.body.task.dueNotifiedAt, undefined);
 
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await new Promise((resolve) => setTimeout(resolve, 75));
     const rejected = await jsonFetch(fixture.baseUrl, "/api/publishing/due/check", {
       method: "POST",
       body: { actor: { role: "admin" }, status: "published" },
@@ -490,16 +491,88 @@ test("due check is session-free, rejects actor overrides and records the system 
     const first = await jsonFetch(fixture.baseUrl, "/api/publishing/due/check", { method: "POST" });
     assert.equal(first.response.status, 200);
     assert.equal(first.body.notifications.length, 1);
+    assert.equal(first.body.notifications[0].taskId, taskId);
     const second = await jsonFetch(fixture.baseUrl, "/api/publishing/due/check", { method: "POST" });
     assert.equal(second.response.status, 200);
     assert.equal(second.body.notifications.length, 0);
+
+    const nextScheduledAt = new Date(Date.now() + 50).toISOString();
+    const rescheduled = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/schedule`, {
+      method: "PATCH",
+      token: fixture.publisherToken,
+      body: { scheduledAt: nextScheduledAt },
+    });
+    assert.equal(rescheduled.response.status, 200);
+    assert.equal(rescheduled.body.task.status, "scheduled");
+    assert.equal(rescheduled.body.task.dueNotifiedAt, undefined);
+
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    const nextCycle = await jsonFetch(fixture.baseUrl, "/api/publishing/due/check", { method: "POST" });
+    assert.equal(nextCycle.response.status, 200);
+    assert.equal(nextCycle.body.notifications.length, 1);
+    assert.equal(nextCycle.body.notifications[0].taskId, taskId);
+    const nextCycleRepeat = await jsonFetch(fixture.baseUrl, "/api/publishing/due/check", { method: "POST" });
+    assert.equal(nextCycleRepeat.body.notifications.length, 0);
 
     const adminSession = await fixture.openAdmin();
     const detail = await jsonFetch(fixture.baseUrl, `/api/publishing/packages/${created.package.id}`, {
       token: adminSession.body.session.token,
     });
-    const dueAudit = detail.body.package.audit.find((event: Record<string, any>) => event.action === "task.due");
-    assert.deepEqual(dueAudit.actor, { userId: "system", displayName: "系统", role: "system" });
+    const dueAudits = detail.body.package.audit.filter((event: Record<string, any>) => event.action === "task.due");
+    assert.equal(dueAudits.length, 2);
+    for (const dueAudit of dueAudits) {
+      assert.deepEqual(dueAudit.actor, { userId: "system", displayName: "系统", role: "system" });
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("due check leaves cancelled and trashed scheduled tasks untouched", async () => {
+  const fixture = await publishingApiFixture();
+  try {
+    const created = await previewAndCreatePackage(fixture);
+    const packageId = created.package.id as string;
+    const taskId = created.tasks[0].id as string;
+    const cancelledAt = new Date(Date.now() + 50).toISOString();
+    await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/schedule`, {
+      method: "PATCH",
+      token: fixture.publisherToken,
+      body: { scheduledAt: cancelledAt },
+    });
+    const cancelled = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/cancel`, {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { confirmation: true },
+    });
+    assert.equal(cancelled.body.task.status, "cancelled");
+
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    const beforeCancelledCheck = await fixture.readPublishingBytes();
+    const cancelledDue = await jsonFetch(fixture.baseUrl, "/api/publishing/due/check", { method: "POST" });
+    assert.deepEqual(cancelledDue.body.notifications, []);
+    assert.deepEqual(await fixture.readPublishingBytes(), beforeCancelledCheck);
+
+    const trashedAt = new Date(Date.now() + 50).toISOString();
+    const restored = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/restore`, {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { scheduledAt: trashedAt },
+    });
+    assert.equal(restored.body.task.status, "scheduled");
+    const adminSession = await fixture.openAdmin();
+    const trashed = await jsonFetch(fixture.baseUrl, `/api/publishing/packages/${packageId}`, {
+      method: "DELETE",
+      token: adminSession.body.session.token,
+      body: { confirmation: true },
+    });
+    assert.equal(trashed.body.package.state, "trashed");
+
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    const beforeTrashedCheck = await fixture.readPublishingBytes();
+    const trashedDue = await jsonFetch(fixture.baseUrl, "/api/publishing/due/check", { method: "POST" });
+    assert.deepEqual(trashedDue.body.notifications, []);
+    assert.deepEqual(await fixture.readPublishingBytes(), beforeTrashedCheck);
   } finally {
     await fixture.close();
   }

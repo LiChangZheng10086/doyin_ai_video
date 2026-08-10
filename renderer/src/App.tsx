@@ -12,6 +12,7 @@ import { ApiKeyStatusIndicator } from './components/ApiKeyStatusIndicator';
 import { CookieStatusIndicator } from './components/CookieStatusIndicator';
 import { LocalUserSetup } from './components/LocalUserSetup';
 import { OperatorSwitcher } from './components/OperatorSwitcher';
+import { PublishingDuePoller } from './components/PublishingDuePoller';
 import { useOperatorStore } from './store/operator';
 
 function Navigation({ onRequestRecovery }: { onRequestRecovery: () => void }) {
@@ -99,7 +100,7 @@ function Navigation({ onRequestRecovery }: { onRequestRecovery: () => void }) {
   );
 }
 
-function App() {
+function AppContent() {
   const initialize = useOperatorStore((state) => state.initialize);
   const initialized = useOperatorStore((state) => state.initialized);
   const needsBootstrap = useOperatorStore((state) => state.needsBootstrap);
@@ -137,6 +138,15 @@ function App() {
     <BrowserRouter>
       <Navigation onRequestRecovery={() => setRecoveryRequested(true)} />
     </BrowserRouter>
+  );
+}
+
+function App() {
+  return (
+    <>
+      <PublishingDuePoller />
+      <AppContent />
+    </>
   );
 }
 
