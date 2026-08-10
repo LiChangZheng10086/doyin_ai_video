@@ -15,6 +15,7 @@ import { registerConfigRoutes } from "./lib/config-server.js";
 import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import { simplifyChineseValue } from "./lib/chinese.js";
 import { buildSkillContext, getSkillErrorMessage, isRetryableSkillError } from "./lib/skill-generation.js";
+import { resolveJobVideo, VideoOutputError } from "./lib/video-output.js";
 import type { CollectionRecord, PipelineStep, ScriptAsset } from "./types.js";
 
 export interface ServerConfig {
@@ -38,6 +39,7 @@ export interface ServerConfig {
   hyperframesUseElectronAsNode?: boolean;
   hyperframesBrowserPath?: string;
   resolveAiConfig?: () => Promise<AiRuntimeConfig | null>;
+  resolveJobVideo?: typeof resolveJobVideo;
 }
 
 export interface AiRuntimeConfig {
@@ -114,6 +116,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   const jobs = new JobStore(storage, cleaner, media, asr, videoGenerator);
   await jobs.init();
+  const resolveVideo = config.resolveJobVideo ?? resolveJobVideo;
 
   const collections = new CollectionStore(storage, jobs, {
     cookiesFile: config.cookiesFile,
@@ -468,11 +471,11 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
 
     try {
-      const videoFullPath = await resolveVideoFile(storage, config.storagePath, record);
-      res.download(videoFullPath, `${record.topic}-${record.id.slice(0, 8)}.mp4`);
+      const video = await resolveVideo(config.storagePath, record);
+      res.download(video.path, `${record.topic}-${record.id.slice(0, 8)}.mp4`);
     } catch (error) {
-      if (error instanceof VideoFileError) {
-        res.status(404).json({ message: error.message });
+      if (error instanceof VideoOutputError) {
+        res.status(error.status).json({ code: error.code, message: error.message });
         return;
       }
       if (isMissingFileError(error)) {
@@ -491,13 +494,13 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
 
     try {
-      const videoFullPath = await resolveVideoFile(storage, config.storagePath, record);
-      res.setHeader("Content-Type", "video/mp4");
+      const video = await resolveVideo(config.storagePath, record);
+      res.setHeader("Content-Type", video.mimeType);
       res.setHeader("Content-Disposition", "inline");
-      res.sendFile(videoFullPath);
+      res.sendFile(video.path);
     } catch (error) {
-      if (error instanceof VideoFileError) {
-        res.status(404).json({ message: error.message });
+      if (error instanceof VideoOutputError) {
+        res.status(error.status).json({ code: error.code, message: error.message });
         return;
       }
       if (isMissingFileError(error)) {
@@ -1741,23 +1744,6 @@ ${tpl.topic}
   return app;
 }
 
-async function resolveVideoFile(storage: LocalStorage, storagePath: string, record: { id: string; videoOutputPath?: string }) {
-  const script = await storage.readJson<ScriptAsset>(path.join("processed", "scripts", `${record.id}.json`));
-  const videoPath = script.hyperframesVideo?.videoPath ?? record.videoOutputPath;
-  if (!videoPath) {
-    throw new VideoFileError("video file not generated yet");
-  }
-
-  const videoFullPath = resolveOutputPath(storagePath, videoPath);
-  if (!existsSync(videoFullPath)) {
-    throw new VideoFileError("video file not found on disk");
-  }
-
-  return videoFullPath;
-}
-
-class VideoFileError extends Error {}
-
 async function generateSkillForCollection(
   collectionId: string,
   nickname: string,
@@ -1853,11 +1839,4 @@ ${aggregatedText}`;
     skillPath: skillsDir,
     skillGeneratedAt: new Date().toISOString(),
   });
-}
-
-function resolveOutputPath(storagePath: string, outputPath: string) {
-  if (path.isAbsolute(outputPath)) {
-    return outputPath;
-  }
-  return path.join(storagePath, outputPath.replace(/^storage\//, ""));
 }

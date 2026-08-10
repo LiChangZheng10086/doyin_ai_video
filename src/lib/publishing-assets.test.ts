@@ -1,0 +1,481 @@
+import assert from "node:assert/strict";
+import { constants } from "node:fs";
+import {
+  copyFile as fsCopyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import type {
+  ActorSnapshot,
+  DeliveryPackage,
+  PublishTask,
+  PublishingIndex,
+  PublishingPackageDetail,
+} from "../types.js";
+import {
+  PublishingAssetError,
+  PublishingAssetService,
+  type PackageAssetInput,
+} from "./publishing-assets.js";
+
+const NOW = new Date("2026-08-10T08:00:00.000Z");
+const ACTOR: ActorSnapshot = { userId: "user-1", displayName: "发布员", role: "publisher" };
+
+function task(
+  id: string,
+  platform: PublishTask["platform"],
+  packageId = "package-1",
+): PublishTask {
+  return {
+    id,
+    packageId,
+    platform,
+    title: `${platform} 标题`,
+    description: `${platform} 正文`,
+    hashtags: ["内容创作", "效率"],
+    copySource: "ai",
+    status: "ready",
+    contentRevision: 1,
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+  };
+}
+
+async function fixture(overrides: Partial<PackageAssetInput> = {}) {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "publishing-assets-"));
+  const sourceVideoPath = path.join(storageRoot, "output", "videos", "job-1", "video.mp4");
+  await mkdir(path.dirname(sourceVideoPath), { recursive: true });
+  await writeFile(sourceVideoPath, Buffer.from("source mp4 bytes"));
+  return {
+    storageRoot,
+    input: {
+      packageId: "package-1",
+      sourceJobId: "job-1",
+      version: 1,
+      sourceVideoPath,
+      title: "发布包标题",
+      tasks: [task("task-douyin", "douyin"), task("task-bilibili", "bilibili")],
+      actor: ACTOR,
+      ...overrides,
+    } satisfies PackageAssetInput,
+  };
+}
+
+async function listFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  async function visit(directory: string) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(fullPath);
+      else files.push(path.relative(root, fullPath));
+    }
+  }
+  await visit(root);
+  return files.sort();
+}
+
+async function directoryBytes(root: string): Promise<Record<string, string>> {
+  const result: Record<string, string> = {};
+  for (const relativePath of await listFiles(root)) {
+    result[relativePath] = (await readFile(path.join(root, relativePath))).toString("base64");
+  }
+  return result;
+}
+
+function packageRecord(result: Awaited<ReturnType<PublishingAssetService["createPackageAssets"]>>): DeliveryPackage {
+  return {
+    id: "package-1",
+    sourceJobId: "job-1",
+    version: 1,
+    state: "active",
+    title: "发布包标题",
+    packagePath: result.packagePath,
+    videoPath: result.videoPath,
+    coverPath: result.coverPath,
+    videoSha256: result.videoSha256,
+    videoSize: result.videoSize,
+    videoMethod: result.videoMethod,
+    assetHealth: result.assetHealth,
+    createdBy: ACTOR,
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+  };
+}
+
+test("packages one cloned MP4 with safe manifest and shared platform projections", async () => {
+  const { storageRoot, input } = await fixture();
+  (input.actor as ActorSnapshot & { apiKey: string }).apiKey = "must-not-be-projected";
+  const copyCalls: Array<{ source: string; destination: string; mode?: number }> = [];
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    copyFile: async (source, destination, mode) => {
+      copyCalls.push({ source: source.toString(), destination: destination.toString(), mode });
+      await fsCopyFile(source, destination);
+    },
+    runCommand: async (_command, args) => {
+      await writeFile(args.at(-1)!, "cover bytes");
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  const result = await service.createPackageAssets(input);
+  const files = await listFiles(result.packagePath);
+  const manifest = JSON.parse(await readFile(path.join(result.packagePath, "manifest.json"), "utf8")) as {
+    tasks: Array<{ videoPath: string }>;
+  };
+
+  assert.equal(copyCalls[0].mode, constants.COPYFILE_FICLONE);
+  assert.equal(result.videoMethod, "clone");
+  assert.equal(files.filter((file) => file.endsWith(".mp4")).length, 1);
+  assert.equal(files.filter((file) => path.basename(file) === "video.mp4").length, 1);
+  assert.deepEqual(manifest.tasks.map((entry) => entry.videoPath), ["video.mp4", "video.mp4"]);
+  for (const platform of ["douyin", "bilibili"]) {
+    assert.deepEqual(
+      files.filter((file) => file.startsWith(`platforms/${platform}/`)).map((file) => path.basename(file)),
+      ["description.txt", "hashtags.txt", "publish.txt", "title.txt"],
+    );
+  }
+  assert.doesNotMatch(JSON.stringify(manifest), /api.?key|cookie|password|pin(hash|salt)?|secret|token/iu);
+  assert.doesNotMatch(files.join("\n"), /api.?key|cookie|password|pin|secret|token/iu);
+});
+
+test("accepts the shared resolver canonical source path", async () => {
+  const { storageRoot, input } = await fixture();
+  input.sourceVideoPath = await realpath(input.sourceVideoPath);
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+
+  const result = await service.createPackageAssets(input);
+
+  assert.deepEqual(await readFile(result.videoPath), Buffer.from("source mp4 bytes"));
+});
+
+test("rejects a runtime platform path escape before writing package assets", async () => {
+  const { storageRoot, input } = await fixture({
+    tasks: [{ ...task("task-escape", "douyin"), platform: "../../escaped" as PublishTask["platform"] }],
+  });
+  const service = new PublishingAssetService({ storageRoot, now: () => NOW });
+
+  await assert.rejects(service.createPackageAssets(input), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.code, "publish_video_unreadable");
+    return true;
+  });
+  await assert.rejects(stat(path.join(storageRoot, "output", "publishing", "job-1", "escaped")), { code: "ENOENT" });
+});
+
+test("falls back to ordinary copy when clone is unsupported", async () => {
+  const { storageRoot, input } = await fixture();
+  const modes: Array<number | undefined> = [];
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    copyFile: async (source, destination, mode) => {
+      modes.push(mode);
+      if (mode === constants.COPYFILE_FICLONE) throw Object.assign(new Error("unsupported"), { code: "EINVAL" });
+      await fsCopyFile(source, destination);
+    },
+    runCommand: async () => { throw new Error("ffmpeg unavailable"); },
+  });
+
+  const result = await service.createPackageAssets(input);
+
+  assert.deepEqual(modes, [constants.COPYFILE_FICLONE, undefined]);
+  assert.equal(result.videoMethod, "copy");
+  assert.deepEqual(await readFile(result.videoPath), await readFile(input.sourceVideoPath));
+  assert.equal(result.assetHealth, "missing_cover");
+});
+
+test("removes temporary assets and never exposes a formal directory when clone and copy fail", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    copyFile: async () => { throw Object.assign(new Error("disk failure"), { code: "EIO" }); },
+  });
+
+  await assert.rejects(service.createPackageAssets(input), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.status, 422);
+    assert.equal(error.code, "publish_clone_failed");
+    assert.equal(error.message, "成片复制失败，请检查磁盘空间和文件权限");
+    return true;
+  });
+
+  const sourceDirectory = path.join(storageRoot, "output", "publishing", input.sourceJobId);
+  const entries = await readdir(sourceDirectory).catch(() => []);
+  assert.deepEqual(entries, []);
+});
+
+test("maps setup storage failures to a stable Simplified Chinese error", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    rm: async () => { throw Object.assign(new Error("device full"), { code: "ENOSPC" }); },
+  });
+
+  await assert.rejects(service.createPackageAssets(input), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.status, 422);
+    assert.equal(error.code, "publish_storage_full");
+    assert.equal(error.message, "存储空间不足，无法创建发布包");
+    return true;
+  });
+});
+
+test("returned rollback removes a promoted package without touching the source video", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const result = await service.createPackageAssets(input);
+
+  await result.rollback();
+  await result.rollback();
+
+  await assert.rejects(stat(result.packagePath), { code: "ENOENT" });
+  assert.deepEqual(await readFile(input.sourceVideoPath), Buffer.from("source mp4 bytes"));
+});
+
+test("reuses a readable local cover without invoking FFmpeg", async () => {
+  const { storageRoot, input } = await fixture();
+  const sourceCoverPath = path.join(storageRoot, "output", "covers", "job-1.jpg");
+  await mkdir(path.dirname(sourceCoverPath), { recursive: true });
+  await writeFile(sourceCoverPath, "local cover bytes");
+  input.sourceCoverPath = sourceCoverPath;
+  let commands = 0;
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => {
+      commands += 1;
+      throw new Error("must not run");
+    },
+  });
+
+  const result = await service.createPackageAssets(input);
+
+  assert.equal(commands, 0);
+  assert.equal(result.assetHealth, "healthy");
+  assert.deepEqual(await readFile(result.coverPath!), await readFile(sourceCoverPath));
+});
+
+test("keeps the package usable with missing_cover when FFmpeg extraction fails", async () => {
+  const { storageRoot, input } = await fixture();
+  const calls: Array<{ command: string; args: string[]; timeoutMs: number }> = [];
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async (command, args, options) => {
+      calls.push({ command, args, timeoutMs: options.timeoutMs });
+      throw new Error("extract failed");
+    },
+  });
+
+  const result = await service.createPackageAssets(input);
+
+  assert.equal(result.assetHealth, "missing_cover");
+  assert.equal(result.coverPath, undefined);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "ffmpeg");
+  assert.deepEqual(calls[0].args.slice(0, 8), ["-y", "-ss", "1", "-i", await realpath(input.sourceVideoPath), "-frames:v", "1", "-q:v"]);
+  await assert.rejects(stat(path.join(result.packagePath, "cover.jpg")), { code: "ENOENT" });
+});
+
+test("projection commit swaps all text and rollback restores exact prior bytes", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const result = await service.createPackageAssets(input);
+  const platformsPath = path.join(result.packagePath, "platforms");
+  await writeFile(path.join(platformsPath, "douyin", "legacy.bin"), Buffer.from([0, 1, 2, 255]));
+  const before = await directoryBytes(platformsPath);
+  const changedTasks = input.tasks.map((entry) => ({ ...entry, title: `已编辑 ${entry.title}` }));
+  const detail: PublishingPackageDetail = {
+    package: packageRecord(result),
+    tasks: changedTasks,
+    audit: [],
+  };
+
+  const transaction = await service.stageTextProjection(detail);
+  assert.deepEqual(await directoryBytes(platformsPath), before);
+  await transaction.commit();
+  assert.equal(await readFile(path.join(platformsPath, "douyin", "title.txt"), "utf8"), "已编辑 douyin 标题");
+  assert.equal((await listFiles(platformsPath)).includes("douyin/legacy.bin"), false);
+
+  await transaction.rollback();
+  assert.deepEqual(await directoryBytes(platformsPath), before);
+});
+
+test("refuses to stage projections through a package-directory symlink", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "publishing-assets-link-"));
+  const outsidePackage = await mkdtemp(path.join(tmpdir(), "publishing-assets-outside-"));
+  const linkedPackage = path.join(storageRoot, "output", "publishing", "job-1", "v1-package-1");
+  await mkdir(path.dirname(linkedPackage), { recursive: true });
+  await mkdir(path.join(outsidePackage, "platforms", "douyin"), { recursive: true });
+  await writeFile(path.join(outsidePackage, "platforms", "douyin", "title.txt"), "outside original");
+  await symlink(outsidePackage, linkedPackage, "dir");
+  const service = new PublishingAssetService({ storageRoot, now: () => NOW });
+  const detail: PublishingPackageDetail = {
+    package: {
+      id: "package-1",
+      sourceJobId: "job-1",
+      version: 1,
+      state: "active",
+      title: "标题",
+      packagePath: linkedPackage,
+      videoPath: path.join(linkedPackage, "video.mp4"),
+      videoSha256: "hash",
+      videoSize: 1,
+      videoMethod: "copy",
+      assetHealth: "healthy",
+      createdBy: ACTOR,
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    },
+    tasks: [task("task-1", "douyin")],
+    audit: [],
+  };
+
+  await assert.rejects(service.stageTextProjection(detail), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.code, "publish_video_unreadable");
+    return true;
+  });
+  assert.equal(await readFile(path.join(outsidePackage, "platforms", "douyin", "title.txt"), "utf8"), "outside original");
+  assert.equal((await readdir(outsidePackage)).some((entry) => entry.startsWith(".next-")), false);
+});
+
+test("refuses to read or swap a platform projection symlink outside the package", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const result = await service.createPackageAssets(input);
+  const platformsPath = path.join(result.packagePath, "platforms");
+  const outsidePlatforms = await mkdtemp(path.join(tmpdir(), "publishing-platforms-outside-"));
+  await writeFile(path.join(outsidePlatforms, "sentinel"), "outside original");
+  await rm(platformsPath, { recursive: true });
+  await symlink(outsidePlatforms, platformsPath, "dir");
+
+  await assert.rejects(service.stageTextProjection({
+    package: packageRecord(result),
+    tasks: input.tasks,
+    audit: [],
+  }), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.code, "publish_video_unreadable");
+    return true;
+  });
+  assert.equal(await readFile(path.join(outsidePlatforms, "sentinel"), "utf8"), "outside original");
+});
+
+test("verifies checksum and size, rejects escaped package video, and purges only package assets", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const result = await service.createPackageAssets(input);
+  const pkg = packageRecord(result);
+
+  assert.equal(await service.verifyPackageVideo(pkg), "missing_cover");
+  await writeFile(result.videoPath, "changed bytes");
+  assert.equal(await service.verifyPackageVideo(pkg), "broken_video");
+  pkg.videoPath = input.sourceVideoPath;
+  assert.equal(await service.verifyPackageVideo(pkg), "broken_video");
+
+  pkg.videoPath = result.videoPath;
+  await service.purgeAssets(pkg);
+  await assert.rejects(stat(result.packagePath), { code: "ENOENT" });
+  assert.deepEqual(await readFile(input.sourceVideoPath), Buffer.from("source mp4 bytes"));
+});
+
+test("startup asset scan repairs files without running store-owned due or purge transitions", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const healthyResult = await service.createPackageAssets(input);
+  const healthyPackage = packageRecord(healthyResult);
+  await writeFile(path.join(healthyResult.packagePath, "platforms", "douyin", "title.txt"), "stale");
+
+  const brokenInput = { ...input, packageId: "package-broken", version: 2, tasks: [task("task-broken", "douyin", "package-broken")] };
+  const brokenResult = await service.createPackageAssets(brokenInput);
+  const brokenPackage = { ...packageRecord(brokenResult), id: "package-broken", version: 2 };
+  await writeFile(brokenResult.videoPath, "corrupt");
+
+  const trashInput = { ...input, packageId: "package-trash", version: 3, tasks: [task("task-trash", "bilibili", "package-trash")] };
+  const trashResult = await service.createPackageAssets(trashInput);
+  const trashPackage: DeliveryPackage = {
+    ...packageRecord(trashResult),
+    id: "package-trash",
+    version: 3,
+    state: "trashed",
+    purgeAt: "2026-08-09T08:00:00.000Z",
+  };
+  const publishingRoot = path.join(storageRoot, "output", "publishing");
+  const staleTemp = path.join(publishingRoot, "job-1", ".next-stale");
+  const orphan = path.join(publishingRoot, "job-orphan", "v1-orphan-package");
+  await mkdir(staleTemp, { recursive: true });
+  await writeFile(path.join(staleTemp, "partial"), "partial");
+  await mkdir(orphan, { recursive: true });
+  await writeFile(path.join(orphan, "video.mp4"), "orphan");
+
+  const index: PublishingIndex = {
+    schemaVersion: 1,
+    revision: 1,
+    nextVersionBySource: { "job-1": 4 },
+    packages: {
+      [healthyPackage.id]: healthyPackage,
+      [brokenPackage.id]: brokenPackage,
+      [trashPackage.id]: trashPackage,
+    },
+    tasks: Object.fromEntries([...input.tasks, ...brokenInput.tasks, ...trashInput.tasks].map((entry) => [entry.id, entry])),
+    audit: [],
+    tombstones: {},
+  };
+  const taskStatesBefore = Object.fromEntries(Object.values(index.tasks).map((entry) => [entry.id, entry.status]));
+
+  const report = await service.scanAndRepair(index);
+
+  assert.deepEqual(report.removedTempPaths, [staleTemp]);
+  assert.deepEqual(report.orphanPaths, [orphan]);
+  assert.deepEqual(report.repairedPackageIds, ["package-1"]);
+  assert.deepEqual(report.brokenPackageIds, ["package-broken"]);
+  assert.deepEqual(report.notifications, []);
+  assert.deepEqual(report.purgedPackageIds, []);
+  assert.deepEqual(report.purgeFailures, []);
+  assert.equal(index.packages["package-broken"].assetHealth, "broken_video");
+  assert.equal(await readFile(path.join(healthyResult.packagePath, "platforms", "douyin", "title.txt"), "utf8"), "douyin 标题");
+  assert.equal((await stat(trashResult.packagePath)).isDirectory(), true);
+  assert.deepEqual(
+    Object.fromEntries(Object.values(index.tasks).map((entry) => [entry.id, entry.status])),
+    taskStatesBefore,
+  );
+});
