@@ -7,9 +7,11 @@ import {
   readFile,
   readdir,
   realpath,
+  rename as fsRename,
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -92,7 +94,10 @@ async function directoryBytes(root: string): Promise<Record<string, string>> {
   return result;
 }
 
-function packageRecord(result: Awaited<ReturnType<PublishingAssetService["createPackageAssets"]>>): DeliveryPackage {
+function packageRecord(
+  result: Awaited<ReturnType<PublishingAssetService["createPackageAssets"]>>,
+  overrides: Partial<DeliveryPackage> = {},
+): DeliveryPackage {
   return {
     id: "package-1",
     sourceJobId: "job-1",
@@ -109,6 +114,7 @@ function packageRecord(result: Awaited<ReturnType<PublishingAssetService["create
     createdBy: ACTOR,
     createdAt: NOW.toISOString(),
     updatedAt: NOW.toISOString(),
+    ...overrides,
   };
 }
 
@@ -135,7 +141,7 @@ test("packages one cloned MP4 with safe manifest and shared platform projections
     tasks: Array<{ videoPath: string }>;
   };
 
-  assert.equal(copyCalls[0].mode, constants.COPYFILE_FICLONE);
+  assert.equal(copyCalls[0].mode, constants.COPYFILE_FICLONE_FORCE);
   assert.equal(result.videoMethod, "clone");
   assert.equal(files.filter((file) => file.endsWith(".mp4")).length, 1);
   assert.equal(files.filter((file) => path.basename(file) === "video.mp4").length, 1);
@@ -186,7 +192,7 @@ test("falls back to ordinary copy when clone is unsupported", async () => {
     now: () => NOW,
     copyFile: async (source, destination, mode) => {
       modes.push(mode);
-      if (mode === constants.COPYFILE_FICLONE) throw Object.assign(new Error("unsupported"), { code: "EINVAL" });
+      if (mode === constants.COPYFILE_FICLONE_FORCE) throw Object.assign(new Error("unsupported"), { code: "EINVAL" });
       await fsCopyFile(source, destination);
     },
     runCommand: async () => { throw new Error("ffmpeg unavailable"); },
@@ -194,7 +200,7 @@ test("falls back to ordinary copy when clone is unsupported", async () => {
 
   const result = await service.createPackageAssets(input);
 
-  assert.deepEqual(modes, [constants.COPYFILE_FICLONE, undefined]);
+  assert.deepEqual(modes, [constants.COPYFILE_FICLONE_FORCE, undefined]);
   assert.equal(result.videoMethod, "copy");
   assert.deepEqual(await readFile(result.videoPath), await readFile(input.sourceVideoPath));
   assert.equal(result.assetHealth, "missing_cover");
@@ -252,6 +258,82 @@ test("returned rollback removes a promoted package without touching the source v
 
   await assert.rejects(stat(result.packagePath), { code: "ENOENT" });
   assert.deepEqual(await readFile(input.sourceVideoPath), Buffer.from("source mp4 bytes"));
+});
+
+test("rejects a pre-existing source publishing directory symlink without touching outside bytes", async () => {
+  const { storageRoot, input } = await fixture();
+  const publishingRoot = path.join(storageRoot, "output", "publishing");
+  const outside = await mkdtemp(path.join(tmpdir(), "publishing-parent-outside-"));
+  await writeFile(path.join(outside, "sentinel.bin"), Buffer.from([0, 1, 2, 255]));
+  const before = await directoryBytes(outside);
+  await mkdir(publishingRoot, { recursive: true });
+  await symlink(outside, path.join(publishingRoot, input.sourceJobId), "dir");
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+
+  await assert.rejects(service.createPackageAssets(input), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.code, "publish_video_unreadable");
+    return true;
+  });
+  assert.deepEqual(await directoryBytes(outside), before);
+});
+
+test("rolls back when the source path inode changes during clone", async () => {
+  const { storageRoot, input } = await fixture();
+  let replaced = false;
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    copyFile: async (source, destination, mode) => {
+      await fsCopyFile(source, destination);
+      if (mode === constants.COPYFILE_FICLONE_FORCE && !replaced) {
+        replaced = true;
+        await fsRename(source, `${source.toString()}.original`);
+        await writeFile(source, "attacker replacement bytes");
+      }
+    },
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+
+  await assert.rejects(service.createPackageAssets(input), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.code, "publish_video_unreadable");
+    return true;
+  });
+  const publishingSource = path.join(storageRoot, "output", "publishing", input.sourceJobId);
+  assert.deepEqual(await readdir(publishingSource).catch(() => []), []);
+});
+
+test("detects a destination parent symlink swap during clone and never promotes it", async () => {
+  const { storageRoot, input } = await fixture();
+  const outside = await mkdtemp(path.join(tmpdir(), "publishing-destination-race-"));
+  let swapped = false;
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    copyFile: async (source, destination, mode) => {
+      if (mode === constants.COPYFILE_FICLONE_FORCE && !swapped) {
+        swapped = true;
+        const parent = path.dirname(destination.toString());
+        await fsRename(parent, `${parent}.held`);
+        await symlink(outside, parent, "dir");
+      }
+      await fsCopyFile(source, destination);
+    },
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+
+  await assert.rejects(service.createPackageAssets(input), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.code, "publish_video_unreadable");
+    return true;
+  });
+  const sourceDirectory = path.join(await realpath(storageRoot), "output", "publishing", input.sourceJobId);
+  assert.equal((await readdir(sourceDirectory)).some((entry) => entry.startsWith("v1-")), false);
 });
 
 test("reuses a readable local cover without invoking FFmpeg", async () => {
@@ -325,6 +407,114 @@ test("projection commit swaps all text and rollback restores exact prior bytes",
 
   await transaction.rollback();
   assert.deepEqual(await directoryBytes(platformsPath), before);
+});
+
+test("projection commit uses CAS and keeps its disk backup until finalize", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const result = await service.createPackageAssets(input);
+  const pkg = packageRecord(result);
+  const first = await service.stageTextProjection({
+    package: pkg,
+    tasks: input.tasks.map((entry) => ({ ...entry, title: `第一版 ${entry.title}` })),
+    audit: [],
+  });
+  const stale = await service.stageTextProjection({
+    package: pkg,
+    tasks: input.tasks.map((entry) => ({ ...entry, title: `过期版 ${entry.title}` })),
+    audit: [],
+  });
+
+  await first.commit();
+  const afterCommit = await readdir(result.packagePath);
+  assert.equal(afterCommit.filter((entry) => entry.startsWith(".previous-platforms-")).length, 1);
+  await assert.rejects(stale.commit(), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.code, "publish_revision_conflict");
+    return true;
+  });
+  assert.equal(await readFile(path.join(result.packagePath, "platforms", "douyin", "title.txt"), "utf8"), "第一版 douyin 标题");
+
+  await first.finalize();
+  assert.equal((await readdir(result.packagePath)).some((entry) => entry.startsWith(".previous-platforms-")), false);
+  await stale.rollback();
+});
+
+test("an older projection rollback cannot overwrite a later committed generation", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const result = await service.createPackageAssets(input);
+  const pkg = packageRecord(result);
+  const first = await service.stageTextProjection({
+    package: pkg,
+    tasks: input.tasks.map((entry) => ({ ...entry, title: `第一版 ${entry.title}` })),
+    audit: [],
+  });
+  await first.commit();
+  const later = await service.stageTextProjection({
+    package: pkg,
+    tasks: input.tasks.map((entry) => ({ ...entry, title: `第二版 ${entry.title}` })),
+    audit: [],
+  });
+  await later.commit();
+
+  await assert.rejects(first.rollback(), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.code, "publish_revision_conflict");
+    return true;
+  });
+  assert.equal(await readFile(path.join(result.packagePath, "platforms", "douyin", "title.txt"), "utf8"), "第二版 douyin 标题");
+
+  await later.rollback();
+  assert.equal(await readFile(path.join(result.packagePath, "platforms", "douyin", "title.txt"), "utf8"), "第一版 douyin 标题");
+  await first.finalize();
+});
+
+test("projection commit rejects when its package inode is replaced after staging", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const result = await service.createPackageAssets(input);
+  const transaction = await service.stageTextProjection({
+    package: packageRecord(result),
+    tasks: input.tasks.map((entry) => ({ ...entry, title: `待提交 ${entry.title}` })),
+    audit: [],
+  });
+  const moved = `${result.packagePath}.moved`;
+  const outside = await mkdtemp(path.join(tmpdir(), "publishing-stage-race-"));
+  await fsRename(result.packagePath, moved);
+  await symlink(outside, result.packagePath, "dir");
+
+  await assert.rejects(transaction.commit(), (error: unknown) => error instanceof PublishingAssetError);
+  assert.deepEqual(await readdir(outside), []);
+});
+
+test("package rollback refuses a replacement inode at the same formal path", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const result = await service.createPackageAssets(input);
+  const moved = `${result.packagePath}.moved`;
+  await fsRename(result.packagePath, moved);
+  await mkdir(result.packagePath);
+  await writeFile(path.join(result.packagePath, "later.bin"), "later bytes");
+
+  await assert.rejects(result.rollback(), (error: unknown) => error instanceof PublishingAssetError);
+  assert.equal(await readFile(path.join(result.packagePath, "later.bin"), "utf8"), "later bytes");
 });
 
 test("refuses to stage projections through a package-directory symlink", async () => {
@@ -414,7 +604,57 @@ test("verifies checksum and size, rejects escaped package video, and purges only
   assert.deepEqual(await readFile(input.sourceVideoPath), Buffer.from("source mp4 bytes"));
 });
 
-test("startup asset scan repairs files without running store-owned due or purge transitions", async () => {
+test("rejects package A records that point at package B for verify, stage, and purge", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const packageA = await service.createPackageAssets(input);
+  const packageBInput: PackageAssetInput = {
+    ...input,
+    packageId: "package-b",
+    version: 2,
+    tasks: [task("task-b", "douyin", "package-b")],
+  };
+  const packageB = await service.createPackageAssets(packageBInput);
+  const forgedA = packageRecord(packageB, {
+    id: "package-1",
+    sourceJobId: "job-1",
+    version: 1,
+  });
+
+  assert.equal(await service.verifyPackageVideo(forgedA), "broken_video");
+  await assert.rejects(service.stageTextProjection({
+    package: forgedA,
+    tasks: input.tasks,
+    audit: [],
+  }), (error: unknown) => error instanceof PublishingAssetError);
+  await assert.rejects(service.purgeAssets(forgedA), (error: unknown) => error instanceof PublishingAssetError);
+  assert.equal((await stat(packageA.packagePath)).isDirectory(), true);
+  assert.equal((await stat(packageB.packagePath)).isDirectory(), true);
+});
+
+test("purge rejects a source directory or sibling path derived from forged package metadata", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const result = await service.createPackageAssets(input);
+  const pkg = packageRecord(result);
+  const sourceDirectory = path.dirname(result.packagePath);
+
+  for (const forgedPath of [sourceDirectory, path.join(sourceDirectory, "v9-sibling")]) {
+    const forged = { ...pkg, packagePath: forgedPath, videoPath: path.join(forgedPath, "video.mp4") };
+    await assert.rejects(service.purgeAssets(forged), (error: unknown) => error instanceof PublishingAssetError);
+  }
+  assert.equal((await stat(result.packagePath)).isDirectory(), true);
+});
+
+test("startup asset scan removes only stale temps and repairs files without store-owned transitions", async () => {
   const { storageRoot, input } = await fixture();
   const service = new PublishingAssetService({
     storageRoot,
@@ -441,9 +681,14 @@ test("startup asset scan repairs files without running store-owned due or purge 
   };
   const publishingRoot = path.join(storageRoot, "output", "publishing");
   const staleTemp = path.join(publishingRoot, "job-1", ".next-stale");
+  const freshTemp = path.join(publishingRoot, "job-1", ".next-fresh");
   const orphan = path.join(publishingRoot, "job-orphan", "v1-orphan-package");
   await mkdir(staleTemp, { recursive: true });
   await writeFile(path.join(staleTemp, "partial"), "partial");
+  await mkdir(freshTemp, { recursive: true });
+  await writeFile(path.join(freshTemp, "partial"), "fresh");
+  await utimes(staleTemp, new Date(NOW.getTime() - 2 * 60 * 60 * 1000), new Date(NOW.getTime() - 2 * 60 * 60 * 1000));
+  await utimes(freshTemp, new Date(NOW.getTime() - 60 * 1000), new Date(NOW.getTime() - 60 * 1000));
   await mkdir(orphan, { recursive: true });
   await writeFile(path.join(orphan, "video.mp4"), "orphan");
 
@@ -463,9 +708,11 @@ test("startup asset scan repairs files without running store-owned due or purge 
   const taskStatesBefore = Object.fromEntries(Object.values(index.tasks).map((entry) => [entry.id, entry.status]));
 
   const report = await service.scanAndRepair(index);
+  const canonicalPublishingRoot = await realpath(publishingRoot);
 
-  assert.deepEqual(report.removedTempPaths, [staleTemp]);
-  assert.deepEqual(report.orphanPaths, [orphan]);
+  assert.deepEqual(report.removedTempPaths, [path.join(canonicalPublishingRoot, "job-1", ".next-stale")]);
+  assert.equal((await stat(freshTemp)).isDirectory(), true);
+  assert.deepEqual(report.orphanPaths, [path.join(canonicalPublishingRoot, "job-orphan", "v1-orphan-package")]);
   assert.deepEqual(report.repairedPackageIds, ["package-1"]);
   assert.deepEqual(report.brokenPackageIds, ["package-broken"]);
   assert.deepEqual(report.notifications, []);
@@ -478,4 +725,98 @@ test("startup asset scan repairs files without running store-owned due or purge 
     Object.fromEntries(Object.values(index.tasks).map((entry) => [entry.id, entry.status])),
     taskStatesBefore,
   );
+});
+
+test("startup scan waits for a live package creation instead of deleting its temp directory", async () => {
+  const { storageRoot, input } = await fixture();
+  let releaseCopy!: () => void;
+  const copyReleased = new Promise<void>((resolve) => { releaseCopy = resolve; });
+  let copyStarted!: () => void;
+  const didStartCopy = new Promise<void>((resolve) => { copyStarted = resolve; });
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    copyFile: async (source, destination) => {
+      copyStarted();
+      await copyReleased;
+      await fsCopyFile(source, destination);
+    },
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const index: PublishingIndex = {
+    schemaVersion: 1,
+    revision: 0,
+    nextVersionBySource: {},
+    packages: {},
+    tasks: {},
+    audit: [],
+    tombstones: {},
+  };
+
+  const creating = service.createPackageAssets(input);
+  await didStartCopy;
+  const scanning = service.scanAndRepair(index);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  releaseCopy();
+
+  const [created, report] = await Promise.all([creating, scanning]);
+  assert.equal((await stat(created.packagePath)).isDirectory(), true);
+  assert.deepEqual(report.removedTempPaths, []);
+});
+
+test("startup scan isolates a bad package and continues later verification and repair", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+  const firstInput: PackageAssetInput = {
+    ...input,
+    packageId: "a-good",
+    version: 1,
+    tasks: [task("task-a", "douyin", "a-good")],
+  };
+  const lastInput: PackageAssetInput = {
+    ...input,
+    packageId: "z-good",
+    version: 2,
+    tasks: [task("task-z", "bilibili", "z-good")],
+  };
+  const first = await service.createPackageAssets(firstInput);
+  const last = await service.createPackageAssets(lastInput);
+  await writeFile(path.join(first.packagePath, "platforms", "douyin", "title.txt"), "stale first");
+  await writeFile(path.join(last.packagePath, "platforms", "bilibili", "title.txt"), "stale last");
+
+  const outside = await mkdtemp(path.join(tmpdir(), "publishing-scan-outside-"));
+  const badPath = path.join(await realpath(storageRoot), "output", "publishing", "job-1", "v3-m-bad");
+  await symlink(outside, badPath, "dir");
+  const bad: DeliveryPackage = {
+    ...packageRecord(first),
+    id: "m-bad",
+    version: 3,
+    packagePath: badPath,
+    videoPath: path.join(badPath, "video.mp4"),
+  };
+  const index: PublishingIndex = {
+    schemaVersion: 1,
+    revision: 0,
+    nextVersionBySource: {},
+    packages: {
+      "a-good": packageRecord(first, { id: "a-good", version: 1 }),
+      "m-bad": bad,
+      "z-good": packageRecord(last, { id: "z-good", version: 2 }),
+    },
+    tasks: Object.fromEntries([...firstInput.tasks, task("task-bad", "douyin", "m-bad"), ...lastInput.tasks].map((entry) => [entry.id, entry])),
+    audit: [],
+    tombstones: {},
+  };
+
+  const report = await service.scanAndRepair(index);
+
+  assert.deepEqual(report.repairedPackageIds, ["a-good", "z-good"]);
+  assert.ok(report.brokenPackageIds.includes("m-bad"));
+  assert.deepEqual(report.repairFailures.map((failure) => failure.packageId), ["m-bad"]);
+  assert.equal(await readFile(path.join(first.packagePath, "platforms", "douyin", "title.txt"), "utf8"), "douyin 标题");
+  assert.equal(await readFile(path.join(last.packagePath, "platforms", "bilibili", "title.txt"), "utf8"), "bilibili 标题");
 });

@@ -1,5 +1,5 @@
-import { access, readFile, realpath, stat } from "node:fs/promises";
-import { constants } from "node:fs";
+import { open, readFile, realpath, stat } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { JobRecord, ScriptAsset } from "../types.js";
 
@@ -7,6 +7,8 @@ export interface ResolvedVideoFile {
   path: string;
   size: number;
   mimeType: "video/mp4";
+  handle: FileHandle;
+  close(): Promise<void>;
 }
 
 export type VideoOutputErrorCode = "publish_video_missing" | "publish_video_unreadable";
@@ -46,14 +48,34 @@ export async function resolveJobVideo(
     throw new VideoOutputError("publish_video_unreadable");
   }
 
-  let canonicalPath: string;
-  let fileStats;
+  let handle: FileHandle | undefined;
   try {
-    canonicalPath = await realpath(candidatePath);
+    handle = await open(candidatePath, "r");
+    const fileStats = await handle.stat();
+    const pathStats = await stat(candidatePath);
+    const canonicalPath = await realpath(candidatePath);
     assertInsideRoot(canonicalRoot, canonicalPath);
-    fileStats = await stat(canonicalPath);
-    await access(canonicalPath, constants.R_OK);
+    if (fileStats.dev !== pathStats.dev || fileStats.ino !== pathStats.ino) {
+      throw new VideoOutputError("publish_video_unreadable");
+    }
+    if (!fileStats.isFile()) throw new VideoOutputError("publish_video_unreadable");
+    if (fileStats.size === 0) throw new VideoOutputError("publish_video_missing");
+
+    let closed = false;
+    const openedHandle = handle;
+    return {
+      path: canonicalPath,
+      size: fileStats.size,
+      mimeType: "video/mp4",
+      handle: openedHandle,
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        await openedHandle.close();
+      },
+    };
   } catch (error) {
+    await handle?.close().catch(() => undefined);
     if (error instanceof VideoOutputError) throw error;
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new VideoOutputError("publish_video_missing");
@@ -61,10 +83,6 @@ export async function resolveJobVideo(
     throw new VideoOutputError("publish_video_unreadable");
   }
 
-  if (!fileStats.isFile()) throw new VideoOutputError("publish_video_unreadable");
-  if (fileStats.size === 0) throw new VideoOutputError("publish_video_missing");
-
-  return { path: canonicalPath, size: fileStats.size, mimeType: "video/mp4" };
 }
 
 async function readScript(storageRoot: string, jobId: string): Promise<ScriptAsset | undefined> {

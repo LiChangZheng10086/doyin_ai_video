@@ -1,4 +1,4 @@
-import express, { Express } from "express";
+import express, { Express, type Request, type Response } from "express";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -15,7 +15,7 @@ import { registerConfigRoutes } from "./lib/config-server.js";
 import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import { simplifyChineseValue } from "./lib/chinese.js";
 import { buildSkillContext, getSkillErrorMessage, isRetryableSkillError } from "./lib/skill-generation.js";
-import { resolveJobVideo, VideoOutputError } from "./lib/video-output.js";
+import { resolveJobVideo, VideoOutputError, type ResolvedVideoFile } from "./lib/video-output.js";
 import type { CollectionRecord, PipelineStep, ScriptAsset } from "./types.js";
 
 export interface ServerConfig {
@@ -472,7 +472,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
     try {
       const video = await resolveVideo(config.storagePath, record);
-      res.download(video.path, `${record.topic}-${record.id.slice(0, 8)}.mp4`);
+      await sendResolvedVideo(req, res, video, `${record.topic}-${record.id.slice(0, 8)}.mp4`);
     } catch (error) {
       if (error instanceof VideoOutputError) {
         res.status(error.status).json({ code: error.code, message: error.message });
@@ -495,9 +495,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
     try {
       const video = await resolveVideo(config.storagePath, record);
-      res.setHeader("Content-Type", video.mimeType);
-      res.setHeader("Content-Disposition", "inline");
-      res.sendFile(video.path);
+      await sendResolvedVideo(req, res, video);
     } catch (error) {
       if (error instanceof VideoOutputError) {
         res.status(error.status).json({ code: error.code, message: error.message });
@@ -1742,6 +1740,67 @@ ${tpl.topic}
   });
 
   return app;
+}
+
+async function sendResolvedVideo(
+  req: Request,
+  res: Response,
+  video: ResolvedVideoFile,
+  downloadFilename?: string,
+): Promise<void> {
+  try {
+    res.setHeader("Accept-Ranges", "bytes");
+    if (downloadFilename) res.attachment(downloadFilename);
+    else res.setHeader("Content-Disposition", "inline");
+    res.setHeader("Content-Type", video.mimeType);
+
+    const parsedRange = req.headers.range ? req.range(video.size, { combine: true }) : undefined;
+    if (parsedRange === -1 || parsedRange === -2 || (Array.isArray(parsedRange) && parsedRange.length !== 1)) {
+      res.status(416);
+      res.setHeader("Content-Range", `bytes */${video.size}`);
+      res.end();
+      return;
+    }
+
+    const range = Array.isArray(parsedRange) ? parsedRange[0] : undefined;
+    const start = range?.start ?? 0;
+    const end = range?.end ?? video.size - 1;
+    if (range) {
+      res.status(206);
+      res.setHeader("Content-Range", `bytes ${start}-${end}/${video.size}`);
+    }
+    res.setHeader("Content-Length", String(end - start + 1));
+    if (req.method === "HEAD") {
+      res.end();
+      return;
+    }
+
+    const stream = video.handle.createReadStream({ start, end, autoClose: false });
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const settle = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        res.off("finish", onFinish);
+        res.off("close", onClose);
+        stream.off("error", onError);
+        if (error) reject(error);
+        else resolve();
+      };
+      const onFinish = () => settle();
+      const onClose = () => {
+        if (!res.writableFinished) stream.destroy();
+        settle();
+      };
+      const onError = (error: Error) => settle(error);
+      res.once("finish", onFinish);
+      res.once("close", onClose);
+      stream.once("error", onError);
+      stream.pipe(res);
+    });
+  } finally {
+    await video.close().catch(() => undefined);
+  }
 }
 
 async function generateSkillForCollection(

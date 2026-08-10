@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, realpath, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -60,11 +60,11 @@ test("resolves the current HyperFrames MP4 to its canonical path and exact size"
 
   const resolved = await resolveJobVideo(storageRoot, job("job-1", fallbackPath));
 
-  assert.deepEqual(resolved, {
-    path: await realpath(videoPath),
-    size: bytes.byteLength,
-    mimeType: "video/mp4",
-  });
+  assert.equal(resolved.path, await realpath(videoPath));
+  assert.equal(resolved.size, bytes.byteLength);
+  assert.equal(resolved.mimeType, "video/mp4");
+  assert.equal((await resolved.handle.stat()).ino, (await stat(videoPath)).ino);
+  await resolved.close();
 });
 
 test("reports a stable missing-video error when no output was generated", async () => {
@@ -143,6 +143,73 @@ test("accepts a canonical in-storage path when the configured storage root is a 
   const resolved = await resolveJobVideo(storageRoot, job(id));
 
   assert.equal(resolved.path, await realpath(videoPath));
+  await resolved.close();
+});
+
+test("keeps the opened video inode when the resolved path is replaced", async () => {
+  const { storageRoot, scriptPath } = await storageFixture("held-inode");
+  const videoPath = path.join(storageRoot, "output", "videos", "held-inode", "video.mp4");
+  await mkdir(path.dirname(videoPath), { recursive: true });
+  await writeFile(videoPath, "original inode bytes");
+  await writeFile(scriptPath, JSON.stringify({ hyperframesVideo: { videoPath } }));
+
+  const resolved = await resolveJobVideo(storageRoot, job("held-inode"));
+  await rename(videoPath, `${videoPath}.old`);
+  await writeFile(videoPath, "replacement bytes");
+
+  const bytes = Buffer.alloc(resolved.size);
+  const read = await resolved.handle.read(bytes, 0, bytes.length, 0);
+  await resolved.close();
+
+  assert.equal(bytes.subarray(0, read.bytesRead).toString(), "original inode bytes");
+});
+
+test("stream consumes the resolver handle instead of reopening a replaced path and closes it", async () => {
+  const { storageRoot } = await storageFixture("handle-endpoint");
+  const videoPath = path.join(storageRoot, "output", "videos", "handle-endpoint", "video.mp4");
+  const original = Buffer.from("original endpoint bytes");
+  await mkdir(path.dirname(videoPath), { recursive: true });
+  await mkdir(path.join(storageRoot, "cache"), { recursive: true });
+  await writeFile(videoPath, original);
+  await writeFile(path.join(storageRoot, "cache", "jobs-index.json"), JSON.stringify({
+    "handle-endpoint": job("handle-endpoint"),
+  }));
+  let handle = await open(videoPath, "r");
+  let closed = false;
+  const app = await createExpressApp({
+    storagePath: storageRoot,
+    rootDir: storageRoot,
+    resolveJobVideo: async () => {
+      await rename(videoPath, `${videoPath}.old`);
+      await writeFile(videoPath, "replacement endpoint bytes");
+      return {
+        path: videoPath,
+        size: original.length,
+        mimeType: "video/mp4",
+        handle,
+        close: async () => {
+          if (closed) return;
+          closed = true;
+          await handle.close();
+        },
+      } as ResolvedVideoFile;
+    },
+  });
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/jobs/handle-endpoint/video/stream`);
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), original.toString());
+    assert.equal(closed, true);
+    await assert.rejects(handle.stat(), { code: "EBADF" });
+  } finally {
+    if (!closed) await handle.close();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
 
 test("stream and download share the injected resolver without changing headers or ranges", async () => {
@@ -157,9 +224,23 @@ test("stream and download share the injected resolver without changing headers o
   }));
 
   const calls: Array<{ storageRoot: string; jobId: string }> = [];
+  const handles: Array<Awaited<ReturnType<typeof open>>> = [];
   const injectedResolver = async (root: string, record: JobRecord): Promise<ResolvedVideoFile> => {
     calls.push({ storageRoot: root, jobId: record.id });
-    return { path: await realpath(videoPath), size: bytes.length, mimeType: "video/mp4" };
+    const handle = await open(videoPath, "r");
+    handles.push(handle);
+    let closed = false;
+    return {
+      path: await realpath(videoPath),
+      size: bytes.length,
+      mimeType: "video/mp4",
+      handle,
+      close: async () => {
+        if (closed) return;
+        closed = true;
+        await handle.close();
+      },
+    };
   };
   const app = await createExpressApp({
     storagePath: storageRoot,
@@ -195,6 +276,7 @@ test("stream and download share the injected resolver without changing headers o
     assert.match(download.headers.get("content-disposition") ?? "", /^attachment;/u);
     assert.equal(download.headers.get("accept-ranges"), "bytes");
     assert.equal(download.headers.get("content-length"), String(bytes.length));
+    assert.equal(Buffer.from(await download.arrayBuffer()).toString(), bytes.toString());
 
     const downloadRange = await fetch(`${baseUrl}/api/jobs/endpoint-job/video/download`, {
       headers: { Range: "bytes=6-8" },
@@ -213,4 +295,5 @@ test("stream and download share the injected resolver without changing headers o
     storageRoot,
     jobId: "endpoint-job",
   })));
+  for (const handle of handles) await assert.rejects(handle.stat(), { code: "EBADF" });
 });
