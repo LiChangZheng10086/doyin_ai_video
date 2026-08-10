@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
+import { access, open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type {
   ActorSnapshot,
@@ -18,6 +18,7 @@ import type {
 } from "../types.js";
 import type { PublishingCopyService } from "./publishing-copy.js";
 import {
+  type BoundSourceVideo,
   type PublishingRecoveryReport,
   PublishingAssetError,
   PublishingAssetService,
@@ -37,7 +38,6 @@ import { resolveJobVideo, VideoOutputError } from "./video-output.js";
 
 const CLEANED_DIRECTORY = path.join("processed", "cleaned");
 const SCRIPT_DIRECTORY = path.join("processed", "scripts");
-const PUBLISHING_INDEX = path.join("cache", "publishing-index.json");
 const SUPPORTED_PLATFORMS = new Set<PublishPlatform>(
   Object.keys(PUBLISH_PLATFORMS) as PublishPlatform[],
 );
@@ -107,6 +107,7 @@ export interface PublishingServiceDependencies {
 type ServiceErrorCode =
   | "publish_asset_broken"
   | "publish_cleaned_missing"
+  | "publish_consistency_failed"
   | "publish_index_corrupt"
   | "publish_index_write_failed"
   | "publish_invalid_transition"
@@ -121,6 +122,7 @@ type ServiceErrorCode =
 const SERVICE_ERROR_MESSAGES: Record<ServiceErrorCode, string> = {
   publish_asset_broken: "发布包视频资产异常，无法执行此操作",
   publish_cleaned_missing: "未找到可用洗稿内容，请先完成 AI 洗稿",
+  publish_consistency_failed: "发布索引写入失败，且发布包资产回滚失败，请重启应用执行修复",
   publish_index_corrupt: "发布索引已损坏，当前处于只读保护状态",
   publish_index_write_failed: "发布索引写入失败，未保存本次修改",
   publish_invalid_transition: "当前发布状态不允许执行此操作",
@@ -230,6 +232,12 @@ export class PublishingService {
       return await this.createPackage({
         sourceJobId: input.sourceJobId,
         sourceVideoPath: context.video.path,
+        sourceVideo: {
+          path: context.video.path,
+          handle: context.video.handle,
+          size: context.video.size,
+          identity: context.video.identity,
+        },
         sourceCoverPath: context.sourceCoverPath,
         title,
         drafts,
@@ -249,20 +257,33 @@ export class PublishingService {
     if (previous.package.state !== "active") {
       throw new PublishingServiceError(409, "publish_validation_failed", "垃圾桶中的发布包不能创建新版本");
     }
-    if (await this.deps.assets.verifyPackageVideo(previous.package) === "broken_video") {
-      throw new PublishingServiceError(422, "publish_asset_broken");
-    }
+    const sourceVideo = await this.bindPackageVideo(previous.package);
+    try {
+      const health = await this.deps.assets.verifyPackageVideo(previous.package);
+      const currentStats = await stat(sourceVideo.path).catch(() => undefined);
+      if (
+        health === "broken_video"
+        || !currentStats
+        || currentStats.dev !== sourceVideo.identity.dev
+        || currentStats.ino !== sourceVideo.identity.ino
+      ) {
+        throw new PublishingServiceError(422, "publish_asset_broken");
+      }
 
-    const versionDrafts = buildVersionDrafts(previous, input);
-    const drafts = validateDrafts(versionDrafts, this.now());
-    return this.createPackage({
-      sourceJobId: previous.package.sourceJobId,
-      sourceVideoPath: previous.package.videoPath!,
-      sourceCoverPath: previous.package.coverPath,
-      title: requireTitle(input.title ?? previous.package.title),
-      drafts,
-      actor,
-    });
+      const versionDrafts = buildVersionDrafts(previous, input);
+      const drafts = validateDrafts(versionDrafts, this.now());
+      return await this.createPackage({
+        sourceJobId: previous.package.sourceJobId,
+        sourceVideoPath: sourceVideo.path,
+        sourceVideo,
+        sourceCoverPath: previous.package.coverPath,
+        title: requireTitle(input.title ?? previous.package.title),
+        drafts,
+        actor,
+      });
+    } finally {
+      await sourceVideo.handle.close().catch(() => undefined);
+    }
   }
 
   async updateContent(
@@ -323,7 +344,7 @@ export class PublishingService {
       }
       throw normalizeOperationError(error, "index");
     }
-    await projection.finalize();
+    await projection.finalize().catch(() => undefined);
     return updated;
   }
 
@@ -342,6 +363,12 @@ export class PublishingService {
   }
 
   async markPublished(taskId: string, actor: ActorSnapshot): Promise<PublishTask> {
+    const task = await this.requireTask(taskId);
+    const detail = await this.requirePackage(task.packageId);
+    if (await this.deps.assets.verifyPackageVideo(detail.package) === "broken_video") {
+      await this.storeCall(() => this.deps.store.setAssetHealth(detail.package.id, "broken_video", actor));
+      throw new PublishingServiceError(422, "publish_asset_broken");
+    }
     return this.storeCall(() => this.deps.store.markPublished(taskId, actor));
   }
 
@@ -431,14 +458,10 @@ export class PublishingService {
     return detail.package.videoPath;
   }
 
-  async debugIndexHash(): Promise<string> {
-    const bytes = await readFile(path.join(this.storageRoot, PUBLISHING_INDEX));
-    return createHash("sha256").update(bytes).digest("hex");
-  }
-
   private async createPackage(input: {
     sourceJobId: string;
     sourceVideoPath: string;
+    sourceVideo: BoundSourceVideo;
     sourceCoverPath?: string;
     title: string;
     drafts: ValidatedDraft[];
@@ -465,6 +488,7 @@ export class PublishingService {
       sourceJobId: input.sourceJobId,
       version,
       sourceVideoPath: input.sourceVideoPath,
+      sourceVideo: input.sourceVideo,
       ...(input.sourceCoverPath ? { sourceCoverPath: input.sourceCoverPath } : {}),
       title: input.title,
       tasks,
@@ -491,7 +515,14 @@ export class PublishingService {
     try {
       return await this.deps.store.commitPackage({ package: packageRecord, tasks }, input.actor);
     } catch (error) {
-      await assets.rollback().catch(() => undefined);
+      try {
+        await assets.rollback();
+      } catch {
+        throw new PublishingServiceError(500, "publish_consistency_failed", undefined, {
+          failedStages: ["index_commit", "asset_rollback"],
+          recovery: "startup_scan",
+        });
+      }
       throw normalizeOperationError(error, "index");
     }
   }
@@ -538,6 +569,28 @@ export class PublishingService {
     } catch (error) {
       await resolved.close().catch(() => undefined);
       throw error;
+    }
+  }
+
+  private async bindPackageVideo(pkg: DeliveryPackage): Promise<BoundSourceVideo> {
+    if (!pkg.videoPath) throw new PublishingServiceError(422, "publish_asset_broken");
+    let handle: BoundSourceVideo["handle"] | undefined;
+    try {
+      handle = await open(pkg.videoPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.size === 0) {
+        throw new PublishingServiceError(422, "publish_asset_broken");
+      }
+      return {
+        path: path.resolve(pkg.videoPath),
+        handle,
+        size: opened.size,
+        identity: { dev: opened.dev, ino: opened.ino },
+      };
+    } catch (error) {
+      await handle?.close().catch(() => undefined);
+      if (error instanceof PublishingServiceError) throw error;
+      throw new PublishingServiceError(422, "publish_asset_broken");
     }
   }
 

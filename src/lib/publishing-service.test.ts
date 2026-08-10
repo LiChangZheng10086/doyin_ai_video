@@ -266,6 +266,27 @@ test("preview revision uses the opened video inode when its path is replaced", a
   assert.equal(preview.previewRevision, expected);
 });
 
+test("create copies the same opened source video instance used for revision validation", async () => {
+  const f = await fixture();
+  const originalBytes = await readFile(f.videoPath);
+  const preview = await f.service.preview("job-1", ["douyin"]);
+  const originalCreateAssets = f.assets.createPackageAssets.bind(f.assets);
+  f.assets.createPackageAssets = async (input) => {
+    await rename(f.videoPath, `${f.videoPath}.validated`);
+    await writeFile(f.videoPath, "replacement after revision validation");
+    return originalCreateAssets(input);
+  };
+
+  const created = await f.service.create({
+    sourceJobId: "job-1",
+    previewRevision: preview.previewRevision,
+    title: "发布包",
+    platforms: [{ platform: "douyin", copy: preview.copies.douyin!, copySource: "ai" }],
+  }, ACTOR);
+
+  assert.deepEqual(await readFile(created.package.videoPath!), originalBytes);
+});
+
 test("create revalidates preview before reserving a version or writing assets", async () => {
   const f = await fixture();
   const preview = await f.service.preview("job-1", ["douyin"]);
@@ -324,6 +345,44 @@ test("create rolls back a promoted directory when index commit fails and keeps t
   assert.equal(created.package.version, 2);
 });
 
+test("create reports index and rollback failure while leaving an orphan for startup recovery", async () => {
+  const f = await fixture();
+  const preview = await f.service.preview("job-1", ["douyin"]);
+  const originalCreateAssets = f.assets.createPackageAssets.bind(f.assets);
+  f.assets.createPackageAssets = async (input) => {
+    const result = await originalCreateAssets(input);
+    return {
+      ...result,
+      async rollback() {
+        throw new Error("rollback failed at private path");
+      },
+    };
+  };
+  f.store.commitPackage = async () => { throw new Error("index failed at private path"); };
+
+  await assert.rejects(f.service.create({
+    sourceJobId: "job-1",
+    previewRevision: preview.previewRevision,
+    title: "发布包",
+    platforms: [{ platform: "douyin", copy: preview.copies.douyin!, copySource: "ai" }],
+  }, ACTOR), (error: unknown) => {
+    assert.ok(error instanceof PublishingServiceError);
+    assert.equal(error.status, 500);
+    assert.equal(error.code, "publish_consistency_failed");
+    assert.match(error.message, /索引写入失败.*资产回滚失败.*重启/u);
+    assert.deepEqual(error.details, {
+      failedStages: ["index_commit", "asset_rollback"],
+      recovery: "startup_scan",
+    });
+    assert.doesNotMatch(JSON.stringify(error), /private path/u);
+    return true;
+  });
+
+  const orphanPath = await realpath((await findFormalPackages(f.storageRoot))[0]);
+  const report = await f.service.recoverOnStartup();
+  assert.deepEqual(report.orphanPaths, [orphanPath]);
+});
+
 test("create normalizes current or past schedules into ready tasks without stale schedule fields", async () => {
   const f = await fixture();
   const past = new Date(f.clock.now.getTime() - 60_000).toISOString();
@@ -360,6 +419,40 @@ test("createVersion copies platform content but never copies terminal states", a
   assert.equal(next.tasks.find((task) => task.platform === "xiaohongshu")!.status, "ready");
   assert.equal(next.tasks.find((task) => task.platform === "bilibili")!.status, "scheduled");
   assert.ok(next.tasks.every((task) => !task.publishedAt && !task.lastError && !task.dueNotifiedAt));
+});
+
+test("createVersion copies the same opened package video instance used for validation", async () => {
+  const f = await fixture();
+  const original = await createPackage(f);
+  const originalBytes = await readFile(original.package.videoPath!);
+  const originalCreateAssets = f.assets.createPackageAssets.bind(f.assets);
+  f.assets.createPackageAssets = async (input) => {
+    await rename(original.package.videoPath!, `${original.package.videoPath}.validated`);
+    await writeFile(original.package.videoPath!, "replacement after package validation");
+    return originalCreateAssets(input);
+  };
+
+  const next = await f.service.createVersion(original.package.id, {}, ACTOR);
+
+  assert.deepEqual(await readFile(next.package.videoPath!), originalBytes);
+});
+
+test("markPublished persists broken video health without publishing the task", async () => {
+  const f = await fixture();
+  const created = await createPackage(f);
+  const task = created.tasks[0];
+  await writeFile(created.package.videoPath!, "broken");
+
+  await assert.rejects(f.service.markPublished(task.id, ACTOR), (error: unknown) => {
+    assert.ok(error instanceof PublishingServiceError);
+    assert.equal(error.status, 422);
+    assert.equal(error.code, "publish_asset_broken");
+    return true;
+  });
+
+  assert.equal((await f.store.getTask(task.id))!.status, task.status);
+  assert.equal((await f.store.getTask(task.id))!.publishedAt, undefined);
+  assert.equal((await f.store.getPackage(created.package.id))!.package.assetHealth, "broken_video");
 });
 
 test("published content is rejected before projection staging with byte-for-byte no-write semantics", async () => {
@@ -442,6 +535,36 @@ test("content edit finalizes projection backup only after the index commit succe
 
   assert.equal(updated.title, "提交后的新标题");
   assert.equal(finalizeCalls, 1);
+});
+
+test("content edit returns the committed update when projection cleanup fails", async () => {
+  const f = await fixture();
+  const created = await createPackage(f);
+  const task = created.tasks[0];
+  const originalStage = f.assets.stageTextProjection.bind(f.assets);
+  f.assets.stageTextProjection = async (detail) => {
+    const transaction = await originalStage(detail);
+    return {
+      ...transaction,
+      async finalize() {
+        throw new Error("stale backup cleanup failed");
+      },
+    };
+  };
+
+  const updated = await f.service.updateContent(task.id, {
+    title: "已经提交的新标题",
+    description: "已经提交的新正文",
+    hashtags: ["已提交"],
+    expectedRevision: task.contentRevision,
+  }, ACTOR);
+
+  assert.equal(updated.title, "已经提交的新标题");
+  assert.equal((await f.store.getTask(task.id))!.title, "已经提交的新标题");
+  assert.equal(
+    await readFile(path.join(created.package.packagePath, "platforms", "douyin", "title.txt"), "utf8"),
+    "已经提交的新标题",
+  );
 });
 
 test("startup recovery reports asset phases before due handling and purge", async () => {
@@ -572,6 +695,11 @@ test("missing entities return stable Simplified Chinese errors without index wri
   });
 
   assert.deepEqual(await indexBytes(f), before);
+});
+
+test("publishing service does not expose the unused debug index hash API", async () => {
+  const f = await fixture();
+  assert.equal("debugIndexHash" in f.service, false);
 });
 
 async function findFormalPackages(storageRoot: string): Promise<string[]> {
