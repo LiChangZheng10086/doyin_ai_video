@@ -31,6 +31,7 @@ export interface OperatorState {
   initialized: boolean;
   initialize(): Promise<void>;
   bootstrap(displayName: string, pin: string): Promise<void>;
+  recover(confirmation: string, displayName: string, pin: string): Promise<void>;
   switchUser(userId: string, pin?: string): Promise<void>;
   signOut(): Promise<void>;
   refreshUsers(): Promise<void>;
@@ -106,22 +107,37 @@ export function createOperatorStore(client: LocalIdentityClient = apiClient, sto
 
     initialize: () => enqueueTransition(async () => {
       const result = await client.getLocalUsers();
-      set({ users: result.users, needsBootstrap: result.needsBootstrap, initialized: true });
+      set({ users: result.users, needsBootstrap: result.needsBootstrap });
 
       const publisher = findRestorablePublisher(result.users, readStorage(storage, LAST_PUBLISHER_ID_KEY));
       if (!publisher) {
         removeStorage(storage, LAST_PUBLISHER_ID_KEY);
+        set({ initialized: true });
         return;
       }
 
       const { session } = await client.openLocalSession(publisher.id);
       applySession(session, set, get);
+      set({ initialized: true });
     }),
 
     bootstrap: (displayName, pin) => enqueueTransition(async () => {
       const { user, session } = await client.bootstrapLocalAdmin(displayName, pin);
       client.setLocalSession(session.token);
       set({ users: [user], currentUser: session.user, token: session.token, needsBootstrap: false, initialized: true });
+      removeStorage(storage, LAST_PUBLISHER_ID_KEY);
+    }),
+
+    recover: (confirmation, displayName, pin) => enqueueTransition(async () => {
+      const { user, session } = await client.recoverLocalIdentity(confirmation, displayName, pin);
+      client.setLocalSession(session.token);
+      set({
+        users: [user],
+        currentUser: session.user,
+        token: session.token,
+        needsBootstrap: false,
+        initialized: true,
+      });
       removeStorage(storage, LAST_PUBLISHER_ID_KEY);
     }),
 

@@ -14,7 +14,7 @@ import { LocalUserSetup } from './components/LocalUserSetup';
 import { OperatorSwitcher } from './components/OperatorSwitcher';
 import { useOperatorStore } from './store/operator';
 
-function Navigation() {
+function Navigation({ onRequestRecovery }: { onRequestRecovery: () => void }) {
   const location = useLocation();
   const navItems = [
     { to: '/', label: '创作中心', icon: LayoutDashboard },
@@ -75,7 +75,7 @@ function Navigation() {
           <div className="flex flex-wrap items-center gap-3">
             <ApiKeyStatusIndicator />
             <CookieStatusIndicator />
-            <OperatorSwitcher />
+            <OperatorSwitcher onRequestRecovery={onRequestRecovery} />
             <span className="text-xs text-tech-muted bg-tech-bg px-3 py-1 rounded-full">
               v0.1.0
             </span>
@@ -105,6 +105,7 @@ function App() {
   const needsBootstrap = useOperatorStore((state) => state.needsBootstrap);
   const initializationStarted = useRef(false);
   const [initializationError, setInitializationError] = useState(false);
+  const [recoveryRequested, setRecoveryRequested] = useState(false);
 
   useEffect(() => {
     if (initializationStarted.current) return;
@@ -122,11 +123,19 @@ function App() {
     );
   }
 
-  if (needsBootstrap) return <LocalUserSetup />;
+  if (needsBootstrap || recoveryRequested) {
+    return (
+      <LocalUserSetup
+        recoveryOnly={!needsBootstrap}
+        onClose={recoveryRequested ? () => setRecoveryRequested(false) : undefined}
+        onRecoveryComplete={recoveryRequested ? () => setRecoveryRequested(false) : undefined}
+      />
+    );
+  }
 
   return (
     <BrowserRouter>
-      <Navigation />
+      <Navigation onRequestRecovery={() => setRecoveryRequested(true)} />
     </BrowserRouter>
   );
 }

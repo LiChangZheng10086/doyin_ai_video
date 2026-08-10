@@ -1,15 +1,19 @@
 import { FormEvent, useState } from 'react';
-import { AlertCircle, KeyRound, RotateCcw, ShieldCheck } from 'lucide-react';
-import { apiClient } from '../services/api';
+import { AlertCircle, ArrowLeft, KeyRound, RotateCcw, ShieldCheck } from 'lucide-react';
 import { useOperatorStore } from '../store/operator';
 import { localIdentityErrorMessage, validateAdminSetup } from '../utils/localUsers';
 
 type FieldErrors = Record<string, string>;
 
-export function LocalUserSetup() {
+interface LocalUserSetupProps {
+  recoveryOnly?: boolean;
+  onClose?: () => void;
+  onRecoveryComplete?: () => void;
+}
+
+export function LocalUserSetup({ recoveryOnly = false, onClose, onRecoveryComplete }: LocalUserSetupProps) {
   const bootstrap = useOperatorStore((state) => state.bootstrap);
-  const switchUser = useOperatorStore((state) => state.switchUser);
-  const refreshUsers = useOperatorStore((state) => state.refreshUsers);
+  const recover = useOperatorStore((state) => state.recover);
   const [displayName, setDisplayName] = useState('');
   const [pin, setPin] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -61,9 +65,8 @@ export function LocalUserSetup() {
     setRecoverySubmitError('');
     setIsRecovering(true);
     try {
-      const { user } = await apiClient.recoverLocalIdentity('重置本地用户', recoveryName.trim(), recoveryPin);
-      await switchUser(user.id, recoveryPin);
-      await refreshUsers();
+      await recover('重置本地用户', recoveryName.trim(), recoveryPin);
+      onRecoveryComplete?.();
     } catch (error) {
       setRecoverySubmitError(localIdentityErrorMessage(error));
     } finally {
@@ -80,13 +83,23 @@ export function LocalUserSetup() {
               <ShieldCheck size={22} aria-hidden="true" />
             </div>
             <div>
-              <h1 className="text-lg font-semibold text-tech-text">创建本地管理员</h1>
-              <p className="mt-1 text-sm leading-6 text-tech-muted">本地管理员仅用于本机创作与发布操作，不会创建线上账号。</p>
+              <h1 className="text-lg font-semibold text-tech-text">{recoveryOnly ? '恢复本地管理员' : '创建本地管理员'}</h1>
+              <p className="mt-1 text-sm leading-6 text-tech-muted">{recoveryOnly ? '通过确认文本重置本地用户与管理员 PIN。' : '本地管理员仅用于本机创作与发布操作，不会创建线上账号。'}</p>
             </div>
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1.5 text-sm font-medium text-tech-muted transition hover:bg-tech-bg hover:text-tech-text"
+              >
+                <ArrowLeft size={16} aria-hidden="true" />
+                返回
+              </button>
+            )}
           </div>
         </div>
 
-        <form onSubmit={handleBootstrap} className="space-y-4 px-5 py-5 sm:px-6 sm:py-6">
+        {!recoveryOnly && <form onSubmit={handleBootstrap} className="space-y-4 px-5 py-5 sm:px-6 sm:py-6">
           <div>
             <label className="mb-2 block text-sm font-medium text-tech-text" htmlFor="local-admin-name">管理员姓名</label>
             <input
@@ -143,7 +156,7 @@ export function LocalUserSetup() {
             <KeyRound size={16} aria-hidden="true" />
             {isSubmitting ? '正在创建...' : '创建本地管理员'}
           </button>
-        </form>
+        </form>}
 
         <div className="border-t border-tech-border px-5 py-4 sm:px-6">
           <button

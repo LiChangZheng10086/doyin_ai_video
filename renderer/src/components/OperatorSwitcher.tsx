@@ -1,5 +1,6 @@
-import { FormEvent, useState } from 'react';
-import { AlertCircle, KeyRound, LogOut, UserRound } from 'lucide-react';
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { AlertCircle, KeyRound, LogOut, RotateCcw, UserRound } from 'lucide-react';
 import type { LocalUser } from '../types';
 import { useOperatorStore } from '../store/operator';
 import { localIdentityErrorMessage } from '../utils/localUsers';
@@ -9,7 +10,11 @@ const roleLabel: Record<LocalUser['role'], string> = {
   publisher: '发布者',
 };
 
-export function OperatorSwitcher() {
+interface OperatorSwitcherProps {
+  onRequestRecovery: () => void;
+}
+
+export function OperatorSwitcher({ onRequestRecovery }: OperatorSwitcherProps) {
   const users = useOperatorStore((state) => state.users);
   const currentUser = useOperatorStore((state) => state.currentUser);
   const switchUser = useOperatorStore((state) => state.switchUser);
@@ -19,12 +24,46 @@ export function OperatorSwitcher() {
   const [error, setError] = useState('');
   const [isSwitching, setIsSwitching] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const pinInputRef = useRef<HTMLInputElement>(null);
+  const lastFocusedElementRef = useRef<HTMLElement | null>(null);
   const activeUsers = users.filter((user) => user.isActive);
+
+  const restoreDialogFocus = useCallback(() => {
+    requestAnimationFrame(() => lastFocusedElementRef.current?.focus());
+  }, []);
+
+  const closeAdminDialog = useCallback(() => {
+    if (isSwitching) return;
+    setPendingAdmin(null);
+    setPin('');
+    setError('');
+    restoreDialogFocus();
+  }, [isSwitching, restoreDialogFocus]);
+
+  useEffect(() => {
+    if (!pendingAdmin) return;
+    const appRoot = document.getElementById('root');
+    appRoot?.setAttribute('aria-hidden', 'true');
+    appRoot?.setAttribute('inert', '');
+    pinInputRef.current?.focus();
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') closeAdminDialog();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      appRoot?.removeAttribute('aria-hidden');
+      appRoot?.removeAttribute('inert');
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [closeAdminDialog, pendingAdmin]);
 
   const handleSelection = async (userId: string) => {
     const selected = activeUsers.find((user) => user.id === userId);
     if (!selected || selected.id === currentUser?.id) return;
     if (selected.role === 'admin') {
+      lastFocusedElementRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : selectRef.current;
       setPin('');
       setError('');
       setPendingAdmin(selected);
@@ -52,10 +91,26 @@ export function OperatorSwitcher() {
       await switchUser(pendingAdmin.id, pin);
       setPendingAdmin(null);
       setPin('');
+      restoreDialogFocus();
     } catch (switchError) {
       setError(localIdentityErrorMessage(switchError));
     } finally {
       setIsSwitching(false);
+    }
+  };
+
+  const trapDialogFocus = (event: KeyboardEvent<HTMLFormElement>) => {
+    if (event.key !== 'Tab') return;
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('input:not([disabled]), button:not([disabled])'));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   };
 
@@ -79,6 +134,7 @@ export function OperatorSwitcher() {
       <label className="sr-only" htmlFor="operator-switcher">切换操作者</label>
       <select
         id="operator-switcher"
+        ref={selectRef}
         value={currentUser?.id ?? ''}
         onChange={(event) => void handleSelection(event.target.value)}
         disabled={isSwitching || isSigningOut}
@@ -101,11 +157,23 @@ export function OperatorSwitcher() {
           <LogOut size={16} aria-hidden="true" />
         </button>
       )}
+      {!currentUser && (
+        <button
+          type="button"
+          onClick={onRequestRecovery}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-tech-muted transition hover:bg-tech-bg hover:text-tech-text"
+          title="重置本地用户"
+          aria-label="重置本地用户"
+        >
+          <RotateCcw size={16} aria-hidden="true" />
+        </button>
+      )}
       {error && !pendingAdmin && <p className="max-w-40 text-xs text-red-600" role="alert">{error}</p>}
-      {pendingAdmin && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      {pendingAdmin && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(event) => event.target === event.currentTarget && closeAdminDialog()}>
           <form
             onSubmit={handleAdminSwitch}
+            onKeyDown={trapDialogFocus}
             role="dialog"
             aria-modal="true"
             aria-labelledby="admin-pin-title"
@@ -126,7 +194,7 @@ export function OperatorSwitcher() {
                   type="password"
                   inputMode="numeric"
                   autoComplete="current-password"
-                  autoFocus
+                  ref={pinInputRef}
                   value={pin}
                   onChange={(event) => setPin(event.target.value)}
                   aria-invalid={Boolean(error)}
@@ -143,7 +211,7 @@ export function OperatorSwitcher() {
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => { setPendingAdmin(null); setPin(''); setError(''); }}
+                  onClick={closeAdminDialog}
                   disabled={isSwitching}
                   className="rounded-lg px-3 py-2 text-sm font-medium text-tech-muted transition hover:bg-tech-bg hover:text-tech-text disabled:cursor-not-allowed disabled:opacity-60"
                 >
@@ -159,7 +227,8 @@ export function OperatorSwitcher() {
               </div>
             </div>
           </form>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
