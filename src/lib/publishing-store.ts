@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import path from "node:path";
 import type {
   ActorSnapshot,
   DeliveryPackage,
@@ -21,6 +23,17 @@ const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const NO_WRITE = Symbol("publishing-no-write");
 
 type NoWrite<T> = { readonly [NO_WRITE]: true; readonly result: T };
+
+type PublishingCoordinator = {
+  writeTail: Promise<void>;
+  sourceLocks: Map<string, Promise<void>>;
+  index?: PublishingIndex;
+  initPromise?: Promise<void>;
+  initialized: boolean;
+  readOnlyError: PublishingError | null;
+};
+
+const COORDINATORS = new Map<string, PublishingCoordinator>();
 
 type PublishingErrorCode =
   | "publish_asset_broken"
@@ -58,58 +71,73 @@ export interface NewPackageRecord {
   tasks: PublishTask[];
 }
 
+export interface RestorePackageResult {
+  package: DeliveryPackage;
+  notifications: DueNotification[];
+}
+
 export class PublishingStore {
-  private writeTail: Promise<void> = Promise.resolve();
-  private readonly sourceLocks = new Map<string, Promise<void>>();
-  private index!: PublishingIndex;
-  private readOnlyError: PublishingError | null = null;
+  private readonly coordinator: PublishingCoordinator;
 
   constructor(
     private readonly storage: LocalStorage,
     private readonly now = () => new Date()
-  ) {}
+  ) {
+    const indexPath = canonicalIndexPath(storage);
+    let coordinator = COORDINATORS.get(indexPath);
+    if (!coordinator) {
+      coordinator = {
+        writeTail: Promise.resolve(),
+        sourceLocks: new Map(),
+        initialized: false,
+        readOnlyError: null,
+      };
+      COORDINATORS.set(indexPath, coordinator);
+    }
+    this.coordinator = coordinator;
+  }
 
   async init(): Promise<void> {
+    if (this.coordinator.initialized) return;
+    if (!this.coordinator.initPromise) {
+      this.coordinator.initPromise = this.initializeCoordinator();
+    }
+    const initPromise = this.coordinator.initPromise;
     try {
-      const index = await this.storage.readJson<PublishingIndex>(PUBLISHING_INDEX);
-      if (!isPublishingIndex(index)) throw new InvalidPublishingIndexError();
-      this.index = index;
-      this.readOnlyError = null;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        this.index = emptyIndex();
-        this.readOnlyError = null;
-        await this.storage.writeJsonAtomic(PUBLISHING_INDEX, this.index);
-        return;
+      await initPromise;
+    } finally {
+      if (!this.coordinator.initialized && this.coordinator.initPromise === initPromise) {
+        this.coordinator.initPromise = undefined;
       }
-      if (error instanceof SyntaxError || error instanceof InvalidPublishingIndexError) {
-        this.index = emptyIndex();
-        this.readOnlyError = new PublishingError("publish_index_corrupt");
-        return;
-      }
-      throw error;
     }
   }
 
   async snapshot(): Promise<PublishingIndex> {
-    return structuredClone(this.index);
+    return structuredClone(this.currentIndex());
   }
 
   async getTask(taskId: string): Promise<PublishTask | null> {
-    const task = this.index.tasks[taskId];
+    const task = this.currentIndex().tasks[taskId];
     return task ? structuredClone(task) : null;
   }
 
   async getPackage(packageId: string): Promise<PublishingPackageDetail | null> {
-    const packageRecord = this.index.packages[packageId];
+    const index = this.currentIndex();
+    const packageRecord = index.packages[packageId];
     if (!packageRecord) return null;
-    return this.packageDetail(this.index, packageRecord);
+    return this.packageDetail(index, packageRecord);
   }
 
-  async reserveVersion(sourceJobId: string): Promise<number> {
+  async reserveVersion(
+    sourceJobId: string,
+    actor: ActorSnapshot = SYSTEM_ACTOR
+  ): Promise<number> {
     return this.withSourceLock(sourceJobId, () => this.mutate((draft) => {
       const version = draft.nextVersionBySource[sourceJobId] ?? 1;
       draft.nextVersionBySource[sourceJobId] = version + 1;
+      draft.audit.push(this.auditEvent(`source:${sourceJobId}`, "source.reserve_version", actor, {
+        metadata: { sourceJobId, version },
+      }));
       return version;
     }));
   }
@@ -143,6 +171,7 @@ export class PublishingStore {
 
       const taskIds = new Set<string>();
       const platforms = new Set<string>();
+      const nowMs = this.now().getTime();
       for (const task of taskInputs) {
         if (
           task.packageId !== packageInput.id ||
@@ -154,6 +183,12 @@ export class PublishingStore {
             packageId: packageInput.id,
             taskId: task.id,
             platform: task.platform,
+          });
+        }
+        if (!isValidInitialTask(task, nowMs)) {
+          throw new PublishingError("publish_validation_failed", {
+            taskId: task.id,
+            field: "status",
           });
         }
         taskIds.add(task.id);
@@ -316,43 +351,8 @@ export class PublishingStore {
   }
 
   async processDue(now = this.now()): Promise<DueNotification[]> {
-    const nowMs = now.getTime();
-    const becameReadyAt = now.toISOString();
     return this.mutate((draft) => {
-      const notifications: DueNotification[] = [];
-      for (const task of Object.values(draft.tasks)) {
-        const packageRecord = draft.packages[task.packageId];
-        if (
-          packageRecord?.state !== "active" ||
-          task.status !== "scheduled" ||
-          !task.scheduledAt ||
-          task.dueNotifiedAt
-        ) {
-          continue;
-        }
-        const scheduledMs = new Date(task.scheduledAt).getTime();
-        if (!Number.isFinite(scheduledMs) || scheduledMs > nowMs) continue;
-
-        task.status = "ready";
-        task.dueNotifiedAt = becameReadyAt;
-        task.updatedAt = becameReadyAt;
-        draft.audit.push(this.auditEvent(task.packageId, "task.due", SYSTEM_ACTOR, {
-          taskId: task.id,
-          fromStatus: "scheduled",
-          toStatus: "ready",
-          metadata: { scheduledAt: task.scheduledAt, overdueMs: nowMs - scheduledMs },
-        }, becameReadyAt));
-        notifications.push({
-          taskId: task.id,
-          packageId: task.packageId,
-          platform: task.platform,
-          platformLabel: PUBLISH_PLATFORMS[task.platform].label,
-          title: task.title,
-          scheduledAt: task.scheduledAt,
-          becameReadyAt,
-          overdueMs: nowMs - scheduledMs,
-        });
-      }
+      const notifications = this.processDueInDraft(draft, now);
       return notifications.length > 0 ? notifications : noWrite(notifications);
     });
   }
@@ -371,12 +371,18 @@ export class PublishingStore {
       packageRecord.deletedAt = deletedAt.toISOString();
       packageRecord.purgeAt = new Date(deletedAt.getTime() + TRASH_RETENTION_MS).toISOString();
       packageRecord.updatedAt = packageRecord.deletedAt;
-      draft.audit.push(this.auditEvent(packageId, "package.trash", actor));
+      draft.audit.push(this.auditEvent(packageId, "package.trash", actor, {
+        metadata: { fromState: "active", toState: "trashed" },
+      }));
       return packageRecord;
     });
   }
 
-  async restorePackage(packageId: string, actor: ActorSnapshot): Promise<DeliveryPackage> {
+  async restorePackage(
+    packageId: string,
+    actor: ActorSnapshot
+  ): Promise<RestorePackageResult> {
+    const restoredAt = this.now();
     return this.mutate((draft) => {
       const packageRecord = this.requirePackage(draft, packageId);
       if (packageRecord.state !== "trashed") {
@@ -389,9 +395,16 @@ export class PublishingStore {
       delete packageRecord.deletedAt;
       delete packageRecord.purgeAt;
       delete packageRecord.purgedAt;
-      packageRecord.updatedAt = this.timestamp();
-      draft.audit.push(this.auditEvent(packageId, "package.restore", actor));
-      return packageRecord;
+      packageRecord.updatedAt = restoredAt.toISOString();
+      draft.audit.push(this.auditEvent(
+        packageId,
+        "package.restore",
+        actor,
+        { metadata: { fromState: "trashed", toState: "active" } },
+        restoredAt.toISOString()
+      ));
+      const notifications = this.processDueInDraft(draft, restoredAt, packageId);
+      return { package: packageRecord, notifications };
     });
   }
 
@@ -411,7 +424,7 @@ export class PublishingStore {
       packageRecord.assetHealth = health;
       packageRecord.updatedAt = this.timestamp();
       draft.audit.push(this.auditEvent(packageId, "package.asset_health", actor, {
-        metadata: { from: previousHealth, to: health },
+        metadata: { fromState: previousHealth, toState: health },
       }));
       return packageRecord;
     });
@@ -419,10 +432,9 @@ export class PublishingStore {
 
   async markPurged(
     packageId: string,
-    tombstone: PublishingTombstone,
-    actor: ActorSnapshot
-  ): Promise<void> {
-    await this.mutate((draft) => {
+    actor: ActorSnapshot = SYSTEM_ACTOR
+  ): Promise<PublishingTombstone> {
+    return this.mutate((draft) => {
       const packageRecord = this.requirePackage(draft, packageId);
       if (packageRecord.state !== "trashed") {
         throw new PublishingError("publish_invalid_transition", {
@@ -430,22 +442,57 @@ export class PublishingStore {
           targetState: "purged",
         });
       }
-      if (
-        tombstone.packageId !== packageId ||
-        tombstone.sourceJobId !== packageRecord.sourceJobId ||
-        tombstone.version !== packageRecord.version
-      ) {
-        throw new PublishingError("publish_revision_conflict", { packageId });
+      const purgedAt = this.now();
+      const purgeAtMs = packageRecord.purgeAt
+        ? new Date(packageRecord.purgeAt).getTime()
+        : Number.NaN;
+      if (!packageRecord.deletedAt || !Number.isFinite(purgeAtMs)) {
+        throw new PublishingError("publish_validation_failed", { packageId });
+      }
+      if (purgeAtMs > purgedAt.getTime()) {
+        throw new PublishingError("publish_invalid_transition", {
+          packageState: packageRecord.state,
+          purgeAt: packageRecord.purgeAt,
+        });
       }
 
+      const tasks = Object.values(draft.tasks).filter((task) => task.packageId === packageId);
+      const purgeAudit = this.auditEvent(packageId, "package.purge", actor, {
+        metadata: { fromState: "trashed", toState: "purged" },
+      }, purgedAt.toISOString());
+      draft.audit.push(purgeAudit);
+      const publishedAt = tasks
+        .flatMap((task) => task.publishedAt ? [task.publishedAt] : [])
+        .sort()
+        .at(-1);
+      const tombstone: PublishingTombstone = {
+        packageId,
+        sourceJobId: packageRecord.sourceJobId,
+        version: packageRecord.version,
+        platforms: tasks.map((task) => ({
+          platform: task.platform,
+          finalStatus: task.status,
+        })),
+        createdAt: packageRecord.createdAt,
+        deletedAt: packageRecord.deletedAt,
+        purgedAt: purgedAt.toISOString(),
+        videoSha256: packageRecord.videoSha256,
+        auditSummary: draft.audit
+          .filter((event) => event.packageId === packageId)
+          .map((event) => ({
+            action: event.action,
+            actor: structuredClone(event.actor),
+            createdAt: event.createdAt,
+          })),
+      };
+      if (publishedAt) tombstone.publishedAt = publishedAt;
+
       packageRecord.state = "purged";
-      packageRecord.purgedAt = tombstone.purgedAt;
-      packageRecord.updatedAt = tombstone.purgedAt;
-      for (const task of Object.values(draft.tasks)) {
-        if (task.packageId === packageId) delete draft.tasks[task.id];
-      }
-      draft.tombstones[packageId] = structuredClone(tombstone);
-      draft.audit.push(this.auditEvent(packageId, "package.purge", actor, {}, tombstone.purgedAt));
+      packageRecord.purgedAt = purgedAt.toISOString();
+      packageRecord.updatedAt = purgedAt.toISOString();
+      for (const task of tasks) delete draft.tasks[task.id];
+      draft.tombstones[packageId] = tombstone;
+      return tombstone;
     });
   }
 
@@ -469,10 +516,11 @@ export class PublishingStore {
   }
 
   async list(filters: PublishingListFilters): Promise<PublishingPackageDetail[]> {
+    const index = this.currentIndex();
     const status = filters.status ?? "action";
-    return Object.values(this.index.packages)
+    return Object.values(index.packages)
       .filter((packageRecord) => {
-        const tasks = Object.values(this.index.tasks).filter((task) => task.packageId === packageRecord.id);
+        const tasks = Object.values(index.tasks).filter((task) => task.packageId === packageRecord.id);
         if (status === "trash") {
           if (packageRecord.state !== "trashed") return false;
         } else {
@@ -500,7 +548,52 @@ export class PublishingStore {
         b.version - a.version ||
         a.id.localeCompare(b.id)
       ))
-      .map((packageRecord) => this.packageDetail(this.index, packageRecord));
+      .map((packageRecord) => this.packageDetail(index, packageRecord));
+  }
+
+  private processDueInDraft(
+    draft: PublishingIndex,
+    now: Date,
+    onlyPackageId?: string
+  ): DueNotification[] {
+    const nowMs = now.getTime();
+    const becameReadyAt = now.toISOString();
+    const notifications: DueNotification[] = [];
+    for (const task of Object.values(draft.tasks)) {
+      const packageRecord = draft.packages[task.packageId];
+      if (
+        (onlyPackageId && task.packageId !== onlyPackageId) ||
+        packageRecord?.state !== "active" ||
+        task.status !== "scheduled" ||
+        !task.scheduledAt ||
+        task.dueNotifiedAt
+      ) {
+        continue;
+      }
+      const scheduledMs = new Date(task.scheduledAt).getTime();
+      if (!Number.isFinite(scheduledMs) || scheduledMs > nowMs) continue;
+
+      task.status = "ready";
+      task.dueNotifiedAt = becameReadyAt;
+      task.updatedAt = becameReadyAt;
+      draft.audit.push(this.auditEvent(task.packageId, "task.due", SYSTEM_ACTOR, {
+        taskId: task.id,
+        fromStatus: "scheduled",
+        toStatus: "ready",
+        metadata: { scheduledAt: task.scheduledAt, overdueMs: nowMs - scheduledMs },
+      }, becameReadyAt));
+      notifications.push({
+        taskId: task.id,
+        packageId: task.packageId,
+        platform: task.platform,
+        platformLabel: PUBLISH_PLATFORMS[task.platform].label,
+        title: task.title,
+        scheduledAt: task.scheduledAt,
+        becameReadyAt,
+        overdueMs: nowMs - scheduledMs,
+      });
+    }
+    return notifications;
   }
 
   private async transitionTask(
@@ -605,43 +698,85 @@ export class PublishingStore {
 
   private async mutate<T>(change: (draft: PublishingIndex) => T | NoWrite<T>): Promise<T> {
     return this.enqueueWrite(async () => {
-      if (this.readOnlyError) throw this.readOnlyError;
-      const draft = structuredClone(this.index);
+      if (this.coordinator.readOnlyError) throw this.coordinator.readOnlyError;
+      const draft = structuredClone(this.currentIndex());
       const result = change(draft);
       if (isNoWrite(result)) return structuredClone(result.result);
       draft.revision += 1;
       await this.storage.writeJsonAtomic(PUBLISHING_INDEX, draft);
-      this.index = draft;
+      this.coordinator.index = draft;
       return structuredClone(result);
     });
   }
 
   private async enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
-    const queued = this.writeTail.then(operation, operation);
-    this.writeTail = queued.then(() => undefined, () => undefined);
+    const queued = this.coordinator.writeTail.then(operation, operation);
+    this.coordinator.writeTail = queued.then(() => undefined, () => undefined);
     return queued;
   }
 
   private async withSourceLock<T>(sourceJobId: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.sourceLocks.get(sourceJobId) ?? Promise.resolve();
+    const previous = this.coordinator.sourceLocks.get(sourceJobId) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>((resolve) => {
       release = resolve;
     });
     const tail = previous.then(() => current);
-    this.sourceLocks.set(sourceJobId, tail);
+    this.coordinator.sourceLocks.set(sourceJobId, tail);
 
     await previous;
     try {
       return await operation();
     } finally {
       release();
-      if (this.sourceLocks.get(sourceJobId) === tail) this.sourceLocks.delete(sourceJobId);
+      if (this.coordinator.sourceLocks.get(sourceJobId) === tail) {
+        this.coordinator.sourceLocks.delete(sourceJobId);
+      }
     }
+  }
+
+  private async initializeCoordinator(): Promise<void> {
+    try {
+      const index = await this.storage.readJson<PublishingIndex>(PUBLISHING_INDEX);
+      if (!isPublishingIndex(index)) throw new InvalidPublishingIndexError();
+      this.coordinator.index = index;
+      this.coordinator.readOnlyError = null;
+      this.coordinator.initialized = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        const index = emptyIndex();
+        await this.storage.writeJsonAtomic(PUBLISHING_INDEX, index);
+        this.coordinator.index = index;
+        this.coordinator.readOnlyError = null;
+        this.coordinator.initialized = true;
+        return;
+      }
+      if (error instanceof SyntaxError || error instanceof InvalidPublishingIndexError) {
+        this.coordinator.index = emptyIndex();
+        this.coordinator.readOnlyError = new PublishingError("publish_index_corrupt");
+        this.coordinator.initialized = true;
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private currentIndex(): PublishingIndex {
+    if (this.coordinator.index) return this.coordinator.index;
+    throw this.coordinator.readOnlyError ?? new PublishingError("publish_index_corrupt");
   }
 }
 
 class InvalidPublishingIndexError extends Error {}
+
+function canonicalIndexPath(storage: LocalStorage): string {
+  const basePath = path.resolve(storage.resolve());
+  try {
+    return path.join(realpathSync.native(basePath), PUBLISHING_INDEX);
+  } catch {
+    return path.resolve(storage.resolve(PUBLISHING_INDEX));
+  }
+}
 
 const ALLOWED_TRANSITIONS: Record<PublishTaskStatus, readonly PublishTaskStatus[]> = {
   scheduled: ["ready", "cancelled", "failed"],
@@ -670,6 +805,14 @@ function requireReason(reason: string): string {
     throw new PublishingError("publish_validation_failed", { field: "reason" });
   }
   return safeReason;
+}
+
+function isValidInitialTask(task: PublishTask, nowMs: number): boolean {
+  if (task.publishedAt || task.dueNotifiedAt || task.lastError) return false;
+  if (task.status === "ready") return task.scheduledAt === undefined;
+  if (task.status !== "scheduled" || !task.scheduledAt) return false;
+  const scheduledMs = new Date(task.scheduledAt).getTime();
+  return Number.isFinite(scheduledMs) && scheduledMs > nowMs;
 }
 
 function matchesSearch(
