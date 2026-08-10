@@ -21,6 +21,17 @@ type LocalUserErrorCode =
   | "local_user_recovery_confirmation_invalid"
   | "local_users_already_initialized";
 
+const LOCAL_USER_ERROR_MESSAGES: Record<LocalUserErrorCode, string> = {
+  local_user_admin_pin_required: "管理员必须设置有效的 PIN",
+  local_user_forbidden: "仅管理员可以执行此操作",
+  local_user_last_admin: "至少保留一个启用的管理员",
+  local_user_not_found: "未找到本地用户",
+  local_user_pin_invalid: "PIN 必须为 6 到 12 位数字",
+  local_user_publisher_pin_forbidden: "发布者不能设置 PIN",
+  local_user_recovery_confirmation_invalid: "请准确输入“重置本地用户”以确认恢复",
+  local_users_already_initialized: "本地用户已初始化",
+};
+
 export const SYSTEM_ACTOR: ActorSnapshot = {
   userId: "system",
   displayName: "系统",
@@ -29,7 +40,7 @@ export const SYSTEM_ACTOR: ActorSnapshot = {
 
 export class LocalUserError extends Error {
   constructor(readonly code: LocalUserErrorCode) {
-    super(code);
+    super(LOCAL_USER_ERROR_MESSAGES[code]);
     this.name = "LocalUserError";
   }
 }

@@ -39,6 +39,16 @@ async function adminFixture() {
   };
 }
 
+test("LocalUserError keeps stable codes with safe Simplified Chinese messages", () => {
+  const invalidPin = new LocalUserError("local_user_pin_invalid");
+  const forbidden = new LocalUserError("local_user_forbidden");
+
+  assert.equal(invalidPin.code, "local_user_pin_invalid");
+  assert.equal(invalidPin.message, "PIN 必须为 6 到 12 位数字");
+  assert.equal(forbidden.code, "local_user_forbidden");
+  assert.equal(forbidden.message, "仅管理员可以执行此操作");
+});
+
 test("bootstrap creates the first admin without persisting plaintext pin", async () => {
   const { store, storage } = await fixture();
   const admin = await store.bootstrap({ displayName: "管理员", pin: "123456" });
