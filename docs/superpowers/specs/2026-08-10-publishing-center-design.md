@@ -381,6 +381,7 @@ POST   /api/jobs/:id/publishing/preview
 POST   /api/publishing/packages
 GET    /api/publishing/packages
 GET    /api/publishing/packages/:id
+POST   /api/publishing/due/check
 POST   /api/publishing/packages/:id/versions
 PATCH  /api/publishing/tasks/:id/content
 PATCH  /api/publishing/tasks/:id/schedule
@@ -394,6 +395,7 @@ POST   /api/publishing/packages/:id/restore
 ```
 
 - `preview` 做资格检查和 AI/回退文案预览，不写正式包或平台任务。
+- `due/check` 不要求用户会话，只允许使用固定系统身份执行 `scheduled -> ready`、设置 `dueNotifiedAt` 并返回本次通知项；它不能执行其他迁移。
 - 创建正式包时再次验证源 MP4、平台、文案、排期和客户端 revision，不能信任旧预览。
 - 列表支持状态、平台、源任务、版本、创建者和文本搜索过滤。
 - 400 表示输入校验，401 表示没有有效本地会话，403 表示角色无权，404 表示实体不存在，409 表示状态/revision/版本冲突，422 表示资产不可交付，500 表示本地持久化错误。
