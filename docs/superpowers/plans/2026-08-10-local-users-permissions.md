@@ -278,7 +278,7 @@ export class LocalUserStore {
   hasUsers(): Promise<boolean>;
   bootstrap(input: { displayName: string; pin: string }): Promise<LocalUserView>;
   create(actor: ActorSnapshot, input: { displayName: string; role: LocalUserRole; pin?: string }): Promise<LocalUserView>;
-  update(actor: ActorSnapshot, id: string, changes: { displayName?: string; role?: LocalUserRole; isActive?: boolean }): Promise<LocalUserView>;
+  update(actor: ActorSnapshot, id: string, changes: { displayName?: string; role?: LocalUserRole; isActive?: boolean; pin?: string }): Promise<LocalUserView>;
   resetPin(actor: ActorSnapshot, id: string, pin: string): Promise<void>;
   verifyPin(id: string, pin: string): Promise<boolean>;
   recover(input: { confirmation: string; displayName: string; pin: string }): Promise<LocalUserView>;
@@ -297,7 +297,7 @@ type StoredLocalUser = LocalUserView & { pinSalt?: string; pinHash?: string };
 type LocalUsersIndex = { schemaVersion: 1; users: Record<string, StoredLocalUser> };
 ```
 
-Use `randomBytes(16)`, promisified `scrypt(pin, salt, 64)`, and `timingSafeEqual`. `list()` and all returned values must strip `pinSalt`/`pinHash`. `create()` requires `actor.role === "admin"`; admins require a valid PIN, publishers reject `pin`. `recover()` atomically replaces only the users index.
+Use `randomBytes(16)`, promisified `scrypt(pin, salt, 64)`, and `timingSafeEqual`. `list()` and all returned values must strip `pinSalt`/`pinHash`. `create()` requires `actor.role === "admin"`; admins require a valid PIN, publishers reject `pin`. `update()` requires a valid new PIN when changing `publisher -> admin`, removes PIN data for `admin -> publisher`, and rejects `pin` when the role is not becoming/staying admin. `recover()` atomically replaces only the users index. Serialize every mutating method through one store-local promise queue so concurrent user API calls cannot overwrite one another.
 
 - [ ] **Step 4: Run tests and inspect the persisted fixture**
 
@@ -740,7 +740,7 @@ Required states and controls:
 
 - Publisher: list active/inactive users, role labels and current-user marker; no management buttons.
 - Admin: “新建用户” form with name, role, and conditional admin PIN.
-- Row actions: rename, enable/disable, change role, reset admin PIN.
+- Row actions: rename, enable/disable, change role, reset admin PIN. Promoting a publisher opens a required new-PIN field; demoting an administrator requires confirmation and removes the PIN.
 - Disable/demote last admin: show backend message inline; do not optimistically mutate the row.
 - Current admin cannot disable their own profile while its session is active.
 - Recovery is not shown during a valid admin session; it remains in `LocalUserSetup` only.
