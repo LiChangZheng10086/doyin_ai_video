@@ -114,7 +114,7 @@ interface LocalUser {
 interface ActorSnapshot {
   userId: string;
   displayName: string;
-  role: LocalUserRole;
+  role: LocalUserRole | "system";
 }
 ```
 
@@ -123,6 +123,7 @@ interface ActorSnapshot {
 - 发布者档案不设置 PIN，可以直接选择。
 - 切换管理员必须验证 PIN。会话令牌只保存在后端内存中，切换用户或退出应用后失效。
 - 用户索引保存于 `cache/local-users.json`，当前选中的发布者可保存在应用配置中；管理员会话不得持久化。
+- 排期到期、启动恢复和垃圾桶过期清理使用固定操作者快照 `{ userId: "system", displayName: "系统", role: "system" }`；`system` 不是可登录用户，也不能出现在用户切换器中。
 - 至少保留一个启用的管理员。最后一个启用管理员不能被停用或降级。
 - 活跃管理员可以创建、停用、重命名用户，并重置其他管理员 PIN。
 - 唯一管理员遗忘 PIN 时，提供“重置本地身份系统”恢复流程：必须输入固定确认文本；只重建用户档案，不删除发布包、任务或历史操作者快照。该流程是本机恢复工具，不是强安全机制。
@@ -557,7 +558,7 @@ AI 失败时文案审核页展示回退提示而非错误终止。成功后提�
 - **AC-089 / REQ-012** Given 切换用户或退出应用，Then 管理员会话失效。
 - **AC-090 / REQ-012** Given 只剩一个启用管理员，Then 禁止停用或降级。
 - **AC-091 / REQ-012** Given 发布者调用管理员 API，Then 服务端返回 403 且不写数据。
-- **AC-092 / REQ-008** Given 任意写操作，Then 审计使用服务端会话解析的操作者快照。
+- **AC-092 / REQ-008** Given 用户发起写操作，Then 审计使用服务端会话解析的操作者快照；Given 自动到期或清理，Then 使用固定系统快照。
 - **AC-093 / REQ-012** Given 唯一管理员遗忘 PIN，Then 身份重置保留发布数据和历史快照。
 - **AC-094 / REQ-012** Given PIN 错误，Then 不返回哈希、盐或敏感配置。
 - **AC-052 / REQ-011** Given 管理员删除包，Then 包和任务原子进入发布垃圾桶。
