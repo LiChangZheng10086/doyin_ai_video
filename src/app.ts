@@ -16,6 +16,11 @@ import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import { simplifyChineseValue } from "./lib/chinese.js";
 import { buildSkillContext, getSkillErrorMessage, isRetryableSkillError } from "./lib/skill-generation.js";
 import { resolveJobVideo, VideoOutputError, type ResolvedVideoFile } from "./lib/video-output.js";
+import { PublishingStore } from "./lib/publishing-store.js";
+import { PublishingCopyService } from "./lib/publishing-copy.js";
+import { PublishingAssetService } from "./lib/publishing-assets.js";
+import { PublishingService } from "./lib/publishing-service.js";
+import { registerPublishingRoutes } from "./lib/publishing-routes.js";
 import type { CollectionRecord, PipelineStep, ScriptAsset } from "./types.js";
 
 export interface ServerConfig {
@@ -118,6 +123,45 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   await jobs.init();
   const resolveVideo = config.resolveJobVideo ?? resolveJobVideo;
 
+  const publishingStore = new PublishingStore(storage);
+  const publishingCopy = new PublishingCopyService({
+    resolveAiConfig: async () => {
+      if (config.resolveAiConfig) return config.resolveAiConfig();
+      if (!aiApiKey) return null;
+      return {
+        provider: aiProvider === "deepseek" || aiProvider === "openai" ? aiProvider : "custom",
+        model: aiModel,
+        apiKey: aiApiKey,
+        baseURL: aiBaseURL,
+      };
+    },
+  });
+  const publishingAssets = new PublishingAssetService({ storageRoot: config.storagePath });
+  const publishingService = new PublishingService({
+    storageRoot: config.storagePath,
+    jobs,
+    store: publishingStore,
+    assets: publishingAssets,
+    copy: publishingCopy,
+    resolveVideo,
+  });
+  const publishing = Object.assign(publishingService, {
+    list: publishingStore.list.bind(publishingStore),
+    getPackage: publishingStore.getPackage.bind(publishingStore),
+  });
+  let publishingRecoveryError: string | undefined;
+  try {
+    await publishingStore.init();
+    await publishingService.recoverOnStartup();
+  } catch (error) {
+    publishingRecoveryError = "发布数据恢复失败，当前发布中心处于只读保护状态";
+    console.error(publishingRecoveryError, error);
+  }
+  app.locals.publishing = publishing;
+  app.locals.publishingHealth = publishingRecoveryError
+    ? { ok: false, readOnly: true, message: publishingRecoveryError }
+    : { ok: true, readOnly: false };
+
   const collections = new CollectionStore(storage, jobs, {
     cookiesFile: config.cookiesFile,
     cookiesFromBrowser: config.cookiesFromBrowser,
@@ -139,6 +183,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   app.use(express.json({ limit: "2mb" }));
   registerLocalUserRoutes(app, { users: localUsers, sessions: localSessions });
   registerLocalUserErrorBoundary(app);
+  registerPublishingRoutes(app, { publishing, sessions: localSessions });
 
   // 静态文件（开发环境可能不需要）
   const publicDir = path.join(config.rootDir, "public");
@@ -150,7 +195,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   }
 
   app.get("/health", (_req, res) => {
-    res.json({ ok: true, service: "douyin-ai-video" });
+    res.json({ ok: true, service: "douyin-ai-video", publishing: app.locals.publishingHealth });
   });
 
   app.get("/api/jobs", async (_req, res) => {
@@ -1755,14 +1800,14 @@ async function sendResolvedVideo(
     res.setHeader("Content-Type", video.mimeType);
 
     const parsedRange = req.headers.range ? req.range(video.size, { combine: true }) : undefined;
-    if (parsedRange === -1 || parsedRange === -2 || (Array.isArray(parsedRange) && parsedRange.length !== 1)) {
+    if (parsedRange === -1 || parsedRange === -2) {
       res.status(416);
       res.setHeader("Content-Range", `bytes */${video.size}`);
       res.end();
       return;
     }
 
-    const range = Array.isArray(parsedRange) ? parsedRange[0] : undefined;
+    const range = Array.isArray(parsedRange) && parsedRange.length === 1 ? parsedRange[0] : undefined;
     const start = range?.start ?? 0;
     const end = range?.end ?? video.size - 1;
     if (range) {
