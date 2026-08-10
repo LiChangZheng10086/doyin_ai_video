@@ -382,7 +382,6 @@ export class PublishingStore {
     packageId: string,
     actor: ActorSnapshot
   ): Promise<RestorePackageResult> {
-    const restoredAt = this.now();
     return this.mutate((draft) => {
       const packageRecord = this.requirePackage(draft, packageId);
       if (packageRecord.state !== "trashed") {
@@ -391,6 +390,7 @@ export class PublishingStore {
           targetState: "active",
         });
       }
+      const restoredAt = this.now();
       packageRecord.state = "active";
       delete packageRecord.deletedAt;
       delete packageRecord.purgeAt;
@@ -808,9 +808,13 @@ function requireReason(reason: string): string {
 }
 
 function isValidInitialTask(task: PublishTask, nowMs: number): boolean {
-  if (task.publishedAt || task.dueNotifiedAt || task.lastError) return false;
+  if (
+    task.publishedAt !== undefined ||
+    task.dueNotifiedAt !== undefined ||
+    task.lastError !== undefined
+  ) return false;
   if (task.status === "ready") return task.scheduledAt === undefined;
-  if (task.status !== "scheduled" || !task.scheduledAt) return false;
+  if (task.status !== "scheduled" || task.scheduledAt === undefined) return false;
   const scheduledMs = new Date(task.scheduledAt).getTime();
   return Number.isFinite(scheduledMs) && scheduledMs > nowMs;
 }

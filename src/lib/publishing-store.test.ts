@@ -368,6 +368,68 @@ test("preserves task states in trash and catches up overdue tasks on restore", a
   );
 });
 
+test("uses the transaction clock after a queued restore starts executing", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "publishing-store-queued-restore-"));
+  const storage = new LocalStorage(root);
+  await storage.writeJsonAtomic(
+    "cache/publishing-index.json",
+    seededIndex([
+      packageRecord({
+        state: "trashed",
+        deletedAt: "2026-08-01T08:00:00.000Z",
+        purgeAt: "2026-08-31T08:00:00.000Z",
+      }),
+    ], [taskRecord("scheduled", { scheduledAt: "2026-08-10T08:00:00.000Z" })])
+  );
+  let nowMs = Date.parse("2026-08-10T07:59:59.000Z");
+  const store = new PublishingStore(storage, () => new Date(nowMs));
+  await store.init();
+
+  let releaseWrite!: () => void;
+  let writeStarted!: () => void;
+  const release = new Promise<void>((resolve) => { releaseWrite = resolve; });
+  const started = new Promise<void>((resolve) => { writeStarted = resolve; });
+  const writeJsonAtomic = storage.writeJsonAtomic.bind(storage);
+  let blockNextWrite = true;
+  storage.writeJsonAtomic = async (relativePath, data) => {
+    if (blockNextWrite) {
+      blockNextWrite = false;
+      writeStarted();
+      await release;
+    }
+    return writeJsonAtomic(relativePath, data);
+  };
+
+  const precedingMutation = store.recordPurgeFailure(
+    "package-1",
+    "前置写入",
+    SYSTEM_ACTOR
+  );
+  await started;
+  const restore = store.restorePackage("package-1", ACTOR);
+  nowMs = Date.parse("2026-08-10T08:00:01.000Z");
+  releaseWrite();
+  await precedingMutation;
+
+  const result = await restore;
+  const index = await store.snapshot();
+  assert.equal(result.package.updatedAt, "2026-08-10T08:00:01.000Z");
+  assert.deepEqual(result.notifications, [{
+    taskId: "task-1",
+    packageId: "package-1",
+    platform: "douyin",
+    platformLabel: "抖音",
+    title: "标题",
+    scheduledAt: "2026-08-10T08:00:00.000Z",
+    becameReadyAt: "2026-08-10T08:00:01.000Z",
+    overdueMs: 1_000,
+  }]);
+  assert.equal(index.tasks["task-1"].status, "ready");
+  assert.equal(index.tasks["task-1"].updatedAt, "2026-08-10T08:00:01.000Z");
+  assert.equal(index.audit.at(-2)?.createdAt, "2026-08-10T08:00:01.000Z");
+  assert.equal(index.audit.at(-1)?.createdAt, "2026-08-10T08:00:01.000Z");
+});
+
 test("preserves a malformed index and protects every subsequent mutation", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "publishing-store-corrupt-"));
   const indexPath = path.join(root, "cache", "publishing-index.json");
@@ -546,6 +608,30 @@ test("rejects invalid initial package task states without writing", async () => 
       dueNotifiedAt: "2026-08-09T07:00:00.000Z",
       lastError: "旧错误",
     }),
+  ];
+
+  for (const task of invalidTasks) {
+    await assert.rejects(
+      () => store.commitPackage({
+        package: packageRecord({ version }),
+        tasks: [task],
+      }, ACTOR),
+      (error: PublishingError) => error.code === "publish_validation_failed"
+    );
+    assert.deepEqual(await readFile(indexPath), before);
+  }
+});
+
+test("rejects present empty-string task traces without writing", async () => {
+  const { root, store } = await fixture();
+  const version = await store.reserveVersion("job-1", ACTOR);
+  const indexPath = path.join(root, "cache", "publishing-index.json");
+  const before = await readFile(indexPath);
+  const invalidTasks = [
+    taskRecord("ready", { publishedAt: "" }),
+    taskRecord("ready", { dueNotifiedAt: "" }),
+    taskRecord("ready", { lastError: "" }),
+    taskRecord("ready", { scheduledAt: "" }),
   ];
 
   for (const task of invalidTasks) {
