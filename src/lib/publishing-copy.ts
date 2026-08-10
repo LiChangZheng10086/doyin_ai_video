@@ -339,20 +339,64 @@ function sanitizeReferenceText(value: string, limit: number): string {
 }
 
 function isProductionMetadataLine(line: string): boolean {
-  if (/^9\s*:\s*16$/u.test(line)) return true;
+  if (/^(?:9\s*:\s*16|动态图形)$/u.test(line)) return true;
 
-  const separatorMatch = line.match(/^(.{1,40}?)[：:=]/u);
+  const separatorMatch = line.match(/^\s*["']?([^"'：:=]{1,40}?)["']?\s*[：:=]/u);
   if (separatorMatch && PRODUCTION_METADATA_KEYS.has(normalizeMetadataKey(separatorMatch[1]))) {
     return true;
   }
 
-  const firstToken = line.match(/^(\S+)/u)?.[1] ?? line;
-  return PRODUCTION_METADATA_KEYS.has(normalizeMetadataKey(firstToken))
-    || PRODUCTION_METADATA_KEYS.has(normalizeMetadataKey(line));
+  const parts = line.trim().split(/\s+/u);
+  for (let count = Math.min(3, parts.length - 1); count >= 1; count -= 1) {
+    const key = normalizeMetadataKey(parts.slice(0, count).join(""));
+    if (!PRODUCTION_METADATA_KEYS.has(key)) continue;
+    return isKnownProductionValue(key, parts.slice(count).join(" "));
+  }
+  return false;
 }
 
 function normalizeMetadataKey(value: string): string {
   return value.toLowerCase().replace(/[\s_-]+/gu, "");
+}
+
+function isKnownProductionValue(key: string, value: string): boolean {
+  if (key === "duration" || key === "时长") {
+    return /^\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|second|seconds|min|mins|minute|minutes|毫秒|秒|分钟)?$/iu.test(value);
+  }
+  if (["scene", "scenes", "场景"].includes(key)) {
+    return /^\d+(?:\s*[-–]\s*\d+)?(?:\s+.*)?$/u.test(value);
+  }
+  if (["pacing", "节奏", "镜头节奏"].includes(key)) {
+    return /^(?:fast|medium|slow|快|中|慢)$/iu.test(value);
+  }
+  if (key === "transition" || key === "转场") {
+    return /^(?:cut|wipe|push|zoom|match[\s_-]*cut|flash)$/iu.test(value);
+  }
+  if (["shottype", "镜头类型"].includes(key)) {
+    return /^(?:hook|problem|explain|proof|contrast|process|summary|cta)$/iu.test(value);
+  }
+  if (key === "shot" || key === "shots" || key === "分镜") {
+    return /^#?\d+(?:\s+.*)?$/u.test(value);
+  }
+  if (["cameramotion", "镜头运动", "镜头移动"].includes(key)) {
+    return /^(?:static|pan|tilt|zoom|push|pull|dolly|track|tracking|slide|drift|parallax|handheld|slow\s+push(?:-?in)?|soft\s+zoom|vertical\s+slide)(?:\s+.*)?$/iu.test(value);
+  }
+  if ([
+    "visual",
+    "visuallayer",
+    "visuallayers",
+    "visualprompt",
+    "visualprompts",
+    "videoprompt",
+    "videoprompts",
+    "视觉",
+    "视觉层",
+    "视觉提示词",
+    "画面提示词",
+  ].includes(key)) {
+    return /^(?:panel\s+reveal|neon\s+dashboard|title\s+card|kinetic(?:\s+title)?|concept\s+map|process\s+flow|comparison|metric|summary\s+stack|graphic|icon|layer|background|foreground|animation|motion|b-?roll|标题卡|图标|面板|图形|画面|背景|前景|动效)(?:\s+.*)?$/iu.test(value);
+  }
+  return false;
 }
 
 function truncate(value: string, limit: number): string {
@@ -364,13 +408,26 @@ function emptyReference(): CleanedReference {
 }
 
 function validateRequestedPlatforms(platforms: unknown): PublishPlatform[] {
-  if (
-    !Array.isArray(platforms)
-    || platforms.some((platform) => typeof platform !== "string" || !SUPPORTED_PLATFORMS.has(platform))
-  ) {
+  if (!Array.isArray(platforms)) {
     throw new PublishingCopyError("publish_copy_platform_invalid");
   }
-  return [...new Set(platforms)] as PublishPlatform[];
+
+  const requested: PublishPlatform[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < platforms.length; index += 1) {
+    if (!Object.hasOwn(platforms, index)) {
+      throw new PublishingCopyError("publish_copy_platform_invalid");
+    }
+    const platform = platforms[index];
+    if (typeof platform !== "string" || !SUPPORTED_PLATFORMS.has(platform)) {
+      throw new PublishingCopyError("publish_copy_platform_invalid");
+    }
+    if (!seen.has(platform)) {
+      seen.add(platform);
+      requested.push(platform as PublishPlatform);
+    }
+  }
+  return requested;
 }
 
 function isUsableConfig(config: AiRuntimeConfig | null): config is AiRuntimeConfig {

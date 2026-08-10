@@ -143,7 +143,7 @@ test("drops production-metadata lines from every allowed cleaned field", async (
     summary: "保留摘要\n镜头运动：slow push\n节奏 fast\n转场 wipe",
     keyPoints: ["保留核心要点", "视觉层：标题和图标", "visualPrompt: neon dashboard"],
     shortVideoScript: "保留内容结论。\ncameraMotion: zoom\npacing: fast\ntransition: cut\nvisualLayers: panel\nSHOT 03",
-    tags: ["内容创作", "9:16", "动态图形", "shot type", "镜头类型"],
+    tags: ["内容创作", "9:16", "动态图形", "shot type: hook", "镜头类型：hook"],
   } as ScriptAsset;
   const client = new FakeChatClient(JSON.stringify({ douyin: VALID_COPIES.douyin }));
 
@@ -186,6 +186,61 @@ test("drops normalized real project metadata keys while preserving natural durat
   assert.match(allMessages, /保留真实核心要点/u);
   assert.doesNotMatch(allMessages, /SENTINEL_(?:CAMEL|UNDERSCORE|SPACE|DASH|SCENE|DURATION|VISUAL|KEYPOINT)/u);
   assert.doesNotMatch(allMessages, /video[\s_-]*prompt\s*[:：=]|(?:^|\n)\s*(?:scene|duration|visual)\s*[:：=]/imu);
+});
+
+test("distinguishes natural key-leading sentences from unseparated production values", async () => {
+  const paired = {
+    ...CLEANED,
+    summary: [
+      "Duration matters to storytelling",
+      "Visual storytelling matters",
+      "duration 6s",
+      "visual panel reveal",
+    ].join("\n"),
+    keyPoints: [
+      "Scene changes the audience perspective",
+      "节奏决定观看体验",
+      "转场让叙事更连贯",
+      "保留普通要点",
+      "scene 3",
+      "pacing fast",
+      "transition match-cut",
+      "shotType hook",
+      "camera_motion slow push",
+      "video prompt neon dashboard",
+      "节奏 fast",
+      "转场 wipe",
+    ],
+  } as ScriptAsset;
+  const client = new FakeChatClient(JSON.stringify({ douyin: VALID_COPIES.douyin }));
+
+  await fixture({ client }).service.previewAll(paired, ["douyin"]);
+
+  const allMessages = requestMessages(client).map((message) => message.content).join("\n");
+  for (const sentence of [
+    "Duration matters to storytelling",
+    "Visual storytelling matters",
+    "Scene changes the audience perspective",
+    "节奏决定观看体验",
+    "转场让叙事更连贯",
+    "保留普通要点",
+  ]) {
+    assert.match(allMessages, new RegExp(sentence, "u"));
+  }
+  for (const metadata of [
+    "duration 6s",
+    "visual panel reveal",
+    "scene 3",
+    "pacing fast",
+    "transition match-cut",
+    "shotType hook",
+    "camera_motion slow push",
+    "video prompt neon dashboard",
+    "节奏 fast",
+    "转场 wipe",
+  ]) {
+    assert.equal(allMessages.includes(metadata), false, `metadata leaked: ${metadata}`);
+  }
 });
 
 test("places malicious cleaned instructions inside an untrusted JSON data boundary", async () => {
@@ -237,11 +292,15 @@ test("deduplicates valid runtime platforms before one AI request", async () => {
 });
 
 test("rejects invalid runtime platforms with a stable safe error before AI access", async () => {
+  const sparseOnly = Array(1) as PublishPlatform[];
+  const sparseMixed = ["douyin", , "bilibili"] as PublishPlatform[];
   const invalidInputs = [
     ["unknown"],
     ["douyin", "unknown"],
     "douyin",
     null,
+    sparseOnly,
+    sparseMixed,
   ];
 
   for (const platforms of invalidInputs) {
