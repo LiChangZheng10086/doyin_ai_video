@@ -31,6 +31,21 @@ export interface PublishingCopyPreview {
   warning?: PublishingCopyWarning;
 }
 
+export type PublishingCopyErrorCode = "publish_copy_platform_invalid";
+
+const PUBLISHING_COPY_ERROR_MESSAGES: Record<PublishingCopyErrorCode, string> = {
+  publish_copy_platform_invalid: "发布平台无效，仅支持抖音、小红书、微信视频号和哔哩哔哩",
+};
+
+export class PublishingCopyError extends Error {
+  readonly status = 400;
+
+  constructor(readonly code: PublishingCopyErrorCode) {
+    super(PUBLISHING_COPY_ERROR_MESSAGES[code]);
+    this.name = "PublishingCopyError";
+  }
+}
+
 type PublishingCopyDependencies = {
   resolveAiConfig: () => Promise<AiRuntimeConfig | null>;
   createClient?: (config: AiRuntimeConfig) => OpenAI;
@@ -54,16 +69,39 @@ const FALLBACK_WARNING: PublishingCopyWarning = {
   message: "AI 平台文案暂不可用，已使用洗稿内容生成可编辑文案。",
 };
 
-const PRODUCTION_METADATA_PATTERNS = [
-  /\bshots?\b/iu,
-  /\bshot\s*type\b|\bshotType\b/iu,
-  /\bcamera\s*motion\b|\bcameraMotion\b/iu,
-  /\bpacing\b|\btransition\b/iu,
-  /\bvisual\s*(?:layers?|prompts?)\b|\bvisual(?:Layers?|Prompts?)\b/iu,
-  /9\s*:\s*16|动态图形/u,
-  /分镜|镜头运动|镜头移动|镜头类型|镜头节奏|视觉层|视觉提示词|画面提示词/u,
-  /节奏|转场/u,
-];
+const PRODUCTION_METADATA_KEYS = new Set([
+  "shot",
+  "shots",
+  "shottype",
+  "cameramotion",
+  "pacing",
+  "transition",
+  "visuallayer",
+  "visuallayers",
+  "visualprompt",
+  "visualprompts",
+  "videoprompt",
+  "videoprompts",
+  "scene",
+  "scenes",
+  "duration",
+  "visual",
+  "分镜",
+  "镜头运动",
+  "镜头移动",
+  "镜头类型",
+  "镜头节奏",
+  "视觉层",
+  "视觉提示词",
+  "画面提示词",
+  "节奏",
+  "转场",
+  "场景",
+  "时长",
+  "视觉",
+  "动态图形",
+]);
+const SUPPORTED_PLATFORMS = new Set(Object.keys(PUBLISH_PLATFORMS));
 const COPY_FIELDS = ["title", "description", "hashtags"] as const;
 
 export class PublishingCopyService {
@@ -80,7 +118,7 @@ export class PublishingCopyService {
     cleaned: CleanedScript,
     platforms: PublishPlatform[],
   ): Promise<PublishingCopyPreview> {
-    const requested = uniquePlatforms(platforms);
+    const requested = validateRequestedPlatforms(platforms);
     if (requested.length === 0) return { copies: {} };
 
     const reference = parseCleanedReference(cleaned);
@@ -98,8 +136,9 @@ export class PublishingCopyService {
     cleaned: CleanedScript,
     platform: PublishPlatform,
   ): Promise<PublishingCopyItem> {
-    const result = await this.previewAll(cleaned, [platform]);
-    const item = result.copies[platform] ?? fallbackCopy(parseCleanedReference(cleaned).value, platform);
+    const [requested] = validateRequestedPlatforms([platform]);
+    const result = await this.previewAll(cleaned, [requested]);
+    const item = result.copies[requested] ?? fallbackCopy(parseCleanedReference(cleaned).value, requested);
     return result.warning ? { ...item, warning: result.warning } : item;
   }
 
@@ -300,7 +339,20 @@ function sanitizeReferenceText(value: string, limit: number): string {
 }
 
 function isProductionMetadataLine(line: string): boolean {
-  return PRODUCTION_METADATA_PATTERNS.some((pattern) => pattern.test(line));
+  if (/^9\s*:\s*16$/u.test(line)) return true;
+
+  const separatorMatch = line.match(/^(.{1,40}?)[：:=]/u);
+  if (separatorMatch && PRODUCTION_METADATA_KEYS.has(normalizeMetadataKey(separatorMatch[1]))) {
+    return true;
+  }
+
+  const firstToken = line.match(/^(\S+)/u)?.[1] ?? line;
+  return PRODUCTION_METADATA_KEYS.has(normalizeMetadataKey(firstToken))
+    || PRODUCTION_METADATA_KEYS.has(normalizeMetadataKey(line));
+}
+
+function normalizeMetadataKey(value: string): string {
+  return value.toLowerCase().replace(/[\s_-]+/gu, "");
 }
 
 function truncate(value: string, limit: number): string {
@@ -311,9 +363,14 @@ function emptyReference(): CleanedReference {
   return { title: "", summary: "", keyPoints: [], tags: [] };
 }
 
-function uniquePlatforms(platforms: PublishPlatform[]): PublishPlatform[] {
-  const supported = new Set(Object.keys(PUBLISH_PLATFORMS) as PublishPlatform[]);
-  return [...new Set(platforms)].filter((platform) => supported.has(platform));
+function validateRequestedPlatforms(platforms: unknown): PublishPlatform[] {
+  if (
+    !Array.isArray(platforms)
+    || platforms.some((platform) => typeof platform !== "string" || !SUPPORTED_PLATFORMS.has(platform))
+  ) {
+    throw new PublishingCopyError("publish_copy_platform_invalid");
+  }
+  return [...new Set(platforms)] as PublishPlatform[];
 }
 
 function isUsableConfig(config: AiRuntimeConfig | null): config is AiRuntimeConfig {
