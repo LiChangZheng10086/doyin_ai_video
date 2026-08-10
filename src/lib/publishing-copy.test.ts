@@ -265,16 +265,16 @@ test("places malicious cleaned instructions inside an untrusted JSON data bounda
   assert.match(messages.at(-1)?.content ?? "", /仅允许顶层键：douyin/);
 });
 
-test("regenerates only one platform and requests exactly that JSON key", async () => {
+test("previews one platform and requests exactly that JSON key", async () => {
   const client = new FakeChatClient(JSON.stringify({ xiaohongshu: VALID_COPIES.xiaohongshu }));
   const { service } = fixture({ client });
 
-  const result = await service.regenerateOne(CLEANED, "xiaohongshu");
+  const result = await service.previewAll(CLEANED, ["xiaohongshu"]);
 
   assert.equal(client.calls.length, 1);
   assert.match(client.calls[0].prompt, /仅允许顶层键：xiaohongshu/);
   assert.doesNotMatch(client.calls[0].prompt, /仅允许顶层键：[^\n]*douyin/);
-  assert.deepEqual(result, { ...VALID_COPIES.xiaohongshu, copySource: "ai" });
+  assert.deepEqual(result.copies.xiaohongshu, { ...VALID_COPIES.xiaohongshu, copySource: "ai" });
 });
 
 test("deduplicates valid runtime platforms before one AI request", async () => {
@@ -319,22 +319,6 @@ test("rejects invalid runtime platforms with a stable safe error before AI acces
     );
     assert.equal(client.calls.length, 0);
   }
-});
-
-test("rejects an invalid runtime regeneration platform with the same stable error", async () => {
-  const { client, service } = fixture();
-
-  await assert.rejects(
-    service.regenerateOne(CLEANED, "unknown" as PublishPlatform),
-    (error: unknown) => {
-      assert.ok(error instanceof Error);
-      assert.equal(error.name, "PublishingCopyError");
-      assert.equal((error as Error & { code?: string }).code, "publish_copy_platform_invalid");
-      assert.equal((error as Error & { status?: number }).status, 400);
-      return true;
-    },
-  );
-  assert.equal(client.calls.length, 0);
 });
 
 test("falls back deterministically when AI config is unavailable", async () => {
@@ -538,11 +522,11 @@ test("returns an empty preview without calling AI when no platform is selected",
   assert.equal(client.calls.length, 0);
 });
 
-test("marks single-platform regeneration fallback with a safe warning", async () => {
+test("marks single-platform preview fallback with a safe warning", async () => {
   const client = new FakeChatClient("not-json");
-  const result = await fixture({ client }).service.regenerateOne(CLEANED, "xiaohongshu");
+  const result = await fixture({ client }).service.previewAll(CLEANED, ["xiaohongshu"]);
 
-  assert.equal(result.copySource, "cleaned_fallback");
+  assert.equal(result.copies.xiaohongshu?.copySource, "cleaned_fallback");
   assert.equal(result.warning?.code, "publish_copy_ai_fallback");
   assert.doesNotMatch(result.warning?.message ?? "", /not-json|secret-key/);
 });

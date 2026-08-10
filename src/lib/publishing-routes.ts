@@ -1,7 +1,6 @@
 import { Router, type Express, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import type {
   CreatePublishingPackageInput,
-  PublishCopySource,
   PublishPlatform,
   PublishingListFilters,
   PublishingPackageDetail,
@@ -67,6 +66,10 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
     res.json({ preview });
   }));
 
+  router.get("/jobs/:id/publishing/assets", authenticated, route(async (req, res) => {
+    res.json({ assets: await deps.publishing.inspectAssets(requiredId(req.params.id)) });
+  }));
+
   router.post("/publishing/packages", authenticated, writable, route(async (req, res) => {
     const detail = await deps.publishing.create(createPackageInput(requestBody(req)), getActor(req));
     res.status(201).json({ package: detail });
@@ -81,6 +84,13 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
     const detail = await deps.publishing.getPackage(requiredId(req.params.id));
     if (!detail) throw new PublishingRouteError(404, "publish_package_not_found", "未找到发布包");
     res.json({ package: detail });
+  }));
+
+  router.get("/publishing/packages/:id/cover", authenticated, route(async (req, res) => {
+    const cover = await deps.publishing.readPackageCover(requiredId(req.params.id));
+    if (!cover) throw new PublishingRouteError(404, "publish_cover_missing", "发布包没有可用封面");
+    res.setHeader("Cache-Control", "private, no-store");
+    res.type("jpg").send(cover);
   }));
 
   router.post("/publishing/due/check", writable, route(async (req, res) => {
@@ -223,7 +233,6 @@ function createPackageInput(input: Record<string, unknown>): CreatePublishingPac
       return {
         platform: platform(record.platform),
         copy: platformCopy(copy),
-        copySource: copySource(record.copySource),
         ...(record.scheduledAt === undefined ? {} : { scheduledAt: requiredString(record.scheduledAt) }),
       };
     }),
@@ -243,7 +252,6 @@ function createVersionInput(input: Record<string, unknown>): CreateVersionInput 
         return {
           platform: platform(record.platform),
           ...(record.copy === undefined ? {} : { copy: platformCopy(object(record.copy)) }),
-          ...(record.copySource === undefined ? {} : { copySource: copySource(record.copySource) }),
           ...(record.scheduledAt === undefined ? {} : { scheduledAt: nullableString(record.scheduledAt) }),
         };
       });
@@ -305,11 +313,6 @@ function platforms(value: unknown): PublishPlatform[] {
 function platform(value: unknown): PublishPlatform {
   if (typeof value !== "string" || !PLATFORMS.has(value as PublishPlatform)) invalid("发布平台无效");
   return value as PublishPlatform;
-}
-
-function copySource(value: unknown): PublishCopySource {
-  if (value !== "ai" && value !== "cleaned_fallback" && value !== "user_edited") invalid("文案来源无效");
-  return value;
 }
 
 function requireConfirmation(input: Record<string, unknown>): void {

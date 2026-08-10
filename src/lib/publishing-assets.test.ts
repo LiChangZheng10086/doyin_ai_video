@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { constants } from "node:fs";
 import {
+  copyFile as fsCopyFile,
   mkdir,
   mkdtemp,
   open,
@@ -135,12 +137,17 @@ function packageRecord(
   };
 }
 
-test("packages one handle-copied MP4 with safe manifest and shared platform projections", async () => {
+test("packages one cloned MP4 with safe manifest and shared platform projections", async () => {
   const { storageRoot, input } = await fixture();
+  const copyModes: number[] = [];
   (input.actor as ActorSnapshot & { apiKey: string }).apiKey = "must-not-be-projected";
   const service = new PublishingAssetService({
     storageRoot,
     now: () => NOW,
+    copyFile: async (source, destination, mode = 0) => {
+      copyModes.push(mode);
+      await fsCopyFile(source, destination, constants.COPYFILE_EXCL);
+    },
     runCommand: async (_command, args) => {
       await writeFile(args.at(-1)!, "cover bytes");
       return { stdout: "", stderr: "" };
@@ -153,7 +160,8 @@ test("packages one handle-copied MP4 with safe manifest and shared platform proj
     tasks: Array<{ videoPath: string }>;
   };
 
-  assert.equal(result.videoMethod, "copy");
+  assert.equal(result.videoMethod, "clone");
+  assert.equal(copyModes[0], constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL);
   assert.equal(files.filter((file) => file.endsWith(".mp4")).length, 1);
   assert.equal(files.filter((file) => path.basename(file) === "video.mp4").length, 1);
   assert.deepEqual(manifest.tasks.map((entry) => entry.videoPath), ["video.mp4", "video.mp4"]);
@@ -211,6 +219,40 @@ test("packages the resolver-bound source inode after its path is replaced", asyn
   }
 });
 
+test("extracts the cover from the packaged video when the source path was replaced", async () => {
+  const { storageRoot, input } = await fixture();
+  input.sourceVideoPath = await realpath(input.sourceVideoPath);
+  const handle = await open(input.sourceVideoPath, "r");
+  const opened = await handle.stat();
+  const original = await readFile(input.sourceVideoPath);
+  await fsRename(input.sourceVideoPath, `${input.sourceVideoPath}.original`);
+  await writeFile(input.sourceVideoPath, "replacement video bytes");
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async (_command, args) => {
+      await writeFile(args.at(-1)!, await readFile(args[4]));
+      return { stdout: "", stderr: "" };
+    },
+  });
+
+  try {
+    const result = await service.createPackageAssets({
+      ...input,
+      sourceVideo: {
+        path: input.sourceVideoPath,
+        handle,
+        size: opened.size,
+        identity: { dev: opened.dev, ino: opened.ino },
+      },
+    });
+    assert.deepEqual(await readFile(result.videoPath), original);
+    assert.deepEqual(await readFile(result.coverPath!), original);
+  } finally {
+    await handle.close();
+  }
+});
+
 test("rejects a runtime platform path escape before writing package assets", async () => {
   const { storageRoot, input } = await fixture({
     tasks: [{ ...task("task-escape", "douyin"), platform: "../../escaped" as PublishTask["platform"] }],
@@ -225,18 +267,25 @@ test("rejects a runtime platform path escape before writing package assets", asy
   await assert.rejects(stat(path.join(storageRoot, "output", "publishing", "job-1", "escaped")), { code: "ENOENT" });
 });
 
-test("uses secure handle copy without invoking path-based clone", async () => {
+test("falls back to ordinary copy when APFS clone is unavailable", async () => {
   const { storageRoot, input } = await fixture();
+  const modes: number[] = [];
   const service = new PublishingAssetService({
     storageRoot,
     now: () => NOW,
-    copyFile: async () => { throw new Error("path copy must not package video"); },
+    copyFile: async (source, destination, mode = 0) => {
+      modes.push(mode);
+      if (mode & constants.COPYFILE_FICLONE) throw Object.assign(new Error("clone unavailable"), { code: "ENOTSUP" });
+      await fsCopyFile(source, destination, mode);
+    },
     runCommand: async () => { throw new Error("ffmpeg unavailable"); },
   });
 
   const result = await service.createPackageAssets(input);
 
   assert.equal(result.videoMethod, "copy");
+  assert.equal(Boolean(modes[0] & constants.COPYFILE_FICLONE), true);
+  assert.equal(modes[1], constants.COPYFILE_EXCL);
   assert.deepEqual(await readFile(result.videoPath), await readFile(input.sourceVideoPath));
   assert.equal(result.assetHealth, "missing_cover");
 });
@@ -254,6 +303,7 @@ test("removes temporary assets and never exposes a formal directory when handle 
   const service = new PublishingAssetService({
     storageRoot,
     now: () => NOW,
+    copyFile: async () => { throw Object.assign(new Error("copy failed"), { code: "EIO" }); },
   });
 
   try {
@@ -459,6 +509,7 @@ test("reuses a readable local cover without invoking FFmpeg", async () => {
   assert.equal(commands, 0);
   assert.equal(result.assetHealth, "healthy");
   assert.deepEqual(await readFile(result.coverPath!), await readFile(sourceCoverPath));
+  assert.deepEqual(await service.readPackageCover(packageRecord(result)), await readFile(sourceCoverPath));
 });
 
 test("keeps the package usable with missing_cover when FFmpeg extraction fails", async () => {
@@ -479,7 +530,8 @@ test("keeps the package usable with missing_cover when FFmpeg extraction fails",
   assert.equal(result.coverPath, undefined);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, "ffmpeg");
-  assert.deepEqual(calls[0].args.slice(0, 8), ["-y", "-ss", "1", "-i", await realpath(input.sourceVideoPath), "-frames:v", "1", "-q:v"]);
+  assert.deepEqual(calls[0].args.slice(0, 4), ["-y", "-ss", "1", "-i"]);
+  assert.match(calls[0].args[4], /\.next-package-1[\\/]video\.mp4$/u);
   await assert.rejects(stat(path.join(result.packagePath, "cover.jpg")), { code: "ENOENT" });
 });
 

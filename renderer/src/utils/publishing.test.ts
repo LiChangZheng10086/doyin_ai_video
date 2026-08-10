@@ -11,7 +11,6 @@ import type {
 import {
   buildCreatePublishingInput,
   createPublishingWizardState,
-  filterPublishingPackages,
   formatDueNotification,
   formatPublishingCopy,
   getPublishingActionIds,
@@ -88,31 +87,6 @@ test('groups packages by source and sorts versions newest first', () => {
   assert.deepEqual(grouped[0].versions.map((detail) => detail.package.version), [3, 2, 1]);
   assert.equal(grouped[0].title, '新标题');
   assert.deepEqual(grouped[1].versions.map((detail) => detail.package.version), [1]);
-});
-
-test('action-needed filter includes ready, failed, overdue, and broken packages only', () => {
-  const now = new Date('2026-08-10T10:00:00.000Z');
-  const scheduledFuture = packageDetail('scheduled-future', 1, 'scheduled');
-  scheduledFuture.tasks[0].scheduledAt = '2026-08-10T11:00:00.000Z';
-  const scheduledOverdue = packageDetail('scheduled-overdue', 1, 'scheduled');
-  scheduledOverdue.tasks[0].scheduledAt = '2026-08-10T09:00:00.000Z';
-
-  const result = filterPublishingPackages([
-    packageDetail('ready', 1, 'ready'),
-    packageDetail('failed', 1, 'failed'),
-    packageDetail('published', 1, 'published'),
-    packageDetail('cancelled', 1, 'cancelled'),
-    scheduledFuture,
-    scheduledOverdue,
-    packageDetail('broken', 1, 'published', { assetHealth: 'broken_video' }),
-  ], 'action', now);
-
-  assert.deepEqual(result.map((detail) => detail.package.sourceJobId), [
-    'ready',
-    'failed',
-    'scheduled-overdue',
-    'broken',
-  ]);
 });
 
 test('publisher actions exclude administrator-only package actions', () => {
@@ -311,8 +285,6 @@ test('replacing Xiaohongshu copy leaves every other platform byte-identical', ()
     wechat_channels: state.drafts.wechat_channels,
     bilibili: state.drafts.bilibili,
   });
-  const refreshedPreview = { ...preview, previewRevision: 'revision-3' };
-  state = publishingWizardReducer(state, { type: 'update-preview', preview: refreshedPreview });
   state = publishingWizardReducer(state, {
     type: 'replace-draft',
     platform: 'xiaohongshu',
@@ -324,7 +296,7 @@ test('replacing Xiaohongshu copy leaves every other platform byte-identical', ()
   });
 
   assert.equal(state.drafts.xiaohongshu?.copy.title, '重新生成标题');
-  assert.equal(state.preview?.previewRevision, 'revision-3');
+  assert.equal(state.preview?.previewRevision, preview.previewRevision);
   assert.equal(JSON.stringify({
     douyin: state.drafts.douyin,
     wechat_channels: state.drafts.wechat_channels,
@@ -355,6 +327,7 @@ test('platform schedules independently map only future values to scheduled', () 
   assert.equal(getPublishingScheduleStatus('2026-08-10T10:00', now), 'ready');
   assert.equal(getPublishingScheduleStatus('2026-08-10T09:00', now), 'ready');
   assert.equal('actor' in input, false);
+  assert.equal(input.platforms.some((item) => 'copySource' in item), false);
 });
 
 test('publishing entry requires a complete usable MP4 output', () => {

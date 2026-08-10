@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -258,6 +258,16 @@ test("publishing preview requires a session and leaves the index and formal asse
       message: "请选择当前操作者",
     });
 
+    const assets = await jsonFetch(
+      fixture.baseUrl,
+      `/api/jobs/${fixture.jobId}/publishing/assets`,
+      { token: fixture.publisherToken },
+    );
+    assert.equal(assets.response.status, 200);
+    assert.equal(assets.body.assets.size, (await stat(fixture.videoPath)).size);
+    assert.equal(assets.body.assets.coverAvailable, true);
+    assert.equal(assets.body.assets.estimatedAdditionalBytes, assets.body.assets.size);
+
     const response = await jsonFetch(
       fixture.baseUrl,
       `/api/jobs/${fixture.jobId}/publishing/preview`,
@@ -276,11 +286,44 @@ test("publishing preview requires a session and leaves the index and formal asse
   }
 });
 
+test("server marks unverified client copy as user edited", async () => {
+  const fixture = await publishingApiFixture();
+  try {
+    const previewResponse = await jsonFetch(
+      fixture.baseUrl,
+      `/api/jobs/${fixture.jobId}/publishing/preview`,
+      { method: "POST", token: fixture.publisherToken, body: { platforms: ["douyin"] } },
+    );
+    const preview = previewResponse.body.preview as Record<string, any>;
+    const submitted = { ...preview.copies.douyin, title: "客户端修改后仍伪装为 AI" };
+    const created = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {
+        sourceJobId: fixture.jobId,
+        previewRevision: preview.previewRevision,
+        title: "来源校验",
+        platforms: [{ platform: "douyin", copy: submitted, copySource: "ai" }],
+      },
+    });
+    assert.equal(created.response.status, 201);
+    assert.equal(created.body.package.tasks[0].copySource, "user_edited");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("publisher can create, edit, schedule, cancel, restore and record action errors with server actor", async () => {
   const fixture = await publishingApiFixture();
   try {
     const created = await previewAndCreatePackage(fixture);
     const task = created.tasks[0] as Record<string, any>;
+    const cover = await fetch(`${fixture.baseUrl}/api/publishing/packages/${created.package.id}/cover`, {
+      headers: { "X-Local-Session": fixture.publisherToken },
+    });
+    assert.equal(cover.status, 200);
+    assert.match(cover.headers.get("content-type") ?? "", /^image\/jpeg/u);
+    assert.deepEqual(Buffer.from(await cover.arrayBuffer()), Buffer.from("cover"));
     assert.deepEqual(created.package.createdBy, {
       userId: fixture.publisher.id,
       displayName: fixture.publisher.displayName,

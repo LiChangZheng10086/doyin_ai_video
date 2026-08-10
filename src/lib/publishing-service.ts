@@ -11,6 +11,7 @@ import type {
   PlatformCopy,
   PublishCopySource,
   PublishPlatform,
+  PublishingAssetInspection,
   PublishingPackageDetail,
   PublishingPreview,
   PublishTask,
@@ -45,7 +46,6 @@ const SUPPORTED_PLATFORMS = new Set<PublishPlatform>(
 export interface CreateVersionPlatformInput {
   platform: PublishPlatform;
   copy?: PlatformCopy;
-  copySource?: PublishCopySource;
   scheduledAt?: string | null;
 }
 
@@ -88,6 +88,7 @@ type Store = Pick<PublishingStore,
 type Assets = Pick<PublishingAssetService,
   | "createPackageAssets"
   | "purgeAssets"
+  | "readPackageCover"
   | "scanAndRepair"
   | "stageTextProjection"
   | "verifyPackageVideo"
@@ -169,12 +170,34 @@ export class PublishingService {
   private readonly createId: () => string;
   private readonly resolveVideo: NonNullable<PublishingServiceDependencies["resolveVideo"]>;
   private readonly storageRoot: string;
+  private readonly copyAttestations = new Map<string, PublishCopySource>();
 
   constructor(private readonly deps: PublishingServiceDependencies) {
     this.storageRoot = path.resolve(deps.storageRoot);
     this.now = deps.now ?? (() => new Date());
     this.createId = deps.createId ?? randomUUID;
     this.resolveVideo = deps.resolveVideo ?? resolveJobVideo;
+  }
+
+  async inspectAssets(jobId: string): Promise<PublishingAssetInspection> {
+    const context = await this.readSourceContext(jobId);
+    try {
+      return {
+        filename: path.basename(context.video.path),
+        size: context.video.size,
+        width: context.width,
+        height: context.height,
+        duration: context.duration,
+        coverAvailable: Boolean(context.sourceCoverPath),
+        estimatedAdditionalBytes: context.video.size,
+        warnings: context.sourceCoverPath ? [] : [{
+          code: "publish_cover_missing",
+          message: "未发现本地封面，创建时将尝试从视频第 1 秒抽取",
+        }],
+      };
+    } finally {
+      await context.video.close().catch(() => undefined);
+    }
   }
 
   async preview(jobId: string, platforms: PublishPlatform[]): Promise<PublishingPreview> {
@@ -184,6 +207,11 @@ export class PublishingService {
       const index = await this.deps.store.snapshot();
       const nextVersion = index.nextVersionBySource[jobId] ?? 1;
       const copyPreview = await this.deps.copy.previewAll(context.cleaned, selected);
+      const sourceKey = sourceContextRevision(jobId, context);
+      for (const platform of selected) {
+        const copy = copyPreview.copies[platform];
+        if (copy) this.rememberCopy(sourceKey, platform, copy, copy.copySource);
+      }
 
       return {
         sourceJobId: jobId,
@@ -227,7 +255,10 @@ export class PublishingService {
         });
       }
 
-      const drafts = validateDrafts(input.platforms, this.now());
+      const sourceKey = sourceContextRevision(input.sourceJobId, context);
+      const drafts = validateDrafts(input.platforms, this.now(), (platform, copy) => (
+        this.copyAttestations.get(copyAttestationKey(sourceKey, platform, copy)) ?? "user_edited"
+      ));
       const title = requireTitle(input.title);
       return await this.createPackage({
         sourceJobId: input.sourceJobId,
@@ -400,6 +431,11 @@ export class PublishingService {
   async restorePackage(packageId: string, actor: ActorSnapshot): Promise<RestorePackageResult> {
     requireAdmin(actor);
     return this.storeCall(() => this.deps.store.restorePackage(packageId, actor));
+  }
+
+  async readPackageCover(packageId: string): Promise<Buffer | null> {
+    const detail = await this.requirePackage(packageId);
+    return this.deps.assets.readPackageCover(detail.package);
   }
 
   async checkDue(): Promise<DueNotification[]> {
@@ -613,6 +649,41 @@ export class PublishingService {
       throw normalizeOperationError(error, "store");
     }
   }
+
+  private rememberCopy(
+    sourceKey: string,
+    platform: PublishPlatform,
+    copy: PlatformCopy,
+    source: PublishCopySource,
+  ): void {
+    this.copyAttestations.set(copyAttestationKey(sourceKey, platform, copy), source);
+    while (this.copyAttestations.size > 500) {
+      const oldest = this.copyAttestations.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.copyAttestations.delete(oldest);
+    }
+  }
+}
+
+function sourceContextRevision(jobId: string, context: SourceContext): string {
+  return sourceContextHash(jobId, context).digest("hex");
+}
+
+function sourceContextHash(jobId: string, context: SourceContext) {
+  return createHash("sha256")
+    .update(jobId)
+    .update(context.video.path)
+    .update(String(context.video.size))
+    .update(String(context.video.mtimeMs))
+    .update(String(context.cleanedMtimeMs));
+}
+
+function copyAttestationKey(sourceKey: string, platform: PublishPlatform, copy: PlatformCopy): string {
+  return createHash("sha256")
+    .update(sourceKey)
+    .update(platform)
+    .update(JSON.stringify([copy.title, copy.description, copy.hashtags]))
+    .digest("hex");
 }
 
 function sourceRevision(
@@ -620,12 +691,7 @@ function sourceRevision(
   context: SourceContext,
   platforms: PublishPlatform[],
 ): string {
-  return createHash("sha256")
-    .update(jobId)
-    .update(context.video.path)
-    .update(String(context.video.size))
-    .update(String(context.video.mtimeMs))
-    .update(String(context.cleanedMtimeMs))
+  return sourceContextHash(jobId, context)
     .update([...platforms].sort().join(","))
     .digest("hex");
 }
@@ -651,22 +717,24 @@ function validateDrafts(
   drafts: Array<{
     platform: PublishPlatform;
     copy: PlatformCopy;
-    copySource: PublishCopySource;
+    copySource?: PublishCopySource;
     scheduledAt?: string | null;
   }>,
   now: Date,
+  resolveCopySource?: (platform: PublishPlatform, copy: PlatformCopy) => PublishCopySource,
 ): ValidatedDraft[] {
   validatePlatformSelection(drafts.map((draft) => draft.platform));
   return drafts.map((draft) => {
-    if (!isCopySource(draft.copySource)) {
+    const copy = validateCopy(draft.platform, draft.copy);
+    const copySource = resolveCopySource?.(draft.platform, copy) ?? draft.copySource;
+    if (!isCopySource(copySource)) {
       throw new PublishingServiceError(400, "publish_validation_failed", "发布文案来源无效");
     }
-    const copy = validateCopy(draft.platform, draft.copy);
     const scheduledAt = normalizeSchedule(draft.scheduledAt, now);
     return {
       platform: draft.platform,
       copy,
-      copySource: draft.copySource,
+      copySource,
       ...(scheduledAt ? { scheduledAt } : {}),
     };
   });
@@ -716,7 +784,7 @@ function buildVersionDrafts(
         description: previous!.description,
         hashtags: [...previous!.hashtags],
       },
-      copySource: descriptor.copySource ?? previous?.copySource ?? "user_edited",
+      copySource: descriptor.copy ? "user_edited" : previous?.copySource ?? "user_edited",
       ...(scheduledAt !== undefined ? { scheduledAt } : {}),
     };
   });

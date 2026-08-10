@@ -69,7 +69,6 @@ export type PublishingWizardAction =
   | { type: 'back' }
   | { type: 'toggle-platform'; platform: PublishPlatform }
   | { type: 'load-preview'; preview: PublishingPreview; step?: PublishingWizardStep }
-  | { type: 'update-preview'; preview: PublishingPreview }
   | { type: 'edit-draft'; platform: PublishPlatform; field: keyof PlatformCopy; value: string | string[] }
   | { type: 'replace-draft'; platform: PublishPlatform; draft: PublishingWizardDraft }
   | { type: 'set-schedule'; platform: PublishPlatform; value: string };
@@ -121,9 +120,6 @@ export function publishingWizardReducer(
       platformError: undefined,
       fieldErrors: [],
     };
-  }
-  if (action.type === 'update-preview') {
-    return { ...state, preview: action.preview };
   }
   if (action.type === 'edit-draft') {
     const draft = state.drafts[action.platform];
@@ -233,7 +229,6 @@ export function buildCreatePublishingInput(
       return {
         platform,
         copy: structuredClone(draft.copy),
-        copySource: draft.copySource,
         scheduledAt,
       };
     }),
@@ -301,28 +296,6 @@ export function groupPublishingPackages(
   return [...groups.values()].map((group) => {
     const versions = group.versions.sort((a, b) => b.package.version - a.package.version);
     return { ...group, title: versions[0].package.title, versions };
-  });
-}
-
-export function filterPublishingPackages(
-  details: PublishingPackageDetail[],
-  status: PublishingListStatus = 'action',
-  now = new Date(),
-): PublishingPackageDetail[] {
-  return details.filter((detail) => {
-    if (status === 'all') return detail.package.state === 'active';
-    if (status === 'trash') return detail.package.state === 'trashed';
-    if (detail.package.state !== 'active') return false;
-    if (status === 'broken') return detail.package.assetHealth === 'broken_video';
-    if (status !== 'action') return detail.tasks.some((task) => task.status === status);
-    if (detail.package.assetHealth === 'broken_video') return true;
-    return detail.tasks.some((task) => (
-      task.status === 'ready'
-      || task.status === 'failed'
-      || (task.status === 'scheduled'
-        && Boolean(task.scheduledAt)
-        && new Date(task.scheduledAt!).getTime() <= now.getTime())
-    ));
   });
 }
 

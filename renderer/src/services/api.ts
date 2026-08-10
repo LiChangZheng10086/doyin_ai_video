@@ -23,6 +23,7 @@ import type {
   PipelineStep,
   PublishPlatform,
   PublishingActionErrorType,
+  PublishingAssetInspection,
   PublishingListFilters,
   PublishingPackageDetail,
   PublishingPreview,
@@ -150,6 +151,14 @@ export class ApiClient {
     return response.preview;
   }
 
+  async inspectPublishingAssets(id: string): Promise<PublishingAssetInspection> {
+    const response = await this.publishingRequest<{ assets: PublishingAssetInspection }>({
+      method: 'GET',
+      url: `/api/jobs/${id}/publishing/assets`,
+    });
+    return response.assets;
+  }
+
   async createPublishingPackage(
     input: CreatePublishingPackageInput,
   ): Promise<PublishingPackageDetail> {
@@ -178,6 +187,14 @@ export class ApiClient {
       url: `/api/publishing/packages/${id}`,
     });
     return response.package;
+  }
+
+  async getPublishingCover(id: string): Promise<Blob> {
+    return this.publishingRequest<Blob>({
+      method: 'GET',
+      url: `/api/publishing/packages/${id}/cover`,
+      responseType: 'blob',
+    });
   }
 
   async checkPublishingDue(): Promise<{ notifications: DueNotification[] }> {

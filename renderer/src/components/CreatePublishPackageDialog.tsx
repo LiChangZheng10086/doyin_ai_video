@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Check, ChevronLeft, ChevronRight, Loader2, Send, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { apiClient, parseApiError } from '../services/api';
-import type { HyperframesVideoOutput, PublishPlatform, PublishingPackageDetail } from '../types';
+import type { HyperframesVideoOutput, PublishPlatform, PublishingAssetInspection, PublishingPackageDetail } from '../types';
 import {
   buildCreatePublishingInput,
   createPublishingWizardState,
@@ -35,6 +35,9 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [created, setCreated] = useState<PublishingPackageDetail | null>(null);
+  const [assetInspection, setAssetInspection] = useState<PublishingAssetInspection | null>(null);
+  const [assetLoading, setAssetLoading] = useState(true);
+  const [assetError, setAssetError] = useState('');
   const dialogRef = useRef<HTMLElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const busyRef = useRef(busy);
@@ -71,6 +74,17 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
       requestAnimationFrame(() => previousFocus.current?.focus());
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    setAssetLoading(true);
+    setAssetError('');
+    void apiClient.inspectPublishingAssets(jobId)
+      .then((assets) => { if (active) setAssetInspection(assets); })
+      .catch((requestError) => { if (active) setAssetError(parseApiError(requestError).message); })
+      .finally(() => { if (active) setAssetLoading(false); });
+    return () => { active = false; };
+  }, [jobId]);
 
   const advance = async () => {
     setError('');
@@ -169,7 +183,7 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
           {created ? (
             <SuccessView detail={created} onClose={onClose} onOpen={() => navigate('/publishing')} />
           ) : state.step === 'asset' ? (
-            <AssetStep output={output} />
+            <AssetStep output={output} inspection={assetInspection} loading={assetLoading} />
           ) : state.step === 'platforms' ? (
             <PlatformStep selected={state.selectedPlatforms} error={state.platformError} onToggle={(platform) => dispatch({ type: 'toggle-platform', platform })} />
           ) : state.step === 'copy' ? (
@@ -180,6 +194,7 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
             <ConfirmStep title={title} state={state} />
           )}
           {state.preview?.warning && <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{state.preview.warning.message}</p>}
+          {assetError && state.step === 'asset' && <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">资产检查失败：{assetError}</p>}
           {error && <p className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">{error}</p>}
         </div>
 
@@ -193,8 +208,8 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
                 {busy ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />} 创建发布包
               </button>
             ) : (
-              <button type="button" onClick={() => void advance()} disabled={busy} className="inline-flex items-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white hover:bg-tech-blue-dark disabled:opacity-50">
-                {busy ? <Loader2 size={16} className="animate-spin" /> : <ChevronRight size={16} />} 下一步
+              <button type="button" onClick={() => void advance()} disabled={busy || (state.step === 'asset' && assetLoading)} className="inline-flex items-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white hover:bg-tech-blue-dark disabled:opacity-50">
+                {busy || (state.step === 'asset' && assetLoading) ? <Loader2 size={16} className="animate-spin" /> : <ChevronRight size={16} />} 下一步
               </button>
             )}
           </footer>
@@ -205,7 +220,7 @@ export function CreatePublishPackageDialog({ jobId, title, output, onClose }: Pr
   return typeof document === 'undefined' ? null : createPortal(dialog, document.body);
 }
 
-function AssetStep({ output }: { output: HyperframesVideoOutput }) {
+function AssetStep({ output, inspection, loading }: { output: HyperframesVideoOutput; inspection: PublishingAssetInspection | null; loading: boolean }) {
   return (
     <div className="space-y-4">
       <div>
@@ -213,13 +228,15 @@ function AssetStep({ output }: { output: HyperframesVideoOutput }) {
         <p className="mt-1 text-sm text-tech-muted">发布包会保存独立 MP4，删除源作品不会影响它。</p>
       </div>
       <dl className="grid grid-cols-2 gap-x-6 gap-y-4 rounded-lg border border-tech-border p-4 sm:grid-cols-3">
-        <Info label="文件" value={output.videoPath.split(/[\\/]/u).pop() || 'video.mp4'} />
-        <Info label="尺寸" value={`${output.width} x ${output.height}`} />
-        <Info label="时长" value={`${Math.round(output.duration)} 秒`} />
+        <Info label="文件" value={inspection?.filename ?? output.videoPath.split(/[\\/]/u).pop() ?? 'video.mp4'} />
+        <Info label="尺寸" value={`${inspection?.width ?? output.width} x ${inspection?.height ?? output.height}`} />
+        <Info label="时长" value={`${Math.round(inspection?.duration ?? output.duration)} 秒`} />
         <Info label="比例" value={output.aspectRatio} />
-        <Info label="额外空间" value="创建预览时计算" />
-        <Info label="封面" value="创建时检测真实封面" />
+        <Info label="文件大小" value={inspection ? formatBytes(inspection.size) : loading ? '检查中...' : '-'} />
+        <Info label="预计额外占用" value={inspection ? `最多 ${formatBytes(inspection.estimatedAdditionalBytes)}` : loading ? '检查中...' : '-'} />
+        <Info label="封面候选" value={inspection ? inspection.coverAvailable ? '已找到本地封面' : '未找到，将尝试抽帧' : loading ? '检查中...' : '-'} />
       </dl>
+      {inspection?.warnings.map((warning) => <p key={warning.code} className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{warning.message}</p>)}
     </div>
   );
 }

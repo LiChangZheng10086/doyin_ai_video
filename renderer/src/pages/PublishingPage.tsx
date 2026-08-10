@@ -7,6 +7,7 @@ import {
   Clipboard,
   ExternalLink,
   FolderOpen,
+  ImageIcon,
   Loader2,
   RefreshCw,
   RotateCcw,
@@ -251,7 +252,36 @@ export function PublishingPage() {
 
 function PackageRow({ detail, role, expanded, busy, onToggle, onAction }: { detail: PublishingPackageDetail; role: 'admin' | 'publisher'; expanded: boolean; busy: boolean; onToggle: () => void; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const pkg = detail.package;
-  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-tech-bg"><span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-purple-50 text-sm font-bold text-tech-purple">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-tech-text">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">垃圾桶</span>}</div><p className="mt-1 text-xs text-tech-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-tech-border bg-tech-bg/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} busy={busy} onAction={onAction} />)}</div><details className="mt-4 border-t border-tech-border pt-4"><summary className="cursor-pointer text-sm font-medium text-tech-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-tech-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-tech-text">{event.actor.displayName} · {event.action}{event.reason ? ` · ${event.reason}` : ''}</span></li>)}</ol></details></div>}</div>;
+  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-tech-bg"><CoverThumbnail packageId={pkg.id} title={pkg.title} hasCover={Boolean(pkg.coverPath)} /><span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-purple-50 text-sm font-bold text-tech-purple">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-tech-text">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">垃圾桶</span>}</div><p className="mt-1 text-xs text-tech-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p><p className="mt-1 text-xs font-medium text-tech-blue">下一步：{publishingNextStep(detail)}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-tech-border bg-tech-bg/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} busy={busy} onAction={onAction} />)}</div><details className="mt-4 border-t border-tech-border pt-4"><summary className="cursor-pointer text-sm font-medium text-tech-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-tech-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-tech-text">{event.actor.displayName} · {event.action}{event.reason ? ` · ${event.reason}` : ''}</span></li>)}</ol></details></div>}</div>;
+}
+
+function CoverThumbnail({ packageId, title, hasCover }: { packageId: string; title: string; hasCover: boolean }) {
+  const [url, setUrl] = useState('');
+  useEffect(() => {
+    if (!hasCover) return;
+    let active = true;
+    let objectUrl = '';
+    void apiClient.getPublishingCover(packageId).then((blob) => {
+      if (!active) return;
+      objectUrl = URL.createObjectURL(blob);
+      setUrl(objectUrl);
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [hasCover, packageId]);
+  return <span className="flex h-16 w-11 shrink-0 items-center justify-center overflow-hidden rounded-md bg-tech-bg text-tech-muted">{url ? <img src={url} alt={`${title}封面`} className="h-full w-full object-cover" /> : <ImageIcon size={18} aria-hidden="true" />}</span>;
+}
+
+function publishingNextStep(detail: PublishingPackageDetail): string {
+  if (detail.package.state === 'trashed') return '由管理员恢复发布包';
+  if (detail.package.assetHealth === 'broken_video') return '创建新版本并修复视频';
+  if (detail.tasks.some((task) => task.status === 'ready')) return '打开平台并完成发布';
+  if (detail.tasks.some((task) => task.status === 'failed')) return '处理失败原因并恢复任务';
+  if (detail.tasks.some((task) => task.status === 'scheduled')) return '等待排期提醒';
+  if (detail.tasks.every((task) => task.status === 'published')) return '已完成，可创建新版本';
+  return '恢复已取消任务或创建新版本';
 }
 
 function TaskRow({ detail, task, role, busy, onAction }: { detail: PublishingPackageDetail; task: PublishTask; role: 'admin' | 'publisher'; busy: boolean; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {

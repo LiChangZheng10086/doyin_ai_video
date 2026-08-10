@@ -32,6 +32,7 @@ import { buildPublishText } from "./publishing-platforms.js";
 
 const APPROVED_PLATFORMS = new Set(["douyin", "xiaohongshu", "wechat_channels", "bilibili"]);
 const TEMP_STALE_MS = 60 * 60 * 1000;
+const MAX_COVER_BYTES = 20 * 1024 * 1024;
 const ASSET_LOCKS = new Map<string, Promise<void>>();
 const PROJECTION_GENERATIONS = new Map<string, number>();
 const LIVE_TEMP_PATHS = new Set<string>();
@@ -201,7 +202,7 @@ export class PublishingAssetService {
         const videoSha256 = await hashFilePath(stagedVideoPath);
         const stagedCoverPath = await this.prepareCover(
           input.sourceCoverPath,
-          source.path,
+          stagedVideoPath,
           tempPath,
           context,
           tempIdentity,
@@ -533,6 +534,30 @@ export class PublishingAssetService {
     return this.withAssetLock((context) => this.verifyPackageVideoUnlocked(context, pkg));
   }
 
+  async readPackageCover(pkg: DeliveryPackage): Promise<Buffer | null> {
+    if (!pkg.coverPath) return null;
+    return this.withAssetLock(async (context) => {
+      const binding = await requireExpectedPackage(context, pkg, true);
+      const coverPath = path.join(binding.path, "cover.jpg");
+      if (path.resolve(pkg.coverPath!) !== coverPath) return null;
+      let handle: FileHandle | undefined;
+      try {
+        handle = await open(coverPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const opened = await handle.stat();
+        const current = await lstat(coverPath);
+        if (!opened.isFile() || opened.size === 0 || opened.size > MAX_COVER_BYTES || !sameIdentity(opened, current)) {
+          return null;
+        }
+        const bytes = await handle.readFile();
+        return bytes.length === opened.size ? bytes : null;
+      } catch {
+        return null;
+      } finally {
+        await handle?.close().catch(() => undefined);
+      }
+    });
+  }
+
   async purgeAssets(pkg: DeliveryPackage): Promise<void> {
     await this.withAssetLock(async (context) => {
       const expected = expectedPackagePathFromRecord(context.publishingRoot, pkg);
@@ -773,6 +798,62 @@ export class PublishingAssetService {
     destinationParentIdentity: FileIdentity,
   ): Promise<PackageVideoMethod> {
     await this.assertRootAndDirectory(context, path.dirname(destination), destinationParentIdentity);
+    const pathMatches = await lstat(source.path)
+      .then((current) => sameIdentity(source.initialStats, current))
+      .catch(() => false);
+    if (!pathMatches) {
+      if (source.requirePathIdentity) throw new PublishingAssetError("publish_video_unreadable");
+      return this.copyFromHandle(source, destination, context, destinationParentIdentity);
+    }
+
+    let lastError: unknown;
+    for (const attempt of [
+      { method: "clone" as const, mode: constants.COPYFILE_FICLONE | constants.COPYFILE_EXCL },
+      { method: "copy" as const, mode: constants.COPYFILE_EXCL },
+    ]) {
+      let target: FileHandle | undefined;
+      try {
+        await this.assertRootAndDirectory(context, path.dirname(destination), destinationParentIdentity);
+        await this.copyFile(source.path, destination, attempt.mode);
+        target = await open(destination, constants.O_RDWR | constants.O_NOFOLLOW);
+        const targetIdentity = await target.stat();
+        if (!targetIdentity.isFile()) throw new PublishingAssetError("publish_clone_failed");
+        await this.verifyCopiedVideo(source, target, targetIdentity, destination, context, destinationParentIdentity);
+        return attempt.method;
+      } catch (error) {
+        lastError = error;
+        await target?.close().catch(() => undefined);
+        target = undefined;
+        const targetIdentity = await optionalLstat(destination);
+        if (targetIdentity && !targetIdentity.isSymbolicLink()) {
+          await this.safeRemoveDirect(
+            context,
+            path.dirname(destination),
+            destinationParentIdentity,
+            destination,
+            targetIdentity,
+          ).catch(() => undefined);
+        }
+        const stillMatches = await lstat(source.path)
+          .then((current) => sameIdentity(source.initialStats, current))
+          .catch(() => false);
+        if (!stillMatches) {
+          if (source.requirePathIdentity) throw new PublishingAssetError("publish_video_unreadable");
+          return this.copyFromHandle(source, destination, context, destinationParentIdentity);
+        }
+      } finally {
+        await target?.close().catch(() => undefined);
+      }
+    }
+    throw normalizeAssetError(lastError, "publish_clone_failed");
+  }
+
+  private async copyFromHandle(
+    source: OpenSourceVideo,
+    destination: string,
+    context: RootContext,
+    destinationParentIdentity: FileIdentity,
+  ): Promise<PackageVideoMethod> {
     let target: FileHandle | undefined;
     try {
       target = await open(

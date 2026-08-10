@@ -132,16 +132,6 @@ export class PublishingCopyService {
     }
   }
 
-  async regenerateOne(
-    cleaned: CleanedScript,
-    platform: PublishPlatform,
-  ): Promise<PublishingCopyItem> {
-    const [requested] = validateRequestedPlatforms([platform]);
-    const result = await this.previewAll(cleaned, [requested]);
-    const item = result.copies[requested] ?? fallbackCopy(parseCleanedReference(cleaned).value, requested);
-    return result.warning ? { ...item, warning: result.warning } : item;
-  }
-
   private async generate(
     reference: CleanedReference,
     platforms: PublishPlatform[],

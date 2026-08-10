@@ -139,6 +139,17 @@ export interface PublishingPreview {
   expectedPackagePath: string;
 }
 
+export interface PublishingAssetInspection {
+  filename: string;
+  size: number;
+  width: number;
+  height: number;
+  duration: number;
+  coverAvailable: boolean;
+  estimatedAdditionalBytes: number;
+  warnings: Array<{ code: string; message: string }>;
+}
+
 export interface CreatePublishingPackageInput {
   sourceJobId: string;
   previewRevision: string;
@@ -146,7 +157,7 @@ export interface CreatePublishingPackageInput {
   platforms: Array<{
     platform: PublishPlatform;
     copy: PlatformCopy;
-    copySource: PublishCopySource;
+    copySource?: PublishCopySource;
     scheduledAt?: string;
   }>;
 }
