@@ -833,10 +833,10 @@ git commit -m "docs: explain local publishing roles"
 
 ## Completion Gate
 
-Do not start the publishing-center plan until all of the following are true:
+Do not start the publishing-center plan until all of the following identity-foundation checks are true:
 
-- `AC-084` through `AC-094` pass with automated evidence.
+- Identity-only portions of `AC-084` through `AC-094` pass with automated evidence. `AC-084` publish-write enforcement and `AC-092` publishing audit attribution are completed and re-verified when the publishing routes exist; they are not prerequisites for creating those routes.
 - Server-side 401/403 behavior is verified, not inferred from hidden buttons.
-- No persisted file or API response contains plaintext PIN, salt, hash, or admin session token.
+- No persisted file contains a plaintext PIN or admin session token. API responses never expose PIN hashes or salts; successful session responses may return the in-memory session token required by the client.
 - Identity recovery preserves unrelated publishing data.
 - Full project tests and all three builds pass.
