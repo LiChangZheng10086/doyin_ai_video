@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Brain, LayoutDashboard, Settings, Sparkles, Trash2, Users, Video } from 'lucide-react';
+import { Brain, LayoutDashboard, Send, Settings, Sparkles, Trash2, Users, Video } from 'lucide-react';
 import { JobListPage } from './pages/JobListPage';
 import { JobDetailPage } from './pages/JobDetailPage';
 import { TrashPage } from './pages/TrashPage';
@@ -8,6 +8,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { CollectionListPage } from './pages/CollectionListPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SkillListPage } from './pages/SkillListPage';
+import { PublishingPage } from './pages/PublishingPage';
 import { ApiKeyStatusIndicator } from './components/ApiKeyStatusIndicator';
 import { CookieStatusIndicator } from './components/CookieStatusIndicator';
 import { LocalUserSetup } from './components/LocalUserSetup';
@@ -21,6 +22,7 @@ function Navigation({ onRequestRecovery }: { onRequestRecovery: () => void }) {
     { to: '/', label: '创作中心', icon: LayoutDashboard },
     { to: '/collections', label: '合集', icon: Users },
     { to: '/skills', label: 'Skills', icon: Brain },
+    { to: '/publishing', label: '发布中心', icon: Send },
     { to: '/settings', label: '设置', icon: Settings },
     { to: '/trash', label: '垃圾桶', icon: Trash2 },
   ];
@@ -92,6 +94,7 @@ function Navigation({ onRequestRecovery }: { onRequestRecovery: () => void }) {
           <Route path="/collections" element={<CollectionListPage />} />
           <Route path="/collections/:id" element={<CollectionDetailPage />} />
           <Route path="/skills" element={<SkillListPage />} />
+          <Route path="/publishing" element={<PublishingPage />} />
           <Route path="/trash" element={<TrashPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
