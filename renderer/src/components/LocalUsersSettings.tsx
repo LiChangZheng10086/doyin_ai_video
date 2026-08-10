@@ -1,4 +1,5 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import React, { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import type { Ref } from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
@@ -16,6 +17,7 @@ import { useOperatorStore } from '../store/operator';
 import type { LocalUser, LocalUserRole } from '../types';
 import {
   canManageUsers,
+  canRestoreLocalUserDialogFocus,
   createLocalUserMutationLock,
   localIdentityErrorMessage,
   runLocalUserMutation,
@@ -72,6 +74,7 @@ export function LocalUsersSettings() {
   const [pin, setPin] = useState('');
   const [pinConfirmation, setPinConfirmation] = useState('');
   const [pinError, setPinError] = useState('');
+  const [restorePinFocusPending, setRestorePinFocusPending] = useState(false);
   const [loadError, setLoadError] = useState('');
   const mutationLockRef = useRef(createLocalUserMutationLock());
   const pinModalRootRef = useRef<HTMLDivElement>(null);
@@ -93,6 +96,7 @@ export function LocalUsersSettings() {
     setPin('');
     setPinConfirmation('');
     setPinError('');
+    setRestorePinFocusPending(true);
   }, []);
 
   useEffect(() => {
@@ -155,21 +159,45 @@ export function LocalUsersSettings() {
         if (ariaHidden === null) element.removeAttribute('aria-hidden');
         else element.setAttribute('aria-hidden', ariaHidden);
       });
-      pinTriggerRef.current?.focus();
-      pinTriggerRef.current = null;
     };
   }, [dismissPinAction, pinAction]);
 
-  const executeMutation = async <T,>(request: MutationRequest<T>): Promise<void> => {
-    await mutationLockRef.current.run(async () => {
-      setIsMutating(true);
-      setMutatingUserId(request.targetUserId ?? null);
-      if (request.targetUserId) {
-        setRowErrors((current) => ({ ...current, [request.targetUserId!]: '' }));
-        setRowWarnings((current) => ({ ...current, [request.targetUserId!]: '' }));
-      }
+  useEffect(() => {
+    const trigger = pinTriggerRef.current;
+    const triggerConnected = Boolean(trigger?.isConnected);
+    const triggerDisabled = trigger?.matches(':disabled') ?? false;
+    const mutationLocked = mutationLockRef.current.locked;
+    if (canRestoreLocalUserDialogFocus({
+      dialogOpen: Boolean(pinAction),
+      restorePending: restorePinFocusPending,
+      mutationLocked,
+      triggerConnected,
+      triggerDisabled,
+    })) {
+      trigger?.focus();
+      pinTriggerRef.current = null;
+      setRestorePinFocusPending(false);
+      return;
+    }
 
-      try {
+    if (restorePinFocusPending && !pinAction && !isMutating && !mutationLocked && !triggerConnected) {
+      pinTriggerRef.current = null;
+      setRestorePinFocusPending(false);
+    }
+  }, [isMutating, pinAction, restorePinFocusPending]);
+
+  const executeMutation = async <T,>(request: MutationRequest<T>): Promise<void> => {
+    let acquired = false;
+    try {
+      await mutationLockRef.current.run(async () => {
+        acquired = true;
+        setIsMutating(true);
+        setMutatingUserId(request.targetUserId ?? null);
+        if (request.targetUserId) {
+          setRowErrors((current) => ({ ...current, [request.targetUserId!]: '' }));
+          setRowWarnings((current) => ({ ...current, [request.targetUserId!]: '' }));
+        }
+
         const outcome = await runLocalUserMutation(
           request.mutate,
           request.applySavedValue,
@@ -183,11 +211,13 @@ export function LocalUsersSettings() {
           const userId = request.savedUserId(outcome.value);
           setRowWarnings((current) => ({ ...current, [userId]: '已保存，但列表刷新失败' }));
         }
-      } finally {
+      });
+    } finally {
+      if (acquired) {
         setIsMutating(false);
         setMutatingUserId(null);
       }
-    });
+    }
   };
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
@@ -286,6 +316,7 @@ export function LocalUsersSettings() {
   const openPinAction = (action: PinAction) => {
     if (mutationLockRef.current.locked) return;
     pinTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setRestorePinFocusPending(false);
     setRowErrors((current) => ({ ...current, [action.user.id]: '' }));
     setPinAction(action);
     setPin('');
@@ -349,21 +380,15 @@ export function LocalUsersSettings() {
             </p>
           </div>
         </div>
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={() => {
-              setNewUser(emptyNewUserForm());
-              setCreateError('');
-              setIsCreateOpen(true);
-            }}
-            disabled={isMutating}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-tech-blue-dark"
-          >
-            <UserPlus size={16} aria-hidden="true" />
-            新建用户
-          </button>
-        )}
+        <LocalUserCreateAction
+          currentUser={currentUser}
+          disabled={isMutating}
+          onCreate={() => {
+            setNewUser(emptyNewUserForm());
+            setCreateError('');
+            setIsCreateOpen(true);
+          }}
+        />
       </div>
 
       {loadError && <InlineError message={loadError} />}
@@ -452,7 +477,6 @@ export function LocalUsersSettings() {
         {users.map((user) => {
           const isCurrent = user.id === currentUser?.id;
           const isBusy = mutatingUserId === user.id;
-          const cannotDisableCurrentAdmin = isCurrent && currentUser?.role === 'admin' && user.isActive;
           return (
             <div key={user.id} aria-busy={isBusy} className="rounded-lg border border-tech-border bg-tech-surface p-5">
               <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -479,49 +503,15 @@ export function LocalUsersSettings() {
                   <p className="mt-2 text-xs text-tech-muted">更新于 {formatDate(user.updatedAt)}</p>
                 </div>
 
-                {isAdmin && (
-                  <div className="flex shrink-0 flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => startRename(user)}
-                      disabled={isMutating}
-                      className={secondaryButtonClassName}
-                    >
-                      <Pencil size={15} aria-hidden="true" />
-                      重命名
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleRoleChange(user)}
-                      disabled={isMutating}
-                      className={secondaryButtonClassName}
-                    >
-                      <ShieldCheck size={15} aria-hidden="true" />
-                      {user.role === 'admin' ? '改为发布者' : '设为管理员'}
-                    </button>
-                    {user.role === 'admin' && (
-                      <button
-                        type="button"
-                        onClick={() => openPinAction({ kind: 'reset', user })}
-                        disabled={isMutating}
-                        className={secondaryButtonClassName}
-                      >
-                        <KeyRound size={15} aria-hidden="true" />
-                        重置 PIN
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => void handleActiveChange(user)}
-                      disabled={isMutating || cannotDisableCurrentAdmin}
-                      title={cannotDisableCurrentAdmin ? '当前管理员会话中不能停用自己的用户' : user.isActive ? '停用用户' : '启用用户'}
-                      className={user.isActive ? dangerButtonClassName : secondaryButtonClassName}
-                    >
-                      {user.isActive ? <UserX size={15} aria-hidden="true" /> : <UserCheck size={15} aria-hidden="true" />}
-                      {user.isActive ? '停用' : '启用'}
-                    </button>
-                  </div>
-                )}
+                <LocalUserRowActions
+                  currentUser={currentUser}
+                  user={user}
+                  disabled={isMutating}
+                  onRename={() => startRename(user)}
+                  onRoleChange={() => void handleRoleChange(user)}
+                  onResetPin={() => openPinAction({ kind: 'reset', user })}
+                  onActiveChange={() => void handleActiveChange(user)}
+                />
               </div>
 
               {isAdmin && renamingUserId === user.id && (
@@ -556,52 +546,164 @@ export function LocalUsersSettings() {
 
       {pinAction && createPortal(
         <div ref={pinModalRootRef} className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <form
-            ref={pinDialogRef}
+          <LocalUserPinDialog
+            formRef={pinDialogRef}
+            action={pinAction}
+            pin={pin}
+            pinConfirmation={pinConfirmation}
+            error={pinError}
+            isMutating={isMutating}
+            onPinChange={setPin}
+            onPinConfirmationChange={setPinConfirmation}
+            onCancel={closePinAction}
             onSubmit={handlePinAction}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="local-user-pin-action-title"
-            aria-describedby="local-user-pin-action-description"
-            tabIndex={-1}
-            className="w-full max-w-sm rounded-lg border border-tech-border bg-tech-surface shadow-xl"
-          >
-            <div className="border-b border-tech-border px-5 py-4">
-              <div className="flex items-center gap-2 text-tech-text">
-                <KeyRound size={18} className="text-tech-blue" aria-hidden="true" />
-                <h4 id="local-user-pin-action-title" className="font-semibold">
-                  {pinAction.kind === 'promote' ? '设置新管理员 PIN' : '重置管理员 PIN'}
-                </h4>
-              </div>
-              <p id="local-user-pin-action-description" className="mt-1 text-sm text-tech-muted">{pinAction.user.displayName}</p>
-            </div>
-            <div className="space-y-4 px-5 py-5">
-              <PinField label="新 PIN" inputId="local-user-new-pin" value={pin} onChange={setPin} />
-              <PinField label="确认新 PIN" inputId="local-user-new-pin-confirmation" value={pinConfirmation} onChange={setPinConfirmation} />
-              {pinError && <InlineError message={pinError} />}
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={closePinAction}
-                  disabled={isMutating}
-                  className="rounded-lg px-4 py-2 text-sm font-medium text-tech-muted transition hover:bg-tech-bg hover:text-tech-text disabled:opacity-60"
-                >
-                  取消
-                </button>
-                <button
-                  type="submit"
-                  disabled={isMutating}
-                  className="rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-tech-blue-dark disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isMutating ? '正在保存...' : '确认保存'}
-                </button>
-              </div>
-            </div>
-          </form>
+          />
         </div>,
         document.body
       )}
     </section>
+  );
+}
+
+export function LocalUserCreateAction({
+  currentUser,
+  disabled,
+  onCreate,
+}: {
+  currentUser: LocalUser | null;
+  disabled: boolean;
+  onCreate(): void;
+}) {
+  if (!canManageUsers(currentUser)) return null;
+  return (
+    <button
+      type="button"
+      onClick={onCreate}
+      disabled={disabled}
+      className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-tech-blue-dark disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <UserPlus size={16} aria-hidden="true" />
+      新建用户
+    </button>
+  );
+}
+
+export function LocalUserRowActions({
+  currentUser,
+  user,
+  disabled,
+  onRename,
+  onRoleChange,
+  onResetPin,
+  onActiveChange,
+}: {
+  currentUser: LocalUser | null;
+  user: LocalUser;
+  disabled: boolean;
+  onRename(): void;
+  onRoleChange(): void;
+  onResetPin(): void;
+  onActiveChange(): void;
+}) {
+  if (!canManageUsers(currentUser)) return null;
+  const cannotDisableCurrentAdmin = currentUser?.id === user.id && user.isActive;
+
+  return (
+    <div className="flex shrink-0 flex-wrap gap-2">
+      <button type="button" onClick={onRename} disabled={disabled} className={secondaryButtonClassName}>
+        <Pencil size={15} aria-hidden="true" />
+        重命名
+      </button>
+      <button type="button" onClick={onRoleChange} disabled={disabled} className={secondaryButtonClassName}>
+        <ShieldCheck size={15} aria-hidden="true" />
+        {user.role === 'admin' ? '改为发布者' : '设为管理员'}
+      </button>
+      {user.role === 'admin' && (
+        <button type="button" onClick={onResetPin} disabled={disabled} className={secondaryButtonClassName}>
+          <KeyRound size={15} aria-hidden="true" />
+          重置 PIN
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onActiveChange}
+        disabled={disabled || cannotDisableCurrentAdmin}
+        title={cannotDisableCurrentAdmin ? '当前管理员会话中不能停用自己的用户' : user.isActive ? '停用用户' : '启用用户'}
+        className={user.isActive ? dangerButtonClassName : secondaryButtonClassName}
+      >
+        {user.isActive ? <UserX size={15} aria-hidden="true" /> : <UserCheck size={15} aria-hidden="true" />}
+        {user.isActive ? '停用' : '启用'}
+      </button>
+    </div>
+  );
+}
+
+export function LocalUserPinDialog({
+  formRef,
+  action,
+  pin,
+  pinConfirmation,
+  error,
+  isMutating,
+  onPinChange,
+  onPinConfirmationChange,
+  onCancel,
+  onSubmit,
+}: {
+  formRef?: Ref<HTMLFormElement>;
+  action: PinAction;
+  pin: string;
+  pinConfirmation: string;
+  error: string;
+  isMutating: boolean;
+  onPinChange(value: string): void;
+  onPinConfirmationChange(value: string): void;
+  onCancel(): void;
+  onSubmit(event: FormEvent<HTMLFormElement>): void;
+}) {
+  return (
+    <form
+      ref={formRef}
+      onSubmit={onSubmit}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="local-user-pin-action-title"
+      aria-describedby="local-user-pin-action-description"
+      tabIndex={-1}
+      className="w-full max-w-sm rounded-lg border border-tech-border bg-tech-surface shadow-xl"
+    >
+      <div className="border-b border-tech-border px-5 py-4">
+        <div className="flex items-center gap-2 text-tech-text">
+          <KeyRound size={18} className="text-tech-blue" aria-hidden="true" />
+          <h4 id="local-user-pin-action-title" className="font-semibold">
+            {action.kind === 'promote' ? '设置新管理员 PIN' : '重置管理员 PIN'}
+          </h4>
+        </div>
+        <p id="local-user-pin-action-description" className="mt-1 text-sm text-tech-muted">{action.user.displayName}</p>
+      </div>
+      <div className="space-y-4 px-5 py-5">
+        <PinField label="新 PIN" inputId="local-user-new-pin" value={pin} onChange={onPinChange} />
+        <PinField label="确认新 PIN" inputId="local-user-new-pin-confirmation" value={pinConfirmation} onChange={onPinConfirmationChange} />
+        {error && <InlineError message={error} />}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isMutating}
+            className="rounded-lg px-4 py-2 text-sm font-medium text-tech-muted transition hover:bg-tech-bg hover:text-tech-text disabled:opacity-60"
+          >
+            取消
+          </button>
+          <button
+            type="submit"
+            disabled={isMutating}
+            className="rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition hover:bg-tech-blue-dark disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isMutating ? '正在保存...' : '确认保存'}
+          </button>
+        </div>
+      </div>
+    </form>
   );
 }
 

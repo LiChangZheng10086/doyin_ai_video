@@ -118,3 +118,38 @@ test('refreshUsers reconciles the latest same-id current user and clears publish
   assert.equal(store.getState().users[0], promoted);
   assert.equal(storage.getItem('douyin-ai-video.last-publisher-id'), null);
 });
+
+test('syncUser clears the current session when the same user becomes inactive', async () => {
+  const sessionChanges: Array<string | null> = [];
+  const storage = memoryStorage();
+  const store = createOperatorStore(identityClient({
+    setLocalSession: (token) => sessionChanges.push(token),
+  }), storage);
+  await store.getState().switchUser(publisher.id);
+
+  store.getState().syncUser({ ...publisher, isActive: false });
+
+  assert.equal(store.getState().currentUser, null);
+  assert.equal(store.getState().token, null);
+  assert.equal(store.getState().users[0].isActive, false);
+  assert.equal(storage.getItem('douyin-ai-video.last-publisher-id'), null);
+  assert.deepEqual(sessionChanges, ['publisher-token', null]);
+});
+
+test('refreshUsers clears the current session when its user disappears', async () => {
+  const sessionChanges: Array<string | null> = [];
+  const storage = memoryStorage();
+  const store = createOperatorStore(identityClient({
+    setLocalSession: (token) => sessionChanges.push(token),
+    getLocalUsers: async () => ({ users: [], needsBootstrap: false }),
+  }), storage);
+  await store.getState().switchUser(publisher.id);
+
+  await store.getState().refreshUsers();
+
+  assert.equal(store.getState().currentUser, null);
+  assert.equal(store.getState().token, null);
+  assert.deepEqual(store.getState().users, []);
+  assert.equal(storage.getItem('douyin-ai-video.last-publisher-id'), null);
+  assert.deepEqual(sessionChanges, ['publisher-token', null]);
+});

@@ -103,6 +103,12 @@ export function createOperatorStore(client: LocalIdentityClient = apiClient, sto
     }
   };
 
+  const clearCurrentSession = (set: (state: Partial<OperatorState>) => void) => {
+    client.setLocalSession(null);
+    set({ currentUser: null, token: null });
+    removeStorage(storage, LAST_PUBLISHER_ID_KEY);
+  };
+
   return create<OperatorState>((set, get) => ({
     users: [],
     currentUser: null,
@@ -167,23 +173,32 @@ export function createOperatorStore(client: LocalIdentityClient = apiClient, sto
       const result = await client.getLocalUsers();
       const currentUser = get().currentUser;
       const refreshedCurrentUser = currentUser
-        ? result.users.find((user) => user.id === currentUser.id) ?? currentUser
-        : null;
+        ? result.users.find((user) => user.id === currentUser.id)
+        : undefined;
       set({
         users: result.users,
-        currentUser: refreshedCurrentUser,
         needsBootstrap: result.needsBootstrap,
       });
-      if (refreshedCurrentUser) syncPublisherPersistence(refreshedCurrentUser);
+      if (currentUser && (!refreshedCurrentUser || !refreshedCurrentUser.isActive)) {
+        clearCurrentSession(set);
+        return;
+      }
+      if (refreshedCurrentUser) {
+        set({ currentUser: refreshedCurrentUser });
+        syncPublisherPersistence(refreshedCurrentUser);
+      }
     },
 
     syncUser: (user) => {
       const currentUser = get().currentUser;
-      set({
-        users: replaceUser(get().users, user),
-        currentUser: currentUser?.id === user.id ? user : currentUser,
-      });
-      if (currentUser?.id === user.id) syncPublisherPersistence(user);
+      set({ users: replaceUser(get().users, user) });
+      if (currentUser?.id !== user.id) return;
+      if (!user.isActive) {
+        clearCurrentSession(set);
+        return;
+      }
+      set({ currentUser: user });
+      syncPublisherPersistence(user);
     },
   }));
 }

@@ -4,6 +4,7 @@ import { createOperatorStore, type LocalIdentityClient } from "../store/operator
 import type { LocalSession, LocalSessionResponse, LocalUser, LocalUsersResponse } from "../types/index.js";
 import {
   canManageUsers,
+  canRestoreLocalUserDialogFocus,
   canWithdrawPublished,
   createLocalUserMutationLock,
   localIdentityErrorMessage,
@@ -114,6 +115,22 @@ test("the local-user mutation lock rejects overlapping operations and unlocks af
   pending.resolve();
   assert.deepEqual(await first, { acquired: true, value: "first" });
   assert.deepEqual(await lock.run(async () => "third"), { acquired: true, value: "third" });
+});
+
+test("dialog focus restoration waits for close, unlock, render enablement, and a connected trigger", () => {
+  const ready = {
+    dialogOpen: false,
+    restorePending: true,
+    mutationLocked: false,
+    triggerConnected: true,
+    triggerDisabled: false,
+  };
+
+  assert.equal(canRestoreLocalUserDialogFocus({ ...ready, dialogOpen: true }), false);
+  assert.equal(canRestoreLocalUserDialogFocus({ ...ready, mutationLocked: true }), false);
+  assert.equal(canRestoreLocalUserDialogFocus({ ...ready, triggerDisabled: true }), false);
+  assert.equal(canRestoreLocalUserDialogFocus({ ...ready, triggerConnected: false }), false);
+  assert.equal(canRestoreLocalUserDialogFocus(ready), true);
 });
 
 test("validateAdminSetup requires a name, matching 6-12 digit pins", () => {

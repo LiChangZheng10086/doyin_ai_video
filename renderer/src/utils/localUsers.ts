@@ -71,6 +71,20 @@ export function createLocalUserMutationLock() {
   };
 }
 
+export function canRestoreLocalUserDialogFocus(state: {
+  dialogOpen: boolean;
+  restorePending: boolean;
+  mutationLocked: boolean;
+  triggerConnected: boolean;
+  triggerDisabled: boolean;
+}): boolean {
+  return state.restorePending
+    && !state.dialogOpen
+    && !state.mutationLocked
+    && state.triggerConnected
+    && !state.triggerDisabled;
+}
+
 export function validateAdminSetup(
   displayName: string,
   pin: string,
