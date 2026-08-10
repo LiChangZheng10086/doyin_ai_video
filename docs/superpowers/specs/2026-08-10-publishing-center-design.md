@@ -359,6 +359,7 @@ output/publishing/{sourceJobId}/v{version}-{packageId}/
 ```text
 GET    /api/local-users
 POST   /api/local-users/bootstrap
+POST   /api/local-users/recover
 POST   /api/local-users
 PATCH  /api/local-users/:id
 POST   /api/local-users/:id/reset-pin
@@ -368,6 +369,7 @@ GET    /api/local-sessions/current
 ```
 
 - `bootstrap` 只在不存在用户时可调用，否则返回 409。
+- `recover` 只接受固定确认文本、新管理员姓名和新 PIN；成功后替换本地用户档案、清空所有会话并创建新管理员，但不得修改发布索引、发布包或历史操作者快照。
 - `POST /local-sessions` 对发布者不要求 PIN，对管理员要求 PIN；成功返回不持久化的随机会话令牌。
 - 管理员 API 与发布写 API 必须验证 `X-Local-Session`。
 - 身份验证失败统一返回安全错误，不返回 PIN 哈希、盐或用户枚举细节。
