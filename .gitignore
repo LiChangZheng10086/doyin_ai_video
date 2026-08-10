@@ -18,6 +18,7 @@ dist-renderer/
 *.swp
 *.swo
 .vscode/
+.worktrees/
 
 # OS
 .DS_Store
