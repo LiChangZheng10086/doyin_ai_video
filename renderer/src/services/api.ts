@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, type AxiosRequestConfig } from 'axios';
 import type {
   ApiResponse,
   CleanedScript,
@@ -37,20 +37,17 @@ export function parseApiError(error: unknown): ParsedApiError {
   const response = (error as {
     response?: { status?: unknown; data?: { code?: unknown; message?: unknown; details?: unknown } };
   })?.response;
-  const fallbackMessage = error instanceof Error && error.message.trim()
-    ? error.message
-    : '请求失败，请稍后重试';
   return {
     code: typeof response?.data?.code === 'string' ? response.data.code : 'request_failed',
     message: typeof response?.data?.message === 'string' && response.data.message.trim()
       ? response.data.message
-      : fallbackMessage,
+      : '发布请求失败，请稍后重试',
     ...(response?.data?.details === undefined ? {} : { details: response.data.details }),
     ...(typeof response?.status === 'number' ? { status: response.status } : {}),
   };
 }
 
-class ApiClient {
+export class ApiClient {
   private client: AxiosInstance | null = null;
   private serverPort: number | null = null;
   private localSessionToken: string | null = null;
@@ -134,139 +131,148 @@ class ApiClient {
     await client.post(`/api/local-users/${id}/reset-pin`, { pin });
   }
 
+  private async publishingRequest<T>(config: AxiosRequestConfig): Promise<T> {
+    try {
+      const client = await this.getClient();
+      return (await client.request<T>(config)).data;
+    } catch (error) {
+      const parsed = parseApiError(error);
+      throw Object.assign(new Error(parsed.message), parsed, { name: 'PublishingApiError' });
+    }
+  }
+
   async previewPublishing(id: string, platforms: PublishPlatform[]): Promise<PublishingPreview> {
-    const client = await this.getClient();
-    const response = await client.post<{ preview: PublishingPreview }>(
-      `/api/jobs/${id}/publishing/preview`,
-      { platforms },
-    );
-    return response.data.preview;
+    const response = await this.publishingRequest<{ preview: PublishingPreview }>({
+      method: 'POST',
+      url: `/api/jobs/${id}/publishing/preview`,
+      data: { platforms },
+    });
+    return response.preview;
   }
 
   async createPublishingPackage(
     input: CreatePublishingPackageInput,
   ): Promise<PublishingPackageDetail> {
-    const client = await this.getClient();
-    const response = await client.post<{ package: PublishingPackageDetail }>(
-      '/api/publishing/packages',
-      input,
-    );
-    return response.data.package;
+    const response = await this.publishingRequest<{ package: PublishingPackageDetail }>({
+      method: 'POST',
+      url: '/api/publishing/packages',
+      data: input,
+    });
+    return response.package;
   }
 
   async listPublishingPackages(
     filters: PublishingListFilters = {},
   ): Promise<PublishingPackageDetail[]> {
-    const client = await this.getClient();
-    const response = await client.get<{ packages: PublishingPackageDetail[] }>(
-      '/api/publishing/packages',
-      { params: filters },
-    );
-    return response.data.packages;
+    const response = await this.publishingRequest<{ packages: PublishingPackageDetail[] }>({
+      method: 'GET',
+      url: '/api/publishing/packages',
+      params: filters,
+    });
+    return response.packages;
   }
 
   async getPublishingPackage(id: string): Promise<PublishingPackageDetail> {
-    const client = await this.getClient();
-    const response = await client.get<{ package: PublishingPackageDetail }>(
-      `/api/publishing/packages/${id}`,
-    );
-    return response.data.package;
+    const response = await this.publishingRequest<{ package: PublishingPackageDetail }>({
+      method: 'GET',
+      url: `/api/publishing/packages/${id}`,
+    });
+    return response.package;
   }
 
   async checkPublishingDue(): Promise<{ notifications: DueNotification[] }> {
-    const client = await this.getClient();
-    const response = await client.post<{ notifications: DueNotification[] }>(
-      '/api/publishing/due/check',
-      {},
-    );
-    return response.data;
+    return this.publishingRequest<{ notifications: DueNotification[] }>({
+      method: 'POST',
+      url: '/api/publishing/due/check',
+      data: {},
+    });
   }
 
   async createPublishingVersion(
     packageId: string,
     input: CreatePublishingVersionInput,
   ): Promise<PublishingPackageDetail> {
-    const client = await this.getClient();
-    const response = await client.post<{ package: PublishingPackageDetail }>(
-      `/api/publishing/packages/${packageId}/versions`,
-      input,
-    );
-    return response.data.package;
+    const response = await this.publishingRequest<{ package: PublishingPackageDetail }>({
+      method: 'POST',
+      url: `/api/publishing/packages/${packageId}/versions`,
+      data: input,
+    });
+    return response.package;
   }
 
   async updatePublishingContent(
     taskId: string,
     input: UpdatePublishingContentInput,
   ): Promise<PublishTask> {
-    const client = await this.getClient();
-    const response = await client.patch<{ task: PublishTask }>(
-      `/api/publishing/tasks/${taskId}/content`,
-      input,
-    );
-    return response.data.task;
+    const response = await this.publishingRequest<{ task: PublishTask }>({
+      method: 'PATCH',
+      url: `/api/publishing/tasks/${taskId}/content`,
+      data: input,
+    });
+    return response.task;
   }
 
   async updatePublishingSchedule(taskId: string, scheduledAt: string | null): Promise<PublishTask> {
-    const client = await this.getClient();
-    const response = await client.patch<{ task: PublishTask }>(
-      `/api/publishing/tasks/${taskId}/schedule`,
-      { scheduledAt },
-    );
-    return response.data.task;
+    const response = await this.publishingRequest<{ task: PublishTask }>({
+      method: 'PATCH',
+      url: `/api/publishing/tasks/${taskId}/schedule`,
+      data: { scheduledAt },
+    });
+    return response.task;
   }
 
   async cancelPublishingTask(
     taskId: string,
     input: ConfirmedPublishingAction,
   ): Promise<PublishTask> {
-    const client = await this.getClient();
-    const response = await client.post<{ task: PublishTask }>(
-      `/api/publishing/tasks/${taskId}/cancel`,
-      input,
-    );
-    return response.data.task;
+    const response = await this.publishingRequest<{ task: PublishTask }>({
+      method: 'POST',
+      url: `/api/publishing/tasks/${taskId}/cancel`,
+      data: input,
+    });
+    return response.task;
   }
 
   async restorePublishingTask(taskId: string, scheduledAt: string | null): Promise<PublishTask> {
-    const client = await this.getClient();
-    const response = await client.post<{ task: PublishTask }>(
-      `/api/publishing/tasks/${taskId}/restore`,
-      { scheduledAt },
-    );
-    return response.data.task;
+    const response = await this.publishingRequest<{ task: PublishTask }>({
+      method: 'POST',
+      url: `/api/publishing/tasks/${taskId}/restore`,
+      data: { scheduledAt },
+    });
+    return response.task;
   }
 
   async markPublishingTaskPublished(
     taskId: string,
     input: ConfirmedPublishingAction,
   ): Promise<PublishTask> {
-    const client = await this.getClient();
-    const response = await client.post<{ task: PublishTask }>(
-      `/api/publishing/tasks/${taskId}/mark-published`,
-      input,
-    );
-    return response.data.task;
+    const response = await this.publishingRequest<{ task: PublishTask }>({
+      method: 'POST',
+      url: `/api/publishing/tasks/${taskId}/mark-published`,
+      data: input,
+    });
+    return response.task;
   }
 
   async withdrawPublishingTask(
     taskId: string,
     input: ConfirmedPublishingAction & { reason: string },
   ): Promise<PublishTask> {
-    const client = await this.getClient();
-    const response = await client.post<{ task: PublishTask }>(
-      `/api/publishing/tasks/${taskId}/withdraw`,
-      input,
-    );
-    return response.data.task;
+    const response = await this.publishingRequest<{ task: PublishTask }>({
+      method: 'POST',
+      url: `/api/publishing/tasks/${taskId}/withdraw`,
+      data: input,
+    });
+    return response.task;
   }
 
   async recordPublishingFailure(taskId: string, reason: string): Promise<PublishTask> {
-    const client = await this.getClient();
-    const response = await client.post<{ task: PublishTask }>(
-      `/api/publishing/tasks/${taskId}/record-failure`,
-      { reason },
-    );
-    return response.data.task;
+    const response = await this.publishingRequest<{ task: PublishTask }>({
+      method: 'POST',
+      url: `/api/publishing/tasks/${taskId}/record-failure`,
+      data: { reason },
+    });
+    return response.task;
   }
 
   async recordPublishingActionError(
@@ -274,29 +280,31 @@ class ApiClient {
     action: PublishingActionErrorType,
     message: string,
   ): Promise<void> {
-    const client = await this.getClient();
-    await client.post(`/api/publishing/tasks/${taskId}/action-error`, { action, message });
+    await this.publishingRequest<void>({
+      method: 'POST',
+      url: `/api/publishing/tasks/${taskId}/action-error`,
+      data: { action, message },
+    });
   }
 
   async trashPublishingPackage(
     packageId: string,
     input: ConfirmedPublishingAction,
   ): Promise<DeliveryPackage> {
-    const client = await this.getClient();
-    const response = await client.delete<{ package: DeliveryPackage }>(
-      `/api/publishing/packages/${packageId}`,
-      { data: input },
-    );
-    return response.data.package;
+    const response = await this.publishingRequest<{ package: DeliveryPackage }>({
+      method: 'DELETE',
+      url: `/api/publishing/packages/${packageId}`,
+      data: input,
+    });
+    return response.package;
   }
 
   async restorePublishingPackage(packageId: string): Promise<RestoredPublishingPackage> {
-    const client = await this.getClient();
-    const response = await client.post<RestoredPublishingPackage>(
-      `/api/publishing/packages/${packageId}/restore`,
-      {},
-    );
-    return response.data;
+    return this.publishingRequest<RestoredPublishingPackage>({
+      method: 'POST',
+      url: `/api/publishing/packages/${packageId}/restore`,
+      data: {},
+    });
   }
 
   // 通用 GET 请求
