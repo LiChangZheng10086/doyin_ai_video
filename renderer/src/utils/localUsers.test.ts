@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createOperatorStore, type LocalIdentityClient } from "../store/operator.js";
 import type { LocalSession, LocalSessionResponse, LocalUser, LocalUsersResponse } from "../types/index.js";
-import { canManageUsers, canWithdrawPublished } from "./localUsers.js";
+import { canManageUsers, canWithdrawPublished, localIdentityErrorMessage, validateAdminSetup } from "./localUsers.js";
 
 const admin: LocalUser = {
   id: "admin-1",
@@ -62,6 +62,24 @@ test("admin-only permissions stay server-aligned", () => {
   assert.equal(canManageUsers(publisher), false);
   assert.equal(canWithdrawPublished(admin), true);
   assert.equal(canWithdrawPublished(publisher), false);
+});
+
+test("validateAdminSetup requires a name, matching 6-12 digit pins", () => {
+  assert.deepEqual(validateAdminSetup("", "123456", "123456"), { displayName: "请输入管理员姓名" });
+  assert.deepEqual(validateAdminSetup("主管", "123", "123"), { pin: "PIN 必须为 6 至 12 位数字" });
+  assert.deepEqual(validateAdminSetup("主管", "123456", "654321"), { confirmation: "两次 PIN 不一致" });
+  assert.equal(validateAdminSetup("主管", "123456", "123456"), null);
+});
+
+test("localIdentityErrorMessage exposes only safe Chinese identity messages", () => {
+  assert.equal(
+    localIdentityErrorMessage({ response: { data: { code: "local_user_pin_invalid", message: "unexpected detail" } } }),
+    "PIN 不正确，请重试"
+  );
+  assert.equal(
+    localIdentityErrorMessage({ response: { data: { code: "unknown", message: "server diagnostic" } } }),
+    "本地用户操作未完成，请稍后重试"
+  );
 });
 
 test("initialization auto-opens only the saved active publisher", async () => {

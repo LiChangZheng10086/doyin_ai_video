@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Brain, LayoutDashboard, Settings, Sparkles, Trash2, Users, Video } from 'lucide-react';
 import { JobListPage } from './pages/JobListPage';
@@ -9,6 +10,9 @@ import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SkillListPage } from './pages/SkillListPage';
 import { ApiKeyStatusIndicator } from './components/ApiKeyStatusIndicator';
 import { CookieStatusIndicator } from './components/CookieStatusIndicator';
+import { LocalUserSetup } from './components/LocalUserSetup';
+import { OperatorSwitcher } from './components/OperatorSwitcher';
+import { useOperatorStore } from './store/operator';
 
 function Navigation() {
   const location = useLocation();
@@ -24,8 +28,8 @@ function Navigation() {
     <div className="min-h-screen bg-tech-bg">
       {/* Header */}
       <header className="bg-tech-surface border-b border-tech-border shadow-sm">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-8">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:px-6 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-center lg:gap-8">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-gradient-to-br from-tech-blue to-tech-purple rounded-lg flex items-center justify-center text-white shadow-sm">
                 <Video size={22} />
@@ -42,7 +46,7 @@ function Navigation() {
             </div>
 
             {/* Navigation */}
-            <nav className="flex items-center gap-1">
+            <nav className="flex items-center gap-1 overflow-x-auto pb-1 lg:pb-0">
               {navItems.map((item) => {
                 const Icon = item.icon;
                 const active = item.to === '/'
@@ -68,9 +72,10 @@ function Navigation() {
             </nav>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <ApiKeyStatusIndicator />
             <CookieStatusIndicator />
+            <OperatorSwitcher />
             <span className="text-xs text-tech-muted bg-tech-bg px-3 py-1 rounded-full">
               v0.1.0
             </span>
@@ -95,6 +100,30 @@ function Navigation() {
 }
 
 function App() {
+  const initialize = useOperatorStore((state) => state.initialize);
+  const initialized = useOperatorStore((state) => state.initialized);
+  const needsBootstrap = useOperatorStore((state) => state.needsBootstrap);
+  const initializationStarted = useRef(false);
+  const [initializationError, setInitializationError] = useState(false);
+
+  useEffect(() => {
+    if (initializationStarted.current) return;
+    initializationStarted.current = true;
+    void initialize().catch(() => setInitializationError(true));
+  }, [initialize]);
+
+  if (!initialized) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-tech-bg p-6">
+        <div className="w-full max-w-sm rounded-lg border border-tech-border bg-tech-surface px-5 py-4 text-sm text-tech-muted shadow-sm" role={initializationError ? 'alert' : 'status'}>
+          {initializationError ? '无法读取本地用户信息，请重新打开应用后再试。' : '正在读取本地用户信息...'}
+        </div>
+      </main>
+    );
+  }
+
+  if (needsBootstrap) return <LocalUserSetup />;
+
   return (
     <BrowserRouter>
       <Navigation />
