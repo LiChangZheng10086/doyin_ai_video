@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createOperatorStore, type LocalIdentityClient } from "../store/operator.js";
 import type { LocalSession, LocalSessionResponse, LocalUser, LocalUsersResponse } from "../types/index.js";
-import { canManageUsers, canWithdrawPublished, localIdentityErrorMessage, validateAdminSetup } from "./localUsers.js";
+import {
+  canManageUsers,
+  canWithdrawPublished,
+  localIdentityErrorMessage,
+  settingsSections,
+  validateAdminSetup,
+} from "./localUsers.js";
 
 const admin: LocalUser = {
   id: "admin-1",
@@ -24,6 +30,12 @@ const publisher: LocalUser = {
 
 const publisherSession: LocalSession = { token: "publisher-token", user: publisher };
 const adminSession: LocalSession = { token: "admin-token", user: admin };
+
+test("settings includes local users without changing existing sections", () => {
+  assert.deepEqual(settingsSections.map((item) => item.id), [
+    "models", "douyin", "asr", "storage", "users", "advanced",
+  ]);
+});
 
 function deferred<T>() {
   let resolve: (value: T) => void;
@@ -79,6 +91,10 @@ test("localIdentityErrorMessage exposes only safe Chinese identity messages", ()
   assert.equal(
     localIdentityErrorMessage({ response: { data: { code: "unknown", message: "server diagnostic" } } }),
     "本地用户操作未完成，请稍后重试"
+  );
+  assert.equal(
+    localIdentityErrorMessage({ response: { data: { code: "local_user_last_admin" } } }),
+    "至少保留一个启用的管理员"
   );
 });
 

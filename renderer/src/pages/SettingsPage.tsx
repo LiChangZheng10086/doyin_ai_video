@@ -20,7 +20,9 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { LocalUsersSettings } from '../components/LocalUsersSettings';
 import { apiClient } from '../services/api';
+import { settingsSections } from '../utils/localUsers';
 
 interface AIKeyConfig {
   id: string;
@@ -52,15 +54,16 @@ const emptyKeyForm = (): AIKeyForm => ({
   model: 'deepseek-chat',
 });
 
-type SettingsSection = 'models' | 'douyin' | 'asr' | 'storage' | 'advanced';
+type SettingsSection = (typeof settingsSections)[number]['id'];
 
-const sections: Array<{ id: SettingsSection; label: string; description: string; icon: typeof KeyRound }> = [
-  { id: 'models', label: 'Models / API Keys', description: 'AI 服务与密钥', icon: KeyRound },
-  { id: 'douyin', label: 'Douyin Login', description: '抖音扫码登录', icon: QrCode },
-  { id: 'asr', label: 'ASR', description: '视频转录服务', icon: Mic },
-  { id: 'storage', label: 'Storage', description: '本地文件位置', icon: HardDrive },
-  { id: 'advanced', label: 'Advanced', description: '安全与提示', icon: SlidersHorizontal },
-];
+const settingsSectionIcons: Record<SettingsSection, typeof KeyRound> = {
+  models: KeyRound,
+  douyin: QrCode,
+  asr: Mic,
+  storage: HardDrive,
+  users: ShieldCheck,
+  advanced: SlidersHorizontal,
+};
 
 export function SettingsPage() {
   const [apiKeys, setApiKeys] = useState<AIKeyConfig[]>([]);
@@ -256,8 +259,8 @@ export function SettingsPage() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
         <aside className="rounded-lg border border-tech-border bg-tech-surface p-2">
-          {sections.map((section) => {
-            const Icon = section.icon;
+          {settingsSections.map((section) => {
+            const Icon = settingsSectionIcons[section.id];
             const active = activeSection === section.id;
             return (
               <button
@@ -307,6 +310,7 @@ export function SettingsPage() {
           {activeSection === 'douyin' && <DouyinSection />}
           {activeSection === 'asr' && <AsrSection />}
           {activeSection === 'storage' && <StorageSection />}
+          {activeSection === 'users' && <LocalUsersSettings />}
           {activeSection === 'advanced' && <AdvancedSection />}
         </main>
       </div>
