@@ -63,7 +63,9 @@ test("resolves the current HyperFrames MP4 to its canonical path and exact size"
   assert.equal(resolved.path, await realpath(videoPath));
   assert.equal(resolved.size, bytes.byteLength);
   assert.equal(resolved.mimeType, "video/mp4");
-  assert.equal((await resolved.handle.stat()).ino, (await stat(videoPath)).ino);
+  const pathStats = await stat(videoPath);
+  assert.equal((await resolved.handle.stat()).ino, pathStats.ino);
+  assert.deepEqual(resolved.identity, { dev: pathStats.dev, ino: pathStats.ino });
   await resolved.close();
 });
 
@@ -164,6 +166,28 @@ test("keeps the opened video inode when the resolved path is replaced", async ()
   assert.equal(bytes.subarray(0, read.bytesRead).toString(), "original inode bytes");
 });
 
+test("resolved video close can retry after the file handle close fails", async () => {
+  const { storageRoot, scriptPath } = await storageFixture("close-retry");
+  const videoPath = path.join(storageRoot, "output", "videos", "close-retry", "video.mp4");
+  await mkdir(path.dirname(videoPath), { recursive: true });
+  await writeFile(videoPath, "close retry bytes");
+  await writeFile(scriptPath, JSON.stringify({ hyperframesVideo: { videoPath } }));
+  const resolved = await resolveJobVideo(storageRoot, job("close-retry"));
+  const closeHandle = resolved.handle.close.bind(resolved.handle);
+  let attempts = 0;
+  resolved.handle.close = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("transient close failure");
+    await closeHandle();
+  };
+
+  await assert.rejects(resolved.close(), /transient close failure/u);
+  await resolved.close();
+
+  assert.equal(attempts, 2);
+  await assert.rejects(resolved.handle.stat(), { code: "EBADF" });
+});
+
 test("stream consumes the resolver handle instead of reopening a replaced path and closes it", async () => {
   const { storageRoot } = await storageFixture("handle-endpoint");
   const videoPath = path.join(storageRoot, "output", "videos", "handle-endpoint", "video.mp4");
@@ -175,6 +199,7 @@ test("stream consumes the resolver handle instead of reopening a replaced path a
     "handle-endpoint": job("handle-endpoint"),
   }));
   let handle = await open(videoPath, "r");
+  const handleStats = await handle.stat();
   let closed = false;
   const app = await createExpressApp({
     storagePath: storageRoot,
@@ -187,6 +212,7 @@ test("stream consumes the resolver handle instead of reopening a replaced path a
         size: original.length,
         mimeType: "video/mp4",
         handle,
+        identity: { dev: handleStats.dev, ino: handleStats.ino },
         close: async () => {
           if (closed) return;
           closed = true;
@@ -228,6 +254,7 @@ test("stream and download share the injected resolver without changing headers o
   const injectedResolver = async (root: string, record: JobRecord): Promise<ResolvedVideoFile> => {
     calls.push({ storageRoot: root, jobId: record.id });
     const handle = await open(videoPath, "r");
+    const handleStats = await handle.stat();
     handles.push(handle);
     let closed = false;
     return {
@@ -235,6 +262,7 @@ test("stream and download share the injected resolver without changing headers o
       size: bytes.length,
       mimeType: "video/mp4",
       handle,
+      identity: { dev: handleStats.dev, ino: handleStats.ino },
       close: async () => {
         if (closed) return;
         closed = true;
@@ -271,6 +299,14 @@ test("stream and download share the injected resolver without changing headers o
     assert.equal(streamRange.headers.get("content-length"), "4");
     assert.equal(await streamRange.text(), "2345");
 
+    const multiRange = await fetch(`${baseUrl}/api/jobs/endpoint-job/video/stream`, {
+      headers: { Range: "bytes=0-1,6-8" },
+    });
+    assert.equal(multiRange.status, 200);
+    assert.equal(multiRange.headers.get("content-range"), null);
+    assert.equal(multiRange.headers.get("content-length"), String(bytes.length));
+    assert.equal(await multiRange.text(), bytes.toString());
+
     const download = await fetch(`${baseUrl}/api/jobs/endpoint-job/video/download`);
     assert.equal(download.status, 200);
     assert.match(download.headers.get("content-disposition") ?? "", /^attachment;/u);
@@ -291,7 +327,7 @@ test("stream and download share the injected resolver without changing headers o
     });
   }
 
-  assert.deepEqual(calls, Array.from({ length: 4 }, () => ({
+  assert.deepEqual(calls, Array.from({ length: 5 }, () => ({
     storageRoot,
     jobId: "endpoint-job",
   })));

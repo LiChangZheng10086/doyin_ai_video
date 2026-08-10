@@ -8,6 +8,7 @@ export interface ResolvedVideoFile {
   size: number;
   mimeType: "video/mp4";
   handle: FileHandle;
+  identity: { dev: number; ino: number };
   close(): Promise<void>;
 }
 
@@ -68,10 +69,11 @@ export async function resolveJobVideo(
       size: fileStats.size,
       mimeType: "video/mp4",
       handle: openedHandle,
+      identity: { dev: fileStats.dev, ino: fileStats.ino },
       close: async () => {
         if (closed) return;
-        closed = true;
         await openedHandle.close();
+        closed = true;
       },
     };
   } catch (error) {

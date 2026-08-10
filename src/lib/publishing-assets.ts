@@ -47,10 +47,18 @@ export interface PackageAssetInput {
   sourceJobId: string;
   version: number;
   sourceVideoPath: string;
+  sourceVideo?: BoundSourceVideo;
   sourceCoverPath?: string;
   title: string;
   tasks: PublishTask[];
   actor: ActorSnapshot;
+}
+
+export interface BoundSourceVideo {
+  path: string;
+  handle: FileHandle;
+  size: number;
+  identity: FileIdentity;
 }
 
 export interface PackageAssetResult {
@@ -122,7 +130,7 @@ type AssetDependencies = {
   now?: () => Date;
 };
 
-type FileIdentity = Pick<Stats, "dev" | "ino">;
+export type FileIdentity = Pick<Stats, "dev" | "ino">;
 
 type DirectorySnapshot = {
   directories: string[];
@@ -140,6 +148,8 @@ type OpenSourceVideo = {
   handle: FileHandle;
   initialStats: Stats;
   initialSha256: string;
+  ownsHandle: boolean;
+  requirePathIdentity: boolean;
 };
 
 export class PublishingAssetService {
@@ -164,13 +174,13 @@ export class PublishingAssetService {
     validateProjectionTasks(input.packageId, input.tasks);
 
     return this.withAssetLock(async (context) => {
-      const source = await this.openSourceVideo(input.sourceVideoPath, context.storageRoot);
+      const source = await this.openSourceVideo(input.sourceVideoPath, context.storageRoot, input.sourceVideo);
       const sourceDirectory = path.join(context.publishingRoot, input.sourceJobId);
       const tempPath = path.join(sourceDirectory, `.next-${input.packageId}`);
       const packagePath = expectedPackagePath(context.publishingRoot, input.sourceJobId, input.version, input.packageId);
       let tempIdentity: FileIdentity | undefined;
       let packageIdentity: FileIdentity | undefined;
-      let promoted = false;
+      let promotionIdentity: FileIdentity | undefined;
       LIVE_TEMP_PATHS.add(tempPath);
 
       try {
@@ -186,7 +196,7 @@ export class PublishingAssetService {
         await this.assertRootAndDirectory(context, sourceDirectory, sourceIdentity);
 
         const stagedVideoPath = path.join(tempPath, "video.mp4");
-        const videoMethod = await this.cloneOrCopyVerified(source, stagedVideoPath, context, tempIdentity);
+        const videoMethod = await this.copyVerified(source, stagedVideoPath, context, tempIdentity);
         const videoStats = await stat(stagedVideoPath);
         const videoSha256 = await hashFilePath(stagedVideoPath);
         const stagedCoverPath = await this.prepareCover(
@@ -241,9 +251,9 @@ export class PublishingAssetService {
         if (await pathExistsNoFollow(packagePath)) {
           throw new PublishingAssetError("publish_clone_failed");
         }
-        await this.safeRenameDirect(context, sourceDirectory, sourceIdentity, tempPath, packagePath, tempIdentity);
-        packageIdentity = await requireDirectoryIdentity(packagePath);
-        promoted = true;
+        promotionIdentity = tempIdentity;
+        await this.safeRenameDirect(context, sourceDirectory, sourceIdentity, tempPath, packagePath, promotionIdentity);
+        packageIdentity = promotionIdentity;
         LIVE_TEMP_PATHS.delete(tempPath);
 
         const videoPath = path.join(packagePath, "video.mp4");
@@ -285,15 +295,16 @@ export class PublishingAssetService {
           },
         };
       } catch (error) {
-        if (promoted && packageIdentity) {
-          await this.safeRemoveDirect(context, sourceDirectory, undefined, packagePath, packageIdentity).catch(() => undefined);
+        const formalStats = await optionalLstat(packagePath).catch(() => undefined);
+        if (promotionIdentity && formalStats && sameIdentity(formalStats, promotionIdentity)) {
+          await this.safeRemoveDirect(context, sourceDirectory, undefined, packagePath, promotionIdentity).catch(() => undefined);
         } else if (tempIdentity) {
           await this.safeRemoveDirect(context, sourceDirectory, undefined, tempPath, tempIdentity).catch(() => undefined);
         }
         throw normalizeAssetError(error);
       } finally {
         LIVE_TEMP_PATHS.delete(tempPath);
-        await source.handle.close().catch(() => undefined);
+        if (source.ownsHandle) await source.handle.close().catch(() => undefined);
       }
     });
   }
@@ -350,8 +361,10 @@ export class PublishingAssetService {
 
             let targetIdentity: FileIdentity | undefined;
             if (currentSnapshot) targetIdentity = await requireDirectoryIdentity(targetPath);
+            let phase: "staged" | "old_backed_up" | "new_promoted" | "committed" = "staged";
             try {
               if (targetIdentity) {
+                backupIdentity = targetIdentity;
                 await this.safeRenameDirect(
                   currentContext,
                   packagePath,
@@ -360,7 +373,7 @@ export class PublishingAssetService {
                   backupPath,
                   targetIdentity,
                 );
-                backupIdentity = targetIdentity;
+                phase = "old_backed_up";
               }
               await this.safeRenameDirect(
                 currentContext,
@@ -370,6 +383,7 @@ export class PublishingAssetService {
                 targetPath,
                 tempIdentity,
               );
+              phase = "new_promoted";
               LIVE_TEMP_PATHS.delete(tempPath);
               committedGeneration = stagedGeneration + 1;
               PROJECTION_GENERATIONS.set(packagePath, committedGeneration);
@@ -377,8 +391,26 @@ export class PublishingAssetService {
                 await snapshotManagedDirectory(packagePath, currentPackage.identity, targetPath),
               );
               state = "committed";
+              phase = "committed";
             } catch (error) {
-              if (backupIdentity && await pathExistsNoFollow(backupPath) && !await pathExistsNoFollow(targetPath)) {
+              const currentTarget = await optionalLstat(targetPath);
+              if (currentTarget && sameIdentity(currentTarget, tempIdentity)) {
+                phase = "new_promoted";
+                await this.safeRemoveDirect(
+                  currentContext,
+                  packagePath,
+                  currentPackage.identity,
+                  targetPath,
+                  tempIdentity,
+                );
+              }
+              const currentBackup = await optionalLstat(backupPath);
+              if (
+                backupIdentity
+                && currentBackup
+                && sameIdentity(currentBackup, backupIdentity)
+                && !await pathExistsNoFollow(targetPath)
+              ) {
                 await this.safeRenameDirect(
                   currentContext,
                   packagePath,
@@ -386,8 +418,21 @@ export class PublishingAssetService {
                   backupPath,
                   targetPath,
                   backupIdentity,
-                ).catch(() => undefined);
+                );
               }
+              const remainingTemp = await optionalLstat(tempPath);
+              if (remainingTemp && sameIdentity(remainingTemp, tempIdentity)) {
+                await this.safeRemoveDirect(
+                  currentContext,
+                  packagePath,
+                  currentPackage.identity,
+                  tempPath,
+                  tempIdentity,
+                );
+              }
+              if (phase !== "committed") PROJECTION_GENERATIONS.set(packagePath, stagedGeneration);
+              LIVE_TEMP_PATHS.delete(tempPath);
+              state = "rolled_back";
               throw normalizeAssetError(error);
             }
           });
@@ -551,6 +596,7 @@ export class PublishingAssetService {
         try {
           const repaired = await this.repairProjectionUnlocked(context, pkg, tasks);
           if (repaired) report.repairedPackageIds.push(packageId);
+          await this.removeProjectionBackupsUnlocked(context, pkg, tasks);
         } catch (error) {
           report.repairFailures.push(recoveryFailure(error, { packageId }));
         }
@@ -627,11 +673,65 @@ export class PublishingAssetService {
     }
   }
 
-  private async openSourceVideo(candidate: string, storageRoot: string): Promise<OpenSourceVideo> {
+  private async removeProjectionBackupsUnlocked(
+    context: RootContext,
+    pkg: DeliveryPackage,
+    tasks: PublishTask[],
+  ): Promise<void> {
+    const binding = await requireExpectedPackage(context, pkg, true);
+    const targetPath = path.join(binding.path, "platforms");
+    const current = await snapshotManagedDirectory(binding.path, binding.identity, targetPath);
+    if (!projectionMatchesSnapshot(current, tasks)) return;
+
+    for (const entry of await readdir(binding.path, { withFileTypes: true })) {
+      if (!entry.name.startsWith(".previous-platforms-")) continue;
+      const backupPath = path.join(binding.path, entry.name);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        throw new PublishingAssetError("publish_video_unreadable");
+      }
+      const backupIdentity = await requireDirectoryIdentity(backupPath);
+      await this.safeRemoveDirect(context, binding.path, binding.identity, backupPath, backupIdentity);
+    }
+  }
+
+  private async openSourceVideo(
+    candidate: string,
+    storageRoot: string,
+    bound?: BoundSourceVideo,
+  ): Promise<OpenSourceVideo> {
     if (typeof candidate !== "string" || path.extname(candidate).toLowerCase() !== ".mp4") {
       throw new PublishingAssetError("publish_video_unreadable");
     }
     const candidatePath = path.resolve(candidate);
+
+    if (bound) {
+      const boundPath = path.resolve(bound.path);
+      if (boundPath !== candidatePath || !isInside(storageRoot, boundPath, false)) {
+        throw new PublishingAssetError("publish_video_unreadable");
+      }
+      try {
+        const initialStats = await bound.handle.stat();
+        if (
+          !initialStats.isFile()
+          || initialStats.size === 0
+          || initialStats.size !== bound.size
+          || !sameIdentity(initialStats, bound.identity)
+        ) {
+          throw new PublishingAssetError(initialStats.size === 0 ? "publish_video_missing" : "publish_video_unreadable");
+        }
+        return {
+          path: boundPath,
+          handle: bound.handle,
+          initialStats,
+          initialSha256: await hashFileHandle(bound.handle, initialStats.size),
+          ownsHandle: false,
+          requirePathIdentity: false,
+        };
+      } catch (error) {
+        if (error instanceof PublishingAssetError) throw error;
+        throw new PublishingAssetError("publish_video_unreadable");
+      }
+    }
 
     let handle: FileHandle | undefined;
     try {
@@ -653,6 +753,8 @@ export class PublishingAssetService {
         handle,
         initialStats,
         initialSha256: await hashFileHandle(handle, initialStats.size),
+        ownsHandle: true,
+        requirePathIdentity: true,
       };
     } catch (error) {
       await handle?.close().catch(() => undefined);
@@ -664,51 +766,61 @@ export class PublishingAssetService {
     }
   }
 
-  private async cloneOrCopyVerified(
+  private async copyVerified(
     source: OpenSourceVideo,
     destination: string,
     context: RootContext,
     destinationParentIdentity: FileIdentity,
   ): Promise<PackageVideoMethod> {
     await this.assertRootAndDirectory(context, path.dirname(destination), destinationParentIdentity);
+    let target: FileHandle | undefined;
     try {
-      await this.copyFile(source.path, destination, constants.COPYFILE_FICLONE_FORCE);
-    } catch {
-      await this.assertRootAndDirectory(context, path.dirname(destination), destinationParentIdentity);
-      try {
-        await this.copyFile(source.path, destination);
-      } catch (error) {
-        throw normalizeAssetError(error, "publish_clone_failed");
-      }
-      await this.verifyCopiedVideo(source, destination, context, destinationParentIdentity);
+      target = await open(
+        destination,
+        constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_RDWR,
+        0o600,
+      );
+      const targetIdentity = await target.stat();
+      if (!targetIdentity.isFile()) throw new PublishingAssetError("publish_clone_failed");
+      await copyFileHandle(source.handle, target, source.initialStats.size);
+      await this.verifyCopiedVideo(source, target, targetIdentity, destination, context, destinationParentIdentity);
       return "copy";
+    } catch (error) {
+      throw normalizeAssetError(error, "publish_clone_failed");
+    } finally {
+      await target?.close().catch(() => undefined);
     }
-    await this.verifyCopiedVideo(source, destination, context, destinationParentIdentity);
-    return "clone";
   }
 
   private async verifyCopiedVideo(
     source: OpenSourceVideo,
+    destinationHandle: FileHandle,
+    destinationIdentity: FileIdentity,
     destination: string,
     context: RootContext,
     destinationParentIdentity: FileIdentity,
   ): Promise<void> {
     await this.assertRootAndDirectory(context, path.dirname(destination), destinationParentIdentity);
     const currentSourceStats = await source.handle.stat();
-    const sourcePathStats = await lstat(source.path);
     if (
       !sameIdentity(source.initialStats, currentSourceStats)
-      || !sameIdentity(source.initialStats, sourcePathStats)
       || sourceMetadataChanged(source.initialStats, currentSourceStats)
     ) {
       throw new PublishingAssetError("publish_video_unreadable");
     }
+    if (source.requirePathIdentity && !sameIdentity(source.initialStats, await lstat(source.path))) {
+      throw new PublishingAssetError("publish_video_unreadable");
+    }
     const currentSourceHash = await hashFileHandle(source.handle, currentSourceStats.size);
-    const destinationHash = await hashFilePath(destination);
+    const destinationStats = await destinationHandle.stat();
+    const destinationHash = await hashFileHandle(destinationHandle, destinationStats.size);
     if (currentSourceHash !== source.initialSha256 || destinationHash !== source.initialSha256) {
       throw new PublishingAssetError("publish_video_unreadable");
     }
     await this.assertRootAndDirectory(context, path.dirname(destination), destinationParentIdentity);
+    if (!sameIdentity(destinationIdentity, await lstat(destination))) {
+      throw new PublishingAssetError("publish_video_unreadable");
+    }
   }
 
   private async prepareCover(
@@ -1125,6 +1237,25 @@ async function hashFileHandle(handle: FileHandle, size: number): Promise<string>
   }
   if (position !== size) throw new PublishingAssetError("publish_video_unreadable");
   return hash.digest("hex");
+}
+
+async function copyFileHandle(source: FileHandle, destination: FileHandle, size: number): Promise<void> {
+  const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(size, 1)));
+  let position = 0;
+  while (position < size) {
+    const length = Math.min(buffer.length, size - position);
+    const { bytesRead } = await source.read(buffer, 0, length, position);
+    if (bytesRead === 0) throw new PublishingAssetError("publish_video_unreadable");
+    let written = 0;
+    while (written < bytesRead) {
+      const result = await destination.write(buffer, written, bytesRead - written, position + written);
+      if (result.bytesWritten === 0) throw new PublishingAssetError("publish_clone_failed");
+      written += result.bytesWritten;
+    }
+    position += bytesRead;
+  }
+  await destination.truncate(size);
+  await destination.sync();
 }
 
 async function hashFilePath(filePath: string): Promise<string> {
