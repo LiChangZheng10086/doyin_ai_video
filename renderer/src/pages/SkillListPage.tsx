@@ -123,7 +123,7 @@ export function SkillListPage() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <p className="text-xs text-tech-muted uppercase tracking-wider mb-1">
-            Knowledge Base
+            知识库
           </p>
           <h1 className="text-2xl font-bold text-tech-text flex items-center gap-2">
             <Brain size={24} className="text-tech-purple" />
