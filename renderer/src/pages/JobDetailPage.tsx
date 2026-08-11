@@ -17,14 +17,19 @@ import {
   Video,
   Wand2,
   XCircle,
+  MoreHorizontal,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { CookieHint } from '../components/CookieHint';
 import { CreatePublishPackageDialog } from '../components/CreatePublishPackageDialog';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { InlineNotice } from '../components/ui/InlineNotice';
+import { IconButton } from '../components/ui/IconButton';
 import { apiClient } from '../services/api';
 import { useOperatorStore } from '../store/operator';
 import { getCleanArtifactDecision, getCleanArtifactLoadError } from '../utils/jobArtifacts';
 import { isPublishingEligibleVideo } from '../utils/publishing';
+import { WorkflowConsole } from '../features/jobs/WorkflowConsole';
 import type {
   Job,
   CleanedScript,
@@ -39,13 +44,6 @@ import type {
 
 type OutcomeTab = 'transcript' | 'script' | 'prompts' | 'video';
 type OutcomeStatus = 'ready' | 'processing' | 'waiting' | 'failed';
-
-const pipelineSteps: Array<{ id: PipelineStep; label: string; description: string; icon: typeof Video }> = [
-  { id: 'transcribe', label: '视频转录', description: '下载视频、提取音频并转成文案', icon: Mic },
-  { id: 'clean', label: 'AI 洗稿', description: '生成创作文稿', icon: Sparkles },
-  { id: 'generate_video_prompts', label: '生成分镜', description: '规划连续竖屏镜头', icon: Wand2 },
-  { id: 'generate_video', label: '生成视频', description: '渲染竖屏成片', icon: Video },
-];
 
 export function JobDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -62,6 +60,7 @@ export function JobDetailPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [runningStep, setRunningStep] = useState<PipelineStep | null>(null);
   const [activeTab, setActiveTab] = useState<OutcomeTab>('script');
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
   const loadJobArtifacts = async (jobData: Job) => {
     setCleanedError(null);
@@ -152,8 +151,6 @@ export function JobDetailPage() {
     };
   }, [id, runningStep]);
 
-  const focus = useMemo(() => job ? getFocusStep(job, runningStep) : null, [job, runningStep]);
-
   if (isLoading) {
     return (
       <Layout>
@@ -170,7 +167,7 @@ export function JobDetailPage() {
   if (error || !job) {
     return (
       <Layout>
-        <div className="rounded-lg border border-tech-border bg-tech-surface py-20 text-center">
+        <div className="rounded-lg border border-tech-border bg-white py-20 text-center">
           <XCircle className="mx-auto mb-4 h-12 w-12 text-red-500" />
           <h3 className="text-xl font-semibold text-tech-text">{error || '作品不存在'}</h3>
           <button
@@ -186,9 +183,6 @@ export function JobDetailPage() {
   }
 
   const handleDeleteJob = async () => {
-    const ok = window.confirm('确定删除这个作品吗？删除后会进入垃圾桶，30 天内可恢复。');
-    if (!ok) return;
-
     try {
       setActionError(null);
       await apiClient.deleteJob(job.id);
@@ -232,11 +226,12 @@ export function JobDetailPage() {
 
   return (
     <Layout>
+      {/* Title bar */}
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
           <button
             onClick={() => navigate('/')}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-tech-border text-tech-muted transition-colors hover:bg-tech-surface hover:text-tech-text"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-tech-border text-tech-muted transition-colors hover:bg-white hover:text-tech-text"
             aria-label="返回创作中心"
           >
             <ArrowLeft size={18} />
@@ -256,7 +251,7 @@ export function JobDetailPage() {
           </button>
         ) : (
           <button
-            onClick={handleDeleteJob}
+            onClick={() => setDeleteConfirmOpen(true)}
             className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-200 px-4 py-2.5 font-medium text-red-600 transition-all hover:bg-red-50"
           >
             <Trash2 size={16} />
@@ -265,30 +260,27 @@ export function JobDetailPage() {
         )}
       </div>
 
-      {actionError && (
-        <div className="mb-6 rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
-          {actionError}
-        </div>
-      )}
-
+      {/* Trashed notice */}
       {job.deletedAt && (
-        <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-700">
-          此作品已在垃圾桶中，{formatTrashRetention(job.trashExpiresAt)}
+        <div className="mb-6">
+          <InlineNotice tone="warning" title="此作品已在垃圾桶中">
+            {formatTrashRetention(job.trashExpiresAt)}
+          </InlineNotice>
         </div>
       )}
 
-      <CurrentStepHero
+      {/* Workflow console */}
+      <WorkflowConsole
         job={job}
-        focus={focus}
         runningStep={runningStep}
+        actionError={actionError}
         onRunStep={handleRunStep}
       />
 
-      <WorkflowStepper job={job} runningStep={runningStep} />
-
+      {/* Outcome tabs */}
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
-        <div className="overflow-hidden rounded-lg border border-tech-border bg-tech-surface">
-          <div className="flex overflow-x-auto border-b border-tech-border bg-tech-bg p-2">
+        <div className="overflow-hidden rounded-lg border border-tech-border bg-white">
+          <div className="flex overflow-x-auto border-b border-tech-border bg-gray-50 p-2">
             {outcomes.map((tab) => {
               const Icon = tab.icon;
               const active = activeOutcome.id === tab.id;
@@ -297,7 +289,7 @@ export function JobDetailPage() {
                   key={tab.id}
                   type="button"
                   onClick={() => setActiveTab(tab.id)}
-                  className={`mr-2 flex min-w-[154px] items-center justify-between gap-3 rounded-lg px-4 py-3 text-left transition-all ${
+                  className={`mr-2 flex min-w-[140px] items-center justify-between gap-3 rounded-lg px-4 py-3 text-left transition-all ${
                     active ? 'bg-white text-tech-text shadow-sm' : 'text-tech-muted hover:bg-white/70'
                   }`}
                 >
@@ -340,125 +332,20 @@ export function JobDetailPage() {
           <AdvancedInfo job={job} />
         </aside>
       </div>
+
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        title="确定删除这个作品吗？"
+        description="删除后会进入垃圾桶，30 天内可恢复。"
+        confirmLabel="删除"
+        onConfirm={handleDeleteJob}
+        onClose={() => setDeleteConfirmOpen(false)}
+      />
     </Layout>
   );
 }
 
-function CurrentStepHero({
-  job,
-  focus,
-  runningStep,
-  onRunStep,
-}: {
-  job: Job;
-  focus: FocusStep | null;
-  runningStep: PipelineStep | null;
-  onRunStep: (step: PipelineStep) => void;
-}) {
-  const completed = getCompletedCount(job);
-  const total = pipelineSteps.length;
-  const percent = Math.round((completed / total) * 100);
-  const hero = getHeroCopy(job, focus);
-  const actionDisabled = !focus || focus.disabled || Boolean(job.deletedAt);
-  const renderState = job.steps?.generate_video;
-  const showRenderProgress = focus?.step === 'generate_video' && renderState?.progress !== undefined;
-
-  return (
-    <section className="overflow-hidden rounded-lg border border-blue-100 bg-gradient-to-br from-blue-50 via-white to-purple-50 p-6 shadow-sm">
-      <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
-        <div className="min-w-0">
-          <p className="mb-3 inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-medium text-tech-purple shadow-sm">
-            <Sparkles size={14} />
-            当前步骤
-          </p>
-          <h2 className="text-2xl font-semibold text-tech-text">{hero.title}</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-tech-muted">{hero.description}</p>
-          {focus?.step === 'transcribe' && (
-            <div className="mt-3 max-w-lg">
-              <CookieHint compact />
-            </div>
-          )}
-          <div className="mt-5 max-w-lg">
-            <div className="mb-2 flex items-center justify-between text-xs font-medium text-tech-muted">
-              <span>主链路进度</span>
-              <span>{completed}/{total} · {percent}%</span>
-            </div>
-            <div className="h-2 overflow-hidden rounded-full bg-white">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-tech-blue to-tech-purple transition-all"
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-            {showRenderProgress && (
-              <div className="mt-4">
-                <div className="mb-2 flex items-center justify-between text-xs font-medium text-tech-muted">
-                  <span>{formatGenerationPhase(renderState.phase)}</span>
-                  <span>{renderState.progress}%</span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-white">
-                  <div className="h-full rounded-full bg-tech-purple transition-all" style={{ width: `${renderState.progress}%` }} />
-                </div>
-                {renderState.status === 'failed' && renderState.lastError && (
-                  <p className="mt-2 line-clamp-2 text-xs text-red-600">{renderState.lastError}</p>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="flex flex-col gap-3 sm:flex-row lg:flex-col">
-          {focus?.step && (
-            <button
-              type="button"
-              disabled={actionDisabled}
-              onClick={() => onRunStep(focus.step)}
-              className={`inline-flex min-w-40 items-center justify-center gap-2 rounded-lg px-5 py-3 font-medium transition-all ${
-                focus.status === 'failed'
-                  ? 'border border-red-200 bg-white text-red-600 hover:bg-red-50'
-                  : 'bg-tech-blue text-white shadow-sm hover:bg-tech-blue-dark hover:shadow'
-              } disabled:cursor-not-allowed disabled:opacity-50`}
-            >
-              {runningStep === focus.step ? <Loader2 className="animate-spin" size={18} /> : getActionIcon(focus)}
-              {runningStep === focus.step ? '执行中...' : focus.actionLabel}
-            </button>
-          )}
-          <StatusChip job={job} />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function WorkflowStepper({ job, runningStep }: { job: Job; runningStep: PipelineStep | null }) {
-  return (
-    <section className="mt-6 rounded-lg border border-tech-border bg-tech-surface p-5">
-      <div className="mb-5 flex items-center justify-between gap-4">
-        <div>
-          <h3 className="font-semibold text-tech-text">Workflow</h3>
-          <p className="mt-1 text-sm text-tech-muted">从视频素材到创作成果的主链路</p>
-        </div>
-      </div>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {pipelineSteps.map((step, index) => {
-          const state = getStepState(job, step.id, runningStep);
-          const Icon = step.icon;
-          return (
-            <div key={step.id} className={`rounded-lg border p-4 ${getStepCardClass(state.status)}`}>
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <span className={`flex h-8 w-8 items-center justify-center rounded-full ${getStepIconClass(state.status)}`}>
-                  {state.status === 'succeeded' ? <Check size={16} /> : <Icon size={16} />}
-                </span>
-                <span className="text-xs font-medium text-tech-muted">0{index + 1}</span>
-              </div>
-              <h4 className="font-semibold text-tech-text">{step.label}</h4>
-              <p className="mt-1 text-xs leading-5 text-tech-muted">{step.description}</p>
-              <p className="mt-3 text-xs font-medium">{getStepStatusLabel(state.status)}</p>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
+// ── Transcript content ──
 
 function TranscriptContent({
   rawTranscript,
@@ -528,7 +415,7 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
       ) : scenes.length > 0 ? (
         <div className="space-y-3">
           {scenes.map((scene) => (
-            <div key={scene.scene} className="rounded-lg border border-tech-border bg-tech-bg p-4">
+            <div key={scene.scene} className="rounded-lg border border-tech-border bg-gray-50 p-4">
               <div className="mb-2 flex items-center justify-between gap-3">
                 <p className="font-semibold text-tech-text">场景 {scene.scene}</p>
                 {scene.cameraMovement && (
@@ -547,7 +434,7 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
       ) : (
         <div className="space-y-3">
           {prompts.map((prompt, index) => (
-            <p key={index} className="rounded-lg border border-tech-border bg-tech-bg p-4 text-sm leading-6 text-tech-text">
+            <p key={index} className="rounded-lg border border-tech-border bg-gray-50 p-4 text-sm leading-6 text-tech-text">
               {index + 1}. {prompt}
             </p>
           ))}
@@ -559,7 +446,7 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
           <h4 className="mb-3 text-base font-semibold text-tech-text">兼容视频大纲</h4>
           <div className="space-y-3">
             {output.videoOutline.map((item, index) => (
-              <div key={index} className="rounded-lg border border-tech-border bg-tech-bg p-4">
+              <div key={index} className="rounded-lg border border-tech-border bg-gray-50 p-4">
                 <p className="mb-2 font-semibold text-tech-text">{index + 1}. {item.title}</p>
                 <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
                   {item.bullets.map((bullet, bulletIndex) => (
@@ -582,7 +469,7 @@ function ShotCard({ shot }: { shot: ShortVideoShot }) {
   const visualItems = shot.visualItems ?? [];
 
   return (
-    <div className="rounded-lg border border-tech-border bg-tech-bg p-4">
+    <div className="rounded-lg border border-tech-border bg-gray-50 p-4">
       <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-semibold text-purple-600">镜头 {shot.index} · {formatShotType(shot.shotType)}</p>
@@ -747,11 +634,11 @@ function VideoContentView({
         <Notice tone="warning" title="视频预览加载失败">可以先下载 MP4 到本地查看。</Notice>
       ) : null}
 
-      <div className="rounded-lg bg-tech-bg p-4">
+      <div className="rounded-lg bg-gray-50 p-4">
         <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">视频文件</label>
         <p className="break-all font-mono text-xs text-tech-text">{output.videoPath}</p>
       </div>
-      <div className="rounded-lg bg-tech-bg p-4">
+      <div className="rounded-lg bg-gray-50 p-4">
         <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">HyperFrames 项目</label>
         <p className="break-all font-mono text-xs text-tech-text">{output.projectPath}</p>
       </div>
@@ -761,7 +648,7 @@ function VideoContentView({
           <h4 className="mb-3 text-base font-semibold text-tech-text">渲染镜头</h4>
           <div className="space-y-3">
             {output.scenes.map((scene) => (
-              <div key={scene.index} className="rounded-lg border border-tech-border bg-tech-bg p-4">
+              <div key={scene.index} className="rounded-lg border border-tech-border bg-gray-50 p-4">
                 <div className="mb-2 flex items-center justify-between gap-3">
                   <p className="font-semibold text-tech-text">{scene.index}. {scene.headline ?? scene.subject ?? scene.title ?? '镜头'}</p>
                   <span className="shrink-0 rounded-full bg-white px-2 py-1 text-xs text-tech-muted">
@@ -811,8 +698,8 @@ function VideoContentView({
 function TimelinePanel({ job }: { job: Job }) {
   const events = buildTimeline(job);
   return (
-    <div className="rounded-lg border border-tech-border bg-tech-surface p-5">
-      <h3 className="font-semibold text-tech-text">Timeline</h3>
+    <div className="rounded-lg border border-tech-border bg-white p-5">
+      <h3 className="font-semibold text-tech-text">活动记录</h3>
       <p className="mt-1 text-sm text-tech-muted">关键步骤时间线</p>
       <div className="mt-5 space-y-4">
         {events.length === 0 ? (
@@ -835,7 +722,7 @@ function TimelinePanel({ job }: { job: Job }) {
 
 function AdvancedInfo({ job }: { job: Job }) {
   return (
-    <details className="rounded-lg border border-tech-border bg-tech-surface p-5">
+    <details className="rounded-lg border border-tech-border bg-white p-5">
       <summary className="cursor-pointer font-semibold text-tech-text">高级信息</summary>
       <div className="mt-4 space-y-4">
         <Field label="任务 ID" value={job.id} />
@@ -877,7 +764,7 @@ function TranscriptTab({ transcriptData, source }: { transcriptData: RawTranscri
           {transcriptData.duration && <Metric label="时长" value={formatSeconds(transcriptData.duration)} />}
         </div>
       )}
-      <div className="mt-4 rounded-lg bg-tech-bg p-4">
+      <div className="mt-4 rounded-lg bg-gray-50 p-4">
         <p className="whitespace-pre-wrap leading-relaxed text-tech-text">{transcriptData.transcript}</p>
       </div>
       {segments.length > 0 && (
@@ -885,7 +772,7 @@ function TranscriptTab({ transcriptData, source }: { transcriptData: RawTranscri
           <h4 className="mb-3 text-base font-semibold text-tech-text">转录分段</h4>
           <div className="space-y-2">
             {segments.map((segment, index) => (
-              <div key={index} className="rounded-lg border border-tech-border bg-tech-bg p-3">
+              <div key={index} className="rounded-lg border border-tech-border bg-gray-50 p-3">
                 <p className="mb-1 font-mono text-xs text-tech-muted">{formatRange(segment.start, segment.end)}</p>
                 <p className="text-sm leading-relaxed text-tech-text">{segment.text}</p>
               </div>
@@ -907,7 +794,7 @@ function ScriptTab({ cleaned }: { cleaned: CleanedScript }) {
   return (
     <div className="space-y-5">
       <div>
-        <h3 className="text-lg font-semibold text-tech-text">AI Rewrite</h3>
+        <h3 className="text-lg font-semibold text-tech-text">AI 洗稿成果</h3>
         <p className="mt-1 text-sm text-tech-muted">面向二次创作的标题、摘要、要点和成稿。</p>
       </div>
       {output.title && <ContentBlock label="标题" value={output.title} strong />}
@@ -917,7 +804,7 @@ function ScriptTab({ cleaned }: { cleaned: CleanedScript }) {
           <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">核心要点</label>
           <div className="space-y-2">
             {output.keyPoints.map((point, index) => (
-              <p key={index} className="rounded-lg bg-tech-bg px-4 py-3 text-sm text-tech-text">{point}</p>
+              <p key={index} className="rounded-lg bg-gray-50 px-4 py-3 text-sm text-tech-text">{point}</p>
             ))}
           </div>
         </div>
@@ -946,19 +833,19 @@ function buildOutcomes(
   return [
     {
       id: 'script' as OutcomeTab,
-      label: 'AI Rewrite',
+      label: 'AI 洗稿',
       icon: Sparkles,
       status: getOutcomeStatus(Boolean(cleaned?.output?.cleanScript), job.steps?.clean?.status, cleanedError),
     },
     {
       id: 'transcript' as OutcomeTab,
-      label: 'Transcript',
+      label: '视频转录',
       icon: Mic,
       status: getOutcomeStatus(Boolean(rawTranscript?.transcript || cleaned?.output?.rawText), job.steps?.transcribe?.status, transcriptError),
     },
     {
       id: 'prompts' as OutcomeTab,
-      label: '镜头列表',
+      label: '分镜',
       icon: Wand2,
       status: getOutcomeStatus(
         Boolean(cleaned?.output?.shortVideoShots?.length || cleaned?.output?.videoPrompts?.length || cleaned?.output?.enhancedScenes?.length),
@@ -982,127 +869,25 @@ function getOutcomeStatus(ready: boolean, stepStatus?: PipelineStepState['status
   return 'waiting';
 }
 
-type FocusStep = {
-  step: PipelineStep;
-  status: PipelineStepState['status'];
-  blocked: boolean;
-  disabled: boolean;
-  actionLabel: string;
-};
-
-function getFocusStep(job: Job, runningStep: PipelineStep | null): FocusStep | null {
-  if (job.workflowMode !== 'manual' || !job.steps) {
-    return null;
-  }
-  const failed = pipelineSteps.find((step) => job.steps?.[step.id]?.status === 'failed')?.id;
-  const running = pipelineSteps.find((step) => job.steps?.[step.id]?.status === 'running')?.id;
-  const next = failed || running || pipelineSteps.find((step) => job.steps?.[step.id]?.status !== 'succeeded')?.id;
-  if (!next) {
-    return null;
-  }
-  const index = pipelineSteps.findIndex((step) => step.id === next);
-  const previous = index > 0 ? job.steps[pipelineSteps[index - 1].id] : null;
-  const state = job.steps[next];
-  const blocked = Boolean(previous && previous.status !== 'succeeded');
-  const disabled =
-    Boolean(runningStep) ||
-    blocked ||
-    state.status === 'running' ||
-    state.status === 'succeeded';
-  return {
-    step: next,
-    status: state.status,
-    blocked,
-    disabled,
-    actionLabel: getStepActionLabel(state, blocked),
-  };
-}
-
-function getHeroCopy(job: Job, focus: FocusStep | null) {
-  if (job.status === 'done') {
-    return {
-      title: '作品资产已生成',
-      description: '可以查看视频转录、AI 洗稿、分镜和视频成片，也可以回到创作中心继续处理其他作品。',
-    };
-  }
-  if (job.status === 'failed') {
-    return {
-      title: focus ? `${getPipelineStepLabel(focus.step)}遇到问题` : '作品处理失败',
-      description: '查看错误摘要后可以重试当前步骤，或在高级信息中检查更详细的错误。',
-    };
-  }
-  if (focus?.blocked) {
-    return {
-      title: `等待上一步完成`,
-      description: `${getPipelineStepLabel(focus.step)}需要前置步骤成功后才能执行。`,
-    };
-  }
-  if (focus?.status === 'running') {
-    return {
-      title: `正在${getPipelineStepLabel(focus.step)}`,
-      description: '系统正在处理当前步骤，完成后会刷新对应的创作成果。',
-    };
-  }
-  if (focus) {
-    return {
-      title: `下一步：${getPipelineStepLabel(focus.step)}`,
-      description: '点击主按钮执行当前步骤。失败时系统会自动尝试 3 次。',
-    };
-  }
-  return {
-    title: '历史作品',
-    description: '这个作品来自旧流程，仍可查看已有结果。',
-  };
-}
-
-function getActionIcon(focus: FocusStep) {
-  if (focus.status === 'failed') return <RotateCcw size={18} />;
-  if (focus.status === 'running') return <Loader2 className="animate-spin" size={18} />;
-  return <Play size={18} />;
-}
-
-function getCompletedCount(job: Job) {
-  if (!job.steps) {
-    return job.status === 'done' ? pipelineSteps.length : 0;
-  }
-  return pipelineSteps.filter((step) => job.steps?.[step.id]?.status === 'succeeded').length;
-}
-
-function getStepState(job: Job, step: PipelineStep, runningStep: PipelineStep | null) {
-  const state = job.steps?.[step] ?? { status: 'pending' as PipelineStepState['status'], attempts: 0 };
-  if (runningStep === step) {
-    return { ...state, status: 'running' as PipelineStepState['status'] };
-  }
-  return state;
-}
-
-function StatusChip({ job }: { job: Job }) {
-  const config = {
-    queued: 'border-blue-200 bg-blue-50 text-blue-700',
-    processing: 'border-cyan-200 bg-cyan-50 text-cyan-700',
-    done: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    failed: 'border-red-200 bg-red-50 text-red-700',
-  }[job.status] ?? 'border-tech-border bg-tech-bg text-tech-muted';
-  return (
-    <span className={`inline-flex items-center justify-center rounded-lg border px-4 py-2 text-sm font-medium ${config}`}>
-      {getJobStatusLabel(job.status)}
-    </span>
-  );
-}
-
 function OutcomeStatusBadge({ status }: { status: OutcomeStatus }) {
   const config: Record<OutcomeStatus, string> = {
     ready: 'bg-emerald-50 text-emerald-700',
     processing: 'bg-cyan-50 text-cyan-700',
-    waiting: 'bg-tech-bg text-tech-muted',
+    waiting: 'bg-gray-100 text-tech-muted',
     failed: 'bg-red-50 text-red-700',
   };
-  return <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${config[status]}`}>{getOutcomeStatusLabel(status)}</span>;
+  const labels: Record<OutcomeStatus, string> = {
+    ready: '可用',
+    processing: '处理中',
+    waiting: '等待中',
+    failed: '失败',
+  };
+  return <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${config[status]}`}>{labels[status]}</span>;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-tech-bg px-4 py-3">
+    <div className="rounded-lg bg-gray-50 px-4 py-3">
       <label className="mb-1 block text-xs text-tech-muted">{label}</label>
       <p className="text-sm text-tech-text">{value}</p>
     </div>
@@ -1113,7 +898,7 @@ function ContentBlock({ label, value, strong = false, multiline = false }: { lab
   return (
     <div>
       <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">{label}</label>
-      <div className="rounded-lg bg-tech-bg px-4 py-3">
+      <div className="rounded-lg bg-gray-50 px-4 py-3">
         <p className={`${strong ? 'text-xl font-semibold' : 'text-sm'} ${multiline ? 'whitespace-pre-wrap leading-7' : ''} text-tech-text`}>
           {value}
         </p>
@@ -1138,7 +923,7 @@ function Notice({ tone, title, children }: { tone: 'info' | 'warning' | 'danger'
 
 function EmptyContent({ title, description }: { title: string; description: string }) {
   return (
-    <div className="rounded-lg border border-dashed border-tech-border bg-tech-bg py-14 text-center">
+    <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
       <Clock className="mx-auto mb-4 h-9 w-9 text-tech-muted" />
       <h3 className="font-semibold text-tech-text">{title}</h3>
       <p className="mt-2 text-sm text-tech-muted">{description}</p>
@@ -1153,49 +938,40 @@ function Field({ label, value }: { label: string; value?: string }) {
   return (
     <div>
       <label className="mb-1 block text-xs font-medium uppercase text-tech-muted">{label}</label>
-      <p className="break-all rounded bg-tech-bg px-3 py-2 font-mono text-xs text-tech-text">{value}</p>
+      <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-xs text-tech-text">{value}</p>
     </div>
   );
 }
 
 function buildTimeline(job: Job) {
+  const STEPS = ['transcribe', 'clean', 'generate_video_prompts', 'generate_video'] as PipelineStep[];
+  const STEP_LABELS: Record<PipelineStep, string> = {
+    transcribe: '视频转录',
+    clean: 'AI 洗稿',
+    generate_video_prompts: '生成分镜',
+    generate_video: '生成视频',
+  };
   if (!job.steps) {
     return [];
   }
-  return pipelineSteps.flatMap((step) => {
-    const state = job.steps?.[step.id];
+  return STEPS.flatMap((step) => {
+    const state = job.steps?.[step];
     if (!state) {
       return [];
     }
     const events: Array<{ label: string; time: string; failed?: boolean }> = [];
     if (state.startedAt) {
-      events.push({ label: `开始${step.label}`, time: state.startedAt });
+      events.push({ label: `开始${STEP_LABELS[step]}`, time: state.startedAt });
     }
     if (state.finishedAt) {
       events.push({
-        label: state.status === 'failed' ? `${step.label}失败` : `${step.label}完成`,
+        label: state.status === 'failed' ? `${STEP_LABELS[step]}失败` : `${STEP_LABELS[step]}完成`,
         time: state.finishedAt,
         failed: state.status === 'failed',
       });
     }
     return events;
   });
-}
-
-function getPipelineStepLabel(step: PipelineStep) {
-  return pipelineSteps.find((item) => item.id === step)?.label || step;
-}
-
-function formatGenerationPhase(phase?: PipelineStepState['phase']) {
-  const labels: Record<NonNullable<PipelineStepState['phase']>, string> = {
-    checking_environment: '检查本地环境',
-    building_project: '生成视频工程',
-    validating: '检查画面布局',
-    snapshotting: '生成镜头快照',
-    rendering: '渲染视频',
-    verifying: '验证成片',
-  };
-  return phase ? labels[phase] : '准备渲染';
 }
 
 function formatShotType(type?: ShotType) {
@@ -1222,64 +998,6 @@ function formatLayout(layout: ShotLayout) {
     'summary-stack': '总结收束',
   };
   return labels[layout];
-}
-
-function getStepActionLabel(state: PipelineStepState, blocked: boolean) {
-  if (blocked) return '等待上一步';
-  if (state.status === 'failed') return '重试';
-  if (state.status === 'succeeded') return '已完成';
-  if (state.status === 'running') return '执行中...';
-  return '执行';
-}
-
-function getStepStatusLabel(status: PipelineStepState['status']) {
-  const labels: Record<PipelineStepState['status'], string> = {
-    pending: '待执行',
-    running: '执行中',
-    succeeded: '已完成',
-    failed: '失败',
-  };
-  return labels[status];
-}
-
-function getStepCardClass(status: PipelineStepState['status']) {
-  const classes: Record<PipelineStepState['status'], string> = {
-    pending: 'border-tech-border bg-white',
-    running: 'border-cyan-200 bg-cyan-50',
-    succeeded: 'border-emerald-200 bg-emerald-50',
-    failed: 'border-red-200 bg-red-50',
-  };
-  return classes[status];
-}
-
-function getStepIconClass(status: PipelineStepState['status']) {
-  const classes: Record<PipelineStepState['status'], string> = {
-    pending: 'bg-tech-bg text-tech-muted',
-    running: 'bg-cyan-100 text-cyan-700',
-    succeeded: 'bg-emerald-100 text-emerald-700',
-    failed: 'bg-red-100 text-red-700',
-  };
-  return classes[status];
-}
-
-function getOutcomeStatusLabel(status: OutcomeStatus) {
-  const labels: Record<OutcomeStatus, string> = {
-    ready: 'Ready',
-    processing: 'Processing',
-    waiting: 'Waiting',
-    failed: 'Failed',
-  };
-  return labels[status];
-}
-
-function getJobStatusLabel(status: Job['status']) {
-  const labels: Record<Job['status'], string> = {
-    queued: '待执行',
-    processing: '处理中',
-    done: '已完成',
-    failed: '失败',
-  };
-  return labels[status];
 }
 
 function formatSeconds(seconds: number) {
