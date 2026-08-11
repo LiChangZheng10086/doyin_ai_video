@@ -20,6 +20,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { LocalUsersSettings } from '../components/LocalUsersSettings';
 import { apiClient } from '../services/api';
 import { settingsSections } from '../utils/localUsers';
@@ -76,6 +77,9 @@ export function SettingsPage() {
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<AIKeyTestResult | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [removeKeyTarget, setRemoveKeyTarget] = useState<string | null>(null);
+  const [removeKeyBusy, setRemoveKeyBusy] = useState(false);
+  const [keyActionError, setKeyActionError] = useState<string | null>(null);
 
   useEffect(() => {
     loadApiKeys();
@@ -220,14 +224,18 @@ export function SettingsPage() {
     }
   };
 
-  const handleRemove = async (keyId: string) => {
-    if (!confirm('确定要删除这个 API Key 吗？')) return;
-
+  const handleRemove = async () => {
+    if (!removeKeyTarget) return;
+    const keyId = removeKeyTarget;
+    setRemoveKeyBusy(true);
     try {
       await window.electron.removeApiKey(keyId);
+      setRemoveKeyTarget(null);
       await loadApiKeys();
     } catch (error) {
-      alert('删除失败：' + (error instanceof Error ? error.message : '未知错误'));
+      setKeyActionError('删除失败：' + (error instanceof Error ? error.message : '未知错误'));
+    } finally {
+      setRemoveKeyBusy(false);
     }
   };
 
@@ -251,7 +259,7 @@ export function SettingsPage() {
       <div className="mb-8">
         <p className="mb-2 inline-flex items-center gap-2 rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-tech-purple">
           <Sparkles size={14} />
-          Creator settings
+          创作设置
         </p>
         <h2 className="text-2xl font-semibold text-tech-text">设置</h2>
         <p className="mt-1 text-sm text-tech-muted">配置 AI 模型、视频转录和本地创作资产。</p>
@@ -303,7 +311,7 @@ export function SettingsPage() {
               onEdit={startEditing}
               onRetest={handleRetest}
               onCloseForm={closeKeyForm}
-              onRemove={handleRemove}
+              setRemoveKeyTarget={setRemoveKeyTarget}
               onSetActive={handleSetActive}
             />
           )}
@@ -314,6 +322,25 @@ export function SettingsPage() {
           {activeSection === 'advanced' && <AdvancedSection />}
         </main>
       </div>
+      <ConfirmDialog
+        open={removeKeyTarget !== null}
+        title="确定要删除这个 API Key 吗？"
+        description="删除后依赖该密钥的功能将不可用。"
+        confirmLabel="删除"
+        tone="danger"
+        busy={removeKeyBusy}
+        onConfirm={handleRemove}
+        onClose={() => setRemoveKeyTarget(null)}
+      />
+
+      {keyActionError && (
+        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg">
+          {keyActionError}
+          <button className="ml-3 font-medium underline" onClick={() => setKeyActionError(null)}>
+            关闭
+          </button>
+        </div>
+      )}
     </Layout>
   );
 }
@@ -338,7 +365,7 @@ function ModelsSection({
   onEdit,
   onRetest,
   onCloseForm,
-  onRemove,
+  setRemoveKeyTarget,
   onSetActive,
 }: {
   apiKeys: AIKeyConfig[];
@@ -360,7 +387,7 @@ function ModelsSection({
   onEdit: (key: AIKeyConfig) => void;
   onRetest: (keyId: string) => void;
   onCloseForm: () => void;
-  onRemove: (keyId: string) => void;
+  setRemoveKeyTarget: (keyId: string) => void;
   onSetActive: (keyId: string) => void;
 }) {
   return (
@@ -454,7 +481,7 @@ function ModelsSection({
                     </button>
                   )}
                   <button
-                    onClick={() => onRemove(key.id)}
+                    onClick={() => setRemoveKeyTarget(key.id)}
                     className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition-all hover:bg-red-50"
                   >
                     <Trash2 size={15} />
