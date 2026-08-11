@@ -11,7 +11,7 @@ export async function hasValidApiKey(): Promise<boolean> {
   try {
     if (typeof window !== 'undefined' && window.electron?.getConfig) {
       const config = await window.electron.getConfig();
-      return config.aiKeys?.some(key => key.isActive) ?? false;
+      return config.aiKeys?.some((key: { isActive?: boolean }) => key.isActive) ?? false;
     }
     // 浏览器开发模式：检查后端 /api/config 端点
     try {
@@ -33,7 +33,7 @@ export async function getActiveApiKey() {
   try {
     if (typeof window !== 'undefined' && window.electron?.getConfig) {
       const config = await window.electron.getConfig();
-      return config.aiKeys?.find(key => key.isActive) ?? null;
+      return config.aiKeys?.find((key: { isActive?: boolean }) => key.isActive) ?? null;
     }
     try {
       const res = await fetch('/api/config');

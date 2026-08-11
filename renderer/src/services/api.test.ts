@@ -15,8 +15,9 @@ test('all publishing API methods reject with one parsed error shape', async () =
     },
   };
   const client = new ApiClient();
-  const rejectingClient = { request: async () => { throw axiosError; } };
-  client.getClient = async () => rejectingClient as Awaited<ReturnType<ApiClient['getClient']>>;
+  const rejectingClient = { request: async () => { throw axiosError; } } as unknown as Awaited<ReturnType<ApiClient['getClient']>>;
+  // Override getClient to return the rejecting mock
+  (client as any).getClient = async () => rejectingClient;
   const copy = { title: '标题', description: '正文', hashtags: ['AI'] };
   const calls = [
     () => client.previewPublishing('job-1', ['douyin']),

@@ -774,14 +774,14 @@ function VideoContentView({
                     {(scene.captionLines?.length ? scene.captionLines : [scene.caption]).filter(Boolean).map((line, index) => <p key={index}>{line}</p>)}
                   </div>
                 )}
-                {scene.bullets?.length > 0 && (
+                {(scene.bullets && scene.bullets.length > 0) && (
                   <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
                     {scene.bullets.map((bullet, index) => (
                       <li key={index}>{bullet}</li>
                     ))}
                   </ul>
                 )}
-                {scene.emphasisWords?.length > 0 && (
+                {(scene.emphasisWords && scene.emphasisWords.length > 0) && (
                   <div className="mt-3 flex flex-wrap gap-2">
                     {scene.emphasisWords.map((word, index) => (
                       <span key={`${word}-${index}`} className="rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700">

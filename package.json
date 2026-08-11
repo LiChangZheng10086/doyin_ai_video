@@ -24,9 +24,11 @@
     "package:win11": "npm run package:win",
     "package:all": "npm run package:mac && npm run package:win",
     "start": "node dist/server.js",
-    "test": "node --import tsx --test \"src/**/*.test.ts\" \"electron/**/*.test.ts\" \"renderer/src/**/*.test.ts\"",
+    "test": "node --import tsx --test \"src/**/*.test.ts\" \"electron/**/*.test.ts\" \"renderer/src/**/*.test.ts\" \"renderer/src/**/*.test.tsx\"",
     "test:hyperframes": "RUN_HYPERFRAMES_INTEGRATION=1 node --import tsx --test src/lib/hyperframes-video.integration.test.ts",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "npm run check:backend && npm run check:renderer",
+    "check:backend": "tsc -p tsconfig.json --noEmit",
+    "check:renderer": "tsc -p tsconfig.renderer.json --noEmit"
   },
   "dependencies": {
     "@types/react-router-dom": "^5.3.3",
