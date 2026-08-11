@@ -9,7 +9,7 @@ type CookieStatusInfo = {
   path: string;
 };
 
-export function CookieStatusIndicator() {
+export function CookieStatusIndicator({ compact }: { compact?: boolean }) {
   const [info, setInfo] = useState<CookieStatusInfo | null>(null);
   const location = useLocation();
 
@@ -49,7 +49,7 @@ export function CookieStatusIndicator() {
     return (
       <div className="flex items-center gap-2">
         <span className="w-2 h-2 bg-green-500 rounded-full" />
-        <span className="text-sm text-tech-muted">抖音已登录</span>
+        <span className={`text-sm text-tech-muted ${compact ? 'text-xs' : ''}`}>{compact ? '抖音已登录' : '抖音已登录'}</span>
       </div>
     );
   }
@@ -58,7 +58,7 @@ export function CookieStatusIndicator() {
   return (
     <div className="flex items-center gap-3">
       <span className="w-2 h-2 bg-orange-500 rounded-full" />
-      <span className="text-sm text-orange-600">
+      <span className={`${compact ? 'text-xs' : 'text-sm'} text-orange-600`}>
         {info.status === 'no-cookie' ? '未配置抖音 Cookie' : 'Cookie 已过期'}
       </span>
       <Link
