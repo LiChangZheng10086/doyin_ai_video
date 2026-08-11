@@ -1,49 +1,39 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
-  Check,
-  CheckCircle2,
-  Clock,
-  Download,
   Loader2,
-  Mic,
-  Play,
   RotateCcw,
-  Send,
-  Sparkles,
   Trash2,
-  Video,
-  Wand2,
   XCircle,
-  MoreHorizontal,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { CookieHint } from '../components/CookieHint';
 import { CreatePublishPackageDialog } from '../components/CreatePublishPackageDialog';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { InlineNotice } from '../components/ui/InlineNotice';
-import { IconButton } from '../components/ui/IconButton';
 import { apiClient } from '../services/api';
 import { useOperatorStore } from '../store/operator';
 import { getCleanArtifactDecision, getCleanArtifactLoadError } from '../utils/jobArtifacts';
 import { isPublishingEligibleVideo } from '../utils/publishing';
 import { WorkflowConsole } from '../features/jobs/WorkflowConsole';
+import { ArtifactNavigator, type ArtifactKey } from '../features/jobs/artifacts/ArtifactNavigator';
+import { TranscriptArtifact } from '../features/jobs/artifacts/TranscriptArtifact';
+import { RewriteArtifact } from '../features/jobs/artifacts/RewriteArtifact';
+import { ShotArtifact } from '../features/jobs/artifacts/ShotArtifact';
+import { VideoArtifact } from '../features/jobs/artifacts/VideoArtifact';
+import { JobContextSidebar } from '../features/jobs/JobContextSidebar';
+import { buildArtifactStates } from '../features/jobs/jobPresentation';
 import type {
   Job,
   CleanedScript,
   RawTranscript,
   PipelineStep,
-  PipelineStepState,
   HyperframesVideoOutput,
   ShortVideoShot,
-  ShotLayout,
-  ShotType,
 } from '../types';
 
 type OutcomeTab = 'transcript' | 'script' | 'prompts' | 'video';
-type OutcomeStatus = 'ready' | 'processing' | 'waiting' | 'failed';
 
 export function JobDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -221,8 +211,52 @@ export function JobDetailPage() {
     }
   };
 
-  const outcomes = buildOutcomes(job, cleaned, rawTranscript, videoOutput, cleanedError, transcriptError, videoError);
-  const activeOutcome = outcomes.find((item) => item.id === activeTab) ?? outcomes[0];
+  const artifactAvailability = {
+    transcriptReady: Boolean(rawTranscript?.transcript),
+    rewriteReady: Boolean(cleaned?.output?.cleanScript || cleaned?.output?.summary),
+    shotsReady: Boolean(cleaned?.output?.shortVideoShots?.length || cleaned?.output?.videoPrompts?.length || cleaned?.output?.enhancedScenes?.length),
+    videoReady: Boolean(videoOutput?.videoPath),
+    transcriptError,
+    rewriteError: cleanedError,
+    videoError: videoError && !videoOutput ? videoError : null,
+  };
+  const artifactStates = buildArtifactStates(job, artifactAvailability);
+  const activeArtifactKey: ArtifactKey = activeTab === 'prompts' ? 'shots' : activeTab === 'script' ? 'script' : activeTab === 'transcript' ? 'transcript' : 'video';
+
+  // Video content view state
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState(false);
+  const [showPublishDialog, setShowPublishDialog] = useState(false);
+  const [publishError, setPublishError] = useState('');
+  const currentUser = useOperatorStore((state) => state.currentUser);
+
+  useEffect(() => {
+    if (!videoOutput) return;
+    setStreamError(false);
+    const loadVideoUrl = async () => {
+      try {
+        const [downloadUrl, previewUrl] = await Promise.all([
+          apiClient.downloadVideo(job.id),
+          apiClient.getVideoStreamUrl(job.id),
+        ]);
+        setVideoUrl(downloadUrl);
+        setStreamUrl(previewUrl);
+      } catch (err) {
+        console.error('Failed to get video URL:', err);
+      }
+    };
+    loadVideoUrl();
+  }, [videoOutput, job.id]);
+
+  const openPublishingDialog = () => {
+    if (!currentUser) {
+      setPublishError('请先在顶部选择操作者');
+      return;
+    }
+    setPublishError('');
+    setShowPublishDialog(true);
+  };
 
   return (
     <Layout>
@@ -278,60 +312,69 @@ export function JobDetailPage() {
       />
 
       {/* Outcome tabs */}
-      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+      <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
         <div className="overflow-hidden rounded-lg border border-tech-border bg-white">
-          <div className="flex overflow-x-auto border-b border-tech-border bg-gray-50 p-2">
-            {outcomes.map((tab) => {
-              const Icon = tab.icon;
-              const active = activeOutcome.id === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`mr-2 flex min-w-[140px] items-center justify-between gap-3 rounded-lg px-4 py-3 text-left transition-all ${
-                    active ? 'bg-white text-tech-text shadow-sm' : 'text-tech-muted hover:bg-white/70'
-                  }`}
-                >
-                  <span className="flex items-center gap-2 text-sm font-semibold">
-                    <Icon size={17} className={active ? 'text-tech-purple' : ''} />
-                    {tab.label}
-                  </span>
-                  <OutcomeStatusBadge status={tab.status} />
-                </button>
-              );
-            })}
-          </div>
+          <ArtifactNavigator
+            active={activeArtifactKey}
+            items={artifactStates.map((a) => ({ key: a.key as ArtifactKey, label: a.label, state: a.state }))}
+            onChange={(key) => {
+              if (key === 'shots') setActiveTab('prompts');
+              else if (key === 'script') setActiveTab('script');
+              else if (key === 'transcript') setActiveTab('transcript');
+              else setActiveTab('video');
+            }}
+          />
           <div className="p-6">
-            {activeOutcome.id === 'transcript' && (
-              <TranscriptContent
-                rawTranscript={rawTranscript}
-                cleaned={cleaned}
+            {activeArtifactKey === 'transcript' && (
+              <TranscriptArtifact
+                transcript={rawTranscript}
+                fallbackText={cleaned?.output?.rawText}
                 transcriptError={transcriptError}
               />
             )}
-            {activeOutcome.id === 'script' && (
-              <ScriptContent cleaned={cleaned} cleanedError={cleanedError} />
+            {activeArtifactKey === 'script' && (
+              <RewriteArtifact cleaned={cleaned} cleanedError={cleanedError} />
             )}
-            {activeOutcome.id === 'prompts' && (
+            {activeArtifactKey === 'shots' && (
               <VideoPromptsContent cleaned={cleaned} />
             )}
-            {activeOutcome.id === 'video' && (
-              <VideoContentView
+            {activeArtifactKey === 'video' && videoOutput ? (
+              <VideoArtifact
                 output={videoOutput}
                 jobId={job.id}
                 title={cleaned?.output?.title || job.topic || '未命名作品'}
                 videoError={videoError}
+                videoUrl={videoUrl}
+                streamUrl={streamUrl}
+                streamError={streamError}
+                publishError={publishError}
+                onOpenPublishing={openPublishingDialog}
               />
-            )}
+            ) : activeArtifactKey === 'video' && videoError ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
+                <p className="font-semibold">视频成片不可用</p>
+                <p className="mt-1 text-sm">{videoError}</p>
+              </div>
+            ) : activeArtifactKey === 'video' ? (
+              <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
+                <h3 className="font-semibold text-tech-text">视频还没生成</h3>
+                <p className="mt-2 text-sm text-tech-muted">完成生成分镜后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。</p>
+              </div>
+            ) : null}
           </div>
         </div>
 
-        <aside className="space-y-6">
-          <TimelinePanel job={job} />
-          <AdvancedInfo job={job} />
-        </aside>
+        <JobContextSidebar job={job} />
       </div>
+
+      {showPublishDialog && videoOutput && isPublishingEligibleVideo(videoOutput) && (
+        <CreatePublishPackageDialog
+          jobId={job.id}
+          title={cleaned?.output?.title || job.topic || '未命名作品'}
+          output={videoOutput}
+          onClose={() => setShowPublishDialog(false)}
+        />
+      )}
 
       <ConfirmDialog
         open={deleteConfirmOpen}
@@ -345,49 +388,7 @@ export function JobDetailPage() {
   );
 }
 
-// ── Transcript content ──
-
-function TranscriptContent({
-  rawTranscript,
-  cleaned,
-  transcriptError,
-}: {
-  rawTranscript: RawTranscript | null;
-  cleaned: CleanedScript | null;
-  transcriptError: string | null;
-}) {
-  if (rawTranscript) {
-    return <TranscriptTab transcriptData={rawTranscript} source="视频音频转录" />;
-  }
-  if (transcriptError) {
-    return (
-      <Notice tone="warning" title="视频转录不可用">
-        {transcriptError}
-      </Notice>
-    );
-  }
-  if (cleaned?.output?.rawText) {
-    return (
-      <div className="space-y-4">
-        <Notice tone="info" title="使用分享文本作为后备">
-          这是您输入的分享文本，不是视频的实际音频转录。
-        </Notice>
-        <TranscriptTab transcriptData={{ transcript: cleaned.output.rawText }} source="分享文本（非转录）" />
-      </div>
-    );
-  }
-  return <EmptyContent title="暂无转录内容" description="完成视频转录后，这里会显示原始文案和分段。" />;
-}
-
-function ScriptContent({ cleaned, cleanedError }: { cleaned: CleanedScript | null; cleanedError: string | null }) {
-  if (cleanedError) {
-    return <Notice tone="danger" title="AI 洗稿失败">{cleanedError}</Notice>;
-  }
-  if (!cleaned?.output?.cleanScript && !cleaned?.output?.summary) {
-    return <EmptyContent title="AI 成果还没生成" description="完成 AI 洗稿后，这里会展示标题、摘要、核心要点和成稿。" />;
-  }
-  return <ScriptTab cleaned={cleaned} />;
-}
+// ── Shots display content ──
 
 function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
   const output = cleaned?.output;
@@ -396,7 +397,12 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
   const scenes = output?.enhancedScenes ?? [];
 
   if (!shots.length && !prompts.length && !scenes.length) {
-    return <EmptyContent title="镜头列表还没生成" description="完成生成分镜后，这里会显示 HyperFrames 使用的短视频镜头规划。" />;
+    return (
+      <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
+        <h3 className="font-semibold text-tech-text">镜头列表还没生成</h3>
+        <p className="mt-2 text-sm text-tech-muted">完成生成分镜后，这里会显示 HyperFrames 使用的短视频镜头规划。</p>
+      </div>
+    );
   }
 
   return (
@@ -522,368 +528,7 @@ function ShotCard({ shot }: { shot: ShortVideoShot }) {
   );
 }
 
-function VideoContentView({
-  output,
-  jobId,
-  title,
-  videoError,
-}: {
-  output: HyperframesVideoOutput | null;
-  jobId: string;
-  title: string;
-  videoError: string | null;
-}) {
-  const currentUser = useOperatorStore((state) => state.currentUser);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [streamUrl, setStreamUrl] = useState<string | null>(null);
-  const [streamError, setStreamError] = useState(false);
-  const [showPublishDialog, setShowPublishDialog] = useState(false);
-  const [publishError, setPublishError] = useState('');
-
-  useEffect(() => {
-    if (!output) {
-      return;
-    }
-    setStreamError(false);
-    const loadVideoUrl = async () => {
-      try {
-        const [downloadUrl, previewUrl] = await Promise.all([
-          apiClient.downloadVideo(jobId),
-          apiClient.getVideoStreamUrl(jobId),
-        ]);
-        setVideoUrl(downloadUrl);
-        setStreamUrl(previewUrl);
-      } catch (err) {
-        console.error('Failed to get video URL:', err);
-      }
-    };
-    loadVideoUrl();
-  }, [output, jobId]);
-
-  if (videoError && !output) {
-    return <Notice tone="danger" title="视频成片不可用">{videoError}</Notice>;
-  }
-
-  if (!output) {
-    return <EmptyContent title="视频还没生成" description="完成生成分镜后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。" />;
-  }
-
-  const openPublishingDialog = () => {
-    if (!currentUser) {
-      setPublishError('请先在顶部选择操作者');
-      document.getElementById('operator-switcher')?.focus();
-      return;
-    }
-    setPublishError('');
-    setShowPublishDialog(true);
-  };
-
-  return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h3 className="text-lg font-semibold text-tech-text">视频成片</h3>
-          <p className="mt-1 text-sm text-tech-muted">HyperFrames 本地渲染的 9:16 无声动效版。</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {isPublishingEligibleVideo(output) && (
-            <button
-              type="button"
-              onClick={openPublishingDialog}
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-purple px-4 py-2.5 font-medium text-white transition-all hover:opacity-90"
-            >
-              <Send size={17} />
-              加入发布中心
-            </button>
-          )}
-          {videoUrl && (
-            <a
-              href={videoUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
-            >
-              <Download size={17} />
-              下载 MP4
-            </a>
-          )}
-        </div>
-      </div>
-
-      {publishError && <Notice tone="warning" title="需要选择操作者">{publishError}</Notice>}
-
-      {videoError && <Notice tone="warning" title="本次渲染失败，正在显示上一版成片">{videoError}</Notice>}
-
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-        <Metric label="渲染器" value={output.provider} />
-        <Metric label="尺寸" value={`${output.width}x${output.height} · ${output.aspectRatio}`} />
-        <Metric label="时长" value={formatSeconds(output.duration)} />
-      </div>
-
-      {streamUrl && !streamError ? (
-        <div className="rounded-lg border border-tech-border bg-black p-3">
-          <video
-            src={streamUrl}
-            controls
-            playsInline
-            className="mx-auto aspect-[9/16] max-h-[72vh] w-full max-w-sm rounded-md bg-black"
-            onError={() => setStreamError(true)}
-          />
-        </div>
-      ) : streamError ? (
-        <Notice tone="warning" title="视频预览加载失败">可以先下载 MP4 到本地查看。</Notice>
-      ) : null}
-
-      <div className="rounded-lg bg-gray-50 p-4">
-        <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">视频文件</label>
-        <p className="break-all font-mono text-xs text-tech-text">{output.videoPath}</p>
-      </div>
-      <div className="rounded-lg bg-gray-50 p-4">
-        <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">HyperFrames 项目</label>
-        <p className="break-all font-mono text-xs text-tech-text">{output.projectPath}</p>
-      </div>
-
-      {output.scenes?.length > 0 && (
-        <div>
-          <h4 className="mb-3 text-base font-semibold text-tech-text">渲染镜头</h4>
-          <div className="space-y-3">
-            {output.scenes.map((scene) => (
-              <div key={scene.index} className="rounded-lg border border-tech-border bg-gray-50 p-4">
-                <div className="mb-2 flex items-center justify-between gap-3">
-                  <p className="font-semibold text-tech-text">{scene.index}. {scene.headline ?? scene.subject ?? scene.title ?? '镜头'}</p>
-                  <span className="shrink-0 rounded-full bg-white px-2 py-1 text-xs text-tech-muted">
-                    {[formatSeconds(scene.duration), scene.transition, scene.pacing].filter(Boolean).join(' · ')}
-                  </span>
-                </div>
-                <p className="text-xs text-tech-muted">{scene.layout ? formatLayout(scene.layout) : formatShotType(scene.shotType)}</p>
-                {(scene.captionLines?.length || scene.caption) && (
-                  <div className="mt-2 rounded-lg bg-white p-3 text-sm leading-6 text-tech-text">
-                    {(scene.captionLines?.length ? scene.captionLines : [scene.caption]).filter(Boolean).map((line, index) => <p key={index}>{line}</p>)}
-                  </div>
-                )}
-                {(scene.bullets && scene.bullets.length > 0) && (
-                  <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
-                    {scene.bullets.map((bullet, index) => (
-                      <li key={index}>{bullet}</li>
-                    ))}
-                  </ul>
-                )}
-                {(scene.emphasisWords && scene.emphasisWords.length > 0) && (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {scene.emphasisWords.map((word, index) => (
-                      <span key={`${word}-${index}`} className="rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-purple-700">
-                        {word}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {showPublishDialog && isPublishingEligibleVideo(output) && (
-        <CreatePublishPackageDialog
-          jobId={jobId}
-          title={title}
-          output={output}
-          onClose={() => setShowPublishDialog(false)}
-        />
-      )}
-    </div>
-  );
-}
-
-function TimelinePanel({ job }: { job: Job }) {
-  const events = buildTimeline(job);
-  return (
-    <div className="rounded-lg border border-tech-border bg-white p-5">
-      <h3 className="font-semibold text-tech-text">活动记录</h3>
-      <p className="mt-1 text-sm text-tech-muted">关键步骤时间线</p>
-      <div className="mt-5 space-y-4">
-        {events.length === 0 ? (
-          <p className="text-sm text-tech-muted">等待第一步开始。</p>
-        ) : events.map((event, index) => (
-          <div key={`${event.label}-${index}`} className="flex gap-3">
-            <span className={`mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${event.failed ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-tech-blue'}`}>
-              {event.failed ? <XCircle size={14} /> : <CheckCircle2 size={14} />}
-            </span>
-            <div>
-              <p className="text-sm font-medium text-tech-text">{event.label}</p>
-              <p className="text-xs text-tech-muted">{formatDateTime(event.time)}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function AdvancedInfo({ job }: { job: Job }) {
-  return (
-    <details className="rounded-lg border border-tech-border bg-white p-5">
-      <summary className="cursor-pointer font-semibold text-tech-text">高级信息</summary>
-      <div className="mt-4 space-y-4">
-        <Field label="任务 ID" value={job.id} />
-        <Field label="创建时间" value={new Date(job.createdAt).toLocaleString('zh-CN')} />
-        <Field label="更新时间" value={new Date(job.updatedAt).toLocaleString('zh-CN')} />
-        <Field label="视频文件" value={job.videoPath} />
-        <Field label="音频文件" value={job.audioPath} />
-        <Field label="成片文件" value={job.videoOutputPath} />
-        <Field label="HyperFrames 项目" value={job.videoProjectPath} />
-        <Field label="存储路径" value={job.storagePath} />
-        {(job.errorMessage || job.error || job.downloadErrorMessage || job.audioErrorMessage || job.transcriptErrorMessage) && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-            <p className="mb-2 font-semibold">错误详情</p>
-            <pre className="whitespace-pre-wrap font-mono text-xs">
-              {job.errorMessage || job.error || job.downloadErrorMessage || job.audioErrorMessage || job.transcriptErrorMessage}
-            </pre>
-          </div>
-        )}
-      </div>
-    </details>
-  );
-}
-
-function TranscriptTab({ transcriptData, source }: { transcriptData: RawTranscript; source: string }) {
-  const segments = transcriptData.segments ?? [];
-
-  return (
-    <div>
-      <h3 className="text-lg font-semibold text-tech-text">{source}</h3>
-      <p className="mt-1 text-xs text-tech-muted">
-        {source === '视频音频转录'
-          ? '这是从视频音频提取并转录的真实内容'
-          : '这是从分享文本解析的内容，非实际音频转录'}
-      </p>
-      {(transcriptData.provider || transcriptData.model || transcriptData.duration) && (
-        <div className="my-4 grid grid-cols-1 gap-3 md:grid-cols-3">
-          {transcriptData.provider && <Metric label="服务" value={transcriptData.provider} />}
-          {transcriptData.model && <Metric label="模型" value={transcriptData.model} />}
-          {transcriptData.duration && <Metric label="时长" value={formatSeconds(transcriptData.duration)} />}
-        </div>
-      )}
-      <div className="mt-4 rounded-lg bg-gray-50 p-4">
-        <p className="whitespace-pre-wrap leading-relaxed text-tech-text">{transcriptData.transcript}</p>
-      </div>
-      {segments.length > 0 && (
-        <div className="mt-5">
-          <h4 className="mb-3 text-base font-semibold text-tech-text">转录分段</h4>
-          <div className="space-y-2">
-            {segments.map((segment, index) => (
-              <div key={index} className="rounded-lg border border-tech-border bg-gray-50 p-3">
-                <p className="mb-1 font-mono text-xs text-tech-muted">{formatRange(segment.start, segment.end)}</p>
-                <p className="text-sm leading-relaxed text-tech-text">{segment.text}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ScriptTab({ cleaned }: { cleaned: CleanedScript }) {
-  const output = cleaned.output;
-
-  if (!output) {
-    return <EmptyContent title="暂无内容" description="AI 洗稿完成后会显示在这里。" />;
-  }
-
-  return (
-    <div className="space-y-5">
-      <div>
-        <h3 className="text-lg font-semibold text-tech-text">AI 洗稿成果</h3>
-        <p className="mt-1 text-sm text-tech-muted">面向二次创作的标题、摘要、要点和成稿。</p>
-      </div>
-      {output.title && <ContentBlock label="标题" value={output.title} strong />}
-      {output.summary && <ContentBlock label="摘要" value={output.summary} />}
-      {output.keyPoints && output.keyPoints.length > 0 && (
-        <div>
-          <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">核心要点</label>
-          <div className="space-y-2">
-            {output.keyPoints.map((point, index) => (
-              <p key={index} className="rounded-lg bg-gray-50 px-4 py-3 text-sm text-tech-text">{point}</p>
-            ))}
-          </div>
-        </div>
-      )}
-      {output.cleanScript && <ContentBlock label="清洗后的脚本" value={output.cleanScript} multiline />}
-      {output.qualityNotes && output.qualityNotes.length > 0 && (
-        <div className="space-y-2">
-          {output.qualityNotes.map((note, index) => (
-            <p key={index} className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">{note}</p>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function buildOutcomes(
-  job: Job,
-  cleaned: CleanedScript | null,
-  rawTranscript: RawTranscript | null,
-  videoOutput: HyperframesVideoOutput | null,
-  cleanedError: string | null,
-  transcriptError: string | null,
-  videoError: string | null
-) {
-  return [
-    {
-      id: 'script' as OutcomeTab,
-      label: 'AI 洗稿',
-      icon: Sparkles,
-      status: getOutcomeStatus(Boolean(cleaned?.output?.cleanScript), job.steps?.clean?.status, cleanedError),
-    },
-    {
-      id: 'transcript' as OutcomeTab,
-      label: '视频转录',
-      icon: Mic,
-      status: getOutcomeStatus(Boolean(rawTranscript?.transcript || cleaned?.output?.rawText), job.steps?.transcribe?.status, transcriptError),
-    },
-    {
-      id: 'prompts' as OutcomeTab,
-      label: '分镜',
-      icon: Wand2,
-      status: getOutcomeStatus(
-        Boolean(cleaned?.output?.shortVideoShots?.length || cleaned?.output?.videoPrompts?.length || cleaned?.output?.enhancedScenes?.length),
-        job.steps?.generate_video_prompts?.status,
-        null
-      ),
-    },
-    {
-      id: 'video' as OutcomeTab,
-      label: '视频成片',
-      icon: Video,
-      status: getOutcomeStatus(Boolean(videoOutput?.videoPath), job.steps?.generate_video?.status, videoError),
-    },
-  ];
-}
-
-function getOutcomeStatus(ready: boolean, stepStatus?: PipelineStepState['status'], error?: string | null): OutcomeStatus {
-  if (ready) return 'ready';
-  if (error || stepStatus === 'failed') return 'failed';
-  if (stepStatus === 'running') return 'processing';
-  return 'waiting';
-}
-
-function OutcomeStatusBadge({ status }: { status: OutcomeStatus }) {
-  const config: Record<OutcomeStatus, string> = {
-    ready: 'bg-emerald-50 text-emerald-700',
-    processing: 'bg-cyan-50 text-cyan-700',
-    waiting: 'bg-gray-100 text-tech-muted',
-    failed: 'bg-red-50 text-red-700',
-  };
-  const labels: Record<OutcomeStatus, string> = {
-    ready: '可用',
-    processing: '处理中',
-    waiting: '等待中',
-    failed: '失败',
-  };
-  return <span className={`rounded-full px-2 py-1 text-[11px] font-medium ${config[status]}`}>{labels[status]}</span>;
-}
+// ── Utility helpers ──
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
@@ -894,110 +539,21 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ContentBlock({ label, value, strong = false, multiline = false }: { label: string; value: string; strong?: boolean; multiline?: boolean }) {
-  return (
-    <div>
-      <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">{label}</label>
-      <div className="rounded-lg bg-gray-50 px-4 py-3">
-        <p className={`${strong ? 'text-xl font-semibold' : 'text-sm'} ${multiline ? 'whitespace-pre-wrap leading-7' : ''} text-tech-text`}>
-          {value}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function Notice({ tone, title, children }: { tone: 'info' | 'warning' | 'danger'; title: string; children: ReactNode }) {
-  const config = {
-    info: 'border-blue-200 bg-blue-50 text-blue-700',
-    warning: 'border-amber-200 bg-amber-50 text-amber-700',
-    danger: 'border-red-200 bg-red-50 text-red-700',
-  }[tone];
-  return (
-    <div className={`rounded-lg border p-4 ${config}`}>
-      <p className="font-semibold">{title}</p>
-      <p className="mt-1 text-sm">{children}</p>
-    </div>
-  );
-}
-
-function EmptyContent({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
-      <Clock className="mx-auto mb-4 h-9 w-9 text-tech-muted" />
-      <h3 className="font-semibold text-tech-text">{title}</h3>
-      <p className="mt-2 text-sm text-tech-muted">{description}</p>
-    </div>
-  );
-}
-
-function Field({ label, value }: { label: string; value?: string }) {
-  if (!value) {
-    return null;
-  }
-  return (
-    <div>
-      <label className="mb-1 block text-xs font-medium uppercase text-tech-muted">{label}</label>
-      <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-xs text-tech-text">{value}</p>
-    </div>
-  );
-}
-
-function buildTimeline(job: Job) {
-  const STEPS = ['transcribe', 'clean', 'generate_video_prompts', 'generate_video'] as PipelineStep[];
-  const STEP_LABELS: Record<PipelineStep, string> = {
-    transcribe: '视频转录',
-    clean: 'AI 洗稿',
-    generate_video_prompts: '生成分镜',
-    generate_video: '生成视频',
+function formatShotType(type?: ShortVideoShot['shotType']) {
+  const labels: Record<string, string> = {
+    hook: '开场钩子', problem: '问题', explain: '解释', proof: '验证',
+    contrast: '对比', process: '流程', summary: '总结', cta: '行动引导',
   };
-  if (!job.steps) {
-    return [];
-  }
-  return STEPS.flatMap((step) => {
-    const state = job.steps?.[step];
-    if (!state) {
-      return [];
-    }
-    const events: Array<{ label: string; time: string; failed?: boolean }> = [];
-    if (state.startedAt) {
-      events.push({ label: `开始${STEP_LABELS[step]}`, time: state.startedAt });
-    }
-    if (state.finishedAt) {
-      events.push({
-        label: state.status === 'failed' ? `${STEP_LABELS[step]}失败` : `${STEP_LABELS[step]}完成`,
-        time: state.finishedAt,
-        failed: state.status === 'failed',
-      });
-    }
-    return events;
-  });
+  return type ? (labels[type] ?? '内容镜头') : '内容镜头';
 }
 
-function formatShotType(type?: ShotType) {
-  const labels: Record<ShotType, string> = {
-    hook: '开场钩子',
-    problem: '问题',
-    explain: '解释',
-    proof: '验证',
-    contrast: '对比',
-    process: '流程',
-    summary: '总结',
-    cta: '行动引导',
+function formatLayout(layout: ShortVideoShot['layout']) {
+  if (!layout) return '';
+  const labels: Record<string, string> = {
+    'kinetic-title': '动态标题', 'concept-map': '概念关系', 'process-flow': '流程图',
+    comparison: '对比画面', metric: '数据状态', 'summary-stack': '总结收束',
   };
-  return type ? labels[type] : '内容镜头';
-}
-
-function formatLayout(layout: ShotLayout) {
-  const labels: Record<ShotLayout, string> = {
-    'kinetic-title': '动态标题',
-    'concept-map': '概念关系',
-    'process-flow': '流程图',
-    comparison: '对比画面',
-    metric: '数据状态',
-    'summary-stack': '总结收束',
-  };
-  return labels[layout];
+  return labels[layout] ?? layout;
 }
 
 function formatSeconds(seconds: number) {
@@ -1007,33 +563,11 @@ function formatSeconds(seconds: number) {
   return `${minutes}:${String(remainder).padStart(2, '0')}`;
 }
 
-function formatRange(start?: number, end?: number) {
-  if (typeof start !== 'number' && typeof end !== 'number') {
-    return '时间未标记';
-  }
-  return `${typeof start === 'number' ? formatSeconds(start) : '--'} - ${
-    typeof end === 'number' ? formatSeconds(end) : '--'
-  }`;
-}
-
 function formatTrashRetention(value?: string) {
-  if (!value) {
-    return '保留期未知';
-  }
+  if (!value) return '保留期未知';
   const days = Math.ceil((new Date(value).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
-  if (days <= 0) {
-    return '即将自动清理';
-  }
+  if (days <= 0) return '即将自动清理';
   return `剩余 ${days} 天自动清理`;
-}
-
-function formatDateTime(value: string) {
-  return new Date(value).toLocaleString('zh-CN', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 function getApiErrorStatus(error: unknown) {
