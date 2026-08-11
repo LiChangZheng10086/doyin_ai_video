@@ -1,19 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  CheckCircle2,
-  Clock,
   Grid3X3,
   LayoutList,
-  Loader2,
   Plus,
   Search,
-  Server,
   Sparkles,
   Trash2,
-  Video,
   Wand2,
-  XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { CreateJobDialog } from '../components/CreateJobDialog';
@@ -23,6 +17,13 @@ import { apiClient } from '../services/api';
 import { hasValidApiKey } from '../utils/apiKeyValidator';
 import { useJobPolling } from '../hooks/useJobPolling';
 import type { JobFilterStatus, JobOverview, ViewMode } from '../types';
+import {
+  getJobVisualState,
+  filterJobOverviews,
+  readStoredViewMode,
+  writeStoredViewMode,
+  formatDate,
+} from '../features/jobs/jobPresentation';
 
 const filterOptions: Array<{ id: JobFilterStatus; label: string }> = [
   { id: 'all', label: '全部' },
@@ -40,7 +41,8 @@ export function JobListPage() {
   const [overviews, setOverviews] = useState<JobOverview[]>([]);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<JobFilterStatus>('all');
-  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [viewMode, setViewMode] = useState<ViewMode>(() => readStoredViewMode(window.localStorage));
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const navigate = useNavigate();
   const setJobs = useAppStore((state) => state.setJobs);
@@ -87,28 +89,7 @@ export function JobListPage() {
   }, [isPolling, overviews.length, refreshOverviews]);
 
   const filteredJobs = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return overviews.filter((job) => {
-      const matchesFilter =
-        filter === 'all' ||
-        (filter === 'pending'
-          ? job.status === 'queued' && job.workflowMode === 'manual'
-          : job.status === filter);
-      if (!matchesFilter) {
-        return false;
-      }
-      if (!needle) {
-        return true;
-      }
-      return [
-        job.preview.displayTitle,
-        job.preview.subtitle,
-        job.preview.summary,
-        job.preview.sourcePlatform,
-        job.topic,
-        job.sourceUrl,
-      ].some((value) => value?.toLowerCase().includes(needle));
-    });
+    return filterJobOverviews(overviews, query, filter);
   }, [filter, overviews, query]);
 
   const handleJobClick = (jobId: string) => {
@@ -116,9 +97,12 @@ export function JobListPage() {
   };
 
   const handleDeleteJob = async (jobId: string) => {
-    const ok = window.confirm('确定删除这个作品吗？删除后会进入垃圾桶，30 天内可恢复。');
-    if (!ok) return;
+    setConfirmDeleteId(jobId);
+  };
 
+  const confirmDelete = async () => {
+    if (!confirmDeleteId) return;
+    const jobId = confirmDeleteId;
     try {
       setDeletingId(jobId);
       await apiClient.deleteJob(jobId);
@@ -129,6 +113,7 @@ export function JobListPage() {
       window.alert(error.response?.data?.message || '删除作品失败');
     } finally {
       setDeletingId(null);
+      setConfirmDeleteId(null);
     }
   };
 
@@ -146,104 +131,117 @@ export function JobListPage() {
       <Layout>
         <div className="flex items-center justify-center min-h-[420px]">
           <div className="text-center">
-            <Loader2 className="mx-auto h-12 w-12 animate-spin text-tech-blue" />
-            <p className="mt-4 text-tech-muted">正在载入创作中心...</p>
+            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-tech-blue border-t-transparent" />
+            <p className="mt-4 text-tech-muted">正在载入作品列表...</p>
           </div>
         </div>
       </Layout>
     );
   }
 
+  const changeViewMode = (mode: ViewMode) => {
+    setViewMode(mode);
+    writeStoredViewMode(window.localStorage, mode);
+  };
+
   return (
     <Layout>
-      <div className="mb-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+      {/* Page header */}
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="mb-2 inline-flex items-center gap-2 rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-tech-purple">
-            <Sparkles size={14} />
-            Creative workspace
-          </p>
           <h2 className="text-2xl font-semibold text-tech-text">最近作品</h2>
           <p className="mt-1 text-sm text-tech-muted">
-            从视频链接开始，管理转录、洗稿、提示词和视频产出
+            从视频链接开始，管理转录、洗稿、分镜和视频产出
           </p>
         </div>
         <button
           onClick={handleCreateClick}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-5 py-3 font-medium text-white shadow-sm transition-all hover:bg-tech-blue-dark hover:shadow disabled:opacity-50"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-5 py-2.5 text-sm font-medium text-white hover:bg-tech-blue-dark transition-colors disabled:opacity-50"
         >
           <Plus size={18} />
           创建作品
         </button>
       </div>
 
-      <div className="mb-5 rounded-lg border border-tech-border bg-tech-surface p-4">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-          <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-tech-muted" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索标题、来源、摘要或链接"
-              className="h-11 w-full rounded-lg border border-tech-border bg-white pl-10 pr-4 text-sm text-tech-text outline-none transition-all placeholder:text-tech-muted focus:border-tech-blue focus:ring-2 focus:ring-blue-100"
-            />
-          </div>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="flex flex-wrap gap-2">
-              {filterOptions.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setFilter(item.id)}
-                  className={`h-9 rounded-lg px-3 text-sm font-medium transition-all ${
-                    filter === item.id
-                      ? 'bg-tech-text text-white'
-                      : 'bg-tech-bg text-tech-muted hover:text-tech-text'
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <div className="flex h-9 shrink-0 rounded-lg border border-tech-border bg-tech-bg p-1">
+      {/* Toolbar */}
+      <div className="mb-5 flex flex-col gap-3 rounded-lg border border-tech-border bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-tech-muted" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索标题、来源或摘要"
+            className="h-10 w-full rounded-lg border border-tech-border bg-white pl-10 pr-4 text-sm text-tech-text outline-none placeholder:text-tech-muted focus:border-tech-blue focus:ring-2 focus:ring-blue-100"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex flex-wrap gap-1">
+            {filterOptions.map((item) => (
               <button
+                key={item.id}
                 type="button"
-                aria-label="列表视图"
-                onClick={() => setViewMode('list')}
-                className={`flex h-7 w-8 items-center justify-center rounded-md transition-all ${
-                  viewMode === 'list' ? 'bg-white text-tech-blue shadow-sm' : 'text-tech-muted'
+                onClick={() => setFilter(item.id)}
+                className={`h-8 rounded-lg px-3 text-xs font-medium transition-colors ${
+                  filter === item.id
+                    ? 'bg-tech-text text-white'
+                    : 'bg-gray-100 text-tech-muted hover:bg-gray-200'
                 }`}
               >
-                <LayoutList size={16} />
+                {item.label}
               </button>
-              <button
-                type="button"
-                aria-label="卡片视图"
-                onClick={() => setViewMode('card')}
-                className={`flex h-7 w-8 items-center justify-center rounded-md transition-all ${
-                  viewMode === 'card' ? 'bg-white text-tech-purple shadow-sm' : 'text-tech-muted'
-                }`}
-              >
-                <Grid3X3 size={16} />
-              </button>
-            </div>
+            ))}
           </div>
+          <div className="flex h-8 shrink-0 rounded-lg border border-tech-border bg-gray-100 p-0.5">
+            <button
+              type="button"
+              aria-label="列表视图"
+              aria-pressed={viewMode === 'list'}
+              onClick={() => changeViewMode('list')}
+              className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                viewMode === 'list' ? 'bg-white text-tech-blue shadow-sm' : 'text-tech-muted'
+              }`}
+            >
+              <LayoutList size={15} />
+            </button>
+            <button
+              type="button"
+              aria-label="卡片视图"
+              aria-pressed={viewMode === 'card'}
+              onClick={() => changeViewMode('card')}
+              className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+                viewMode === 'card' ? 'bg-white text-tech-blue shadow-sm' : 'text-tech-muted'
+              }`}
+            >
+              <Grid3X3 size={15} />
+            </button>
+          </div>
+          {isPolling && overviews.length > 0 && (
+            <span className="hidden sm:inline-flex items-center gap-1.5 text-xs text-tech-muted">
+              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+              同步中
+            </span>
+          )}
         </div>
       </div>
 
-      {serverPort && (
-        <div className="mb-5 flex flex-wrap items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          <Server size={16} />
-          <span className="font-medium">后端服务运行中</span>
-          <code className="rounded bg-white px-2 py-1 text-xs text-emerald-700">
-            http://localhost:{serverPort}
-          </code>
-        </div>
-      )}
-
+      {/* Content */}
       {overviews.length === 0 ? (
-        <EmptyCreatorState onCreate={handleCreateClick} />
+        <div className="rounded-lg border border-dashed border-tech-border bg-white px-6 py-20 text-center">
+          <Sparkles size={36} className="mx-auto mb-4 text-tech-muted" />
+          <h3 className="text-lg font-semibold text-tech-text">还没有作品</h3>
+          <p className="mx-auto mt-2 max-w-md text-sm text-tech-muted">
+            粘贴抖音链接或分享文本，生成转录、洗稿内容、分镜和本地成片。
+          </p>
+          <button
+            onClick={handleCreateClick}
+            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-tech-blue px-5 py-2.5 text-sm font-medium text-white hover:bg-tech-blue-dark"
+          >
+            <Plus size={16} />
+            创建第一个作品
+          </button>
+        </div>
       ) : filteredJobs.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface py-16 text-center">
+        <div className="rounded-lg border border-dashed border-tech-border bg-white py-16 text-center">
           <Search className="mx-auto mb-4 h-10 w-10 text-tech-muted" />
           <h3 className="text-lg font-semibold text-tech-text">没有匹配的作品</h3>
           <p className="mt-2 text-sm text-tech-muted">换个关键词或筛选条件再试试。</p>
@@ -279,10 +277,32 @@ export function JobListPage() {
         onClose={() => setShowApiWarning(false)}
       />
 
-      {isPolling && overviews.length > 0 && (
-        <div className="fixed bottom-4 right-4 rounded-lg border border-tech-border bg-tech-surface px-3 py-2 text-xs text-tech-muted shadow-sm">
-          <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
-          同步作品状态...
+      {/* Confirm delete dialog */}
+      {confirmDeleteId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/40" onClick={() => setConfirmDeleteId(null)} />
+          <div role="dialog" aria-modal="true" className="relative z-10 w-full max-w-sm rounded-xl bg-white p-6 shadow-lg">
+            <h3 className="text-lg font-semibold text-tech-text">确定删除这个作品吗？</h3>
+            <p className="mt-2 text-sm text-tech-muted">删除后会进入垃圾桶，30 天内可恢复。</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteId(null)}
+                disabled={!!deletingId}
+                className="rounded-lg border border-tech-border px-4 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={!!deletingId}
+                className="rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white hover:bg-tech-blue-dark disabled:opacity-50"
+              >
+                {deletingId ? '删除中...' : '删除'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </Layout>
@@ -301,8 +321,8 @@ function JobOverviewTable({
   onDelete: (jobId: string) => void;
 }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-tech-border bg-tech-surface">
-      <div className="grid grid-cols-[minmax(260px,1.6fr)_minmax(150px,0.9fr)_minmax(130px,0.7fr)_minmax(160px,0.9fr)_112px] gap-4 border-b border-tech-border bg-tech-bg px-4 py-3 text-xs font-medium uppercase text-tech-muted max-lg:hidden">
+    <div className="overflow-hidden rounded-lg border border-tech-border bg-white">
+      <div className="grid grid-cols-[minmax(240px,1.4fr)_minmax(130px,0.8fr)_minmax(110px,0.6fr)_minmax(150px,0.8fr)_96px] gap-3 border-b border-tech-border bg-gray-50 px-4 py-2.5 text-xs font-medium text-tech-muted max-lg:hidden">
         <span>作品</span>
         <span>更新时间</span>
         <span>状态</span>
@@ -313,39 +333,43 @@ function JobOverviewTable({
         {jobs.map((job) => (
           <div
             key={job.id}
-            role="button"
-            tabIndex={0}
-            onClick={() => onOpen(job.id)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                onOpen(job.id);
-              }
-            }}
-            className="grid w-full grid-cols-1 gap-4 px-4 py-4 text-left transition-all hover:bg-tech-bg lg:grid-cols-[minmax(260px,1.6fr)_minmax(150px,0.9fr)_minmax(130px,0.7fr)_minmax(160px,0.9fr)_112px] lg:items-center"
+            className="grid w-full grid-cols-1 gap-3 px-4 py-3.5 transition-colors hover:bg-gray-50 lg:grid-cols-[minmax(240px,1.4fr)_minmax(130px,0.8fr)_minmax(110px,0.6fr)_minmax(150px,0.8fr)_96px] lg:items-center"
           >
-            <div className="flex min-w-0 items-center gap-4">
+            <div
+              className="flex min-w-0 items-center gap-3 cursor-pointer"
+              role="button"
+              tabIndex={0}
+              onClick={() => onOpen(job.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') onOpen(job.id);
+              }}
+            >
               <PreviewCover
                 title={job.preview.coverTitle || job.preview.displayTitle}
                 imageUrl={job.preview.coverUrl}
                 compact
               />
               <div className="min-w-0">
-                <h3 className="line-clamp-1 font-semibold text-tech-text">{job.preview.displayTitle}</h3>
-                <p className="mt-1 line-clamp-1 text-sm text-tech-muted">
+                <h3 className="line-clamp-1 font-semibold text-sm text-tech-text">{job.preview.displayTitle}</h3>
+                <p className="mt-0.5 line-clamp-1 text-xs text-tech-muted">
                   {job.preview.sourcePlatform} · {job.preview.subtitle}
                 </p>
               </div>
             </div>
-            <div className="text-sm text-tech-muted">{formatDate(job.updatedAt)}</div>
-            <StatusBadge job={job} />
-            <div className="inline-flex items-center gap-2 text-sm font-medium text-tech-text">
-              <Wand2 size={15} className="text-tech-purple" />
-              {job.preview.nextActionLabel}
+            <div className="text-xs text-tech-muted">{formatDate(job.updatedAt)}</div>
+            <JobStatusBadge job={job} />
+            <div className="inline-flex items-center gap-1.5 text-xs font-medium text-tech-text">
+              <Wand2 size={13} className="text-tech-purple shrink-0" />
+              <span className="line-clamp-1">{job.preview.nextActionLabel}</span>
             </div>
             <div className="flex justify-start gap-2 lg:justify-end">
-              <span className="rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-tech-blue">
+              <button
+                type="button"
+                onClick={() => onOpen(job.id)}
+                className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-tech-blue hover:bg-blue-100"
+              >
                 打开
-              </span>
+              </button>
               {!job.deletedAt && (
                 <button
                   type="button"
@@ -353,15 +377,8 @@ function JobOverviewTable({
                     event.stopPropagation();
                     onDelete(job.id);
                   }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.stopPropagation();
-                      onDelete(job.id);
-                    }
-                  }}
-                  className={`rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition-all hover:bg-red-50 ${
-                    deletingId === job.id ? 'pointer-events-none opacity-50' : ''
-                  }`}
+                  disabled={deletingId === job.id}
+                  className={`rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50`}
                 >
                   删除
                 </button>
@@ -371,6 +388,35 @@ function JobOverviewTable({
         ))}
       </div>
     </div>
+  );
+}
+
+function JobStatusBadge({ job }: { job: JobOverview }) {
+  const state = getJobVisualState(job);
+  const toneClasses: Record<string, string> = {
+    info: 'border-blue-200 bg-blue-50 text-blue-700',
+    processing: 'border-cyan-200 bg-cyan-50 text-cyan-700',
+    success: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    danger: 'border-red-200 bg-red-50 text-red-700',
+  };
+  return (
+    <span className={`inline-flex w-fit items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium ${toneClasses[state.tone]}`}>
+      {state.busy && <span className="inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-current border-t-transparent" />}
+      {!state.busy && <span className={`inline-block h-1.5 w-1.5 rounded-full ${state.tone === 'success' ? 'bg-emerald-500' : state.tone === 'danger' ? 'bg-red-500' : state.tone === 'processing' ? 'bg-cyan-500' : 'bg-blue-500'}`} />}
+      {state.label}
+    </span>
+  );
+}
+
+function AssetPill({ ready, label }: { ready: boolean; label: string }) {
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+        ready ? 'bg-purple-50 text-tech-purple' : 'bg-gray-100 text-tech-muted'
+      }`}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -399,7 +445,7 @@ function JobOverviewCard({
               {job.preview.sourcePlatform} · {job.preview.subtitle}
             </p>
           </div>
-          <StatusBadge job={job} />
+          <JobStatusBadge job={job} />
         </div>
         {job.preview.summary && (
           <p className="mb-4 line-clamp-2 text-sm leading-6 text-tech-muted">{job.preview.summary}</p>
@@ -443,7 +489,7 @@ function PreviewCover({ title, imageUrl, compact = false }: { title: string; ima
   return (
     <div
       className={`shrink-0 overflow-hidden rounded-lg bg-gradient-to-br from-tech-blue via-tech-purple to-tech-purple-dark text-white ${
-        compact ? 'relative h-14 w-24' : 'relative flex aspect-video w-full items-end'
+        compact ? 'relative h-12 w-20' : 'relative flex aspect-video w-full items-end'
       }`}
     >
       {showImage && (
@@ -456,103 +502,13 @@ function PreviewCover({ title, imageUrl, compact = false }: { title: string; ima
           onError={() => setImageFailed(true)}
         />
       )}
-      <div className={`relative z-10 ${showImage ? 'bg-gradient-to-t from-black/75 via-black/20 to-transparent' : ''} ${compact ? 'flex h-full w-full items-center p-2' : 'w-full p-4'}`}>
-        <div className="flex items-center gap-2">
-          <Video size={compact ? 14 : 18} className="shrink-0 opacity-90" />
-          <p className={`line-clamp-2 font-semibold leading-tight ${compact ? 'text-xs' : 'text-lg'}`}>
-            {title || 'AI 视频作品'}
-          </p>
-        </div>
+      <div className={`relative z-10 ${showImage ? 'bg-gradient-to-t from-black/75 via-black/20 to-transparent' : ''} ${compact ? 'flex h-full w-full items-center p-1.5' : 'w-full p-4'}`}>
+        <p className={`line-clamp-2 font-semibold leading-tight ${compact ? 'text-[10px]' : 'text-base'}`}>
+          {title || '视频作品'}
+        </p>
       </div>
     </div>
   );
 }
 
-function StatusBadge({ job }: { job: JobOverview }) {
-  const config = getStatusConfig(job);
-  const Icon = config.icon;
-  return (
-    <span className={`inline-flex w-fit items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium ${config.className}`}>
-      <Icon size={13} />
-      {config.label}
-    </span>
-  );
-}
-
-function AssetPill({ ready, label }: { ready: boolean; label: string }) {
-  return (
-    <span
-      className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-        ready ? 'bg-purple-50 text-tech-purple' : 'bg-tech-bg text-tech-muted'
-      }`}
-    >
-      {ready ? 'Ready' : 'Waiting'} · {label}
-    </span>
-  );
-}
-
-function EmptyCreatorState({ onCreate }: { onCreate: () => void }) {
-  return (
-    <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface px-6 py-20 text-center">
-      <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-lg bg-gradient-to-br from-tech-blue to-tech-purple text-white shadow-lg">
-        <Sparkles size={34} />
-      </div>
-      <h3 className="text-xl font-semibold text-tech-text">还没有作品</h3>
-      <p className="mx-auto mt-2 max-w-md text-tech-muted">
-        粘贴抖音链接或分享文本，生成转录、洗稿内容、连续分镜和本地成片。
-      </p>
-      <button
-        onClick={onCreate}
-        className="mt-8 inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-6 py-3 font-medium text-white shadow-sm transition-all hover:bg-tech-blue-dark hover:shadow"
-      >
-        <Plus size={18} />
-        创建第一个作品
-      </button>
-    </div>
-  );
-}
-
-function getStatusConfig(job: JobOverview) {
-  if (job.workflowMode === 'manual' && job.status === 'queued') {
-    return {
-      label: '待执行',
-      icon: Clock,
-      className: 'border-blue-200 bg-blue-50 text-blue-700',
-    };
-  }
-  if (job.status === 'processing') {
-    return {
-      label: '处理中',
-      icon: Loader2,
-      className: 'border-cyan-200 bg-cyan-50 text-cyan-700',
-    };
-  }
-  if (job.status === 'done') {
-    return {
-      label: '已完成',
-      icon: CheckCircle2,
-      className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    };
-  }
-  if (job.status === 'failed') {
-    return {
-      label: '失败',
-      icon: XCircle,
-      className: 'border-red-200 bg-red-50 text-red-700',
-    };
-  }
-  return {
-    label: job.status,
-    icon: Clock,
-    className: 'border-tech-border bg-tech-bg text-tech-muted',
-  };
-}
-
-function formatDate(dateString: string) {
-  return new Date(dateString).toLocaleString('zh-CN', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+// Old helpers: emptyCreatorState, getStatusConfig, formatDate removed — now using centralized jobPresentation
