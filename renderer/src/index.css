@@ -1,23 +1,55 @@
 @import "tailwindcss";
 
 @theme {
-  /* 科技蓝主题 */
+  --color-brand-blue: #2563EB;
+  --color-brand-blue-dark: #1E40AF;
+  --color-brand-violet: #7C3AED;
+  --color-canvas: #F6F8FB;
+  --color-surface: #FFFFFF;
+  --color-border: #DCE3EC;
+  --color-text-primary: #172033;
+  --color-text-secondary: #667085;
+
   --color-tech-blue: #2563EB;
   --color-tech-blue-light: #3B82F6;
   --color-tech-blue-dark: #1E40AF;
   --color-tech-purple: #7C3AED;
   --color-tech-purple-light: #A78BFA;
   --color-tech-purple-dark: #5B21B6;
-  --color-tech-cyan: #06B6D4;
-  --color-tech-bg: #F8FAFC;
+  --color-tech-cyan: #0891B2;
+  --color-tech-bg: #F6F8FB;
   --color-tech-surface: #FFFFFF;
-  --color-tech-border: #E2E8F0;
-  --color-tech-text: #1E293B;
-  --color-tech-muted: #64748B;
+  --color-tech-border: #DCE3EC;
+  --color-tech-text: #172033;
+  --color-tech-muted: #667085;
 }
 
+:root {
+  color: #172033;
+  background: #F6F8FB;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; letter-spacing: 0; }
+html { background: #F6F8FB; }
 body {
-  font-family: system-ui, sans-serif;
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: #F6F8FB;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+button, input, textarea, select { font: inherit; }
+button, summary { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid #2563EB; outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
