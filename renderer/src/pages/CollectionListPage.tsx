@@ -9,11 +9,11 @@ import {
   Sparkles,
   Trash2,
   Users,
-  Video,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { CreateJobDialog } from '../components/CreateJobDialog';
 import { ApiKeyWarning } from '../components/ApiKeyWarning';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { apiClient } from '../services/api';
 import { hasValidApiKey } from '../utils/apiKeyValidator';
 import type { CollectionOverview } from '../types';
@@ -24,6 +24,8 @@ export function CollectionListPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [collections, setCollections] = useState<CollectionOverview[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const navigate = useNavigate();
 
@@ -52,15 +54,14 @@ export function CollectionListPage() {
   }, [collections.length, refreshCollections]);
 
   const handleDelete = async (collectionId: string) => {
-    const ok = window.confirm('确定删除这个合集吗？子任务不会被删除。');
-    if (!ok) return;
-
     try {
+      setDeleteError(null);
       setDeletingId(collectionId);
       await apiClient.deleteCollection(collectionId);
       setCollections((prev) => prev.filter((c) => c.id !== collectionId));
+      setDeleteTarget(null);
     } catch (error: any) {
-      window.alert(error.response?.data?.message || '删除合集失败');
+      setDeleteError(error.response?.data?.message || '删除合集失败');
     } finally {
       setDeletingId(null);
     }
@@ -94,7 +95,7 @@ export function CollectionListPage() {
         <div>
           <p className="mb-2 inline-flex items-center gap-2 rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-tech-purple">
             <Sparkles size={14} />
-            Batch Collection
+            作品合集
           </p>
           <h2 className="text-2xl font-semibold text-tech-text">作品合集</h2>
           <p className="mt-1 text-sm text-tech-muted">
@@ -135,7 +136,7 @@ export function CollectionListPage() {
               collection={collection}
               deleting={deletingId === collection.id}
               onOpen={() => navigate(`/collections/${collection.id}`)}
-              onDelete={() => handleDelete(collection.id)}
+              onDelete={() => setDeleteTarget(collection.id)}
             />
           ))}
         </div>
@@ -150,6 +151,23 @@ export function CollectionListPage() {
         isOpen={showApiWarning}
         onClose={() => setShowApiWarning(false)}
       />
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="确定删除这个合集吗？"
+        description="子任务不会被删除。"
+        confirmLabel="删除"
+        tone="danger"
+        busy={deletingId !== null}
+        onConfirm={() => deleteTarget && handleDelete(deleteTarget)}
+        onClose={() => { setDeleteTarget(null); setDeleteError(null); }}
+      />
+
+      {deleteError && (
+        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg">
+          {deleteError}
+          <button className="ml-3 font-medium underline" onClick={() => setDeleteError(null)}>关闭</button>
+        </div>
+      )}
     </Layout>
   );
 }
