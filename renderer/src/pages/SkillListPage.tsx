@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { apiClient } from '../services/api';
+import { SkillViewModal } from '../features/skills/SkillViewModal';
 import type { SkillSummary } from '../types';
 
 export function SkillListPage() {
@@ -23,6 +24,7 @@ export function SkillListPage() {
   const [error, setError] = useState('');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // 查看 Skill 内容
   const [viewingSkill, setViewingSkill] = useState(false);
@@ -68,7 +70,7 @@ export function SkillListPage() {
       const data = await apiClient.getSkillContent(collectionId);
       setSkillContent(data);
     } catch (err: any) {
-      alert(err.response?.data?.message || '读取 Skill 失败');
+      setActionError(err.response?.data?.message || '读取 Skill 失败');
     } finally {
       setViewingSkill(false);
     }
@@ -81,7 +83,7 @@ export function SkillListPage() {
       setDeleteConfirm(null);
       await refresh();
     } catch (err: any) {
-      alert(err.response?.data?.message || '删除 Skill 失败');
+      setActionError(err.response?.data?.message || '删除 Skill 失败');
     } finally {
       setDeletingId(null);
     }
@@ -101,7 +103,7 @@ export function SkillListPage() {
       setRenameValue('');
       await refresh();
     } catch (err: any) {
-      alert(err.response?.data?.message || '重命名失败');
+      setActionError(err.response?.data?.message || '重命名失败');
     } finally {
       setRenaming(false);
     }
@@ -298,303 +300,24 @@ export function SkillListPage() {
         </div>
       )}
 
-      {/* Skill 内容查看 Modal（复用 SkillViewModal 逻辑） */}
+      {/* Skill 内容查看 Modal */}
       {skillContent && (
         <SkillViewModal
           data={skillContent}
-          loading={false}
+          loading={viewingSkill}
           onClose={() => setSkillContent(null)}
         />
       )}
+
+      {/* Action error toast */}
+      {actionError && (
+        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg">
+          {actionError}
+          <button className="ml-3 font-medium underline" onClick={() => setActionError(null)}>
+            关闭
+          </button>
+        </div>
+      )}
     </Layout>
   );
-}
-
-// ─── Skill 内容查看 Modal（与 CollectionDetailPage 中的相同） ──────
-
-function SkillViewModal({
-  data,
-  loading,
-  onClose,
-}: {
-  data: {
-    skillName: string;
-    skillPath: string;
-    skillMarkdown: string;
-    sourceMarkdown: string;
-    meta: any;
-    knowledgeBase?: string;
-    caseLibrary?: string;
-    quotesCollection?: string;
-    checklist?: string;
-    decisionFramework?: string;
-    evalCases?: string;
-    templates?: Array<{ name: string; content: string }>;
-  };
-  loading: boolean;
-  onClose: () => void;
-}) {
-  const [tab, setTab] = useState<string>('skill');
-  const [copied, setCopied] = useState(false);
-
-  const getCurrentContent = () => {
-    switch (tab) {
-      case 'skill': return data.skillMarkdown;
-      case 'source': return data.sourceMarkdown;
-      case 'knowledge_base': return data.knowledgeBase || '';
-      case 'case_library': return data.caseLibrary || '';
-      case 'quotes': return data.quotesCollection || '';
-      case 'checklist': return data.checklist || '';
-      case 'decision': return data.decisionFramework || '';
-      case 'evals': return data.evalCases || '';
-      case 'meta': return JSON.stringify(data.meta, null, 2);
-      default:
-        if (tab.startsWith('tpl_') && data.templates) {
-          const tplName = tab.slice(4);
-          return data.templates.find(t => t.name === tplName)?.content || '';
-        }
-        return '';
-    }
-  };
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(getCurrentContent());
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  if (loading) {
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-        <div className="rounded-xl bg-white p-8 shadow-2xl flex items-center gap-3">
-          <Loader2 size={24} className="animate-spin text-tech-purple" />
-          <span className="text-tech-text">加载 Skill 内容…</span>
-        </div>
-      </div>
-    );
-  }
-
-  const tabs = [
-    { id: 'skill', label: 'SKILL.md' },
-    ...(data.knowledgeBase ? [{ id: 'knowledge_base', label: '知识库' }] : []),
-    ...(data.caseLibrary ? [{ id: 'case_library', label: '案例库' }] : []),
-    ...(data.quotesCollection ? [{ id: 'quotes', label: '金句集' }] : []),
-    ...(data.checklist ? [{ id: 'checklist', label: '检查清单' }] : []),
-    ...(data.decisionFramework ? [{ id: 'decision', label: '决策框架' }] : []),
-    ...(data.evalCases ? [{ id: 'evals', label: '验收用例' }] : []),
-    ...(data.templates || []).map(t => ({ id: `tpl_${t.name}`, label: t.name })),
-    { id: 'source', label: '原始来源' },
-    { id: 'meta', label: '元信息' },
-  ];
-
-  const currentContent = getCurrentContent();
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="flex h-[90vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl">
-        {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-tech-border px-6 py-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <Brain size={20} className="text-tech-purple shrink-0" />
-            <div className="min-w-0">
-              <h2 className="text-lg font-semibold text-tech-text truncate">
-                {data.skillName}
-              </h2>
-              <p className="text-xs text-tech-muted truncate mt-0.5">
-                {data.skillPath}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleCopy}
-              className="inline-flex items-center gap-2 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg transition-colors"
-            >
-              {copied ? <CheckCircle2 size={16} className="text-emerald-500" /> : <Copy size={16} />}
-              {copied ? '已复制' : '复制'}
-            </button>
-            <button
-              onClick={onClose}
-              className="rounded-lg p-2 text-tech-muted hover:bg-tech-bg hover:text-tech-text transition-colors"
-            >
-              <X size={20} />
-            </button>
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex shrink-0 gap-1 border-b border-tech-border bg-tech-bg px-6 py-2 overflow-x-auto">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors whitespace-nowrap ${
-                tab === t.id
-                  ? 'bg-white text-tech-text shadow-sm'
-                  : 'text-tech-muted hover:text-tech-text'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto">
-          {tab === 'skill' || tab === 'knowledge_base' || tab === 'case_library' || tab === 'quotes' || tab === 'checklist' || tab === 'decision' || tab === 'evals' || tab.startsWith('tpl_') ? (
-            <div className="p-6">
-              <div className="prose prose-sm max-w-none">
-                <RenderMarkdown content={currentContent} />
-              </div>
-            </div>
-          ) : tab === 'source' ? (
-            <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-tech-text p-6">
-              {data.sourceMarkdown || '(暂无原始来源)'}
-            </pre>
-          ) : (
-            <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-tech-text p-6">
-              {JSON.stringify(data.meta, null, 2) || '(暂无元信息)'}
-            </pre>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RenderMarkdown({ content }: { content: string }) {
-  const lines = content.split('\n');
-  let inCodeBlock = false;
-  let codeContent = '';
-
-  const elements: React.ReactNode[] = [];
-
-  const flushCodeBlock = () => {
-    if (codeContent) {
-      elements.push(
-        <pre key={elements.length} className="rounded-lg bg-tech-bg border border-tech-border p-4 my-3 overflow-x-auto">
-          <code className="text-sm font-mono">{codeContent.trim()}</code>
-        </pre>
-      );
-      codeContent = '';
-    }
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    if (line.startsWith('```')) {
-      if (inCodeBlock) {
-        flushCodeBlock();
-        inCodeBlock = false;
-      } else {
-        inCodeBlock = true;
-      }
-      continue;
-    }
-
-    if (inCodeBlock) {
-      codeContent += (codeContent ? '\n' : '') + line;
-      continue;
-    }
-
-    // Frontmatter detection
-    if (i === 0 && line === '---') {
-      let j = i + 1;
-      while (j < lines.length && lines[j] !== '---') j++;
-      if (j < lines.length) {
-        const fmLines = lines.slice(i + 1, j);
-        elements.push(
-          <div key={elements.length} className="rounded-lg bg-tech-bg border border-tech-border p-3 my-3 font-mono text-sm text-tech-muted">
-            {fmLines.map((fl, fi) => (
-              <div key={fi}>{fl}</div>
-            ))}
-          </div>
-        );
-        i = j;
-        continue;
-      }
-    }
-
-    // Headings
-    if (line.startsWith('### ')) {
-      elements.push(<h3 key={elements.length} className="text-base font-semibold text-tech-text mt-5 mb-2">{line.slice(4)}</h3>);
-      continue;
-    }
-    if (line.startsWith('## ')) {
-      elements.push(<h2 key={elements.length} className="text-lg font-bold text-tech-text mt-6 mb-3 border-b border-tech-border pb-1">{line.slice(3)}</h2>);
-      continue;
-    }
-    if (line.startsWith('# ')) {
-      elements.push(<h1 key={elements.length} className="text-xl font-bold text-tech-text mt-6 mb-3">{line.slice(2)}</h1>);
-      continue;
-    }
-
-    // Ordered list item
-    const olMatch = line.match(/^(\d+)\.\s+(.+)/);
-    if (olMatch) {
-      elements.push(
-        <div key={elements.length} className="flex gap-2 text-sm text-tech-text ml-4 my-0.5">
-          <span className="text-tech-muted min-w-[1.5em] text-right">{olMatch[1]}.</span>
-          <span>{renderInline(olMatch[2])}</span>
-        </div>
-      );
-      continue;
-    }
-
-    // Unordered list item
-    if (/^[-*]\s+/.test(line)) {
-      const text = line.replace(/^[-*]\s+/, '');
-      elements.push(
-        <div key={elements.length} className="flex gap-2 text-sm text-tech-text ml-4 my-0.5">
-          <span className="text-tech-muted">•</span>
-          <span>{renderInline(text)}</span>
-        </div>
-      );
-      continue;
-    }
-
-    // Empty line
-    if (line.trim() === '') {
-      elements.push(<div key={elements.length} className="h-2" />);
-      continue;
-    }
-
-    // Bold text only
-    if (/^\*\*.+\*\*$/.test(line.trim())) {
-      elements.push(
-        <p key={elements.length} className="text-sm font-semibold text-tech-text my-1">
-          {line.trim().replace(/\*\*/g, '')}
-        </p>
-      );
-      continue;
-    }
-
-    // Regular paragraph
-    elements.push(
-      <p key={elements.length} className="text-sm text-tech-text leading-relaxed my-1">
-        {renderInline(line)}
-      </p>
-    );
-  }
-
-  flushCodeBlock();
-
-  return <>{elements}</>;
-}
-
-function renderInline(text: string): React.ReactNode {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>;
-    }
-    const codeParts = part.split(/(`[^`]+`)/g);
-    return codeParts.map((cp, j) => {
-      if (cp.startsWith('`') && cp.endsWith('`')) {
-        return <code key={j} className="bg-tech-bg px-1 py-0.5 rounded text-xs font-mono text-tech-purple">{cp.slice(1, -1)}</code>;
-      }
-      return cp;
-    });
-  });
 }
