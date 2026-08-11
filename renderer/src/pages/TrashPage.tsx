@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Trash2 } from 'lucide-react';
+import { Loader2, Trash2 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { apiClient } from '../services/api';
 import type { Job } from '../types';
 
@@ -10,7 +11,9 @@ export function TrashPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
 
   useEffect(() => {
     const loadTrash = async () => {
@@ -35,22 +38,22 @@ export function TrashPage() {
       await apiClient.restoreJob(jobId);
       setJobs(jobs.filter((job) => job.id !== jobId));
     } catch (err: any) {
-      window.alert(err.response?.data?.message || '恢复任务失败');
+      setActionError(err.response?.data?.message || '恢复任务失败');
     } finally {
       setBusyId(null);
     }
   };
 
-  const handlePermanentDelete = async (job: Job) => {
-    const ok = window.confirm('确定永久删除这个任务吗？相关视频、音频、转录、洗稿、提示词和成片会被清理，无法恢复。');
-    if (!ok) return;
-
+  const handlePermanentDelete = async () => {
+    if (!deleteTarget) return;
+    const job = deleteTarget;
     try {
       setBusyId(job.id);
       await apiClient.permanentlyDeleteJob(job.id);
       setJobs(jobs.filter((item) => item.id !== job.id));
+      setDeleteTarget(null);
     } catch (err: any) {
-      window.alert(err.response?.data?.message || '永久删除任务失败');
+      setActionError(err.response?.data?.message || '永久删除任务失败');
     } finally {
       setBusyId(null);
     }
@@ -59,10 +62,10 @@ export function TrashPage() {
   if (isLoading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center py-20">
+        <div className="flex items-center justify-center min-h-[420px]">
           <div className="text-center">
-            <div className="w-16 h-16 border-4 border-tech-blue border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-tech-muted">加载垃圾桶...</p>
+            <Loader2 className="mx-auto h-12 w-12 animate-spin text-tech-purple" />
+            <p className="mt-4 text-tech-muted">加载垃圾桶...</p>
           </div>
         </div>
       </Layout>
@@ -93,8 +96,8 @@ export function TrashPage() {
       )}
 
       {jobs.length === 0 ? (
-        <div className="text-center py-20">
-          <div className="w-20 h-20 mx-auto mb-6 bg-tech-surface rounded-lg border border-tech-border flex items-center justify-center text-tech-muted">
+        <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface px-6 py-20 text-center">
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-lg bg-tech-surface border border-tech-border text-tech-muted">
             <Trash2 size={34} />
           </div>
           <h3 className="text-xl font-semibold text-tech-text mb-2">垃圾桶是空的</h3>
@@ -146,7 +149,7 @@ export function TrashPage() {
                       type="button"
                       disabled={busy || active}
                       title={active ? '处理中任务暂不能永久删除' : undefined}
-                      onClick={() => handlePermanentDelete(job)}
+                      onClick={() => setDeleteTarget(job)}
                       className="px-3 py-2 rounded-lg border border-red-200 text-red-600 text-sm hover:bg-red-50 disabled:opacity-50 transition-all"
                     >
                       永久删除
@@ -156,6 +159,26 @@ export function TrashPage() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="确定永久删除这个任务吗？"
+        description="相关视频、音频、转录、洗稿、提示词和成片会被清理，无法恢复。"
+        confirmLabel="永久删除"
+        tone="danger"
+        busy={busyId !== null}
+        onConfirm={handlePermanentDelete}
+        onClose={() => setDeleteTarget(null)}
+      />
+
+      {actionError && (
+        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg">
+          {actionError}
+          <button className="ml-3 font-medium underline" onClick={() => setActionError(null)}>
+            关闭
+          </button>
         </div>
       )}
     </Layout>
