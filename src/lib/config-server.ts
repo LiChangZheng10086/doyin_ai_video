@@ -20,6 +20,7 @@ export interface AIKeyConfig {
   apiKey: string;
   baseURL?: string;
   model: string;
+  maxOutputTokens?: number;
   isActive: boolean;
   isValid?: boolean;
   lastTested?: string;
@@ -80,6 +81,21 @@ export async function saveConfig(config: AppConfig): Promise<void> {
 function normalizeBaseURL(baseURL?: string): string {
   if (!baseURL) return "";
   return baseURL.replace(/\/+$/, "");
+}
+
+export function normalizeMaxOutputTokens(value?: number): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value)) throw new Error("输出 Token 上限必须为整数");
+  if (value < 256) throw new Error("输出 Token 上限至少为 256");
+  return value;
+}
+
+export function resolveUpdatedMaxOutputTokens(
+  existing: number | undefined,
+  changes: { maxOutputTokens?: number | null }
+): number | undefined {
+  if (!Object.prototype.hasOwnProperty.call(changes, "maxOutputTokens")) return existing;
+  return normalizeMaxOutputTokens(changes.maxOutputTokens ?? undefined);
 }
 
 function defaultBaseURL(provider: AIKeyConfig["provider"]): string {
@@ -178,9 +194,11 @@ export function registerConfigRoutes(app: Express): void {
         return;
       }
 
+      const normalizedLimit = normalizeMaxOutputTokens(keyInput.maxOutputTokens);
       const id = randomUUID();
       const newKey: AIKeyConfig = {
         ...keyInput,
+        ...(normalizedLimit === undefined ? {} : { maxOutputTokens: normalizedLimit }),
         baseURL: normalizeBaseURL(keyInput.baseURL) || defaultBaseURL(keyInput.provider),
         id,
         isActive: config.aiKeys.length === 0,
@@ -223,12 +241,14 @@ export function registerConfigRoutes(app: Express): void {
 
       const changes = req.body as Partial<AIKeyInput>;
       const existing = config.aiKeys[idx];
+      const maxOutputTokens = resolveUpdatedMaxOutputTokens(existing.maxOutputTokens, changes);
       const merged: AIKeyInput = {
         name: changes.name ?? existing.name,
         provider: changes.provider ?? existing.provider,
         apiKey: changes.apiKey || existing.apiKey,
         baseURL: changes.baseURL ?? existing.baseURL,
         model: changes.model ?? existing.model,
+        ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
       };
 
       const result = await testApiKey(merged);
@@ -238,6 +258,9 @@ export function registerConfigRoutes(app: Express): void {
       }
 
       config.aiKeys[idx] = { ...existing, ...merged, isValid: true, lastTested: result.testedAt };
+      if (maxOutputTokens === undefined) {
+        delete config.aiKeys[idx].maxOutputTokens;
+      }
       await saveConfig(config);
       res.json({ ok: true });
     } catch (err: any) {
