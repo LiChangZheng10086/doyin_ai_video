@@ -19,12 +19,12 @@ const LOCAL_IDENTITY_ERROR_MESSAGES: Record<string, string> = {
 };
 
 export const settingsSections = [
-  { id: 'models', label: 'Models / API Keys', description: 'AI 服务与密钥' },
-  { id: 'douyin', label: 'Douyin Login', description: '抖音扫码登录' },
-  { id: 'asr', label: 'ASR', description: '视频转录服务' },
-  { id: 'storage', label: 'Storage', description: '本地文件位置' },
+  { id: 'models', label: 'AI 模型与密钥', description: 'AI 服务与密钥' },
+  { id: 'douyin', label: '抖音登录', description: '抖音扫码登录' },
+  { id: 'asr', label: '语音转录', description: '视频转录服务' },
+  { id: 'storage', label: '存储位置', description: '本地文件位置' },
   { id: 'users', label: '本地用户', description: '操作者与权限' },
-  { id: 'advanced', label: 'Advanced', description: '安全与提示' },
+  { id: 'advanced', label: '高级选项', description: '安全与提示' },
 ] as const;
 
 export type LocalUserMutationOutcome<T = unknown> =

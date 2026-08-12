@@ -257,12 +257,8 @@ export function SettingsPage() {
   return (
     <Layout>
       <div className="mb-8">
-        <p className="mb-2 inline-flex items-center gap-2 rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-tech-purple">
-          <Sparkles size={14} />
-          创作设置
-        </p>
         <h2 className="text-2xl font-semibold text-tech-text">设置</h2>
-        <p className="mt-1 text-sm text-tech-muted">配置 AI 模型、视频转录和本地创作资产。</p>
+        <p className="mt-1 text-sm text-tech-muted">配置 AI 模型、抖音登录、语音转录和本地创作资产。</p>
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -394,7 +390,7 @@ function ModelsSection({
     <section className="space-y-6">
       <SectionHeader
         icon={KeyRound}
-        title="Models / API Keys"
+        title="AI 模型与密钥"
         description="管理 AI 洗稿使用的模型密钥。"
         action={
           <button
@@ -621,7 +617,7 @@ function AsrSection() {
     <section className="space-y-6">
       <SectionHeader
         icon={Mic}
-        title="ASR"
+        title="语音转录"
         description="视频转录由软件内置 Whisper 本地完成。"
       />
 
@@ -655,15 +651,15 @@ function StorageSection() {
     <section className="space-y-6">
       <SectionHeader
         icon={HardDrive}
-        title="Storage"
+        title="存储位置"
         description="本地作品、素材和输出文件会保存到用户文档目录。"
       />
       <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <StorageCard title="Raw assets" value="~/Documents/抖音AI视频/raw" />
-          <StorageCard title="Processed scripts" value="~/Documents/抖音AI视频/processed" />
-          <StorageCard title="Video output" value="~/Documents/抖音AI视频/output/videos" />
-          <StorageCard title="Logs" value="~/Documents/抖音AI视频/logs" />
+          <StorageCard title="原始素材" value="~/Documents/抖音AI视频/raw" />
+          <StorageCard title="处理产物" value="~/Documents/抖音AI视频/processed" />
+          <StorageCard title="视频输出" value="~/Documents/抖音AI视频/output/videos" />
+          <StorageCard title="日志" value="~/Documents/抖音AI视频/logs" />
         </div>
       </div>
     </section>
@@ -675,7 +671,7 @@ function AdvancedSection() {
     <section className="space-y-6">
       <SectionHeader
         icon={SlidersHorizontal}
-        title="Advanced"
+        title="高级选项"
         description="安全策略和本地运行提示。"
       />
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -864,7 +860,7 @@ function DouyinSection() {
     <section className="space-y-6">
       <SectionHeader
         icon={QrCode}
-        title="Douyin Login"
+        title="抖音登录"
         description="扫码登录抖音以获取 API 调用所需的 Cookie。登录后即可使用签名 API 批量采集视频。"
       />
 
