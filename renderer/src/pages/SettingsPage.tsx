@@ -131,14 +131,6 @@ export function SettingsPage() {
   };
 
   const handleTest = async () => {
-    let maxOutputTokens: number | undefined;
-    try {
-      maxOutputTokens = parseOutputLimit(newKey.maxOutputMode, newKey.maxOutputTokens);
-    } catch (error) {
-      setTestResult({ valid: false, error: error instanceof Error ? error.message : '输出 Token 上限无效' });
-      return;
-    }
-
     if (!newKey.apiKey) {
       setTestResult({ valid: false, error: '请输入 API Key' });
       return;
@@ -148,6 +140,7 @@ export function SettingsPage() {
     setTestResult(null);
 
     try {
+      const maxOutputTokens = parseOutputLimit(newKey.maxOutputMode, newKey.maxOutputTokens);
       const result = await window.electron.testApiKey({
         ...toKeyPayload(newKey),
         ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
@@ -164,14 +157,6 @@ export function SettingsPage() {
   };
 
   const handleAdd = async () => {
-    let maxOutputTokens: number | undefined;
-    try {
-      maxOutputTokens = parseOutputLimit(newKey.maxOutputMode, newKey.maxOutputTokens);
-    } catch (error) {
-      setTestResult({ valid: false, error: error instanceof Error ? error.message : '输出 Token 上限无效' });
-      return;
-    }
-
     if (!newKey.name || !newKey.apiKey) {
       setTestResult({ valid: false, error: '请填写完整信息' });
       return;
@@ -185,6 +170,7 @@ export function SettingsPage() {
     setIsSaving(true);
 
     try {
+      const maxOutputTokens = parseOutputLimit(newKey.maxOutputMode, newKey.maxOutputTokens);
       await window.electron.addApiKey({
         ...toKeyPayload(newKey),
         ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
@@ -232,14 +218,6 @@ export function SettingsPage() {
   };
 
   const handleUpdate = async () => {
-    let maxOutputTokens: number | undefined;
-    try {
-      maxOutputTokens = parseOutputLimit(newKey.maxOutputMode, newKey.maxOutputTokens);
-    } catch (error) {
-      setTestResult({ valid: false, error: error instanceof Error ? error.message : '输出 Token 上限无效' });
-      return;
-    }
-
     if (!editingKeyId || !newKey.name || !newKey.model || (newKey.provider === 'custom' && !newKey.baseURL)) {
       setTestResult({ valid: false, error: '请填写完整信息' });
       return;
@@ -247,6 +225,7 @@ export function SettingsPage() {
     setIsSaving(true);
     setTestResult(null);
     try {
+      const maxOutputTokens = parseOutputLimit(newKey.maxOutputMode, newKey.maxOutputTokens);
       await window.electron.updateApiKey(editingKeyId, {
         ...toKeyPayload(newKey),
         maxOutputTokens: maxOutputTokens ?? null,
@@ -508,7 +487,7 @@ function ModelsSection({
                     模型：<code className="rounded bg-tech-bg px-2 py-0.5 text-tech-text">{key.model}</code>
                   </p>
                   <p className="mt-1 text-xs text-tech-muted">
-                    输出上限：{key.maxOutputTokens === undefined ? '自动' : key.maxOutputTokens.toLocaleString('zh-CN')}
+                    输出上限：{key.maxOutputTokens === undefined ? '自动' : `${key.maxOutputTokens.toLocaleString('zh-CN')} Tokens`}
                   </p>
                   {key.baseURL && <p className="mt-1 break-all font-mono text-xs text-tech-muted">{key.baseURL}</p>}
                   <p className="mt-1 font-mono text-xs text-tech-muted">
