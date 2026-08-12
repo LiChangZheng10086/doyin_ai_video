@@ -32,7 +32,7 @@ export function AppShell({ children, onRequestRecovery }: AppShellProps) {
       </div>
 
       {/* Main content area — offset for desktop rail + utility bar */}
-      <main className="ml-14 md:ml-[56px] xl:ml-16 md:pt-14 pb-14 md:pb-0 min-h-screen">
+      <main className="md:ml-[56px] xl:ml-16 md:pt-14 pb-14 md:pb-0 min-h-screen">
         {children}
       </main>
 
