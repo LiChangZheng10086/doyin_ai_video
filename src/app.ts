@@ -786,6 +786,47 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   // 获取合集全部转录文本（聚合）
   app.get("/api/collections/:id/transcripts", async (req, res) => {
+  // 获取合集中每个视频项的子任务状态
+  app.get("/api/collections/:id/item-states", async (req, res) => {
+    try {
+      const collection = await collections.get(req.params.id);
+      if (!collection) {
+        res.status(404).json({ message: "collection not found" });
+        return;
+      }
+
+      const itemStates: Record<string, {
+        jobId: string;
+        status: string;
+        stage: string;
+        error?: string;
+      } | null> = {};
+
+      for (const item of collection.crawlResult.items) {
+        const jobId = collection.childJobMap?.[item.awemeId];
+        if (!jobId) {
+          itemStates[item.awemeId] = null;
+          continue;
+        }
+        const job = await jobs.get(jobId);
+        if (!job) {
+          itemStates[item.awemeId] = null;
+          continue;
+        }
+        itemStates[item.awemeId] = {
+          jobId: job.id,
+          status: job.status,
+          stage: job.stage,
+          error: job.errorMessage || job.steps?.transcribe?.lastError || job.steps?.clean?.lastError || job.steps?.generate_video_prompts?.lastError || job.steps?.generate_video?.lastError,
+        };
+      }
+
+      res.json({ itemStates });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "failed to get item states";
+      res.status(500).json({ message });
+    }
+  });
     try {
       const collection = await collections.get(req.params.id);
       if (!collection) {
@@ -803,7 +844,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
       for (let i = 0; i < collection.childJobIds.length; i++) {
         const jobId = collection.childJobIds[i];
-        const item = collection.crawlResult.items[i];
+        const item = collection.crawlResult.items.find(v => collection.childJobMap[v.awemeId] === jobId);
         try {
           const t = await storage.readJson<any>(
             path.join("raw", "transcripts", `${jobId}.json`)
@@ -895,7 +936,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       const transcripts: Array<{ desc: string; transcript: string }> = [];
       for (let i = 0; i < collection.childJobIds.length; i++) {
         const jobId = collection.childJobIds[i];
-        const item = collection.crawlResult.items[i];
+        const item = collection.crawlResult.items.find(v => collection.childJobMap[v.awemeId] === jobId);
         try {
           const t = await storage.readJson<any>(
             path.join("raw", "transcripts", `${jobId}.json`)
@@ -1873,7 +1914,7 @@ async function generateSkillForCollection(
 
   for (let i = 0; i < collection.childJobIds.length; i++) {
     const jobId = collection.childJobIds[i];
-    const item = collection.crawlResult.items[i];
+    const item = collection.crawlResult.items.find(v => collection.childJobMap[v.awemeId] === jobId);
     try {
       const t = await _storage.readJson<any>(path.join("raw", "transcripts", `${jobId}.json`));
       if (t?.transcript) {

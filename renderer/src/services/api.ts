@@ -475,6 +475,18 @@ export class ApiClient {
     return response.data.collection!;
   }
 
+  // 获取合集中每个视频项的子任务状态
+  async getCollectionItemStates(id: string): Promise<Record<string, {
+    jobId: string;
+    status: string;
+    stage: string;
+    error?: string;
+  } | null>> {
+    const client = await this.getClient();
+    const response = await client.get(`/api/collections/${id}/item-states`);
+    return response.data.itemStates;
+  }
+
   // 删除合集
   async deleteCollection(id: string): Promise<void> {
     const client = await this.getClient();

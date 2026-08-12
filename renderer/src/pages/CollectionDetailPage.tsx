@@ -68,6 +68,13 @@ export function CollectionDetailPage() {
     error?: string;
   } | null>(null);
   const [skillElapsedSeconds, setSkillElapsedSeconds] = useState(0);
+  // Per-item job state map (awemeId → job snapshot)
+  const [itemStates, setItemStates] = useState<Record<string, {
+    jobId: string;
+    status: string;
+    stage: string;
+    error?: string;
+  } | null> | null>(null);
   // Skill content view state
   const [viewingSkill, setViewingSkill] = useState(false);
   const [skillContentData, setSkillContentData] = useState<{
@@ -93,6 +100,23 @@ export function CollectionDetailPage() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // 加载每个视频项的任务状态
+  useEffect(() => {
+    if (!id || !collection) return;
+    let active = true;
+    const loadItemStates = async () => {
+      try {
+        const states = await apiClient.getCollectionItemStates(id);
+        if (active) setItemStates(states);
+      } catch {
+        // 静默失败，回退到进度摘要
+        if (active) setItemStates(null);
+      }
+    };
+    loadItemStates();
+    return () => { active = false; };
+  }, [id, collection?.childJobIds.length]);
 
   // 定时刷新进度
   useEffect(() => {
@@ -300,22 +324,27 @@ export function CollectionDetailPage() {
     }
   };
 
-  const getItemStatus = (item: DouyinVideoItem, index: number): 'created' | 'processing' | 'done' | 'failed' | 'pending' => {
+  const getItemStatus = (item: DouyinVideoItem): 'created' | 'processing' | 'done' | 'failed' | 'pending' => {
     if (!collection) return 'pending';
-    // 检查是否创建了子任务
-    const jobId = collection.childJobIds[index];
+    const jobId = collection.childJobMap?.[item.awemeId];
     if (!jobId) return 'pending';
 
-    const progress = collection.childJobProgress;
-    const itemIndex = collection.crawlResult.items.findIndex((i) => i.awemeId === item.awemeId);
-    if (itemIndex < 0 || itemIndex >= collection.childJobIds.length) return 'pending';
+    if (itemStates?.[item.awemeId]) {
+      const s = itemStates[item.awemeId]!;
+      if (s.status === 'done' || s.stage === 'rendered') return 'done';
+      if (s.status === 'failed' || s.stage === 'failed') return 'failed';
+      if (s.status === 'processing' || s.status === 'queued') return 'processing';
+      return 'created';
+    }
 
-    // 由于我们无法直接获取每个 job 的详情，这里用索引近似判断
-    // 实际状态通过 item-job 映射表来管理
-    if (progress.rendered >= itemIndex + 1) return 'done';
-    if (progress.failed > 0) return 'failed'; // 简化处理
-    if (progress.transcribed < itemIndex + 1) return 'created';
-    return 'processing';
+    // Fallback: use progress summary (less accurate but always available)
+    const idx = collection.crawlResult.items.findIndex((i) => i.awemeId === item.awemeId);
+    if (idx < 0 || idx >= collection.childJobIds.length) return 'pending';
+    const progress = collection.childJobProgress;
+    if (progress.rendered > 0 && progress.rendered > idx) return 'done';
+    if (progress.failed > 0) return 'failed';
+    if (progress.transcribed > 0 && progress.transcribed > idx) return 'processing';
+    return 'created';
   };
 
   if (isLoading) {
@@ -587,23 +616,11 @@ export function CollectionDetailPage() {
         <div className="divide-y divide-tech-border max-h-[600px] overflow-y-auto">
           {[...collection.crawlResult.items]
             .sort((a, b) => b.createTime - a.createTime)
-            .map((item, index) => {
-            const hasJob = index < collection.childJobIds.length;
+            .map((item) => {
+            const jobId = collection.childJobMap?.[item.awemeId];
+            const hasJob = Boolean(jobId);
             const isSelected = selectedIds.has(item.awemeId);
-            const progress = collection.childJobProgress;
-            const jobId = collection.childJobIds[index];
-
-            // 计算该项的状态
-            let status: 'pending' | 'created' | 'transcribed' | 'cleaned' | 'scripted' | 'done' | 'failed' = 'pending';
-            if (hasJob) {
-              status = 'created';
-              // 根据进度位置粗略推断
-              if (progress.failed >= index + 1) status = 'failed';
-              else if (progress.rendered >= index + 1) status = 'done';
-              else if (progress.scripted >= index + 1) status = 'scripted';
-              else if (progress.cleaned >= index + 1) status = 'cleaned';
-              else if (progress.transcribed >= index + 1) status = 'transcribed';
-            }
+            const status = getItemStatus(item);
 
             return (
               <div
@@ -668,28 +685,16 @@ export function CollectionDetailPage() {
                       待创建
                     </span>
                   )}
+                  {status === 'processing' && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-700">
+                      <RefreshCw size={12} className="animate-spin" />
+                      处理中
+                    </span>
+                  )}
                   {status === 'created' && (
                     <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-700">
                       <Clock size={12} />
                       待处理
-                    </span>
-                  )}
-                  {status === 'transcribed' && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-cyan-50 px-2 py-1 text-xs text-cyan-700">
-                      <Mic size={12} />
-                      已转录
-                    </span>
-                  )}
-                  {status === 'cleaned' && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-1 text-xs text-indigo-700">
-                      <Sparkles size={12} />
-                      已洗稿
-                    </span>
-                  )}
-                  {status === 'scripted' && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-purple-50 px-2 py-1 text-xs text-purple-700">
-                      <Wand2 size={12} />
-                      已分镜
                     </span>
                   )}
                   {status === 'done' && (

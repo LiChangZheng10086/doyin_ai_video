@@ -551,6 +551,7 @@ export interface CollectionRecord {
     nextCursor: number;
   };
   childJobIds: string[];
+  childJobMap?: Record<string, string>; // awemeId → jobId
   skillName?: string;
   skillPath?: string;
   autoSyncSkill?: boolean;

@@ -23,6 +23,7 @@ export interface CollectionRecord {
     nextCursor: number;
   };
   childJobIds: string[];
+  childJobMap: Record<string, string>; // awemeId → jobId
   skillName?: string;
   skillPath?: string;
   autoSyncSkill?: boolean;
@@ -86,6 +87,7 @@ export class CollectionStore {
         nextCursor: crawlResult.nextCursor,
       },
       childJobIds: [],
+      childJobMap: {},
       createdAt: now,
       updatedAt: now,
     };
@@ -163,6 +165,7 @@ export class CollectionStore {
 
     const createdJobs: JobRecord[] = [];
     const newJobIds: string[] = [];
+    const newJobMap: Record<string, string> = {};
 
     for (const item of toCreate) {
       const videoShareUrl = `https://www.douyin.com/video/${item.awemeId}`;
@@ -176,6 +179,7 @@ export class CollectionStore {
         });
         createdJobs.push(job);
         newJobIds.push(job.id);
+        newJobMap[item.awemeId] = job.id;
       } catch (error) {
         // 单个子任务创建失败不影响整体
         console.warn(`Failed to create child job for aweme ${item.awemeId}:`, error);
@@ -186,6 +190,7 @@ export class CollectionStore {
     const current = index[collectionId];
     if (current) {
       current.childJobIds = [...current.childJobIds, ...newJobIds];
+      current.childJobMap = { ...current.childJobMap, ...newJobMap };
       current.updatedAt = new Date().toISOString();
       index[collectionId] = current;
       await this.writeIndex(index);
@@ -290,12 +295,9 @@ export class CollectionStore {
     const collection = await this.get(collectionId);
     if (!collection) return null;
 
-    const itemIndex = collection.crawlResult.items.findIndex(
-      (item) => item.awemeId === awemeId
-    );
-    if (itemIndex < 0 || itemIndex >= collection.childJobIds.length) return null;
+    const jobId = collection.childJobMap[awemeId];
+    if (!jobId) return null;
 
-    const jobId = collection.childJobIds[itemIndex];
     return this.jobStore.get(jobId);
   }
 
