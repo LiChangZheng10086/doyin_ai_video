@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  AlertCircle,
   Plus,
   Search,
   Sparkles,
@@ -30,6 +31,8 @@ export function JobListPage() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [showApiWarning, setShowApiWarning] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [overviews, setOverviews] = useState<JobOverview[]>([]);
   const [query, setQuery] = useState('');
@@ -60,8 +63,10 @@ export function JobListPage() {
         }
         await apiClient.initialize();
         await refreshOverviews();
+        setLoadError(null);
       } catch (error) {
         console.error('Failed to initialize:', error);
+        setLoadError('加载作品列表失败，请检查后端服务是否正常运行');
       } finally {
         setIsLoading(false);
       }
@@ -102,8 +107,9 @@ export function JobListPage() {
       const next = overviews.filter((job) => job.id !== jobId);
       setOverviews(next);
       setJobs(next);
+      setDeleteError(null);
     } catch (error: any) {
-      // Keep deletingId set so the UI shows the error state
+      setDeleteError(error.response?.data?.message || '删除作品失败');
     } finally {
       setDeletingId(null);
       setConfirmDeleteId(null);
@@ -139,6 +145,35 @@ export function JobListPage() {
 
   return (
     <Layout>
+      {/* Load error */}
+      {loadError && (
+        <div className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <AlertCircle size={16} />
+            {loadError}
+          </span>
+          <button
+            onClick={() => { setLoadError(null); window.location.reload(); }}
+            className="text-xs font-medium underline"
+          >
+            重试
+          </button>
+        </div>
+      )}
+
+      {/* Delete error */}
+      {deleteError && (
+        <div className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <AlertCircle size={16} />
+            {deleteError}
+          </span>
+          <button onClick={() => setDeleteError(null)} className="text-xs font-medium underline">
+            关闭
+          </button>
+        </div>
+      )}
+
       {/* Page header */}
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>

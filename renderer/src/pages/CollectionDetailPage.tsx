@@ -160,7 +160,7 @@ export function CollectionDetailPage() {
   const toggleAll = () => {
     if (!collection) return;
     const uncreated = collection.crawlResult.items.filter(
-      (_, idx) => !createdJobIds.has(`${collection.id}-${idx}`)
+      (item) => !collection.childJobMap?.[item.awemeId]
     );
     const allSelected = uncreated.every(
       (item) => selectedIds.has(item.awemeId)
@@ -363,7 +363,7 @@ export function CollectionDetailPage() {
   }
 
   const uncreatedCount = collection.crawlResult.items.filter(
-    (_, idx) => !createdJobIds.has(`${collection.id}-${idx}`)
+    (item) => !collection.childJobMap?.[item.awemeId]
   ).length;
 
   return (
