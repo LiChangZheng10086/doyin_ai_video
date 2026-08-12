@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyHttpFailure, classifyNetworkFailure, mergeAiKeyChanges, normalizeBaseURL } from "./ai-config";
+import {
+  classifyHttpFailure,
+  classifyNetworkFailure,
+  mergeAiKeyChanges,
+  normalizeBaseURL,
+  normalizeMaxOutputTokens
+} from "./ai-config";
 
 test("normalizeBaseURL removes trailing slashes without adding v1", () => {
   assert.equal(normalizeBaseURL("https://gateway.example/v1///"), "https://gateway.example/v1");
@@ -17,6 +23,37 @@ test("mergeAiKeyChanges preserves the existing secret when the edit leaves it bl
   assert.equal(merged.apiKey, "sk-existing");
   assert.equal(merged.baseURL, "https://new.example");
   assert.equal(existing.baseURL, "https://old.example");
+});
+
+test("normalizeMaxOutputTokens keeps valid custom values", () => {
+  assert.equal(normalizeMaxOutputTokens(8192), 8192);
+});
+
+test("normalizeMaxOutputTokens treats an empty value as automatic", () => {
+  assert.equal(normalizeMaxOutputTokens(undefined), undefined);
+});
+
+test("normalizeMaxOutputTokens rejects invalid custom values", () => {
+  assert.throws(() => normalizeMaxOutputTokens(255), /至少为 256/);
+  assert.throws(() => normalizeMaxOutputTokens(1024.5), /整数/);
+});
+
+test("mergeAiKeyChanges clears a previous custom limit", () => {
+  const merged = mergeAiKeyChanges({
+    name: "DeepSeek",
+    provider: "deepseek",
+    apiKey: "secret",
+    baseURL: "https://api.deepseek.com",
+    model: "deepseek-chat",
+    maxOutputTokens: 8192
+  }, {
+    name: "DeepSeek",
+    provider: "deepseek",
+    baseURL: "https://api.deepseek.com",
+    model: "deepseek-chat",
+    maxOutputTokens: null
+  });
+  assert.equal(merged.maxOutputTokens, undefined);
 });
 
 test("classifyNetworkFailure identifies DNS, TLS and timeout errors", () => {

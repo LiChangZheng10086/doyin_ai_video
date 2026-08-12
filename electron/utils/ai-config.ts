@@ -6,11 +6,22 @@ export type EditableAiKey = {
   apiKey: string;
   baseURL?: string;
   model: string;
+  maxOutputTokens?: number;
 };
-export type EditableAiKeyChanges = Omit<EditableAiKey, "apiKey"> & { apiKey?: string };
+export type EditableAiKeyChanges = Omit<EditableAiKey, "apiKey" | "maxOutputTokens"> & {
+  apiKey?: string;
+  maxOutputTokens?: number | null;
+};
 
 export function normalizeBaseURL(value?: string) {
   return (value ?? "").trim().replace(/\/+$/, "");
+}
+
+export function normalizeMaxOutputTokens(value?: number) {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value)) throw new Error("输出 Token 上限必须为整数");
+  if (value < 256) throw new Error("输出 Token 上限至少为 256");
+  return value;
 }
 
 export function mergeAiKeyChanges<T extends EditableAiKey>(existing: T, changes: EditableAiKeyChanges): T {
@@ -18,7 +29,10 @@ export function mergeAiKeyChanges<T extends EditableAiKey>(existing: T, changes:
     ...existing,
     ...changes,
     apiKey: changes.apiKey?.trim() || existing.apiKey,
-    baseURL: normalizeBaseURL(changes.baseURL)
+    baseURL: normalizeBaseURL(changes.baseURL),
+    maxOutputTokens: normalizeMaxOutputTokens(
+      changes.maxOutputTokens === null ? undefined : changes.maxOutputTokens ?? existing.maxOutputTokens
+    )
   };
 }
 

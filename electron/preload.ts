@@ -38,13 +38,17 @@ export interface AIKeyConfig {
   apiKey: string;
   baseURL?: string;
   model: string;
+  maxOutputTokens?: number;
   isActive: boolean; // 当前使用的 Key
   isValid?: boolean; // API Key 是否有效
   lastTested?: string; // 最后测试时间
 }
 
 export type AIKeyInput = Omit<AIKeyConfig, 'id' | 'isActive' | 'isValid' | 'lastTested'>;
-export type AIKeyChanges = Omit<AIKeyInput, 'apiKey'> & { apiKey?: string };
+export type AIKeyChanges = Omit<AIKeyInput, 'apiKey' | 'maxOutputTokens'> & {
+  apiKey?: string;
+  maxOutputTokens?: number | null;
+};
 export type AiErrorCode = 'dns' | 'tls' | 'timeout' | 'auth' | 'endpoint' | 'model' | 'quota' | 'upstream' | 'unknown';
 
 export interface AIKeyTestResult {

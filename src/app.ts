@@ -31,6 +31,7 @@ export interface ServerConfig {
   aiModel?: string;
   aiApiKey?: string;
   aiBaseURL?: string;
+  aiMaxOutputTokens?: number;
   ytDlpBinary?: string;
   ffmpegBinary?: string;
   ffprobeBinary?: string;
@@ -53,6 +54,7 @@ export interface AiRuntimeConfig {
   model: string;
   apiKey: string;
   baseURL?: string;
+  maxOutputTokens?: number;
 }
 
 function isMissingFileError(error: unknown) {
@@ -75,12 +77,14 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   const aiModel = config.aiModel ?? "deepseek-chat";
   const aiApiKey = config.aiApiKey;
   const aiBaseURL = config.aiBaseURL ?? (aiProvider === "deepseek" ? "https://api.deepseek.com" : undefined);
+  const aiMaxOutputTokens = config.aiMaxOutputTokens;
 
   const staticCleanerOptions = {
     apiKey: aiApiKey,
     model: aiModel,
     baseURL: aiBaseURL,
-    provider: aiProvider
+    provider: aiProvider,
+    maxOutputTokens: aiMaxOutputTokens
   } as const;
   const cleaner = config.resolveAiConfig
     ? new RuntimeScriptCleaner(async () => {
@@ -90,7 +94,8 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
           apiKey: current.apiKey,
           model: current.model,
           baseURL: current.baseURL,
-          provider: current.provider
+          provider: current.provider,
+          maxOutputTokens: current.maxOutputTokens
         };
       })
     : new OpenAiScriptCleaner(staticCleanerOptions);

@@ -4,7 +4,7 @@ import path from 'path';
 import { resolve4, resolve6 } from 'dns/promises';
 import { AppConfig, AIKeyChanges, AIKeyConfig, AIKeyInput, AIKeyTestResult, AiErrorCode } from '../preload';
 import { randomUUID } from 'crypto';
-import { classifyHttpFailure, classifyNetworkFailure, mergeAiKeyChanges, normalizeBaseURL } from '../utils/ai-config';
+import { classifyHttpFailure, classifyNetworkFailure, mergeAiKeyChanges, normalizeBaseURL, normalizeMaxOutputTokens } from '../utils/ai-config';
 
 const CONFIG_FILE = 'config.json';
 
@@ -101,6 +101,7 @@ function normalizeAiKey<T extends AIKeyInput>(keyConfig: T): T {
   return {
     ...keyConfig,
     baseURL: normalizeBaseURL(keyConfig.baseURL) || defaultBaseURL(keyConfig.provider),
+    maxOutputTokens: normalizeMaxOutputTokens(keyConfig.maxOutputTokens),
   };
 }
 
