@@ -132,18 +132,18 @@ export function TrashPage() {
                   <div className="flex items-center gap-2 shrink-0">
                     <button
                       type="button"
-                      onClick={() => navigate(`/jobs/${job.id}`)}
-                      className="px-3 py-2 rounded-lg border border-tech-border text-sm text-tech-text hover:bg-tech-bg transition-all"
-                    >
-                      查看
-                    </button>
-                    <button
-                      type="button"
                       disabled={busy}
                       onClick={() => handleRestore(job.id)}
                       className="px-3 py-2 rounded-lg bg-tech-blue text-white text-sm hover:bg-tech-blue-dark disabled:opacity-50 transition-all"
                     >
                       恢复
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/jobs/${job.id}`)}
+                      className="px-3 py-2 rounded-lg border border-tech-border text-sm text-tech-text hover:bg-tech-bg transition-all"
+                    >
+                      查看
                     </button>
                     <button
                       type="button"
