@@ -97,7 +97,7 @@ export function TrashPage() {
 
       {jobs.length === 0 ? (
         <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface px-6 py-20 text-center">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-lg bg-tech-surface border border-tech-border text-tech-muted">
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-lg bg-tech-bg border border-tech-border text-tech-muted">
             <Trash2 size={34} />
           </div>
           <h3 className="text-xl font-semibold text-tech-text mb-2">垃圾桶是空的</h3>
