@@ -24,6 +24,7 @@ import { Layout } from '../components/Layout';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { LocalUsersSettings } from '../components/LocalUsersSettings';
 import { apiClient } from '../services/api';
+import { parseOutputLimit, toOutputLimitForm, type OutputLimitMode } from '../utils/ai-output-limit';
 import { settingsSections } from '../utils/localUsers';
 import type { AiProvider } from '../types';
 
@@ -37,6 +38,7 @@ interface AIKeyConfig {
   isActive: boolean;
   isValid?: boolean;
   lastTested?: string;
+  maxOutputTokens?: number;
 }
 
 type AIKeyForm = {
@@ -45,6 +47,8 @@ type AIKeyForm = {
   apiKey: string;
   baseURL: string;
   model: string;
+  maxOutputMode: OutputLimitMode;
+  maxOutputTokens: string;
 };
 
 type AIKeyTestResult = { valid: boolean; code?: string; error?: string; testedAt?: string };
@@ -55,6 +59,16 @@ const emptyKeyForm = (): AIKeyForm => ({
   apiKey: '',
   baseURL: 'https://api.deepseek.com',
   model: 'deepseek-chat',
+  maxOutputMode: 'automatic',
+  maxOutputTokens: '8192',
+});
+
+const toKeyPayload = (key: AIKeyForm) => ({
+  name: key.name,
+  provider: key.provider,
+  apiKey: key.apiKey,
+  baseURL: key.baseURL,
+  model: key.model,
 });
 
 type SettingsSection = (typeof settingsSections)[number]['id'];
@@ -117,6 +131,14 @@ export function SettingsPage() {
   };
 
   const handleTest = async () => {
+    let maxOutputTokens: number | undefined;
+    try {
+      maxOutputTokens = parseOutputLimit(newKey.maxOutputMode, newKey.maxOutputTokens);
+    } catch (error) {
+      setTestResult({ valid: false, error: error instanceof Error ? error.message : '输出 Token 上限无效' });
+      return;
+    }
+
     if (!newKey.apiKey) {
       setTestResult({ valid: false, error: '请输入 API Key' });
       return;
@@ -126,7 +148,10 @@ export function SettingsPage() {
     setTestResult(null);
 
     try {
-      const result = await window.electron.testApiKey(newKey);
+      const result = await window.electron.testApiKey({
+        ...toKeyPayload(newKey),
+        ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+      });
       setTestResult(result);
     } catch (error) {
       setTestResult({
@@ -139,6 +164,14 @@ export function SettingsPage() {
   };
 
   const handleAdd = async () => {
+    let maxOutputTokens: number | undefined;
+    try {
+      maxOutputTokens = parseOutputLimit(newKey.maxOutputMode, newKey.maxOutputTokens);
+    } catch (error) {
+      setTestResult({ valid: false, error: error instanceof Error ? error.message : '输出 Token 上限无效' });
+      return;
+    }
+
     if (!newKey.name || !newKey.apiKey) {
       setTestResult({ valid: false, error: '请填写完整信息' });
       return;
@@ -152,7 +185,10 @@ export function SettingsPage() {
     setIsSaving(true);
 
     try {
-      await window.electron.addApiKey(newKey);
+      await window.electron.addApiKey({
+        ...toKeyPayload(newKey),
+        ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+      });
       await loadApiKeys();
       closeKeyForm();
     } catch (error) {
@@ -173,6 +209,7 @@ export function SettingsPage() {
   };
 
   const startEditing = (key: AIKeyConfig) => {
+    const outputLimit = toOutputLimitForm(key.maxOutputTokens);
     setEditingKeyId(key.id);
     setNewKey({
       name: key.name,
@@ -180,6 +217,8 @@ export function SettingsPage() {
       apiKey: '',
       baseURL: key.baseURL || '',
       model: key.model,
+      maxOutputMode: outputLimit.mode,
+      maxOutputTokens: outputLimit.value,
     });
     setTestResult(null);
     setIsAdding(true);
@@ -193,6 +232,14 @@ export function SettingsPage() {
   };
 
   const handleUpdate = async () => {
+    let maxOutputTokens: number | undefined;
+    try {
+      maxOutputTokens = parseOutputLimit(newKey.maxOutputMode, newKey.maxOutputTokens);
+    } catch (error) {
+      setTestResult({ valid: false, error: error instanceof Error ? error.message : '输出 Token 上限无效' });
+      return;
+    }
+
     if (!editingKeyId || !newKey.name || !newKey.model || (newKey.provider === 'custom' && !newKey.baseURL)) {
       setTestResult({ valid: false, error: '请填写完整信息' });
       return;
@@ -200,7 +247,10 @@ export function SettingsPage() {
     setIsSaving(true);
     setTestResult(null);
     try {
-      await window.electron.updateApiKey(editingKeyId, newKey);
+      await window.electron.updateApiKey(editingKeyId, {
+        ...toKeyPayload(newKey),
+        maxOutputTokens: maxOutputTokens ?? null,
+      });
       await loadApiKeys();
       closeKeyForm();
     } catch (error) {
@@ -457,6 +507,9 @@ function ModelsSection({
                   <p className="text-sm text-tech-muted">
                     模型：<code className="rounded bg-tech-bg px-2 py-0.5 text-tech-text">{key.model}</code>
                   </p>
+                  <p className="mt-1 text-xs text-tech-muted">
+                    输出上限：{key.maxOutputTokens === undefined ? '自动' : key.maxOutputTokens.toLocaleString('zh-CN')}
+                  </p>
                   {key.baseURL && <p className="mt-1 break-all font-mono text-xs text-tech-muted">{key.baseURL}</p>}
                   <p className="mt-1 font-mono text-xs text-tech-muted">
                     密钥：{key.apiKey.slice(0, 8)}...{key.apiKey.slice(-4)}
@@ -596,6 +649,36 @@ function ModelsSection({
                 placeholder="模型 ID"
                 className={`${inputClassName} font-mono text-sm`}
               />
+            </FormField>
+
+            <FormField label="创作输出 Token 上限">
+              <div className="inline-flex rounded-lg border border-tech-border bg-tech-bg p-1">
+                {(['automatic', 'custom'] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setNewKey({ ...newKey, maxOutputMode: mode })}
+                    className={mode === newKey.maxOutputMode
+                      ? 'rounded-md bg-tech-surface px-3 py-2 text-sm font-medium text-tech-text shadow-sm'
+                      : 'rounded-md px-3 py-2 text-sm font-medium text-tech-muted transition-colors hover:text-tech-text'}
+                  >
+                    {mode === 'automatic' ? '自动' : '自定义'}
+                  </button>
+                ))}
+              </div>
+              {newKey.maxOutputMode === 'custom' && (
+                <input
+                  type="number"
+                  min={256}
+                  step={1}
+                  value={newKey.maxOutputTokens}
+                  onChange={(event) => setNewKey({ ...newKey, maxOutputTokens: event.target.value })}
+                  className={`${inputClassName} mt-3`}
+                />
+              )}
+              <p className="mt-2 text-xs leading-5 text-tech-muted">
+                仅用于 AI 洗稿和生成分镜。自动模式不由应用限制；自定义值最终仍受模型和中转服务限制。
+              </p>
             </FormField>
 
             {testResult && (
