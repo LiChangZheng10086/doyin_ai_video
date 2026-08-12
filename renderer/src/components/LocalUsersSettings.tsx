@@ -15,6 +15,7 @@ import {
 import { apiClient } from '../services/api';
 import { useOperatorStore } from '../store/operator';
 import type { LocalUser, LocalUserRole } from '../types';
+import { ConfirmDialog } from './ui/ConfirmDialog';
 import {
   canManageUsers,
   canRestoreLocalUserDialogFocus,
@@ -76,6 +77,8 @@ export function LocalUsersSettings() {
   const [pinError, setPinError] = useState('');
   const [restorePinFocusPending, setRestorePinFocusPending] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [deactivateTarget, setDeactivateTarget] = useState<LocalUser | null>(null);
+  const [demoteTarget, setDemoteTarget] = useState<LocalUser | null>(null);
   const mutationLockRef = useRef(createLocalUserMutationLock());
   const pinModalRootRef = useRef<HTMLDivElement>(null);
   const pinDialogRef = useRef<HTMLFormElement>(null);
@@ -283,10 +286,26 @@ export function LocalUsersSettings() {
   const handleActiveChange = async (user: LocalUser) => {
     if (mutationLockRef.current.locked) return;
     if (user.isActive && user.id === currentUser?.id && currentUser.role === 'admin') return;
-    if (user.isActive && !window.confirm(`确定要停用“${user.displayName}”吗？`)) return;
+    if (user.isActive) {
+      setDeactivateTarget(user);
+      return;
+    }
     await executeMutation({
       targetUserId: user.id,
       mutate: () => apiClient.updateLocalUser(user.id, { isActive: !user.isActive }),
+      applySavedValue: ({ user: savedUser }) => syncUser(savedUser),
+      savedUserId: ({ user: savedUser }) => savedUser.id,
+      onFailure: (message) => setRowErrors((current) => ({ ...current, [user.id]: message })),
+    });
+  };
+
+  const confirmDeactivate = async () => {
+    const user = deactivateTarget;
+    if (!user || mutationLockRef.current.locked) return;
+    setDeactivateTarget(null);
+    await executeMutation({
+      targetUserId: user.id,
+      mutate: () => apiClient.updateLocalUser(user.id, { isActive: false }),
       applySavedValue: ({ user: savedUser }) => syncUser(savedUser),
       savedUserId: ({ user: savedUser }) => savedUser.id,
       onFailure: (message) => setRowErrors((current) => ({ ...current, [user.id]: message })),
@@ -300,10 +319,13 @@ export function LocalUsersSettings() {
       return;
     }
 
-    const confirmed = window.confirm(
-      `确定要将“${user.displayName}”改为发布者吗？确认后将移除该用户的管理员 PIN。`
-    );
-    if (!confirmed) return;
+    setDemoteTarget(user);
+  };
+
+  const confirmDemote = async () => {
+    const user = demoteTarget;
+    if (!user || mutationLockRef.current.locked) return;
+    setDemoteTarget(null);
     await executeMutation({
       targetUserId: user.id,
       mutate: () => apiClient.updateLocalUser(user.id, { role: 'publisher' }),
@@ -561,6 +583,28 @@ export function LocalUsersSettings() {
         </div>,
         document.body
       )}
+
+      <ConfirmDialog
+        open={deactivateTarget !== null}
+        title="停用用户"
+        description={`确定要停用"${deactivateTarget?.displayName ?? ''}"吗？`}
+        confirmLabel="停用"
+        tone="warning"
+        busy={isMutating}
+        onConfirm={confirmDeactivate}
+        onClose={() => setDeactivateTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={demoteTarget !== null}
+        title="降级为发布者"
+        description={`确定要将"${demoteTarget?.displayName ?? ''}"改为发布者吗？确认后将移除该用户的管理员 PIN。`}
+        confirmLabel="确认降级"
+        tone="warning"
+        busy={isMutating}
+        onConfirm={confirmDemote}
+        onClose={() => setDemoteTarget(null)}
+      />
     </section>
   );
 }
