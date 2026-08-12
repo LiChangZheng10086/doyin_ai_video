@@ -324,7 +324,7 @@ export function CollectionDetailPage() {
     }
   };
 
-  const getItemStatus = (item: DouyinVideoItem): 'created' | 'processing' | 'done' | 'failed' | 'pending' => {
+  const getItemStatus = (item: DouyinVideoItem): 'created' | 'processing' | 'done' | 'failed' | 'pending' | 'unknown' => {
     if (!collection) return 'pending';
     const jobId = collection.childJobMap?.[item.awemeId];
     if (!jobId) return 'pending';
@@ -337,14 +337,8 @@ export function CollectionDetailPage() {
       return 'created';
     }
 
-    // Fallback: use progress summary (less accurate but always available)
-    const idx = collection.crawlResult.items.findIndex((i) => i.awemeId === item.awemeId);
-    if (idx < 0 || idx >= collection.childJobIds.length) return 'pending';
-    const progress = collection.childJobProgress;
-    if (progress.rendered > 0 && progress.rendered > idx) return 'done';
-    if (progress.failed > 0) return 'failed';
-    if (progress.transcribed > 0 && progress.transcribed > idx) return 'processing';
-    return 'created';
+    // itemStates 加载失败，无法确定精确状态
+    return 'unknown';
   };
 
   if (isLoading) {
@@ -673,7 +667,7 @@ export function CollectionDetailPage() {
                     {formatDuration(item.duration)} ·{' '}
                     {new Date(item.createTime * 1000).toLocaleDateString('zh-CN')}
                     {item.statistics.diggCount > 0 &&
-                      ` · ❤️ ${formatCount(item.statistics.diggCount)}`}
+                      ` · 赞 ${formatCount(item.statistics.diggCount)}`}
                   </p>
                 </div>
 
@@ -683,6 +677,12 @@ export function CollectionDetailPage() {
                     <span className="inline-flex items-center gap-1 text-xs text-tech-muted">
                       <Clock size={12} />
                       待创建
+                    </span>
+                  )}
+                  {status === 'unknown' && (
+                    <span className="inline-flex items-center gap-1 text-xs text-tech-muted">
+                      <Clock size={12} />
+                      状态同步失败
                     </span>
                   )}
                   {status === 'processing' && (
@@ -1101,23 +1101,23 @@ function SkillGenModal({
                 <div className="text-xs space-y-1 pt-1 border-t border-tech-border">
                   <p className="font-medium text-tech-text mb-1">将生成以下产物：</p>
                   <div className="grid grid-cols-2 gap-1">
-                    <PlannedItem label="增强 SKILL.md" active icon="📄" />
+                    <PlannedItem label="增强 SKILL.md" active icon="·" />
                     {Object.entries(progress.generates).map(([key, val]) => (
                       <PlannedItem
                         key={key}
                         label={productLabelMap[key] || key}
                         active={!!val}
-                        icon={val ? '✅' : '⏭️'}
+                        icon={val ? '✓' : '—'}
                       />
                     ))}
                     {progress.templates && progress.templates.length > 0 && (
                       <PlannedItem
                         label={`${progress.templates.length} 个模板`}
                         active
-                        icon="📋"
+                        icon="·"
                       />
                     )}
-                    <PlannedItem label="验收用例" active icon="🧪" />
+                    <PlannedItem label="验收用例" active icon="·" />
                   </div>
                 </div>
               )}

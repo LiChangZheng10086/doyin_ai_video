@@ -171,7 +171,7 @@ export function SkillListPage() {
           </button>
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2">
           {skills.map((skill) => (
             <div
               key={skill.collectionId}
@@ -180,10 +180,20 @@ export function SkillListPage() {
               {/* Skill 名称 */}
               <div className="flex items-start gap-3 mb-3">
                 {skill.avatarUrl ? (
-                  <img src={skill.avatarUrl} alt={skill.collectionNickname} className="h-10 w-10 shrink-0 rounded-lg object-cover" />
-                ) : (
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-tech-purple to-tech-blue text-white">
-                    <Brain size={18} />
+                  <img
+                    src={skill.avatarUrl}
+                    alt={skill.collectionNickname}
+                    className="h-10 w-10 shrink-0 rounded-lg object-cover"
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      (e.target as HTMLImageElement).style.display = 'none';
+                    }}
+                  />
+                ) : null}
+                {(!skill.avatarUrl) && (
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-tech-purple to-tech-blue text-white text-sm font-bold">
+                    {skill.collectionNickname?.charAt(0) || <Brain size={16} />}
                   </div>
                 )}
                 <div className="min-w-0 flex-1">

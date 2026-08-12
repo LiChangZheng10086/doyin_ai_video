@@ -148,6 +148,25 @@ export function JobDetailPage() {
     };
   }, [id, runningStep]);
 
+  useEffect(() => {
+    if (!videoOutput || !job) return;
+    setStreamError(false);
+    const loadVideoUrl = async () => {
+      try {
+        const [downloadUrl, previewUrl] = await Promise.all([
+          apiClient.downloadVideo(job.id),
+          apiClient.getVideoStreamUrl(job.id),
+        ]);
+        setVideoUrl(downloadUrl);
+        setStreamUrl(previewUrl);
+      } catch (err) {
+        console.error('Failed to get video URL:', err);
+        setStreamError(true);
+      }
+    };
+    loadVideoUrl();
+  }, [videoOutput, job?.id]);
+
   if (isLoading) {
     return (
       <Layout>
@@ -229,24 +248,6 @@ export function JobDetailPage() {
   };
   const artifactStates = buildArtifactStates(job, artifactAvailability);
   const activeArtifactKey: ArtifactKey = activeTab === 'prompts' ? 'shots' : activeTab === 'script' ? 'script' : activeTab === 'transcript' ? 'transcript' : 'video';
-
-  useEffect(() => {
-    if (!videoOutput) return;
-    setStreamError(false);
-    const loadVideoUrl = async () => {
-      try {
-        const [downloadUrl, previewUrl] = await Promise.all([
-          apiClient.downloadVideo(job.id),
-          apiClient.getVideoStreamUrl(job.id),
-        ]);
-        setVideoUrl(downloadUrl);
-        setStreamUrl(previewUrl);
-      } catch (err) {
-        console.error('Failed to get video URL:', err);
-      }
-    };
-    loadVideoUrl();
-  }, [videoOutput, job.id]);
 
   const openPublishingDialog = () => {
     if (!currentUser) {
@@ -348,6 +349,7 @@ export function JobDetailPage() {
                 streamError={streamError}
                 publishError={publishError}
                 onOpenPublishing={openPublishingDialog}
+                onVideoError={() => setStreamError(true)}
               />
             ) : activeArtifactKey === 'video' && videoError ? (
               <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">

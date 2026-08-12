@@ -261,8 +261,21 @@ export function SettingsPage() {
         <p className="mt-1 text-sm text-tech-muted">配置 AI 模型、抖音登录、语音转录和本地创作资产。</p>
       </div>
 
+      {/* 移动端：水平下拉选择 */}
+      <div className="mb-6 lg:hidden">
+        <select
+          value={activeSection}
+          onChange={(e) => setActiveSection(e.target.value as SettingsSection)}
+          className="w-full rounded-lg border border-tech-border bg-tech-surface px-4 py-3 text-sm font-medium text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue"
+        >
+          {settingsSections.map((s) => (
+            <option key={s.id} value={s.id}>{s.label} — {s.description}</option>
+          ))}
+        </select>
+      </div>
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="rounded-lg border border-tech-border bg-tech-surface p-2">
+        <aside className="hidden lg:block rounded-lg border border-tech-border bg-tech-surface p-2">
           {settingsSections.map((section) => {
             const Icon = settingsSectionIcons[section.id];
             const active = activeSection === section.id;

@@ -125,7 +125,7 @@ export function CollectionListPage() {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {collections.map((collection) => (
             <CollectionCard
               key={collection.id}

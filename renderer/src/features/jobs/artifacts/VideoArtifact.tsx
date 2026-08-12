@@ -12,6 +12,7 @@ export interface VideoArtifactProps {
   streamError: boolean;
   publishError: string;
   onOpenPublishing: () => void;
+  onVideoError: () => void;
 }
 
 export function VideoArtifact({
@@ -22,6 +23,7 @@ export function VideoArtifact({
   streamError,
   publishError,
   onOpenPublishing,
+  onVideoError,
 }: VideoArtifactProps) {
   return (
     <div className="space-y-5">
@@ -79,6 +81,7 @@ export function VideoArtifact({
             src={streamUrl}
             controls
             playsInline
+            onError={onVideoError}
             className="mx-auto aspect-[9/16] max-h-[72vh] w-full max-w-sm rounded-md bg-black"
           />
         </div>

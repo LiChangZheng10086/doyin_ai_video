@@ -127,7 +127,7 @@ test('VideoArtifact renders player with controls and 9:16 wrapper', () => {
     scenes: [],
   };
   const markup = renderToStaticMarkup(
-    React.createElement(VideoArtifact, { output, jobId: 'job-1', title: '测试视频', videoError: null, videoUrl: 'https://example.com/v.mp4', streamUrl: 'https://example.com/stream', streamError: false, publishError: '', onOpenPublishing: noop }),
+    React.createElement(VideoArtifact, { output, jobId: 'job-1', title: '测试视频', videoError: null, videoUrl: 'https://example.com/v.mp4', streamUrl: 'https://example.com/stream', streamError: false, publishError: '', onOpenPublishing: noop, onVideoError: noop }),
   );
   assert.match(markup, /controls/);
   assert.match(markup, /9:16/);
