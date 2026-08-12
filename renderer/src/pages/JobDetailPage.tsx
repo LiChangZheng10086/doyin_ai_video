@@ -29,7 +29,6 @@ import type {
   RawTranscript,
   PipelineStep,
   HyperframesVideoOutput,
-  ShortVideoShot,
 } from '../types';
 
 type OutcomeTab = 'transcript' | 'script' | 'prompts' | 'video';
@@ -48,8 +47,12 @@ export function JobDetailPage() {
   const [videoError, setVideoError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [runningStep, setRunningStep] = useState<PipelineStep | null>(null);
-  const [activeTab, setActiveTab] = useState<OutcomeTab>('script');
+  const [activeTab, setActiveTab] = useState<OutcomeTab>(() => {
+    // Determine best initial tab based on job state — called once on mount
+    return 'script'; // Will be set properly when job data arrives
+  });
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [tabInitialized, setTabInitialized] = useState(false);
 
   // ── Video player state (must be before any conditional returns) ──
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -166,6 +169,22 @@ export function JobDetailPage() {
     };
     loadVideoUrl();
   }, [videoOutput, job?.id]);
+
+  // Auto-select initial tab based on available artifacts
+  useEffect(() => {
+    if (tabInitialized || !job) return;
+    // Video ready → open video; else shots ready → open shots; else rewrite ready → open script; else transcript → open transcript
+    if (videoOutput?.videoPath) {
+      setActiveTab('video');
+    } else if (cleaned?.output?.shortVideoShots?.length || cleaned?.output?.videoPrompts?.length || cleaned?.output?.enhancedScenes?.length) {
+      setActiveTab('prompts');
+    } else if (cleaned?.output?.cleanScript || cleaned?.output?.summary) {
+      setActiveTab('script');
+    } else if (rawTranscript?.transcript) {
+      setActiveTab('transcript');
+    }
+    setTabInitialized(true);
+  }, [job, cleaned, rawTranscript, videoOutput, tabInitialized]);
 
   if (isLoading) {
     return (
@@ -336,7 +355,7 @@ export function JobDetailPage() {
               <RewriteArtifact cleaned={cleaned} cleanedError={cleanedError} />
             )}
             {activeArtifactKey === 'shots' && (
-              <VideoPromptsContent cleaned={cleaned} />
+              <ShotsContent cleaned={cleaned} />
             )}
             {activeArtifactKey === 'video' && videoOutput ? (
               <VideoArtifact
@@ -389,9 +408,9 @@ export function JobDetailPage() {
   );
 }
 
-// ── Shots display content ──
+// ── Shots display content (delegates to ShotArtifact) ──
 
-function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
+function ShotsContent({ cleaned }: { cleaned: CleanedScript | null }) {
   const output = cleaned?.output;
   const shots = output?.shortVideoShots ?? [];
   const prompts = output?.videoPrompts ?? [];
@@ -416,7 +435,7 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
       {shots.length > 0 ? (
         <div className="space-y-3">
           {shots.map((shot) => (
-            <ShotCard key={`${shot.index}-${shot.caption}`} shot={shot} />
+            <ShotArtifact key={`${shot.index}-${shot.caption || shot.headline || ''}`} shot={shot} />
           ))}
         </div>
       ) : scenes.length > 0 ? (
@@ -470,65 +489,6 @@ function VideoPromptsContent({ cleaned }: { cleaned: CleanedScript | null }) {
   );
 }
 
-function ShotCard({ shot }: { shot: ShortVideoShot }) {
-  const layers = shot.visualLayers ?? [];
-  const captionLines = shot.captionLines?.length ? shot.captionLines : [shot.caption].filter(Boolean);
-  const visualItems = shot.visualItems ?? [];
-
-  return (
-    <div className="rounded-lg border border-tech-border bg-gray-50 p-4">
-      <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="text-xs font-semibold text-purple-600">镜头 {shot.index} · {formatShotType(shot.shotType)}</p>
-          <h4 className="mt-1 text-base font-semibold text-tech-text">{shot.headline || shot.subject}</h4>
-          {shot.supportingText && <p className="mt-1 text-sm text-tech-muted">{shot.supportingText}</p>}
-        </div>
-        <div className="flex flex-wrap gap-2 text-xs text-tech-muted">
-          <span className="rounded-full bg-white px-2 py-1">{formatSeconds(shot.duration)}</span>
-          {shot.layout && <span className="rounded-full bg-white px-2 py-1">{formatLayout(shot.layout)}</span>}
-          {shot.sourceKeyPoints?.length ? <span className="rounded-full bg-white px-2 py-1">覆盖要点 {shot.sourceKeyPoints.map((item) => item + 1).join('、')}</span> : null}
-        </div>
-      </div>
-
-      <div className="mt-3 rounded-lg border border-purple-100 bg-white p-3">
-        <label className="mb-1 block text-xs font-medium uppercase text-purple-500">字幕</label>
-        {captionLines.map((line, index) => <p key={index} className="text-sm leading-6 text-tech-text">{line}</p>)}
-      </div>
-
-      {visualItems.length > 0 && (
-        <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3">
-          {visualItems.map((item, index) => (
-            <div key={`${item.label}-${index}`} className="rounded-lg border border-tech-border bg-white p-3">
-              <p className="text-xs text-tech-muted">{item.label}</p>
-              {item.value && <p className="mt-1 font-semibold text-tech-text">{item.value}</p>}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <details className="mt-3 rounded-lg border border-tech-border bg-white p-3">
-        <summary className="cursor-pointer text-sm font-medium text-tech-muted">制作信息</summary>
-        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-          <Metric label="转场" value={shot.transition} />
-          <Metric label="节奏" value={shot.pacing} />
-          <Metric label="画面动作" value={shot.action} />
-          <Metric label="镜头运动" value={shot.cameraMotion} />
-        </div>
-        {layers.length > 0 && (
-          <div className="mt-3 space-y-2">
-            {layers.map((layer, index) => (
-              <p key={`${layer.type}-${index}`} className="text-xs leading-5 text-tech-muted">
-                {layer.type}: {[layer.content, layer.motion, layer.style].filter(Boolean).join(' · ')}
-              </p>
-            ))}
-          </div>
-        )}
-        {shot.narration && <p className="mt-3 text-xs leading-5 text-tech-muted">内部口播稿：{shot.narration}</p>}
-      </details>
-    </div>
-  );
-}
-
 // ── Utility helpers ──
 
 function Metric({ label, value }: { label: string; value: string }) {
@@ -538,30 +498,6 @@ function Metric({ label, value }: { label: string; value: string }) {
       <p className="text-sm text-tech-text">{value}</p>
     </div>
   );
-}
-
-function formatShotType(type?: ShortVideoShot['shotType']) {
-  const labels: Record<string, string> = {
-    hook: '开场钩子', problem: '问题', explain: '解释', proof: '验证',
-    contrast: '对比', process: '流程', summary: '总结', cta: '行动引导',
-  };
-  return type ? (labels[type] ?? '内容镜头') : '内容镜头';
-}
-
-function formatLayout(layout: ShortVideoShot['layout']) {
-  if (!layout) return '';
-  const labels: Record<string, string> = {
-    'kinetic-title': '动态标题', 'concept-map': '概念关系', 'process-flow': '流程图',
-    comparison: '对比画面', metric: '数据状态', 'summary-stack': '总结收束',
-  };
-  return labels[layout] ?? layout;
-}
-
-function formatSeconds(seconds: number) {
-  const safeSeconds = Math.max(0, Math.round(seconds));
-  const minutes = Math.floor(safeSeconds / 60);
-  const remainder = safeSeconds % 60;
-  return `${minutes}:${String(remainder).padStart(2, '0')}`;
 }
 
 function formatTrashRetention(value?: string) {

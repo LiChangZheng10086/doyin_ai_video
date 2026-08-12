@@ -720,10 +720,12 @@ function AdvancedSection() {
             </div>
             <button
               type="button"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 transition-colors"
+              disabled
+              title="此功能将在后续版本中提供"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-400 cursor-not-allowed transition-colors"
             >
               <Trash2 size={14} />
-              重置数据
+              暂不可用
             </button>
           </div>
           <div className="rounded-lg border border-red-200 bg-white p-4 flex items-center justify-between">
@@ -733,10 +735,12 @@ function AdvancedSection() {
             </div>
             <button
               type="button"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg transition-colors"
+              disabled
+              title="此功能将在后续版本中提供"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-muted cursor-not-allowed transition-colors"
             >
               <RefreshCw size={14} />
-              清除缓存
+              暂不可用
             </button>
           </div>
         </div>

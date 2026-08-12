@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Clock,
   Loader2,
+  MoreHorizontal,
   Plus,
   Sparkles,
   Trash2,
@@ -27,6 +28,7 @@ export function CollectionListPage() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState(false);
+  const [expandedMenu, setExpandedMenu] = useState<string | null>(null);
 
   const navigate = useNavigate();
 
@@ -152,8 +154,10 @@ export function CollectionListPage() {
               key={collection.id}
               collection={collection}
               deleting={deletingId === collection.id}
+              expandedMenu={expandedMenu === collection.id}
               onOpen={() => navigate(`/collections/${collection.id}`)}
               onDelete={() => setDeleteTarget(collection.id)}
+              onToggleMenu={() => setExpandedMenu(expandedMenu === collection.id ? null : collection.id)}
             />
           ))}
         </div>
@@ -192,13 +196,17 @@ export function CollectionListPage() {
 function CollectionCard({
   collection,
   deleting,
+  expandedMenu,
   onOpen,
   onDelete,
+  onToggleMenu,
 }: {
   collection: CollectionOverview;
   deleting: boolean;
+  expandedMenu: boolean;
   onOpen: () => void;
   onDelete: () => void;
+  onToggleMenu: () => void;
 }) {
   const [avatarFailed, setAvatarFailed] = useState(false);
   const progress = collection.childJobProgress;
@@ -295,18 +303,40 @@ function CollectionCard({
             '点击查看详情'
           )}
         </span>
-        <button
-          type="button"
-          disabled={deleting}
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
-          }}
-          className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-600 transition-all hover:bg-red-50 disabled:opacity-50"
-          aria-label="删除合集"
-        >
-          <Trash2 size={15} />
-        </button>
+        <div className="relative">
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleMenu();
+            }}
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-tech-border text-tech-muted transition-all hover:bg-tech-bg disabled:opacity-50"
+            aria-label="更多操作"
+          >
+            <MoreHorizontal size={15} />
+          </button>
+          {expandedMenu && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={(e) => { e.stopPropagation(); onToggleMenu(); }} />
+              <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border border-tech-border bg-white shadow-lg py-1 min-w-[120px]">
+                <button
+                  type="button"
+                  disabled={deleting}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onToggleMenu();
+                    onDelete();
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                >
+                  <Trash2 size={14} />
+                  删除合集
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

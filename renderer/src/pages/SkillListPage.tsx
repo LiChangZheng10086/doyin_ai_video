@@ -216,17 +216,10 @@ export function SkillListPage() {
                       </button>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-1.5 group/name">
+                    <div className="flex items-center gap-1.5">
                       <h3 className="font-semibold text-tech-text truncate">
                         {skill.skillName}
                       </h3>
-                      <button
-                        onClick={() => startRename(skill)}
-                        className="shrink-0 p-0.5 rounded text-tech-muted opacity-0 group-hover/name:opacity-100 hover:text-tech-blue hover:bg-blue-50 transition-all"
-                        title="重命名"
-                      >
-                        <Edit3 size={12} />
-                      </button>
                     </div>
                   )}
                   <p className="text-xs text-tech-muted mt-0.5 truncate">

@@ -45,6 +45,14 @@ button, input, textarea, select { font: inherit; }
 button, summary { -webkit-tap-highlight-color: transparent; }
 :focus-visible { outline: 2px solid #2563EB; outline-offset: 2px; }
 
+/* Safe area utilities for notched devices */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;
