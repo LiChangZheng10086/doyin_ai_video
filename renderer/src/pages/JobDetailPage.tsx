@@ -51,6 +51,14 @@ export function JobDetailPage() {
   const [activeTab, setActiveTab] = useState<OutcomeTab>('script');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
+  // ── Video player state (must be before any conditional returns) ──
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
+  const [streamError, setStreamError] = useState(false);
+  const [showPublishDialog, setShowPublishDialog] = useState(false);
+  const [publishError, setPublishError] = useState('');
+  const currentUser = useOperatorStore((state) => state.currentUser);
+
   const loadJobArtifacts = async (jobData: Job) => {
     setCleanedError(null);
     setTranscriptError(null);
@@ -221,14 +229,6 @@ export function JobDetailPage() {
   };
   const artifactStates = buildArtifactStates(job, artifactAvailability);
   const activeArtifactKey: ArtifactKey = activeTab === 'prompts' ? 'shots' : activeTab === 'script' ? 'script' : activeTab === 'transcript' ? 'transcript' : 'video';
-
-  // Video content view state
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [streamUrl, setStreamUrl] = useState<string | null>(null);
-  const [streamError, setStreamError] = useState(false);
-  const [showPublishDialog, setShowPublishDialog] = useState(false);
-  const [publishError, setPublishError] = useState('');
-  const currentUser = useOperatorStore((state) => state.currentUser);
 
   useEffect(() => {
     if (!videoOutput) return;
