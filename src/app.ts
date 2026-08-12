@@ -1701,6 +1701,7 @@ ${tpl.topic}
         .map((c) => ({
           collectionId: c.id,
           collectionNickname: c.nickname,
+          avatarUrl: c.avatarUrl || "",
           skillName: c.skillName,
           skillPath: c.skillPath,
           skillGeneratedAt: c.skillGeneratedAt,

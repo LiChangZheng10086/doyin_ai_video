@@ -613,6 +613,7 @@ export interface SkillContentResponse {
 export interface SkillSummary {
   collectionId: string;
   collectionNickname: string;
+  avatarUrl: string;
   skillName: string;
   skillPath: string;
   skillGeneratedAt: string;

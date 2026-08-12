@@ -179,9 +179,13 @@ export function SkillListPage() {
             >
               {/* Skill 名称 */}
               <div className="flex items-start gap-3 mb-3">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-tech-purple to-tech-blue text-white">
-                  <Brain size={18} />
-                </div>
+                {skill.avatarUrl ? (
+                  <img src={skill.avatarUrl} alt={skill.collectionNickname} className="h-10 w-10 shrink-0 rounded-lg object-cover" />
+                ) : (
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-tech-purple to-tech-blue text-white">
+                    <Brain size={18} />
+                  </div>
+                )}
                 <div className="min-w-0 flex-1">
                   {renamingId === skill.collectionId ? (
                     <div className="flex items-center gap-1.5">
