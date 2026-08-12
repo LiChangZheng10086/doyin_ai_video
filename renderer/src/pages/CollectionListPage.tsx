@@ -93,10 +93,6 @@ export function CollectionListPage() {
     <Layout>
       <div className="mb-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="mb-2 inline-flex items-center gap-2 rounded-full bg-purple-50 px-3 py-1 text-xs font-medium text-tech-purple">
-            <Sparkles size={14} />
-            作品合集
-          </p>
           <h2 className="text-2xl font-semibold text-tech-text">作品合集</h2>
           <p className="mt-1 text-sm text-tech-muted">
             从抖音用户主页批量采集视频，统一管理、处理和生成
@@ -186,6 +182,7 @@ function CollectionCard({
   const [avatarFailed, setAvatarFailed] = useState(false);
   const progress = collection.childJobProgress;
   const showAvatar = Boolean(collection.avatarUrl) && !avatarFailed;
+
   const overallPercent = progress.total > 0
     ? Math.round(
         ((progress.transcribed + progress.cleaned + progress.scripted + progress.rendered) /
@@ -197,45 +194,43 @@ function CollectionCard({
   return (
     <div
       onClick={onOpen}
-      className="cursor-pointer overflow-hidden rounded-lg border border-tech-border bg-tech-surface transition-all hover:border-tech-purple hover:shadow-lg"
+      className="cursor-pointer overflow-hidden rounded-lg border border-tech-border bg-tech-surface transition-all hover:border-tech-purple/40 hover:shadow-md"
     >
-      {/* 封面区域 */}
-      <div className="flex items-center gap-4 bg-gradient-to-br from-tech-purple via-tech-purple-dark to-tech-blue p-5">
-        <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full bg-white/20 text-2xl font-bold text-white">
-          {collection.nickname?.charAt(0) || 'U'}
-          {showAvatar && (
+      {/* 身份区：博主头像 + 名称 */}
+      <div className="flex items-center gap-4 p-5">
+        <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full bg-tech-bg ring-2 ring-tech-purple/20">
+          {showAvatar ? (
             <img
               src={collection.avatarUrl}
               alt={collection.nickname || '用户头像'}
-              className="absolute inset-0 h-full w-full object-cover"
+              className="h-full w-full object-cover"
               loading="lazy"
               referrerPolicy="no-referrer"
               onError={() => setAvatarFailed(true)}
             />
+          ) : (
+            <span className="absolute inset-0 flex items-center justify-center text-xl font-bold text-tech-purple">
+              {collection.nickname?.charAt(0) || 'U'}
+            </span>
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="line-clamp-1 font-semibold text-white text-lg">
+          <h3 className="truncate text-lg font-semibold text-tech-text">
             {collection.nickname || '未知用户'}
           </h3>
-          <p className="mt-0.5 text-sm text-white/70">
-            {collection.crawlResult.totalCollected} 个作品
+          <p className="mt-0.5 text-sm text-tech-muted">
+            {collection.crawlResult.totalCollected} 个作品 · {progress.total > 0 ? `${progress.rendered} 部成片` : '待处理'}
           </p>
         </div>
       </div>
 
-      <div className="p-4">
-        {/* 用户信息 */}
-        <div className="mb-4 flex items-center gap-3 text-sm text-tech-muted">
-          <Users size={14} />
-          <span>{collection.crawlResult.totalCollected} 个视频已采集</span>
-        </div>
-
+      {/* 内容库摘要 */}
+      <div className="border-t border-tech-border px-5 py-3">
         {/* 进度条 */}
-        {progress.total > 0 && (
-          <div className="mb-4">
+        {progress.total > 0 ? (
+          <>
             <div className="flex items-center justify-between mb-2 text-xs text-tech-muted">
-              <span>处理进度</span>
+              <span className="font-medium">处理进度</span>
               <span>{overallPercent}%</span>
             </div>
             <div className="h-2 rounded-full bg-tech-bg overflow-hidden">
@@ -244,42 +239,53 @@ function CollectionCard({
                 style={{ width: `${overallPercent}%` }}
               />
             </div>
-            <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            <div className="mt-3 flex flex-wrap gap-1.5 text-xs">
               <ProgressChip label="转录" count={progress.transcribed} total={progress.total} />
               <ProgressChip label="洗稿" count={progress.cleaned} total={progress.total} />
               <ProgressChip label="分镜" count={progress.scripted} total={progress.total} />
               <ProgressChip label="成片" count={progress.rendered} total={progress.total} />
+              {progress.failed > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 font-medium text-red-600">
+                  <AlertCircle size={10} />
+                  {progress.failed} 失败
+                </span>
+              )}
             </div>
-          </div>
-        )}
-
-        {progress.total === 0 && (
-          <div className="mb-4 flex items-center gap-2 text-sm text-tech-muted">
+          </>
+        ) : (
+          <div className="flex items-center gap-2 text-sm text-tech-muted">
             <AlertCircle size={14} />
             <span>尚未创建子任务</span>
           </div>
         )}
+      </div>
 
-        {/* 操作 */}
-        <div className="flex items-center justify-between border-t border-tech-border pt-3">
-          <span className="text-sm font-medium text-tech-text">
-            {progress.total > 0
-              ? `${progress.rendered} / ${progress.total} 部成片`
-              : '点击查看详情'}
-          </span>
-          <button
-            type="button"
-            disabled={deleting}
-            onClick={(event) => {
-              event.stopPropagation();
-              onDelete();
-            }}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-600 transition-all hover:bg-red-50 disabled:opacity-50"
-            aria-label="删除合集"
-          >
-            <Trash2 size={15} />
-          </button>
-        </div>
+      {/* 底部操作 */}
+      <div className="flex items-center justify-between border-t border-tech-border px-5 py-3">
+        <span className="text-xs text-tech-muted">
+          {collection.skillName ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-purple-50 px-2 py-0.5 text-xs font-medium text-tech-purple">
+              <Sparkles size={10} />
+              {collection.skillName}
+            </span>
+          ) : progress.rendered > 0 ? (
+            `${progress.rendered} 部成片可发布`
+          ) : (
+            '点击查看详情'
+          )}
+        </span>
+        <button
+          type="button"
+          disabled={deleting}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+          className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-600 transition-all hover:bg-red-50 disabled:opacity-50"
+          aria-label="删除合集"
+        >
+          <Trash2 size={15} />
+        </button>
       </div>
     </div>
   );
