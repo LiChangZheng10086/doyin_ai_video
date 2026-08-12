@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   CheckCircle2,
   Database,
   HardDrive,
@@ -261,8 +262,21 @@ export function SettingsPage() {
         <p className="mt-1 text-sm text-tech-muted">配置 AI 模型、抖音登录、语音转录和本地创作资产。</p>
       </div>
 
+      {/* 移动端：水平下拉选择 */}
+      <div className="mb-6 lg:hidden">
+        <select
+          value={activeSection}
+          onChange={(e) => setActiveSection(e.target.value as SettingsSection)}
+          className="w-full rounded-lg border border-tech-border bg-tech-surface px-4 py-3 text-sm font-medium text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue"
+        >
+          {settingsSections.map((s) => (
+            <option key={s.id} value={s.id}>{s.label} — {s.description}</option>
+          ))}
+        </select>
+      </div>
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="rounded-lg border border-tech-border bg-tech-surface p-2">
+        <aside className="hidden lg:block rounded-lg border border-tech-border bg-tech-surface p-2">
           {settingsSections.map((section) => {
             const Icon = settingsSectionIcons[section.id];
             const active = activeSection === section.id;
@@ -672,7 +686,7 @@ function AdvancedSection() {
       <SectionHeader
         icon={SlidersHorizontal}
         title="高级选项"
-        description="安全策略和本地运行提示。"
+        description="安全策略、运行诊断和本地数据管理。"
       />
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <InfoCard
@@ -685,6 +699,47 @@ function AdvancedSection() {
           title="处理链路"
           description="视频、音频、转录、洗稿、提示词和成片按任务 ID 保存，删除后会先进入垃圾桶。"
         />
+      </div>
+
+      {/* 危险区域：数据恢复与重置 */}
+      <div className="rounded-lg border border-red-200 bg-red-50 p-6">
+        <div className="flex items-start gap-3 mb-4">
+          <AlertTriangle size={20} className="text-red-600 shrink-0 mt-0.5" />
+          <div>
+            <h3 className="text-lg font-semibold text-red-700">恢复与重置</h3>
+            <p className="mt-1 text-sm text-red-600">
+              以下操作不可撤销，请在执行前确认已备份重要数据。
+            </p>
+          </div>
+        </div>
+        <div className="space-y-3">
+          <div className="rounded-lg border border-red-200 bg-white p-4 flex items-center justify-between">
+            <div>
+              <p className="font-medium text-tech-text">重置所有本地数据</p>
+              <p className="text-xs text-tech-muted mt-0.5">清除所有任务、合集、发布包和 Skill，保留 API Key 和配置</p>
+            </div>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-100 transition-colors"
+            >
+              <Trash2 size={14} />
+              重置数据
+            </button>
+          </div>
+          <div className="rounded-lg border border-red-200 bg-white p-4 flex items-center justify-between">
+            <div>
+              <p className="font-medium text-tech-text">清除缓存和临时文件</p>
+              <p className="text-xs text-tech-muted mt-0.5">清除下载缓存、临时处理文件和日志</p>
+            </div>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg transition-colors"
+            >
+              <RefreshCw size={14} />
+              清除缓存
+            </button>
+          </div>
+        </div>
       </div>
     </section>
   );

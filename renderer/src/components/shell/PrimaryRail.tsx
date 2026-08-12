@@ -32,7 +32,7 @@ export function PrimaryRail() {
   );
 
   return (
-    <nav aria-label="主导航" className="fixed left-0 top-0 bottom-0 z-40 flex w-16 flex-col bg-white border-r border-tech-border">
+    <nav aria-label="主导航" className="fixed left-0 top-0 bottom-0 z-40 flex flex-col bg-white border-r border-tech-border w-14 md:w-[56px] xl:w-16">
       <div className="flex items-center justify-center h-14 border-b border-tech-border">
         <div className="w-8 h-8 bg-gradient-to-br from-tech-blue to-tech-purple rounded-lg flex items-center justify-center">
           <Video size={16} className="text-white" />

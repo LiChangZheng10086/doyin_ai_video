@@ -12,6 +12,7 @@ export interface VideoArtifactProps {
   streamError: boolean;
   publishError: string;
   onOpenPublishing: () => void;
+  onVideoError: () => void;
 }
 
 export function VideoArtifact({
@@ -22,6 +23,7 @@ export function VideoArtifact({
   streamError,
   publishError,
   onOpenPublishing,
+  onVideoError,
 }: VideoArtifactProps) {
   return (
     <div className="space-y-5">
@@ -79,6 +81,7 @@ export function VideoArtifact({
             src={streamUrl}
             controls
             playsInline
+            onError={onVideoError}
             className="mx-auto aspect-[9/16] max-h-[72vh] w-full max-w-sm rounded-md bg-black"
           />
         </div>
@@ -89,14 +92,21 @@ export function VideoArtifact({
         </div>
       ) : null}
 
-      <div className="rounded-lg bg-gray-50 p-4">
-        <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">视频文件</label>
-        <p className="break-all font-mono text-xs text-tech-text">{output.videoPath}</p>
-      </div>
-      <div className="rounded-lg bg-gray-50 p-4">
-        <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">HyperFrames 项目</label>
-        <p className="break-all font-mono text-xs text-tech-text">{output.projectPath}</p>
-      </div>
+      <details className="rounded-lg border border-tech-border bg-white">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-tech-muted hover:text-tech-text">
+          高级信息
+        </summary>
+        <div className="px-4 pb-4 space-y-3">
+          <div className="rounded-lg bg-gray-50 p-4">
+            <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">视频文件</label>
+            <p className="break-all font-mono text-xs text-tech-text">{output.videoPath}</p>
+          </div>
+          <div className="rounded-lg bg-gray-50 p-4">
+            <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">HyperFrames 项目</label>
+            <p className="break-all font-mono text-xs text-tech-text">{output.projectPath}</p>
+          </div>
+        </div>
+      </details>
     </div>
   );
 }

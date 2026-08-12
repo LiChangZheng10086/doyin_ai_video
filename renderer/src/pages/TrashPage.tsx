@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, Trash2 } from 'lucide-react';
+import { Loader2, MoreHorizontal, Trash2 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { apiClient } from '../services/api';
@@ -14,6 +14,7 @@ export function TrashPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
+  const [expandedMenu, setExpandedMenu] = useState<string | null>(null);
 
   useEffect(() => {
     const loadTrash = async () => {
@@ -115,47 +116,65 @@ export function TrashPage() {
                 className="bg-tech-surface rounded-lg border border-tech-border p-5"
               >
                 <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-                  <div className="min-w-0">
-                    <h3 className="font-medium text-tech-text mb-1 line-clamp-1">
-                      {job.topic || '无主题'}
-                    </h3>
-                    <p className="text-xs text-tech-muted mb-2">
-                      删除于 {formatDate(job.deletedAt)} · {formatRemaining(job.trashExpiresAt)}
+                <div className="min-w-0">
+                  <h3 className="font-medium text-tech-text mb-1 line-clamp-1">
+                    {job.topic || '无主题'}
+                  </h3>
+                  <p className="text-xs text-tech-muted mb-2">
+                    删除于 {formatDate(job.deletedAt)} · {formatRemaining(job.trashExpiresAt)}
+                  </p>
+                  {job.sourceUrl && (
+                    <p className="text-sm text-tech-muted line-clamp-1 break-all">
+                      {job.sourceUrl}
                     </p>
-                    {job.sourceUrl && (
-                      <p className="text-sm text-tech-muted line-clamp-1 break-all">
-                        {job.sourceUrl}
-                      </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0 relative">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => handleRestore(job.id)}
+                    className="px-3 py-2 rounded-lg bg-tech-blue text-white text-sm hover:bg-tech-blue-dark disabled:opacity-50 transition-all"
+                  >
+                    恢复
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/jobs/${job.id}`)}
+                    className="px-3 py-2 rounded-lg border border-tech-border text-sm text-tech-text hover:bg-tech-bg transition-all"
+                  >
+                    查看
+                  </button>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setExpandedMenu(expandedMenu === job.id ? null : job.id)}
+                      className="px-2 py-2 rounded-lg border border-tech-border text-sm text-tech-muted hover:bg-tech-bg transition-all"
+                      aria-label="更多操作"
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+                    {expandedMenu === job.id && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setExpandedMenu(null)} />
+                        <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border border-tech-border bg-white shadow-lg py-1 min-w-[120px]">
+                          <button
+                            type="button"
+                            disabled={busy || active}
+                            title={active ? '处理中任务暂不能永久删除' : undefined}
+                            onClick={() => { setExpandedMenu(null); setDeleteTarget(job); }}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                          >
+                            <Trash2 size={14} />
+                            永久删除
+                          </button>
+                        </div>
+                      </>
                     )}
                   </div>
-
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => handleRestore(job.id)}
-                      className="px-3 py-2 rounded-lg bg-tech-blue text-white text-sm hover:bg-tech-blue-dark disabled:opacity-50 transition-all"
-                    >
-                      恢复
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/jobs/${job.id}`)}
-                      className="px-3 py-2 rounded-lg border border-tech-border text-sm text-tech-text hover:bg-tech-bg transition-all"
-                    >
-                      查看
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy || active}
-                      title={active ? '处理中任务暂不能永久删除' : undefined}
-                      onClick={() => setDeleteTarget(job)}
-                      className="px-3 py-2 rounded-lg border border-red-200 text-red-600 text-sm hover:bg-red-50 disabled:opacity-50 transition-all"
-                    >
-                      永久删除
-                    </button>
-                  </div>
                 </div>
+              </div>
               </div>
             );
           })}

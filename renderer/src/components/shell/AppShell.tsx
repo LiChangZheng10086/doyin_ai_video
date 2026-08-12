@@ -1,7 +1,7 @@
 import React, { useState, ReactNode } from 'react';
 import { PrimaryRail } from './PrimaryRail';
 import { MobileNavigation } from './MobileNavigation';
-import { UtilityBarDesktop } from './UtilityBar';
+import { UtilityBar, UtilityBarDesktop } from './UtilityBar';
 import { BottomSheet } from '../ui/BottomSheet';
 import { SECONDARY_NAV_ITEMS } from './navigation';
 import { ApiKeyStatusIndicator } from '../ApiKeyStatusIndicator';
@@ -26,8 +26,13 @@ export function AppShell({ children, onRequestRecovery }: AppShellProps) {
         <UtilityBarDesktop onRequestRecovery={onRequestRecovery} />
       </div>
 
-      {/* Main content area — offset for desktop rail + utility bar */}
-      <main className="md:ml-16 md:pt-14 pb-14 md:pb-0 min-h-screen">
+      {/* Mobile context bar (page title) */}
+      <div className="md:hidden">
+        <UtilityBar onRequestRecovery={onRequestRecovery} />
+      </div>
+
+      {/* Main content area — offset for desktop rail + utility bar, mobile top bar */}
+      <main className="pt-14 md:ml-[56px] xl:ml-16 md:pt-14 pb-14 md:pb-0 min-h-screen">
         {children}
       </main>
 

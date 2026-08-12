@@ -152,17 +152,30 @@ export function PublishingActionDialog({
     }
 
     if (type === 'prompt') {
+      const isDatetime = inputLabel?.includes('排期') || inputPlaceholder?.includes('YYYY-MM-DD');
+      const isMultiline = inputLabel?.includes('原因') || inputPlaceholder?.includes('原因');
       return (
         <label className="block">
           {inputLabel && <span className="mb-1.5 block text-sm font-medium text-tech-text">{inputLabel}</span>}
-          <input
-            type="text"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder={inputPlaceholder}
-            className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue"
-            autoFocus
-          />
+          {isMultiline ? (
+            <textarea
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={inputPlaceholder}
+              rows={3}
+              className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue resize-y"
+              autoFocus
+            />
+          ) : (
+            <input
+              type={isDatetime ? 'datetime-local' : 'text'}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={inputPlaceholder}
+              className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue"
+              autoFocus
+            />
+          )}
         </label>
       );
     }
@@ -206,11 +219,11 @@ export function PublishingActionDialog({
       return (
         <label className="block">
           <span className="mb-1.5 block text-sm font-medium text-tech-text">填写撤回本地已发布状态的原因</span>
-          <input
-            type="text"
+          <textarea
             value={withdrawReason}
             onChange={(e) => setWithdrawReason(e.target.value)}
-            className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue"
+            rows={3}
+            className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue resize-y"
             autoFocus
           />
         </label>
