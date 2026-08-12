@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Brain, CheckCircle2, Copy, Loader2, X } from 'lucide-react';
 
 export interface SkillViewData {
@@ -25,8 +25,47 @@ export interface SkillViewModalProps {
 export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) {
   const [tab, setTab] = useState<string>('skill');
   const [copied, setCopied] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
-  const getCurrentContent = (): string => {
+  // Focus trap and Escape handling
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement as HTMLElement;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const focusable = dialog.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.body.style.overflow = '';
+      previousFocusRef.current?.focus();
+    };
+  }, [onClose]);
+
+  const getCurrentContent = useCallback((): string => {
     switch (tab) {
       case 'skill':
         return data.skillMarkdown;
@@ -53,7 +92,7 @@ export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) 
         }
         return '';
     }
-  };
+  }, [tab, data]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(getCurrentContent());
@@ -63,7 +102,7 @@ export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) 
 
   if (loading) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="加载 Skill 内容">
         <div className="flex items-center gap-3 rounded-xl bg-white p-8 shadow-2xl">
           <Loader2 size={24} className="animate-spin text-tech-purple" />
           <span className="text-tech-text">加载 Skill 内容…</span>
@@ -88,14 +127,20 @@ export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) 
   const currentContent = getCurrentContent();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+    <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={data.skillName}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    >
       <div className="flex h-[90vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl">
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-tech-border px-6 py-4">
           <div className="flex min-w-0 items-center gap-3">
             <Brain size={20} className="shrink-0 text-tech-purple" />
             <div className="min-w-0">
-              <h2 className="truncate text-lg font-semibold text-tech-text">{data.skillName}</h2>
+              <h2 id="skill-view-title" className="truncate text-lg font-semibold text-tech-text">{data.skillName}</h2>
               <p className="mt-0.5 truncate text-xs text-tech-muted">{data.skillPath}</p>
             </div>
           </div>
@@ -110,6 +155,7 @@ export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) 
             <button
               onClick={onClose}
               className="rounded-lg p-2 text-tech-muted transition-colors hover:bg-tech-bg hover:text-tech-text"
+              aria-label="关闭 Skill 查看"
             >
               <X size={20} />
             </button>

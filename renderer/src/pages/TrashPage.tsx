@@ -1,6 +1,17 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, MoreHorizontal, Trash2 } from 'lucide-react';
+import {
+  CheckCircle2,
+  Clock,
+  FileText,
+  Loader2,
+  Mic,
+  MoreHorizontal,
+  Sparkles,
+  Trash2,
+  Video,
+  XCircle,
+} from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { apiClient } from '../services/api';
@@ -124,10 +135,37 @@ export function TrashPage() {
                     删除于 {formatDate(job.deletedAt)} · {formatRemaining(job.trashExpiresAt)}
                   </p>
                   {job.sourceUrl && (
-                    <p className="text-sm text-tech-muted line-clamp-1 break-all">
+                    <p className="text-sm text-tech-muted line-clamp-1 break-all mb-3">
                       {job.sourceUrl}
                     </p>
                   )}
+                  {/* Stage summary chips */}
+                  <div className="flex flex-wrap gap-1.5">
+                    <StageChip
+                      label="转录"
+                      done={job.steps?.transcribe?.status === 'succeeded'}
+                      failed={job.steps?.transcribe?.status === 'failed'}
+                      icon={Mic}
+                    />
+                    <StageChip
+                      label="洗稿"
+                      done={job.steps?.clean?.status === 'succeeded'}
+                      failed={job.steps?.clean?.status === 'failed'}
+                      icon={Sparkles}
+                    />
+                    <StageChip
+                      label="分镜"
+                      done={job.steps?.generate_video_prompts?.status === 'succeeded'}
+                      failed={job.steps?.generate_video_prompts?.status === 'failed'}
+                      icon={FileText}
+                    />
+                    <StageChip
+                      label="成片"
+                      done={job.steps?.generate_video?.status === 'succeeded'}
+                      failed={job.steps?.generate_video?.status === 'failed'}
+                      icon={Video}
+                    />
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0 relative">
@@ -217,4 +255,16 @@ function formatRemaining(value?: string) {
     return '即将自动清理';
   }
   return `剩余 ${days} 天自动清理`;
+}
+
+function StageChip({ label, done, failed, icon: Icon }: { label: string; done: boolean; failed: boolean; icon: React.ComponentType<{ size?: number }> }) {
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+      done ? 'bg-emerald-50 text-emerald-700' : failed ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-tech-muted'
+    }`}>
+      {done ? <CheckCircle2 size={10} /> : failed ? <XCircle size={10} /> : <Clock size={10} />}
+      <Icon size={10} />
+      {label}
+    </span>
+  );
 }

@@ -54,6 +54,7 @@ export function PublishingPage() {
   const [version, setVersion] = useState('');
   const [createdBy, setCreatedBy] = useState('');
   const [search, setSearch] = useState('');
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [packages, setPackages] = useState<PublishingPackageDetail[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -298,19 +299,45 @@ export function PublishingPage() {
         <div className="border-y border-tech-border py-16 text-center"><p className="text-lg font-semibold text-tech-text">请选择操作者</p><p className="mt-2 text-sm text-tech-muted">在顶部选择发布者或管理员后查看发布任务。</p></div>
       ) : (
         <>
-          {/* Status filter chips */}
+          {/* Status filter chips with counts */}
           <div className="mb-3 flex gap-2 overflow-x-auto border-b border-tech-border pb-3">
-            {PUBLISH_FILTERS.map((item) => <button key={item.id} type="button" onClick={() => setParams(item.id === 'action' ? {} : { status: item.id })} className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${status === item.id ? 'bg-blue-50 text-tech-blue' : 'text-tech-muted hover:bg-tech-surface'}`}>{item.label}</button>)}
+            {PUBLISH_FILTERS.map((item) => {
+              const count = item.id === 'all'
+                ? packages.length
+                : packages.reduce((n, pkg) => n + pkg.tasks.filter((t) => t.status === item.id).length, 0);
+              return (
+                <button key={item.id} type="button" onClick={() => setParams(item.id === 'action' ? {} : { status: item.id })} className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${status === item.id ? 'bg-blue-50 text-tech-blue' : 'text-tech-muted hover:bg-tech-surface'}`}>
+                  {item.label}
+                  {count > 0 && <span className="ml-1.5 text-xs opacity-70">{count}</span>}
+                </button>
+              );
+            })}
           </div>
-          {/* Detail filters */}
-          <div className="mb-6 grid gap-3 border-b border-tech-border pb-5 md:grid-cols-3 xl:grid-cols-6">
+          {/* Primary filters: always visible */}
+          <div className="mb-3 grid gap-3 md:grid-cols-2">
             <FilterInput icon={<Search size={15} />} value={search} onChange={setSearch} placeholder="搜索标题/文案" />
             <select value={platform} onChange={(event) => setPlatform(event.target.value as PublishPlatform | '')} className="rounded-lg border border-tech-border bg-tech-surface px-3 py-2 text-sm text-tech-text"><option value="">全部平台</option>{PUBLISHING_PLATFORMS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
-            <FilterInput value={sourceJobId} onChange={setSourceJobId} placeholder="源任务 ID" />
-            <FilterInput value={version} onChange={setVersion} placeholder="版本号" type="number" />
-            <FilterInput value={createdBy} onChange={setCreatedBy} placeholder="创建者 ID" />
-            <button type="button" onClick={() => { setPlatform(''); setSourceJobId(''); setVersion(''); setCreatedBy(''); setSearch(''); }} className="rounded-lg border border-tech-border px-3 py-2 text-sm text-tech-muted hover:bg-tech-surface">清空筛选</button>
           </div>
+          {/* More filters toggle */}
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setShowMoreFilters((v) => !v)}
+              className="inline-flex items-center gap-1.5 text-sm text-tech-muted hover:text-tech-text transition-colors"
+            >
+              {showMoreFilters ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              更多筛选
+            </button>
+          </div>
+          {/* Extended filters: collapsed by default */}
+          {showMoreFilters && (
+            <div className="mb-6 grid gap-3 border-t border-tech-border pt-4 md:grid-cols-3">
+              <FilterInput value={sourceJobId} onChange={setSourceJobId} placeholder="源任务 ID" />
+              <FilterInput value={version} onChange={setVersion} placeholder="版本号" type="number" />
+              <FilterInput value={createdBy} onChange={setCreatedBy} placeholder="创建者 ID" />
+              <button type="button" onClick={() => { setPlatform(''); setSourceJobId(''); setVersion(''); setCreatedBy(''); setSearch(''); }} className="rounded-lg border border-tech-border px-3 py-2 text-sm text-tech-muted hover:bg-tech-surface self-end">清空筛选</button>
+            </div>
+          )}
 
           {error && <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</p>}
           {feedback && <p className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700"><Check size={16} />{feedback}</p>}
