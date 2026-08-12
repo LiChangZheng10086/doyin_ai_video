@@ -47,12 +47,8 @@ export function JobDetailPage() {
   const [videoError, setVideoError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [runningStep, setRunningStep] = useState<PipelineStep | null>(null);
-  const [activeTab, setActiveTab] = useState<OutcomeTab>(() => {
-    // Determine best initial tab based on job state — called once on mount
-    return 'script'; // Will be set properly when job data arrives
-  });
+  const [activeTab, setActiveTab] = useState<OutcomeTab>('script');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
-  const [tabInitialized, setTabInitialized] = useState(false);
 
   // ── Video player state (must be before any conditional returns) ──
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -62,16 +58,21 @@ export function JobDetailPage() {
   const [publishError, setPublishError] = useState('');
   const currentUser = useOperatorStore((state) => state.currentUser);
 
-  const loadJobArtifacts = async (jobData: Job) => {
+  const loadJobArtifacts = async (jobData: Job, isInitialLoad = false) => {
     setCleanedError(null);
     setTranscriptError(null);
     setVideoError(null);
     setVideoOutput(null);
 
+    let loadedTranscript: RawTranscript | null = null;
+    let loadedCleaned: CleanedScript | null = null;
+    let loadedVideo: HyperframesVideoOutput | null = null;
+
     try {
       const transcriptData = await apiClient.getJobRawTranscript(jobData.id);
       if (transcriptData && transcriptData.transcript) {
         setRawTranscript(transcriptData);
+        loadedTranscript = transcriptData;
       }
     } catch {
       setRawTranscript(null);
@@ -86,8 +87,10 @@ export function JobDetailPage() {
       try {
         const cleanedData = await apiClient.getJobCleaned(jobData.id);
         setCleaned(cleanedData);
+        loadedCleaned = cleanedData;
         if (cleanedData.output?.hyperframesVideo) {
           setVideoOutput(cleanedData.output.hyperframesVideo);
+          loadedVideo = cleanedData.output.hyperframesVideo;
         }
       } catch (err) {
         setCleaned(null);
@@ -107,10 +110,28 @@ export function JobDetailPage() {
       try {
         const output = await apiClient.getJobVideoOutput(jobData.id);
         setVideoOutput(output);
+        loadedVideo = output;
       } catch (err) {
         setVideoOutput(null);
         const errMsg = err instanceof Error ? err.message : '未知错误';
         setVideoError(`视频成片加载失败: ${errMsg}`);
+      }
+    }
+
+    // Auto-select best available tab after initial load
+    if (isInitialLoad) {
+      if (loadedVideo?.videoPath) {
+        setActiveTab('video');
+      } else if (
+        loadedCleaned?.output?.shortVideoShots?.length ||
+        loadedCleaned?.output?.videoPrompts?.length ||
+        loadedCleaned?.output?.enhancedScenes?.length
+      ) {
+        setActiveTab('prompts');
+      } else if (loadedCleaned?.output?.cleanScript || loadedCleaned?.output?.summary) {
+        setActiveTab('script');
+      } else if (loadedTranscript?.transcript) {
+        setActiveTab('transcript');
       }
     }
   };
@@ -123,7 +144,7 @@ export function JobDetailPage() {
         setIsLoading(true);
         const jobData = await apiClient.getJob(id);
         setJob(jobData);
-        await loadJobArtifacts(jobData);
+        await loadJobArtifacts(jobData, true);
       } catch (err: any) {
         setError(err.response?.data?.message || '加载任务失败');
       } finally {
@@ -169,22 +190,6 @@ export function JobDetailPage() {
     };
     loadVideoUrl();
   }, [videoOutput, job?.id]);
-
-  // Auto-select initial tab based on available artifacts
-  useEffect(() => {
-    if (tabInitialized || !job) return;
-    // Video ready → open video; else shots ready → open shots; else rewrite ready → open script; else transcript → open transcript
-    if (videoOutput?.videoPath) {
-      setActiveTab('video');
-    } else if (cleaned?.output?.shortVideoShots?.length || cleaned?.output?.videoPrompts?.length || cleaned?.output?.enhancedScenes?.length) {
-      setActiveTab('prompts');
-    } else if (cleaned?.output?.cleanScript || cleaned?.output?.summary) {
-      setActiveTab('script');
-    } else if (rawTranscript?.transcript) {
-      setActiveTab('transcript');
-    }
-    setTabInitialized(true);
-  }, [job, cleaned, rawTranscript, videoOutput, tabInitialized]);
 
   if (isLoading) {
     return (
