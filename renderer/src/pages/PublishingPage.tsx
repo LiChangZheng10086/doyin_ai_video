@@ -30,6 +30,19 @@ import {
   PUBLISH_STATUS_LABELS,
   PUBLISHING_PLATFORMS,
 } from '../utils/publishing';
+import { PublishingActionDialog } from '../features/publishing/PublishingActionDialog';
+
+interface ActionDialogConfig {
+  type: 'confirm' | 'prompt' | 'edit-content' | 'withdraw';
+  title: string;
+  description?: string;
+  confirmLabel?: string;
+  tone?: 'danger' | 'warning' | 'info';
+  inputLabel?: string;
+  inputPlaceholder?: string;
+  defaultValue?: string;
+  defaultValues?: { title: string; description: string; hashtags: string };
+}
 
 export function PublishingPage() {
   const currentUser = useOperatorStore((state) => state.currentUser);
@@ -49,6 +62,20 @@ export function PublishingPage() {
   const [feedback, setFeedback] = useState('');
   const loadSequence = useRef(0);
   const actionLock = useRef(false);
+
+  // ── Action dialog state ──
+  const [actionDialog, setActionDialog] = useState<ActionDialogConfig & { open: boolean; busy?: boolean; resolve: ((value: any) => void) | null }>({
+    type: 'confirm',
+    title: '',
+    open: false,
+    resolve: null,
+  });
+
+  const showDialog = useCallback(<T = any,>(config: ActionDialogConfig): Promise<T | null> => {
+    return new Promise<T | null>((resolve) => {
+      setActionDialog({ ...config, open: true, resolve });
+    });
+  }, []);
 
   const filters = useMemo<PublishingListFilters>(() => ({
     status,
@@ -130,7 +157,10 @@ export function PublishingPage() {
       return;
     }
     if (action === 'open-platform') {
-      if (!detail.package.coverPath && !window.confirm('当前发布包没有封面，仍然打开平台吗？')) return;
+      if (!detail.package.coverPath) {
+        const confirmed = await showDialog({ type: 'confirm', title: '缺少封面', description: '当前发布包没有封面，仍然打开平台吗？', tone: 'warning' });
+        if (!confirmed) return;
+      }
       const policy = PUBLISHING_PLATFORMS.find((item) => item.id === task.platform)!;
       try {
         const result = await desktop.openExternal(policy.creatorUrl);
@@ -141,17 +171,25 @@ export function PublishingPage() {
       return;
     }
     if (action === 'edit-content') {
-      const title = window.prompt('标题', task.title);
-      if (title === null) return;
-      const description = window.prompt('正文', task.description);
-      if (description === null) return;
-      const hashtags = window.prompt('标签，用空格分隔', task.hashtags.join(' '));
-      if (hashtags === null) return;
-      await run(() => apiClient.updatePublishingContent(task.id, { title, description, hashtags: hashtags.split(/\s+/u).filter(Boolean), expectedRevision: task.contentRevision }), '文案已更新');
+      const result = await showDialog<{ title: string; description: string; hashtags: string[] }>({
+        type: 'edit-content',
+        title: '编辑文案',
+        defaultValues: { title: task.title, description: task.description, hashtags: task.hashtags.join(' ') },
+      });
+      if (!result) return;
+      await run(
+        () => apiClient.updatePublishingContent(task.id, { ...result, expectedRevision: task.contentRevision }),
+        '文案已更新',
+      );
       return;
     }
     if (action === 'schedule' || action === 'restore') {
-      const value = window.prompt('输入未来排期时间（YYYY-MM-DDTHH:mm），留空表示立即待发布', task.scheduledAt ? toLocalDateTimeValue(task.scheduledAt) : '');
+      const value = await showDialog<string>({
+        type: 'prompt',
+        title: action === 'restore' ? '恢复任务' : '修改排期',
+        inputLabel: '输入未来排期时间（YYYY-MM-DDTHH:mm），留空表示立即待发布',
+        defaultValue: task.scheduledAt ? toLocalDateTimeValue(task.scheduledAt) : '',
+      });
       if (value === null) return;
       await run(
         () => action === 'restore' ? apiClient.restorePublishingTask(task.id, value || null) : apiClient.updatePublishingSchedule(task.id, value || null),
@@ -159,34 +197,49 @@ export function PublishingPage() {
       );
       return;
     }
-    if (action === 'mark-published' && window.confirm('确认已在平台完成发布？')) {
+    if (action === 'mark-published') {
+      const confirmed = await showDialog({ type: 'confirm', title: '标记已发布', description: '确认已在平台完成发布？' });
+      if (!confirmed) return;
       await run(() => apiClient.markPublishingTaskPublished(task.id, { confirmation: true }), '已标记为发布');
       return;
     }
     if (action === 'record-failure') {
-      const reason = window.prompt('填写发布失败原因');
-      if (reason?.trim()) await run(() => apiClient.recordPublishingFailure(task.id, reason), '失败原因已记录');
+      const reason = await showDialog<string>({
+        type: 'prompt',
+        title: '记录失败',
+        inputLabel: '填写发布失败原因',
+        inputPlaceholder: '描述失败原因...',
+      });
+      if (!reason?.trim()) return;
+      await run(() => apiClient.recordPublishingFailure(task.id, reason), '失败原因已记录');
       return;
     }
-    if (action === 'cancel' && window.confirm('确认取消这个平台任务？')) {
+    if (action === 'cancel') {
+      const confirmed = await showDialog({ type: 'confirm', title: '取消任务', description: '确认取消这个平台任务？', tone: 'warning' });
+      if (!confirmed) return;
       await run(() => apiClient.cancelPublishingTask(task.id, { confirmation: true }), '任务已取消');
       return;
     }
-    if (action === 'create-version' && window.confirm('基于当前发布包创建一个独立新版本？')) {
+    if (action === 'create-version') {
+      const confirmed = await showDialog({ type: 'confirm', title: '创建新版本', description: '基于当前发布包创建一个独立新版本？' });
+      if (!confirmed) return;
       await run(() => apiClient.createPublishingVersion(detail.package.id, {}), '新版本已创建');
       return;
     }
     if (action === 'withdraw') {
-      const reason = window.prompt('填写撤回本地已发布状态的原因');
-      if (reason?.trim() && window.confirm('只撤回本地状态，不会删除平台视频。确认继续？')) {
-        await run(() => apiClient.withdrawPublishingTask(task.id, { confirmation: true, reason }), '本地发布状态已撤回');
-      }
+      const result = await showDialog<{ reason: string }>({ type: 'withdraw', title: '撤回本地状态' });
+      if (!result?.reason) return;
+      await run(() => apiClient.withdrawPublishingTask(task.id, { confirmation: true, reason: result.reason }), '本地发布状态已撤回');
       return;
     }
     if (action === 'trash-package') {
       const hasPublished = detail.tasks.some((item) => item.status === 'published');
-      const message = hasPublished ? '发布包含已发布任务。删除只影响本地资产，不影响平台视频。确认移入发布垃圾桶？' : '确认将整个发布包移入发布垃圾桶？';
-      if (window.confirm(message)) await run(() => apiClient.trashPublishingPackage(detail.package.id, { confirmation: true }), '发布包已移入垃圾桶');
+      const description = hasPublished
+        ? '发布包含已发布任务。删除只影响本地资产，不影响平台视频。确认移入发布垃圾桶？'
+        : '确认将整个发布包移入发布垃圾桶？';
+      const confirmed = await showDialog({ type: 'confirm', title: '移入发布垃圾桶', description, tone: 'danger' });
+      if (!confirmed) return;
+      await run(() => apiClient.trashPublishingPackage(detail.package.id, { confirmation: true }), '发布包已移入垃圾桶');
       return;
     }
     if (action === 'restore-package') {
@@ -207,11 +260,31 @@ export function PublishingPage() {
 
   const groups = groupPublishingPackages(packages);
 
+  // ── Mobile bottom bar: primary actions for expanded packages ──
+  const mobileBarActions = useMemo(() => {
+    if (expanded.size === 0 || !currentUser) return [];
+    for (const group of groups) {
+      for (const detail of group.versions) {
+        if (!expanded.has(detail.package.id)) continue;
+        if (detail.package.state === 'trashed') continue;
+        for (const task of detail.tasks) {
+          if (task.status === 'ready' && detail.package.assetHealth !== 'broken_video') {
+            return [
+              { label: '打开平台', action: 'open-platform', detail, task },
+              { label: '标记已发布', action: 'mark-published', detail, task },
+              { label: '复制全文', action: 'copy-full', detail, task },
+            ];
+          }
+        }
+      }
+    }
+    return [];
+  }, [expanded, groups, currentUser]);
+
   return (
     <Layout>
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-sm font-medium text-tech-purple"><Send size={16} /> Publishing Center</div>
           <h1 className="mt-2 text-3xl font-semibold text-tech-text">发布中心</h1>
           <p className="mt-2 text-tech-muted">整理交付包、复制文案并跟踪人工发布状态。</p>
         </div>
@@ -225,9 +298,11 @@ export function PublishingPage() {
         <div className="border-y border-tech-border py-16 text-center"><p className="text-lg font-semibold text-tech-text">请选择操作者</p><p className="mt-2 text-sm text-tech-muted">在顶部选择发布者或管理员后查看发布任务。</p></div>
       ) : (
         <>
-          <div className="mb-4 flex gap-2 overflow-x-auto border-b border-tech-border pb-3">
+          {/* Status filter chips */}
+          <div className="mb-3 flex gap-2 overflow-x-auto border-b border-tech-border pb-3">
             {PUBLISH_FILTERS.map((item) => <button key={item.id} type="button" onClick={() => setParams(item.id === 'action' ? {} : { status: item.id })} className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${status === item.id ? 'bg-blue-50 text-tech-blue' : 'text-tech-muted hover:bg-tech-surface'}`}>{item.label}</button>)}
           </div>
+          {/* Detail filters */}
           <div className="mb-6 grid gap-3 border-b border-tech-border pb-5 md:grid-cols-3 xl:grid-cols-6">
             <FilterInput icon={<Search size={15} />} value={search} onChange={setSearch} placeholder="搜索标题/文案" />
             <select value={platform} onChange={(event) => setPlatform(event.target.value as PublishPlatform | '')} className="rounded-lg border border-tech-border bg-tech-surface px-3 py-2 text-sm text-tech-text"><option value="">全部平台</option>{PUBLISHING_PLATFORMS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
@@ -240,12 +315,58 @@ export function PublishingPage() {
           {error && <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</p>}
           {feedback && <p className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700"><Check size={16} />{feedback}</p>}
           {loading ? <div className="flex justify-center py-20"><Loader2 className="animate-spin text-tech-blue" size={32} /></div> : groups.length === 0 ? <div className="border-y border-tech-border py-16 text-center"><p className="font-semibold text-tech-text">没有符合条件的发布包</p><p className="mt-2 text-sm text-tech-muted">可从已生成成片的作品详情加入发布中心。</p></div> : (
-            <div className="space-y-6">
+            <div className="space-y-6 pb-20 md:pb-0">
               {groups.map((group) => <section key={group.sourceJobId} className="overflow-hidden rounded-lg border border-tech-border bg-tech-surface"><header className="flex flex-col gap-1 border-b border-tech-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-tech-text">{group.title}</h2><p className="text-xs text-tech-muted">源任务 {group.sourceJobId}</p></div><span className="text-sm text-tech-muted">{group.versions.length} 个版本</span></header><div className="divide-y divide-tech-border">{group.versions.map((detail) => <PackageRow key={detail.package.id} detail={detail} role={currentUser.role} expanded={expanded.has(detail.package.id)} busy={busyAction} onToggle={() => setExpanded((value) => { const next = new Set(value); next.has(detail.package.id) ? next.delete(detail.package.id) : next.add(detail.package.id); return next; })} onAction={handleTaskAction} />)}</div></section>)}
             </div>
           )}
         </>
       )}
+
+      {/* Mobile bottom action bar */}
+      {mobileBarActions.length > 0 && (
+        <div className="fixed bottom-0 inset-x-0 z-40 border-t border-tech-border bg-white px-4 py-3 md:hidden">
+          <div className="flex gap-2">
+            {mobileBarActions.map(({ label, action, detail, task }) => (
+              <button
+                key={action}
+                type="button"
+                disabled={busyAction}
+                onClick={() => void handleTaskAction(detail, task, action)}
+                className={`flex-1 rounded-lg px-3 py-2.5 text-sm font-medium disabled:opacity-50 ${
+                  action === 'mark-published' || action === 'open-platform'
+                    ? 'bg-tech-blue text-white'
+                    : 'border border-tech-border text-tech-text'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Publishing action dialog — replaces all window.confirm/prompt */}
+      <PublishingActionDialog
+        open={actionDialog.open}
+        type={actionDialog.type}
+        title={actionDialog.title}
+        description={actionDialog.description}
+        confirmLabel={actionDialog.confirmLabel}
+        tone={actionDialog.tone}
+        inputLabel={actionDialog.inputLabel}
+        inputPlaceholder={actionDialog.inputPlaceholder}
+        defaultValue={actionDialog.defaultValue}
+        defaultValues={actionDialog.defaultValues}
+        busy={actionDialog.busy}
+        onConfirm={(value) => {
+          actionDialog.resolve?.(value ?? true);
+          setActionDialog((prev) => ({ ...prev, open: false, resolve: null }));
+        }}
+        onClose={() => {
+          actionDialog.resolve?.(null);
+          setActionDialog((prev) => ({ ...prev, open: false, resolve: null }));
+        }}
+      />
     </Layout>
   );
 }
