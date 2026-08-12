@@ -41,7 +41,7 @@ export function JobContextSidebar({ job }: JobContextSidebarProps) {
         </div>
       </div>
 
-      {/* Advanced info */}
+      {/* 补充信息 */}
       <details className="rounded-lg border border-tech-border bg-white p-5">
         <summary className="cursor-pointer font-semibold text-tech-text">高级信息</summary>
         <div className="mt-4 space-y-4">
