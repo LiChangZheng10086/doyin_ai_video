@@ -26,15 +26,21 @@ export function CollectionListPage() {
   const [collections, setCollections] = useState<CollectionOverview[]>([]);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState(false);
 
   const navigate = useNavigate();
 
-  const refreshCollections = useCallback(async () => {
+  const refreshCollections = useCallback(async (silent = false) => {
     try {
       const items = await apiClient.getCollections();
       setCollections(items);
+      setRefreshError(false);
     } catch (error) {
       console.error('Failed to load collections:', error);
+      if (!silent) {
+        setRefreshError(true);
+      }
+      // 静默轮询失败不清空已有数据
     } finally {
       setIsLoading(false);
     }
@@ -44,11 +50,11 @@ export function CollectionListPage() {
     refreshCollections();
   }, [refreshCollections]);
 
-  // 每 5 秒刷新合集进度
+  // 每 5 秒刷新合集进度（静默轮询）
   useEffect(() => {
     if (collections.length === 0) return;
     const timer = window.setInterval(() => {
-      refreshCollections();
+      refreshCollections(true);
     }, 5000);
     return () => window.clearInterval(timer);
   }, [collections.length, refreshCollections]);
@@ -91,6 +97,21 @@ export function CollectionListPage() {
 
   return (
     <Layout>
+      {/* 静默刷新失败提示 */}
+      {refreshError && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 flex items-center justify-between">
+          <span className="flex items-center gap-2">
+            <AlertCircle size={16} />
+            刷新失败，当前显示上次数据
+          </span>
+          <button
+            onClick={() => { setRefreshError(false); refreshCollections(); }}
+            className="text-xs font-medium underline"
+          >
+            重试
+          </button>
+        </div>
+      )}
       <div className="mb-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h2 className="text-2xl font-semibold text-tech-text">作品合集</h2>

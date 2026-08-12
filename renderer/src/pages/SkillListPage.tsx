@@ -7,6 +7,7 @@ import {
   Edit3,
   Eye,
   Loader2,
+  MoreHorizontal,
   RefreshCw,
   Trash2,
   Users,
@@ -14,6 +15,7 @@ import {
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { apiClient } from '../services/api';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { SkillViewModal } from '../features/skills/SkillViewModal';
 import type { SkillSummary } from '../types';
 
@@ -25,6 +27,7 @@ export function SkillListPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [expandedMenu, setExpandedMenu] = useState<string | null>(null);
 
   // 查看 Skill 内容
   const [viewingSkill, setViewingSkill] = useState(false);
@@ -251,49 +254,62 @@ export function SkillListPage() {
               </div>
 
               {/* 操作按钮 */}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 relative">
                 <button
                   onClick={() => handleView(skill.collectionId)}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-tech-border px-3 py-2 text-xs font-medium text-tech-text hover:bg-tech-bg transition-colors"
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg bg-tech-purple px-3 py-2 text-xs font-medium text-white hover:bg-purple-700 transition-colors"
                 >
                   <Eye size={12} />
                   查看
                 </button>
                 <button
-                  onClick={() => navigate(`/collections/${skill.collectionId}`)}
-                  className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg border border-tech-border px-3 py-2 text-xs font-medium text-tech-text hover:bg-tech-bg transition-colors"
+                  type="button"
+                  onClick={() => setExpandedMenu(expandedMenu === skill.collectionId ? null : skill.collectionId)}
+                  className="shrink-0 rounded-lg border border-tech-border px-2 py-2 text-xs text-tech-muted hover:bg-tech-bg transition-colors"
+                  aria-label="更多操作"
                 >
-                  <Users size={12} />
-                  打开合集
+                  <MoreHorizontal size={14} />
                 </button>
-                {deleteConfirm === skill.collectionId ? (
-                  <div className="flex items-center gap-1">
-                    <button
-                      onClick={() => handleDelete(skill.collectionId)}
-                      disabled={deletingId === skill.collectionId}
-                      className="rounded-lg bg-red-600 px-2.5 py-2 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
-                    >
-                      {deletingId === skill.collectionId ? (
-                        <Loader2 size={12} className="animate-spin" />
-                      ) : (
-                        '确认'
-                      )}
-                    </button>
-                    <button
-                      onClick={() => setDeleteConfirm(null)}
-                      className="rounded-lg border border-tech-border px-2 py-2 text-xs text-tech-muted hover:bg-tech-bg"
-                    >
-                      <X size={12} />
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setDeleteConfirm(skill.collectionId)}
-                    className="rounded-lg border border-tech-border px-2.5 py-2 text-xs text-red-500 hover:bg-red-50 transition-colors"
-                    title="删除 Skill"
-                  >
-                    <Trash2 size={12} />
-                  </button>
+                {expandedMenu === skill.collectionId && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setExpandedMenu(null)} />
+                    <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border border-tech-border bg-white shadow-lg py-1 min-w-[140px]">
+                      <button
+                        onClick={() => { setExpandedMenu(null); navigate(`/collections/${skill.collectionId}`); }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-sm text-tech-text hover:bg-tech-bg"
+                      >
+                        <Users size={14} />
+                        打开合集
+                      </button>
+                      <button
+                        onClick={() => { setExpandedMenu(null); startRename(skill); }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-sm text-tech-text hover:bg-tech-bg"
+                      >
+                        <Edit3 size={14} />
+                        重命名
+                      </button>
+                      <hr className="border-tech-border" />
+                      <button
+                        onClick={() => { setExpandedMenu(null); setDeleteConfirm(skill.collectionId); }}
+                        className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+                      >
+                        <Trash2 size={14} />
+                        删除
+                      </button>
+                    </div>
+                  </>
+                )}
+                {deleteConfirm === skill.collectionId && (
+                  <ConfirmDialog
+                    open={true}
+                    title="确认删除 Skill？"
+                    description={`Skill「${skill.skillName}」将从本地删除，合集不受影响。`}
+                    confirmLabel="删除"
+                    tone="danger"
+                    busy={deletingId === skill.collectionId}
+                    onConfirm={() => handleDelete(skill.collectionId)}
+                    onClose={() => setDeleteConfirm(null)}
+                  />
                 )}
               </div>
             </div>

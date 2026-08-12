@@ -31,8 +31,8 @@ export function AppShell({ children, onRequestRecovery }: AppShellProps) {
         <UtilityBar onRequestRecovery={onRequestRecovery} />
       </div>
 
-      {/* Main content area — offset for desktop rail + utility bar */}
-      <main className="md:ml-[56px] xl:ml-16 md:pt-14 pb-14 md:pb-0 min-h-screen">
+      {/* Main content area — offset for desktop rail + utility bar, mobile top bar */}
+      <main className="pt-14 md:ml-[56px] xl:ml-16 md:pt-14 pb-14 md:pb-0 min-h-screen">
         {children}
       </main>
 
