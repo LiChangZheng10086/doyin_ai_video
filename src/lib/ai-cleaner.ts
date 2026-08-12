@@ -44,6 +44,7 @@ export interface OpenAiScriptCleanerOptions {
   baseURL?: string;
   thinkingMode?: "enabled" | "disabled";
   provider?: AiProvider;
+  maxOutputTokens?: number;
 }
 
 export class RuntimeScriptCleaner implements ScriptCleaner {
@@ -91,12 +92,14 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
   private readonly baseURL?: string;
   private readonly thinkingMode: "enabled" | "disabled";
   private readonly provider: AiProvider;
+  private readonly maxOutputTokens?: number;
 
   constructor(options: OpenAiScriptCleanerOptions = {}) {
     this.model = options.model ?? process.env.AI_MODEL ?? "deepseek-v4-pro";
     this.baseURL = options.baseURL;
     this.provider = options.provider ?? (options.baseURL ? "deepseek" : "openai");
     this.thinkingMode = options.thinkingMode ?? (process.env.AI_THINKING_MODE as "enabled" | "disabled") ?? "disabled";
+    this.maxOutputTokens = options.maxOutputTokens;
     if (this.provider === "custom" && !this.baseURL?.trim()) {
       throw new Error("自定义 AI 配置缺少 Base URL");
     }
@@ -135,7 +138,7 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
               correction
             ].filter(Boolean).join("\n")
           }
-        ], 2400, signal, onStream);
+        ], this.maxOutputTokens, signal, onStream);
       } catch (error) {
         const diagnosis = await diagnoseAiError(error, { baseURL: this.baseURL, model: this.model });
         throw new Error(`AI 洗稿失败：${diagnosis.message}`);
@@ -186,7 +189,7 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
               correction
             ].filter(Boolean).join("\n")
           }
-        ], undefined, signal, onStream);
+        ], this.maxOutputTokens, signal, onStream);
         const parsed = parseAiJson(text);
         const sourceText = [
           script.shortVideoScript,
@@ -240,7 +243,7 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
       for await (const chunk of response) {
         const choice = (chunk as { choices?: Array<{ delta?: { content?: unknown }; finish_reason?: string | null }> }).choices?.[0];
         if (choice?.finish_reason === "length") {
-          throw new Error("AI 输出被截断（达到输出长度上限）");
+          throw this.outputLimitError();
         }
         const delta = extractDeltaText(choice?.delta?.content);
         if (!delta) continue;
@@ -251,7 +254,7 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
       return text;
     }
     if (response?.choices?.[0]?.finish_reason === "length") {
-      throw new Error("AI 输出被截断（达到输出长度上限）");
+      throw this.outputLimitError();
     }
     const text = extractAiMessageText(response?.choices?.[0]?.message);
     if (!text) {
@@ -259,6 +262,12 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
     }
     onStream?.({ delta: text, text, model: this.model });
     return text;
+  }
+
+  private outputLimitError() {
+    return this.maxOutputTokens === undefined
+      ? new Error("AI 输出达到模型或中转服务的输出上限，请在设置中尝试自定义更高上限，并确认服务商支持该值。")
+      : new Error(`AI 输出达到当前设置的 ${this.maxOutputTokens} Tokens 上限，请在设置中提高上限或改为自动。`);
   }
 
   private toAssetFromPayload(payload: CleanScriptPayload, draft: ScriptAsset): ScriptAsset {

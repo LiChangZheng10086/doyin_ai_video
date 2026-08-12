@@ -17,6 +17,66 @@ function draft(): ScriptAsset {
   };
 }
 
+function cleanInput() {
+  return { topic: "AI 内容生产", transcriptText: "原始转录", draft: draft() };
+}
+
+function validCleanPayload() {
+  return {
+    title: "内容生产方法",
+    summary: "核心内容",
+    hook: "先找准核心问题",
+    key_points: ["核心内容", "明确目标", "验证结果"],
+    clean_script: "核心内容",
+    short_video_script: "核心内容".repeat(46),
+    cover_title: "内容生产方法",
+    tags: ["内容生产"],
+    quality_notes: []
+  };
+}
+
+function validShots() {
+  return Array.from({ length: 8 }, (_, index) => ({
+    index: index + 1,
+    duration: index < 4 ? 7 : 6,
+    shot_type: index === 0 ? "hook" : index === 7 ? "summary" : "explain",
+    layout: index === 0 ? "kinetic-title" : index === 7 ? "summary-stack" : "concept-map",
+    headline: `要点${index + 1}`,
+    caption_lines: ["核心内容"],
+    visual_items: [{ label: "输入" }, { label: "输出" }],
+    source_key_points: [0],
+    transition: "cut",
+    pacing: "medium"
+  }));
+}
+
+function installResponseQueue(
+  cleaner: OpenAiScriptCleaner,
+  requests: Array<Record<string, unknown>>,
+  responses: unknown[]
+) {
+  (cleaner as any).client = {
+    chat: { completions: { create: async (request: Record<string, unknown>) => {
+      requests.push(request);
+      return responses.shift();
+    } } }
+  };
+}
+
+function cleanerReturningFinishReasonLength(maxOutputTokens?: number) {
+  const cleaner = new OpenAiScriptCleaner({
+    apiKey: "test",
+    model: "model",
+    maxOutputTokens
+  });
+  (cleaner as any).client = {
+    chat: { completions: { create: async () => ({
+      choices: [{ finish_reason: "length", message: { content: "{\"title\":" } }]
+    }) } }
+  };
+  return cleaner;
+}
+
 async function* streamChunks(parts: string[]) {
   for (const part of parts) {
     yield { choices: [{ delta: { content: part }, finish_reason: null }] };
@@ -30,6 +90,56 @@ test("OpenAiScriptCleaner fails instead of silently returning raw transcript wit
   await assert.rejects(
     () => cleaner.clean({ topic: "AI 内容生产", transcriptText: "原始转录", draft: draft() }),
     /AI API Key/
+  );
+});
+
+test("OpenAiScriptCleaner omits max_tokens in automatic mode", async () => {
+  const cleaner = new OpenAiScriptCleaner({ apiKey: "test", model: "model" });
+  const requests: Array<Record<string, unknown>> = [];
+  installResponseQueue(cleaner, requests, [
+    { choices: [{ message: { content: JSON.stringify(validCleanPayload()) } }] },
+    { choices: [{ message: { content: JSON.stringify({ target_duration: 60, shots: validShots() }) } }] }
+  ]);
+
+  await cleaner.clean(cleanInput());
+  await cleaner.planShortVideo!({ ...draft(), keyPoints: ["核心内容"], shortVideoScript: "核心内容" });
+
+  assert.equal(requests[0].max_tokens, undefined);
+  assert.equal(requests[1].max_tokens, undefined);
+});
+
+test("OpenAiScriptCleaner sends the configured max output tokens", async () => {
+  const cleaner = new OpenAiScriptCleaner({
+    apiKey: "test",
+    model: "model",
+    maxOutputTokens: 8192
+  });
+  const requests: Array<Record<string, unknown>> = [];
+  installResponseQueue(cleaner, requests, [
+    { choices: [{ message: { content: JSON.stringify(validCleanPayload()) } }] },
+    { choices: [{ message: { content: JSON.stringify({ target_duration: 60, shots: validShots() }) } }] }
+  ]);
+
+  await cleaner.clean(cleanInput());
+  await cleaner.planShortVideo!({ ...draft(), keyPoints: ["核心内容"], shortVideoScript: "核心内容" });
+
+  assert.equal(requests[0].max_tokens, 8192);
+  assert.equal(requests[1].max_tokens, 8192);
+});
+
+test("automatic truncation points to the model or gateway limit", async () => {
+  const cleaner = cleanerReturningFinishReasonLength();
+  await assert.rejects(
+    cleaner.clean(cleanInput()),
+    /达到模型或中转服务的输出上限/
+  );
+});
+
+test("custom truncation reports the configured limit", async () => {
+  const cleaner = cleanerReturningFinishReasonLength(8192);
+  await assert.rejects(
+    cleaner.clean(cleanInput()),
+    /当前设置的 8192 Tokens 上限/
   );
 });
 
@@ -177,7 +287,7 @@ test("OpenAiScriptCleaner accepts fenced JSON storyboard responses", async () =>
   assert.equal(result.shots.length, 8);
 });
 
-test("OpenAiScriptCleaner reports truncated storyboard responses clearly", async () => {
+test("OpenAiScriptCleaner reports automatic storyboard output limits clearly", async () => {
   const cleaner = new OpenAiScriptCleaner({ apiKey: "test", model: "deepseek-v4-flash" });
   (cleaner as any).client = {
     chat: {
@@ -191,7 +301,7 @@ test("OpenAiScriptCleaner reports truncated storyboard responses clearly", async
 
   await assert.rejects(
     () => cleaner.planShortVideo({ ...draft(), keyPoints: ["核心内容"] }),
-    /输出被截断/
+    /达到模型或中转服务的输出上限/
   );
 });
 
