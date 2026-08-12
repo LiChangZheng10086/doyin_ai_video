@@ -10,8 +10,10 @@ import type { AsrService } from "./asr.js";
 import { LocalStorage } from "./storage.js";
 import { parseDouyinShare } from "./douyin.js";
 import { toSimplifiedChinese } from "./chinese.js";
+import { JobStepEventHub } from "./job-step-events.js";
 import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import type {
+  JobStepStreamEvent,
   JobOverview,
   JobPreview,
   JobRecord,
@@ -21,6 +23,7 @@ import type {
   PipelineStepState,
   PipelineSteps,
   ScriptAsset,
+  StreamablePipelineStep,
   TranscriptAsset
 } from "../types.js";
 
@@ -46,6 +49,14 @@ const STEP_STAGE: Record<PipelineStep, { running: JobStage; succeeded: JobStage 
   generate_video_prompts: { running: "generating-video-prompts", succeeded: "scripted" },
   generate_video: { running: "generating-video", succeeded: "rendered" }
 };
+const LEGACY_ACTIVE_STAGE_STEP: Partial<Record<JobStage, PipelineStep>> = {
+  downloading: "transcribe",
+  extracting: "transcribe",
+  transcribing: "transcribe",
+  cleaning: "clean",
+  "generating-video-prompts": "generate_video_prompts",
+  "generating-video": "generate_video"
+};
 const STEP_PREVIOUS: Partial<Record<PipelineStep, PipelineStep>> = {
   clean: "transcribe",
   generate_video_prompts: "clean",
@@ -53,6 +64,13 @@ const STEP_PREVIOUS: Partial<Record<PipelineStep, PipelineStep>> = {
 };
 
 type JobsIndex = Record<string, JobRecord>;
+type ActiveStepRun = {
+  step: PipelineStep;
+  controller: AbortController;
+  cancelRequested: boolean;
+  settled: Promise<void>;
+  resolveSettled: () => void;
+};
 type ParsedShare = NonNullable<ReturnType<typeof parseDouyinShare>>;
 type PageInfoRecord = DouyinPageInfo & { errorMessage?: string };
 type PermanentDeleteResult = "deleted" | "not_found" | "active" | "not_in_trash";
@@ -77,8 +95,14 @@ function firstText(...values: Array<unknown>) {
   return undefined;
 }
 
+function isStreamableStep(step: PipelineStep): step is StreamablePipelineStep {
+  return step === "clean" || step === "generate_video_prompts";
+}
+
 export class JobStore {
   private readonly runningSteps = new Set<string>();
+  private readonly activeRuns = new Map<string, ActiveStepRun>();
+  private readonly stepEvents = new JobStepEventHub();
 
   constructor(
     private readonly storage: LocalStorage,
@@ -90,12 +114,60 @@ export class JobStore {
 
   async init() {
     await this.storage.ensureBaseDirs();
+    let index: JobsIndex;
     try {
-      await this.storage.readJson<JobsIndex>(JOBS_INDEX);
+      index = await this.storage.readJson<JobsIndex>(JOBS_INDEX);
     } catch {
-      await this.storage.writeJson(JOBS_INDEX, {});
+      index = {};
+      await this.storage.writeJson(JOBS_INDEX, index);
+    }
+    if (this.recoverInterruptedSteps(index)) {
+      await this.storage.writeJson(JOBS_INDEX, index);
     }
     await this.purgeExpiredTrash();
+  }
+
+  private recoverInterruptedSteps(index: JobsIndex) {
+    let changed = false;
+    const now = new Date().toISOString();
+    const message = "应用重启时中断了正在执行的步骤，已暂停，请重新执行";
+
+    for (const record of Object.values(index)) {
+      if (record.status !== "processing" && !record.steps) {
+        continue;
+      }
+
+      const steps = this.ensurePipelineSteps(record.steps);
+      const interrupted = PIPELINE_STEPS.filter((step) => steps[step].status === "running");
+      const inferredStep = interrupted[0] ?? LEGACY_ACTIVE_STAGE_STEP[record.stage];
+      const isActiveRecord = record.status === "processing";
+      if (!isActiveRecord && interrupted.length === 0) continue;
+
+      const stepsToPause = new Set(interrupted);
+      if (inferredStep && steps[inferredStep].status !== "succeeded") {
+        stepsToPause.add(inferredStep);
+      }
+      for (const step of stepsToPause) {
+        steps[step] = {
+          ...steps[step],
+          status: "paused",
+          lastError: message,
+          finishedAt: now
+        };
+      }
+
+      index[record.id] = {
+        ...record,
+        workflowMode: "manual",
+        status: "queued",
+        errorMessage: stepsToPause.size > 0 ? message : "应用重启后未找到正在执行的步骤，已暂停，请检查并重试",
+        updatedAt: now,
+        steps
+      };
+      changed = true;
+    }
+
+    return changed;
   }
 
   async create(input: { sourceUrl?: string; shareText?: string; topic?: string; coverUrl?: string }) {
@@ -138,28 +210,118 @@ export class JobStore {
     }
 
     this.runningSteps.add(id);
+    let resolveSettled: () => void = () => undefined;
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    const activeRun: ActiveStepRun = {
+      step,
+      controller: new AbortController(),
+      cancelRequested: false,
+      settled,
+      resolveSettled
+    };
+    this.activeRuns.set(id, activeRun);
     try {
       const record = await this.getStepRunnableRecord(id, step);
       await this.markStepRunning(record, step);
+      if (isStreamableStep(step)) {
+        this.stepEvents.publish(id, step, { type: "started" });
+      }
 
       let lastError = "";
       const maxAttempts = step === "generate_video" ? 1 : MAX_STEP_ATTEMPTS;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        if (activeRun.cancelRequested) {
+          return (await this.get(id)) ?? record;
+        }
         await this.updateStep(id, step, { attempts: attempt });
         try {
-          await this.executeStepAction(id, step);
-          return await this.markStepSucceeded(id, step);
+          await this.executeStepAction(id, step, activeRun.controller.signal);
+          if (activeRun.cancelRequested) {
+            return (await this.get(id)) ?? record;
+          }
+          const succeeded = await this.markStepSucceeded(id, step);
+          if (isStreamableStep(step)) {
+            this.stepEvents.publish(id, step, { type: "completed" });
+          }
+          return succeeded;
         } catch (error) {
+          if (activeRun.cancelRequested) {
+            return (await this.get(id)) ?? record;
+          }
           lastError = error instanceof Error ? error.message : String(error);
           await this.updateStep(id, step, { attempts: attempt, lastError });
         }
       }
 
       const failed = await this.markStepFailed(id, step, lastError || "step failed");
+      if (isStreamableStep(step)) {
+        this.stepEvents.publish(id, step, { type: "error", message: lastError || "step failed" });
+      }
       throw new JobStepError(lastError || "step failed", 500, failed);
     } finally {
       this.runningSteps.delete(id);
+      this.activeRuns.delete(id);
+      activeRun.resolveSettled();
     }
+  }
+
+  async pauseStep(id: string) {
+    const record = await this.get(id);
+    if (!record) {
+      throw new JobStepError("job not found", 404);
+    }
+    if (record.deletedAt) {
+      throw new JobStepError("deleted job cannot pause steps", 409, record);
+    }
+    if (record.workflowMode !== "manual" || !record.steps) {
+      throw new JobStepError("manual workflow steps are not available for this job", 409, record);
+    }
+
+    const steps = this.ensurePipelineSteps(record.steps);
+    const step = PIPELINE_STEPS.find((candidate) => steps[candidate].status === "running");
+    if (!step) {
+      throw new JobStepError("no step is currently running", 409, record);
+    }
+
+    const activeRun = this.activeRuns.get(id);
+    if (activeRun) {
+      activeRun.cancelRequested = true;
+      activeRun.controller.abort();
+    }
+
+    const paused = await this.updateStep(
+      id,
+      step,
+      {
+        status: "paused",
+        lastError: "用户已暂停当前步骤，可重新执行",
+        finishedAt: new Date().toISOString()
+      },
+      {
+        status: "queued",
+        errorMessage: "用户已暂停当前步骤，可重新执行"
+      }
+    );
+    if (isStreamableStep(step)) {
+      this.stepEvents.publish(id, step, { type: "paused", message: "用户已暂停当前步骤，可重新执行" });
+    }
+
+    if (activeRun) {
+      await activeRun.settled;
+      return (await this.get(id)) ?? paused;
+    }
+    return paused;
+  }
+
+  subscribeStepEvents(
+    id: string,
+    step: StreamablePipelineStep,
+    listener: (event: JobStepStreamEvent) => void,
+    afterId = 0
+  ) {
+    return this.stepEvents.subscribe(id, step, listener, afterId);
   }
 
   private async getStepRunnableRecord(id: string, step: PipelineStep) {
@@ -196,20 +358,20 @@ export class JobStore {
     };
   }
 
-  private async executeStepAction(id: string, step: PipelineStep) {
+  private async executeStepAction(id: string, step: PipelineStep, signal?: AbortSignal) {
     if (step === "transcribe") {
       await this.runTranscribeStep(id);
       return;
     }
     if (step === "clean") {
-      await this.runCleanStep(id);
+      await this.runCleanStep(id, signal);
       return;
     }
     if (step === "generate_video_prompts") {
-      await this.runGenerateVideoPromptsStep(id);
+      await this.runGenerateVideoPromptsStep(id, signal);
       return;
     }
-    await this.runGenerateVideoStep(id);
+    await this.runGenerateVideoStep(id, signal);
   }
 
   private async runDownloadStep(id: string) {
@@ -326,7 +488,7 @@ export class JobStore {
     );
   }
 
-  private async runCleanStep(id: string) {
+  private async runCleanStep(id: string, signal?: AbortSignal) {
     const record = await this.requireRecord(id);
     const parsed = await this.readParsedShare(id);
     const pageInfo = await this.readPageInfo(id);
@@ -344,6 +506,8 @@ export class JobStore {
       topic: record.topic,
       draft,
       pageInfo
+    }, signal, (update) => {
+      this.stepEvents.publish(id, "clean", { type: "preview", ...update });
     });
     await this.storage.writeJson(path.join("processed", "cleaned", `${id}.json`), {
       jobId: id,
@@ -361,7 +525,7 @@ export class JobStore {
     await this.update(id, { errorMessage: undefined });
   }
 
-  private async runGenerateVideoPromptsStep(id: string) {
+  private async runGenerateVideoPromptsStep(id: string, signal?: AbortSignal) {
     const record = await this.requireRecord(id);
     const script = await this.storage.readJson<ScriptAsset>(record.storagePath);
     if (!script.cleanScript?.trim() && !script.voiceoverScript?.trim()) {
@@ -370,7 +534,9 @@ export class JobStore {
     if (!this.cleaner.planShortVideo) {
       throw new Error("AI 分镜服务不可用");
     }
-    const plan = await this.cleaner.planShortVideo(script);
+    const plan = await this.cleaner.planShortVideo(script, signal, (update) => {
+      this.stepEvents.publish(id, "generate_video_prompts", { type: "preview", ...update });
+    });
     const enhanced: ScriptAsset = {
       ...script,
       planVersion: plan.planVersion,
@@ -392,7 +558,7 @@ export class JobStore {
     await this.update(id, { errorMessage: undefined });
   }
 
-  private async runGenerateVideoStep(id: string) {
+  private async runGenerateVideoStep(id: string, signal?: AbortSignal) {
     if (!this.videoGenerator) {
       throw new Error("HyperFrames video generator is not configured");
     }
@@ -405,7 +571,7 @@ export class JobStore {
 
     const videoResult = await this.videoGenerator.generate(script, id, async ({ phase, progress }) => {
       await this.updateStep(id, "generate_video", { phase, progress });
-    });
+    }, signal);
     const enhanced: ScriptAsset = {
       ...script,
       hyperframesVideo: videoResult,
@@ -685,6 +851,9 @@ export class JobStore {
     }
     if (record.status === "failed" && nextStep) {
       return `重试${STEP_LABELS[nextStep]}`;
+    }
+    if (nextStep && record.steps?.[nextStep]?.status === "paused") {
+      return `重新执行${STEP_LABELS[nextStep]}`;
     }
     if (nextStep) {
       return `开始${STEP_LABELS[nextStep]}`;

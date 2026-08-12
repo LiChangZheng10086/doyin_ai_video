@@ -104,6 +104,8 @@ export function buildWorkflowSteps(
     let actionLabel: string;
     if (status === 'failed') {
       actionLabel = `重试 ${STEP_LABELS[key]}`;
+    } else if (status === 'paused') {
+      actionLabel = `重新执行 ${STEP_LABELS[key]}`;
     } else if (status === 'running') {
       actionLabel = `${STEP_LABELS[key]}进行中...`;
     } else if (status === 'succeeded') {

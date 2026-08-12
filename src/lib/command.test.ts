@@ -31,3 +31,15 @@ test("runCommand timeout terminates spawned descendants", { skip: process.platfo
 
   assert.equal(await stat(marker).catch(() => null), null);
 });
+
+test("runCommand abort terminates the active process", async () => {
+  const controller = new AbortController();
+  const running = runCommand(
+    process.execPath,
+    ["-e", "setTimeout(() => process.exit(0), 500)"],
+    { signal: controller.signal, captureStderr: true }
+  );
+  setTimeout(() => controller.abort(), 40).unref();
+
+  await assert.rejects(running, /aborted/i);
+});

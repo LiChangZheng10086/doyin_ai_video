@@ -11,6 +11,81 @@ import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import { LocalStorage } from "./storage.js";
 import type { ScriptAsset } from "../types.js";
 
+test("JobStore recovers persisted running steps after restart so they can be retried", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-restart-recovery-"));
+  const storage = new LocalStorage(storageRoot);
+  await storage.writeJson("cache/jobs-index.json", {
+    interrupted: {
+      id: "interrupted",
+      sourceUrl: "https://example.com/video",
+      topic: "restart recovery",
+      status: "processing",
+      stage: "generating-video-prompts",
+      workflowMode: "manual",
+      steps: {
+        transcribe: { status: "succeeded", attempts: 1 },
+        clean: { status: "succeeded", attempts: 1 },
+        generate_video_prompts: {
+          status: "running",
+          attempts: 1,
+          startedAt: "2026-08-12T18:00:00.000Z"
+        },
+        generate_video: { status: "pending", attempts: 0 }
+      },
+      storagePath: "processed/scripts/interrupted.json",
+      createdAt: "2026-08-12T17:00:00.000Z",
+      updatedAt: "2026-08-12T18:00:00.000Z"
+    }
+  });
+  await storage.writeJson("processed/scripts/interrupted.json", {
+    sourceUrl: "https://example.com/video",
+    topic: "restart recovery",
+    cleanScript: "可以重新执行的内容",
+    status: "ready"
+  } satisfies ScriptAsset);
+
+  const jobs = new JobStore(
+    storage,
+    {
+      async clean(input) { return input.draft; },
+      async planShortVideo() {
+        return {
+          planVersion: 2,
+          targetDuration: 60,
+          shortVideoScript: "恢复后的分镜内容",
+          shots: [{
+            index: 1,
+            duration: 6,
+            shotType: "hook",
+            subject: "恢复",
+            action: "",
+            cameraMotion: "",
+            visualLayers: [],
+            caption: "恢复",
+            emphasisWords: [],
+            transition: "cut",
+            pacing: "fast",
+            narration: "恢复"
+          }]
+        };
+      }
+    },
+    {} as MediaService,
+    {} as AsrService
+  );
+
+  await jobs.init();
+
+  const recovered = await jobs.get("interrupted");
+  assert.equal(recovered?.status, "queued");
+  assert.equal(recovered?.steps?.generate_video_prompts.status, "paused");
+  assert.match(recovered?.steps?.generate_video_prompts.lastError ?? "", /应用重启.*暂停/);
+  assert.ok(recovered?.steps?.generate_video_prompts.finishedAt);
+
+  const retried = await jobs.runStep("interrupted", "generate_video_prompts");
+  assert.equal(retried.steps?.generate_video_prompts.status, "succeeded");
+});
+
 test("JobStore overview restores cover URLs for legacy collection jobs", async () => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-cover-overview-"));
   const storage = new LocalStorage(storageRoot);
@@ -225,6 +300,78 @@ test("JobStore stores the AI generated Shot V2 plan", async () => {
   assert.equal(script.videoPrompts, undefined);
   assert.equal(script.enhancedScenes, undefined);
 });
+
+test("JobStore publishes AI clean previews before the completed event", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-clean-stream-"));
+  const storage = new LocalStorage(storageRoot);
+  const cleaner: ScriptCleaner = {
+    async clean(input, _signal, onStream) {
+      onStream?.({ delta: "第一段", text: "第一段", model: "deepseek-chat" });
+      onStream?.({ delta: "第二段", text: "第一段第二段", model: "deepseek-chat" });
+      return { ...input.draft, title: "完成洗稿", cleanScript: "完成内容", status: "ready" };
+    }
+  };
+  const jobs = new JobStore(storage, cleaner, {} as MediaService, {} as AsrService);
+  await jobs.init();
+  await writeCleanRunnableFixture(storage, "stream-clean");
+  const events: Array<{ type: string; text?: string }> = [];
+  jobs.subscribeStepEvents("stream-clean", "clean", (event) => events.push({ type: event.type, text: event.text }));
+
+  await jobs.runStep("stream-clean", "clean");
+
+  assert.deepEqual(events.map((event) => event.type), ["started", "preview", "preview", "completed"]);
+  assert.equal(events[2]?.text, "第一段第二段");
+  const cleaned = await storage.readJson<{ output: ScriptAsset }>("processed/cleaned/stream-clean.json");
+  assert.equal(cleaned.output.title, "完成洗稿");
+});
+
+test("JobStore emits an error and never writes a partial cleaned artifact when streaming fails", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-clean-stream-failure-"));
+  const storage = new LocalStorage(storageRoot);
+  const cleaner: ScriptCleaner = {
+    async clean(_input, _signal, onStream) {
+      onStream?.({ delta: "半截内容", text: "半截内容", model: "deepseek-chat" });
+      throw new Error("上游连接中断");
+    }
+  };
+  const jobs = new JobStore(storage, cleaner, {} as MediaService, {} as AsrService);
+  await jobs.init();
+  await writeCleanRunnableFixture(storage, "stream-failed");
+  const eventTypes: string[] = [];
+  jobs.subscribeStepEvents("stream-failed", "clean", (event) => eventTypes.push(event.type));
+
+  await assert.rejects(jobs.runStep("stream-failed", "clean"), /上游连接中断/);
+
+  assert.equal(eventTypes[0], "started");
+  assert.equal(eventTypes.at(-1), "error");
+  await assert.rejects(storage.readJson("processed/cleaned/stream-failed.json"));
+});
+
+async function writeCleanRunnableFixture(storage: LocalStorage, id: string) {
+  await storage.writeJson("cache/jobs-index.json", {
+    [id]: {
+      id,
+      sourceUrl: "https://example.com/video",
+      topic: "AI 内容生产",
+      status: "queued",
+      stage: "transcribed",
+      workflowMode: "manual",
+      steps: {
+        transcribe: { status: "succeeded", attempts: 1 },
+        clean: { status: "pending", attempts: 0 },
+        generate_video_prompts: { status: "pending", attempts: 0 },
+        generate_video: { status: "pending", attempts: 0 }
+      },
+      storagePath: `processed/scripts/${id}.json`,
+      createdAt: "2026-08-12T00:00:00.000Z",
+      updatedAt: "2026-08-12T00:00:00.000Z"
+    }
+  });
+  await storage.writeJson(`raw/transcripts/${id}.json`, {
+    transcript: "这是完整的视频转录文本",
+    text: "这是完整的视频转录文本"
+  });
+}
 
 test("JobStore attempts video rendering only once and preserves the failure phase", async () => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-video-once-"));

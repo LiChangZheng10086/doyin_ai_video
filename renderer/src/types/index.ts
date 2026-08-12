@@ -1,4 +1,5 @@
 // 任务状态
+export type AiProvider = 'deepseek' | 'openai' | 'custom';
 export type JobStatus = 'queued' | 'processing' | 'done' | 'failed';
 
 export type LocalUserRole = 'admin' | 'publisher';
@@ -247,7 +248,30 @@ export type PipelineStep =
   | 'generate_video_prompts'
   | 'generate_video';
 
-export type PipelineStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
+export type StreamablePipelineStep = 'clean' | 'generate_video_prompts';
+export type JobStepStreamEventType = 'started' | 'preview' | 'completed' | 'paused' | 'error';
+
+export interface JobStepStreamEvent {
+  id: number;
+  type: JobStepStreamEventType;
+  jobId: string;
+  step: StreamablePipelineStep;
+  delta?: string;
+  text?: string;
+  model?: string;
+  message?: string;
+}
+
+export interface AiStreamPreview {
+  step: StreamablePipelineStep;
+  status: 'connecting' | 'streaming' | 'completed' | 'paused' | 'error';
+  text: string;
+  model?: string;
+  receivedLength: number;
+  message?: string;
+}
+
+export type PipelineStepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'paused';
 export type VideoGenerationPhase =
   | 'checking_environment'
   | 'building_project'

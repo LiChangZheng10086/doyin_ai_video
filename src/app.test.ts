@@ -1193,3 +1193,61 @@ test("video prompts endpoint returns Shot V2 and legacy compatibility fields", a
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
+
+test("AI step events endpoint streams SSE lifecycle events and rejects unsupported steps", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "app-ai-step-events-"));
+  await mkdir(path.join(storageRoot, "cache"), { recursive: true });
+  await mkdir(path.join(storageRoot, "raw", "transcripts"), { recursive: true });
+  await writeFile(path.join(storageRoot, "cache", "jobs-index.json"), JSON.stringify({
+    "stream-clean": {
+      id: "stream-clean",
+      sourceUrl: "https://example.com/video",
+      topic: "流式洗稿",
+      status: "queued",
+      stage: "transcribed",
+      workflowMode: "manual",
+      steps: {
+        transcribe: { status: "succeeded", attempts: 1 },
+        clean: { status: "pending", attempts: 0 },
+        generate_video_prompts: { status: "pending", attempts: 0 },
+        generate_video: { status: "pending", attempts: 0 }
+      },
+      storagePath: "processed/scripts/stream-clean.json",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      updatedAt: "2026-08-12T00:00:00.000Z"
+    }
+  }), "utf8");
+  await writeFile(path.join(storageRoot, "raw", "transcripts", "stream-clean.json"), JSON.stringify({
+    transcript: "用于测试的完整转录文本",
+    text: "用于测试的完整转录文本"
+  }), "utf8");
+  const fixture = await serveApp(storageRoot);
+
+  try {
+    const unsupported = await fetch(`${fixture.baseUrl}/api/jobs/stream-clean/steps/transcribe/events`);
+    assert.equal(unsupported.status, 400);
+
+    const stream = await fetch(`${fixture.baseUrl}/api/jobs/stream-clean/steps/clean/events`);
+    assert.equal(stream.status, 200);
+    assert.match(stream.headers.get("content-type") ?? "", /text\/event-stream/);
+
+    const run = fetch(`${fixture.baseUrl}/api/jobs/stream-clean/steps/clean`, { method: "POST" });
+    const body = await stream.text();
+    const runResponse = await run;
+
+    assert.equal(runResponse.status, 500);
+    assert.match(body, /event: started/);
+    assert.match(body, /event: error/);
+    assert.match(body, /"step":"clean"/);
+    assert.match(body, /^id: 1/m);
+
+    const replay = await fetch(`${fixture.baseUrl}/api/jobs/stream-clean/steps/clean/events`, {
+      headers: { "Last-Event-ID": "1" }
+    });
+    const replayBody = await replay.text();
+    assert.doesNotMatch(replayBody, /event: started/);
+    assert.match(replayBody, /event: error/);
+  } finally {
+    await fixture.close();
+  }
+});

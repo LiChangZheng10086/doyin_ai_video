@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, RotateCcw, Loader2, Sparkles } from 'lucide-react';
+import { Play, RotateCcw, Loader2, Pause, Sparkles } from 'lucide-react';
 import type { Job, PipelineStep } from '../../types/index';
 import { buildWorkflowSteps } from './jobPresentation';
 import { WorkflowStepper } from './WorkflowStepper';
@@ -9,9 +9,10 @@ export interface WorkflowConsoleProps {
   runningStep: PipelineStep | null;
   actionError: string | null;
   onRunStep: (step: PipelineStep) => void;
+  onPauseStep?: (step: PipelineStep) => void;
 }
 
-export function WorkflowConsole({ job, runningStep, actionError, onRunStep }: WorkflowConsoleProps) {
+export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPauseStep }: WorkflowConsoleProps) {
   const steps = buildWorkflowSteps(job, runningStep);
   const focus = findFocusStep(steps);
 
@@ -22,8 +23,10 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep }: Wo
   const hero = getConsoleCopy(job, focus);
 
   const isBusy = runningStep !== null;
+  const isRunning = focus?.status === 'running';
   const isBlocked = focus?.blocked ?? false;
   const isFailed = focus?.status === 'failed';
+  const isPaused = focus?.status === 'paused';
 
   return (
     <section className="overflow-hidden rounded-lg border border-blue-100 bg-gradient-to-br from-blue-50 via-white to-purple-50 p-6 shadow-sm">
@@ -72,7 +75,7 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep }: Wo
             <button
               type="button"
               data-primary-action
-              disabled={isBusy || isBlocked || Boolean(job.deletedAt)}
+              disabled={isBusy || isRunning || isBlocked || Boolean(job.deletedAt)}
               onClick={() => onRunStep(focus.key)}
               className={`inline-flex min-w-40 items-center justify-center gap-2 rounded-lg px-5 py-3 font-medium transition-all ${
                 isFailed
@@ -80,8 +83,19 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep }: Wo
                   : 'bg-tech-blue text-white shadow-sm hover:bg-tech-blue-dark hover:shadow'
               } disabled:cursor-not-allowed disabled:opacity-50`}
             >
-              {isBusy ? <Loader2 className="animate-spin" size={18} /> : isFailed ? <RotateCcw size={18} /> : <Play size={18} />}
+              {isBusy ? <Loader2 className="animate-spin" size={18} /> : isFailed || isPaused ? <RotateCcw size={18} /> : <Play size={18} />}
               {isBusy ? '执行中...' : focus.actionLabel}
+            </button>
+          )}
+          {focus?.status === 'running' && onPauseStep && (
+            <button
+              type="button"
+              onClick={() => onPauseStep(focus.key)}
+              disabled={Boolean(job.deletedAt)}
+              className="inline-flex min-w-40 items-center justify-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-5 py-3 font-medium text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Pause size={18} />
+              暂停当前步骤
             </button>
           )}
           <StatusChip job={job} />
@@ -98,6 +112,8 @@ function findFocusStep(steps: ReturnType<typeof buildWorkflowSteps>) {
   if (failed) return failed;
   const running = steps.find((s) => s.status === 'running');
   if (running) return running;
+  const paused = steps.find((s) => s.status === 'paused');
+  if (paused) return paused;
   const next = steps.find((s) => s.status === 'pending');
   return next ?? null;
 }
@@ -120,6 +136,9 @@ function getConsoleCopy(job: Job, focus: ReturnType<typeof buildWorkflowSteps>[n
   }
   if (focus.status === 'failed') {
     return { title: `${focus.label}遇到问题`, description: '查看错误摘要后可以重试当前步骤。' };
+  }
+  if (focus.status === 'paused') {
+    return { title: `${focus.label}已暂停`, description: '当前步骤没有继续占用任务，可以重新执行。' };
   }
   return { title: `下一步：${focus.label}`, description: '点击主按钮执行当前步骤。失败时系统会自动尝试 3 次。' };
 }

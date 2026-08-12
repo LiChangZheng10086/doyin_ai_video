@@ -1,13 +1,15 @@
 import React from 'react';
-import type { CleanedScript } from '../../../types/index';
+import type { AiStreamPreview, CleanedScript } from '../../../types/index';
+import { StreamingArtifact } from './StreamingArtifact';
 
 export interface RewriteArtifactProps {
   cleaned: CleanedScript | null;
   cleanedError: string | null;
+  streamPreview?: AiStreamPreview | null;
 }
 
-export function RewriteArtifact({ cleaned, cleanedError }: RewriteArtifactProps) {
-  if (cleanedError) {
+export function RewriteArtifact({ cleaned, cleanedError, streamPreview }: RewriteArtifactProps) {
+  if (cleanedError && !streamPreview) {
     return (
       <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
         <p className="font-semibold">AI 洗稿失败</p>
@@ -18,12 +20,17 @@ export function RewriteArtifact({ cleaned, cleanedError }: RewriteArtifactProps)
 
   const output = cleaned?.output;
 
-  if (!output || (!output.cleanScript && !output.summary)) {
+  if ((!output || (!output.cleanScript && !output.summary)) && !streamPreview) {
     return <EmptyContent title="AI 成果还没生成" description="完成 AI 洗稿后，这里会展示标题、摘要、核心要点和成稿。" />;
   }
 
   return (
     <div className="space-y-5">
+      {streamPreview && <StreamingArtifact kind="clean" preview={streamPreview} />}
+      {cleanedError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{cleanedError}</div>
+      )}
+      {output && (output.cleanScript || output.summary) && <>
       <div>
         <h3 className="text-lg font-semibold text-tech-text">AI 洗稿成果</h3>
         <p className="mt-1 text-sm text-tech-muted">面向二次创作的标题、摘要、要点和成稿。</p>
@@ -48,6 +55,7 @@ export function RewriteArtifact({ cleaned, cleanedError }: RewriteArtifactProps)
           ))}
         </div>
       )}
+      </>}
     </div>
   );
 }

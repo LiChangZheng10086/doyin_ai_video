@@ -7,6 +7,7 @@ import type {
 } from "../types.js";
 import type { AiRuntimeConfig as ServerAiRuntimeConfig } from "../app.js";
 import { toSimplifiedChinese } from "./chinese.js";
+import { extractAiMessageText } from "./ai-response.js";
 import {
   PUBLISH_PLATFORMS,
   normalizePlatformCopy,
@@ -146,8 +147,8 @@ export class PublishingCopyService {
       response_format: { type: "json_object" },
       max_tokens: 2400,
     } as any);
-    const content = completion?.choices?.[0]?.message?.content;
-    if (typeof content !== "string" || !content.trim()) {
+    const content = extractAiMessageText(completion?.choices?.[0]?.message);
+    if (!content) {
       throw new Error("AI 返回内容为空");
     }
 
@@ -427,7 +428,8 @@ function isUsableConfig(config: AiRuntimeConfig | null): config is AiRuntimeConf
     && config.apiKey.trim()
     && typeof config.model === "string"
     && config.model.trim()
-    && ["deepseek", "openai", "custom"].includes(config.provider),
+    && ["deepseek", "openai", "custom"].includes(config.provider)
+    && (config.provider !== "custom" || Boolean(config.baseURL?.trim())),
   );
 }
 

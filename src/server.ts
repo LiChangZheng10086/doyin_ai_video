@@ -3,6 +3,7 @@ import path from "node:path";
 import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { createExpressApp } from "./app.js";
+import type { AiProvider } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,11 +14,15 @@ if (existsSync(envPath)) {
   loadEnvFile(envPath);
 }
 
-const aiProvider = process.env.AI_PROVIDER ?? "deepseek";
+const configuredProvider = process.env.AI_PROVIDER;
+const aiProvider: AiProvider = configuredProvider === "openai" || configuredProvider === "custom" || configuredProvider === "deepseek"
+  ? configuredProvider
+  : "deepseek";
 const aiApiKey =
-  aiProvider === "deepseek"
+  process.env.AI_API_KEY
+  ?? (aiProvider === "deepseek"
     ? process.env.DEEPSEEK_API_KEY ?? process.env.OPENAI_API_KEY
-    : process.env.OPENAI_API_KEY;
+    : process.env.OPENAI_API_KEY);
 
 const app = await createExpressApp({
   storagePath: path.join(rootDir, "storage"),
@@ -25,7 +30,7 @@ const app = await createExpressApp({
   aiProvider,
   aiModel: process.env.AI_MODEL ?? "deepseek-v4-pro",
   aiApiKey,
-  aiBaseURL: aiProvider === "deepseek" ? "https://api.deepseek.com" : undefined,
+  aiBaseURL: process.env.AI_BASE_URL ?? (aiProvider === "deepseek" ? "https://api.deepseek.com" : undefined),
   ytDlpBinary: process.env.YTDLP_BINARY,
   ffmpegBinary: process.env.FFMPEG_BINARY,
   ffprobeBinary: process.env.FFPROBE_BINARY ?? "ffprobe",

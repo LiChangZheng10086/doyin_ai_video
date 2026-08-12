@@ -25,11 +25,12 @@ import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { LocalUsersSettings } from '../components/LocalUsersSettings';
 import { apiClient } from '../services/api';
 import { settingsSections } from '../utils/localUsers';
+import type { AiProvider } from '../types';
 
 interface AIKeyConfig {
   id: string;
   name: string;
-  provider: 'deepseek' | 'openai' | 'custom';
+  provider: AiProvider;
   apiKey: string;
   baseURL?: string;
   model: string;
@@ -40,7 +41,7 @@ interface AIKeyConfig {
 
 type AIKeyForm = {
   name: string;
-  provider: 'deepseek' | 'openai' | 'custom';
+  provider: AiProvider;
   apiKey: string;
   baseURL: string;
   model: string;
@@ -95,7 +96,7 @@ export function SettingsPage() {
     }
   };
 
-  const handleProviderChange = (provider: 'deepseek' | 'openai' | 'custom') => {
+  const handleProviderChange = (provider: AiProvider) => {
     setNewKey({
       ...newKey,
       provider,
@@ -389,7 +390,7 @@ function ModelsSection({
   setTestResult: (value: AIKeyTestResult | null) => void;
   isTesting: boolean;
   isSaving: boolean;
-  onProviderChange: (provider: 'deepseek' | 'openai' | 'custom') => void;
+  onProviderChange: (provider: AiProvider) => void;
   onTest: () => void;
   onAdd: () => void;
   onUpdate: () => void;

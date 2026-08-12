@@ -7,6 +7,7 @@ import { TranscriptArtifact } from './TranscriptArtifact.js';
 import { RewriteArtifact } from './RewriteArtifact.js';
 import { ShotArtifact } from './ShotArtifact.js';
 import { VideoArtifact } from './VideoArtifact.js';
+import { StreamingArtifact } from './StreamingArtifact.js';
 import type { RawTranscript, CleanedScript, HyperframesVideoOutput, ShortVideoShot, ShotType, ShotLayout, ShotTransition, ShotPacing } from '../../../types/index.js';
 
 const noop = () => {};
@@ -78,6 +79,67 @@ test('RewriteArtifact renders title, summary, key points, and quality notes', ()
   assert.match(markup, /要点二/);
   assert.match(markup, /清洗后的脚本内容/);
   assert.match(markup, /需要检查事实准确性/);
+});
+
+test('StreamingArtifact marks live content as unsaved and shows model and character count', () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(StreamingArtifact, {
+      kind: 'clean',
+      preview: {
+        step: 'clean',
+        status: 'streaming',
+        text: '正在生成的洗稿内容',
+        model: 'deepseek-chat',
+        receivedLength: 9,
+      },
+    }),
+  );
+
+  assert.match(markup, /正在生成 AI 洗稿/);
+  assert.match(markup, /生成中，尚未保存/);
+  assert.match(markup, /正在生成的洗稿内容/);
+  assert.match(markup, /deepseek-chat/);
+  assert.match(markup, /9 个字符/);
+});
+
+test('StreamingArtifact extracts readable wash copy from an incomplete JSON stream', () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(StreamingArtifact, {
+      kind: 'clean',
+      preview: {
+        step: 'clean',
+        status: 'streaming',
+        text: '{"title":"标题","clean_script":"这是正在生成的洗稿正文',
+        receivedLength: 40,
+      },
+    }),
+  );
+
+  assert.match(markup, /这是正在生成的洗稿正文/);
+  assert.doesNotMatch(markup, /clean_script/);
+});
+
+test('RewriteArtifact keeps the saved result visible while showing a live replacement preview', () => {
+  const cleaned: CleanedScript = {
+    jobId: 'job-1',
+    sourceUrl: 'https://example.test',
+    output: { title: '旧标题', cleanScript: '已保存的旧洗稿' },
+  };
+  const markup = renderToStaticMarkup(
+    React.createElement(RewriteArtifact, {
+      cleaned,
+      cleanedError: null,
+      streamPreview: {
+        step: 'clean',
+        status: 'streaming',
+        text: '新洗稿正在生成',
+        receivedLength: 7,
+      },
+    }),
+  );
+
+  assert.match(markup, /新洗稿正在生成/);
+  assert.match(markup, /已保存的旧洗稿/);
 });
 
 test('ShotArtifact renders headline, caption, and hides cameraMotion outside details', () => {

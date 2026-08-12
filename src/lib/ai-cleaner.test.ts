@@ -17,6 +17,13 @@ function draft(): ScriptAsset {
   };
 }
 
+async function* streamChunks(parts: string[]) {
+  for (const part of parts) {
+    yield { choices: [{ delta: { content: part }, finish_reason: null }] };
+  }
+  yield { choices: [{ delta: {}, finish_reason: "stop" }] };
+}
+
 test("OpenAiScriptCleaner fails instead of silently returning raw transcript without an API key", async () => {
   const cleaner = new OpenAiScriptCleaner();
 
@@ -66,6 +73,128 @@ test("OpenAiScriptCleaner surfaces API and invalid JSON failures", async () => {
   );
 });
 
+test("OpenAiScriptCleaner accepts structured content parts from OpenAI-compatible gateways", async () => {
+  const cleaner = new OpenAiScriptCleaner({ apiKey: "test", model: "deepseek-v4-flash" });
+  const shots = Array.from({ length: 8 }, (_, index) => ({
+    index: index + 1,
+    duration: index < 4 ? 7 : 6,
+    shot_type: index === 0 ? "hook" : index === 7 ? "summary" : "explain",
+    layout: index === 0 ? "kinetic-title" : index === 7 ? "summary-stack" : "concept-map",
+    headline: `要点${index + 1}`,
+    caption_lines: ["核心内容"],
+    visual_items: [{ label: "输入" }, { label: "输出" }],
+    source_key_points: [0],
+    transition: "cut",
+    pacing: "medium"
+  }));
+  (cleaner as any).client = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{
+            message: {
+              content: [{ type: "text", text: JSON.stringify({ target_duration: 60, shots }) }]
+            }
+          }]
+        })
+      }
+    }
+  };
+
+  const result = await cleaner.planShortVideo({ ...draft(), keyPoints: ["核心内容"] });
+
+  assert.equal(result.shots.length, 8);
+});
+
+test("OpenAiScriptCleaner preserves custom providers without sending DeepSeek-only options", async () => {
+  const cleaner = new OpenAiScriptCleaner({
+    apiKey: "test",
+    provider: "custom",
+    baseURL: "https://gateway.example/v1",
+    model: "vendor-model"
+  });
+  const shots = Array.from({ length: 8 }, (_, index) => ({
+    index: index + 1,
+    duration: index < 4 ? 7 : 6,
+    shot_type: index === 0 ? "hook" : index === 7 ? "summary" : "explain",
+    layout: index === 0 ? "kinetic-title" : index === 7 ? "summary-stack" : "concept-map",
+    headline: `要点${index + 1}`,
+    caption_lines: ["核心内容"],
+    visual_items: [{ label: "输入" }, { label: "输出" }],
+    source_key_points: [0],
+    transition: "cut",
+    pacing: "medium"
+  }));
+  let request: Record<string, unknown> | undefined;
+  (cleaner as any).client = {
+    chat: {
+      completions: {
+        create: async (value: Record<string, unknown>) => {
+          request = value;
+          return { choices: [{ message: { content: JSON.stringify({ target_duration: 60, shots }) } }] };
+        }
+      }
+    }
+  };
+
+  const result = await cleaner.planShortVideo({ ...draft(), keyPoints: ["核心内容"] });
+
+  assert.equal(result.shots.length, 8);
+  assert.equal(request?.model, "vendor-model");
+  assert.equal(request?.max_tokens, undefined);
+  assert.equal(request?.extra_body, undefined);
+});
+
+test("OpenAiScriptCleaner accepts fenced JSON storyboard responses", async () => {
+  const cleaner = new OpenAiScriptCleaner({ apiKey: "test", model: "deepseek-v4-flash" });
+  const shots = Array.from({ length: 8 }, (_, index) => ({
+    index: index + 1,
+    duration: index < 4 ? 7 : 6,
+    shot_type: index === 0 ? "hook" : index === 7 ? "summary" : "explain",
+    layout: index === 0 ? "kinetic-title" : index === 7 ? "summary-stack" : "concept-map",
+    headline: `要点${index + 1}`,
+    caption_lines: ["核心内容"],
+    visual_items: [{ label: "输入" }, { label: "输出" }],
+    source_key_points: [0],
+    transition: "cut",
+    pacing: "medium"
+  }));
+  (cleaner as any).client = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{
+            finish_reason: "stop",
+            message: { content: `这是结果：\n\`\`\`json\n${JSON.stringify({ target_duration: 60, shots })}\n\`\`\`` }
+          }]
+        })
+      }
+    }
+  };
+
+  const result = await cleaner.planShortVideo({ ...draft(), keyPoints: ["核心内容"] });
+
+  assert.equal(result.shots.length, 8);
+});
+
+test("OpenAiScriptCleaner reports truncated storyboard responses clearly", async () => {
+  const cleaner = new OpenAiScriptCleaner({ apiKey: "test", model: "deepseek-v4-flash" });
+  (cleaner as any).client = {
+    chat: {
+      completions: {
+        create: async () => ({
+          choices: [{ finish_reason: "length", message: { content: '{"shots":[' } }]
+        })
+      }
+    }
+  };
+
+  await assert.rejects(
+    () => cleaner.planShortVideo({ ...draft(), keyPoints: ["核心内容"] }),
+    /输出被截断/
+  );
+});
+
 test("OpenAiScriptCleaner stores AI content as Simplified Chinese", async () => {
   const cleaner = new OpenAiScriptCleaner({ apiKey: "test" });
   let prompt = "";
@@ -97,6 +226,112 @@ test("OpenAiScriptCleaner stores AI content as Simplified Chinese", async () => 
   assert.deepEqual(result.keyPoints, ["明确目标", "拆解步骤", "验证结果"]);
   assert.match(result.shortVideoScript ?? "", /这是完整短视频文案内容/);
   assert.match(prompt, /中国大陆规范简体中文/);
+});
+
+test("OpenAiScriptCleaner streams clean JSON deltas and still validates the final result", async () => {
+  const cleaner = new OpenAiScriptCleaner({ apiKey: "test", model: "deepseek-chat" });
+  const payload = JSON.stringify({
+    title: "内容工作流",
+    summary: "简洁摘要",
+    hook: "别再重复返工",
+    key_points: ["明确目标", "拆解步骤", "验证结果"],
+    clean_script: "先明确目标，再拆解步骤，最后验证结果。",
+    short_video_script: "这是完整短视频文案内容".repeat(18),
+    cover_title: "内容工作流",
+    tags: ["内容创作"],
+    quality_notes: []
+  });
+  const split = Math.floor(payload.length / 2);
+  let request: Record<string, unknown> | undefined;
+  let requestOptions: Record<string, unknown> | undefined;
+  const controller = new AbortController();
+  (cleaner as any).client = {
+    chat: { completions: { create: async (value: Record<string, unknown>, options: Record<string, unknown>) => {
+      request = value;
+      requestOptions = options;
+      return streamChunks([payload.slice(0, split), payload.slice(split)]);
+    } } }
+  };
+  const updates: Array<{ delta: string; text: string; model: string }> = [];
+
+  const result = await cleaner.clean(
+    { topic: "内容生产", transcriptText: "原始转录", draft: draft() },
+    controller.signal,
+    (update) => updates.push(update)
+  );
+
+  assert.equal(request?.stream, true);
+  assert.equal(request?.signal, undefined);
+  assert.equal(requestOptions?.signal, controller.signal);
+  assert.equal(updates.length, 2);
+  assert.equal(updates[0]?.text, payload.slice(0, split));
+  assert.equal(updates[1]?.text, payload);
+  assert.equal(updates[1]?.model, "deepseek-chat");
+  assert.equal(result.title, "内容工作流");
+});
+
+test("OpenAiScriptCleaner streams storyboard JSON before returning validated shots", async () => {
+  const cleaner = new OpenAiScriptCleaner({ apiKey: "test", model: "deepseek-chat" });
+  const shots = Array.from({ length: 8 }, (_, index) => ({
+    index: index + 1,
+    duration: index < 4 ? 7 : 6,
+    shot_type: index === 0 ? "hook" : index === 7 ? "summary" : "explain",
+    layout: index === 0 ? "kinetic-title" : index === 7 ? "summary-stack" : "concept-map",
+    headline: `要点${index + 1}`,
+    caption_lines: ["核心内容"],
+    visual_items: [{ label: "输入" }, { label: "输出" }],
+    source_key_points: [0],
+    transition: "cut",
+    pacing: "medium"
+  }));
+  const payload = JSON.stringify({ target_duration: 60, shots });
+  (cleaner as any).client = {
+    chat: { completions: { create: async () => streamChunks([payload.slice(0, 40), payload.slice(40)]) } }
+  };
+  const previews: string[] = [];
+
+  const result = await cleaner.planShortVideo(
+    { ...draft(), keyPoints: ["核心内容"] },
+    undefined,
+    (update) => previews.push(update.text)
+  );
+
+  assert.equal(previews.at(-1), payload);
+  assert.equal(result.shots.length, 8);
+});
+
+test("OpenAiScriptCleaner falls back to one-shot completion when a gateway rejects streaming", async () => {
+  const cleaner = new OpenAiScriptCleaner({ apiKey: "test", provider: "custom", baseURL: "https://gateway.example/v1" });
+  const payload = JSON.stringify({
+    title: "内容工作流",
+    summary: "简洁摘要",
+    hook: "别再重复返工",
+    key_points: ["明确目标", "拆解步骤", "验证结果"],
+    clean_script: "先明确目标，再拆解步骤，最后验证结果。",
+    short_video_script: "这是完整短视频文案内容".repeat(18),
+    cover_title: "内容工作流",
+    tags: [],
+    quality_notes: []
+  });
+  const requests: Array<Record<string, unknown>> = [];
+  const updates: string[] = [];
+  (cleaner as any).client = {
+    chat: { completions: { create: async (request: Record<string, unknown>) => {
+      requests.push(request);
+      if (request.stream) throw Object.assign(new Error("stream is not supported"), { status: 400 });
+      return { choices: [{ message: { content: payload } }] };
+    } } }
+  };
+
+  const result = await cleaner.clean(
+    { topic: "内容生产", transcriptText: "原始转录", draft: draft() },
+    undefined,
+    (update) => updates.push(update.text)
+  );
+
+  assert.deepEqual(requests.map((request) => request.stream), [true, undefined]);
+  assert.deepEqual(updates, [payload]);
+  assert.equal(result.title, "内容工作流");
 });
 
 test("OpenAiScriptCleaner asks the model to repair a short video script once", async () => {
@@ -229,7 +464,7 @@ test("validateShortVideoPlan rejects invalid storyboard enum values", () => {
     captionLines: ["有效字幕"],
     visualItems: [{ label: "输入" }, { label: "输出" }],
     sourceKeyPoints: [0],
-    transition: index === 3 ? "dissolve" : "cut",
+    transition: index === 3 ? "teleport" : "cut",
     pacing: "medium"
   }));
 
@@ -255,4 +490,30 @@ test("validateShortVideoPlan normalizes storyboard audience text to Simplified C
   assert.equal(result.shots[0]?.headline, "推荐内容方法");
   assert.equal(result.shots[0]?.captionLines?.[0], "这是观众字幕");
   assert.equal(result.shots[0]?.visualItems?.[0]?.label, "明确目标");
+});
+
+test("validateShortVideoPlan normalizes common model aliases and removes ungrounded metrics", () => {
+  const shots = Array.from({ length: 8 }, (_, index) => ({
+    index: index + 1,
+    duration: index < 4 ? 7 : 6,
+    shot_type: index === 0 ? "hook" : index === 7 ? "总结" : "explanation",
+    layout: index === 0 ? "kinetic-title" : index === 7 ? "summary-stack" : index === 2 ? "metric" : "cards",
+    headline: index === 2 ? "提升效率" : `有效标题${index + 1}`,
+    caption_lines: ["有效字幕"],
+    visual_items: index === 2
+      ? [{ label: "效率", value: "99%" }, { label: "方法" }]
+      : [{ label: "输入" }, { label: "输出" }],
+    source_key_points: [0],
+    transition: index === 1 ? "dissolve" : "cut",
+    pacing: "medium"
+  }));
+
+  const result = validateShortVideoPlan({ shots }, 1, "原文只介绍提升效率的方法");
+
+  assert.equal(result.shots[1]?.shotType, "explain");
+  assert.equal(result.shots[1]?.layout, "concept-map");
+  assert.equal(result.shots[1]?.transition, "cut");
+  assert.equal(result.shots[2]?.shotType, "explain");
+  assert.equal(result.shots[2]?.layout, "concept-map");
+  assert.equal(result.shots[2]?.visualItems?.[0]?.value, undefined);
 });

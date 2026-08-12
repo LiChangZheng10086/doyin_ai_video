@@ -14,6 +14,7 @@ import type {
   HyperframesVideoOutput,
   Job,
   JobOverview,
+  JobStepStreamEvent,
   LocalSessionResponse,
   LocalUserResponse,
   LocalUsersResponse,
@@ -21,6 +22,7 @@ import type {
   LocalUserRole,
   ParsedApiError,
   PipelineStep,
+  StreamablePipelineStep,
   PublishPlatform,
   PublishingActionErrorType,
   PublishingAssetInspection,
@@ -46,6 +48,18 @@ export function parseApiError(error: unknown): ParsedApiError {
     ...(response?.data?.details === undefined ? {} : { details: response.data.details }),
     ...(typeof response?.status === 'number' ? { status: response.status } : {}),
   };
+}
+
+export function parseJobStepStreamEvent(value: string): JobStepStreamEvent | null {
+  try {
+    const event = JSON.parse(value) as Partial<JobStepStreamEvent>;
+    if (!Number.isFinite(event.id) || typeof event.jobId !== 'string') return null;
+    if (!['clean', 'generate_video_prompts'].includes(event.step ?? '')) return null;
+    if (!['started', 'preview', 'completed', 'paused', 'error'].includes(event.type ?? '')) return null;
+    return event as JobStepStreamEvent;
+  } catch {
+    return null;
+  }
 }
 
 export class ApiClient {
@@ -365,6 +379,56 @@ export class ApiClient {
     };
     const response = await client.post<ApiResponse>(`/api/jobs/${id}/steps/${routeMap[step]}`);
     return response.data.job!;
+  }
+
+  async pauseJobStep(id: string): Promise<Job> {
+    const client = await this.getClient();
+    const response = await client.post<ApiResponse>(`/api/jobs/${id}/steps/pause`);
+    return response.data.job!;
+  }
+
+  async subscribeJobStepEvents(
+    id: string,
+    step: StreamablePipelineStep,
+    handlers: {
+      onEvent: (event: JobStepStreamEvent) => void;
+      onConnectionError?: (message: string) => void;
+    }
+  ): Promise<() => void> {
+    await this.initialize();
+    const source = new EventSource(`http://localhost:${this.serverPort}/api/jobs/${id}/steps/${step}/events`);
+    const eventTypes: JobStepStreamEvent['type'][] = ['started', 'preview', 'completed', 'paused', 'error'];
+    let terminal = false;
+    let consecutiveErrors = 0;
+    const listeners = eventTypes.map((type) => {
+      const listener = (raw: Event) => {
+        const parsed = parseJobStepStreamEvent((raw as MessageEvent<string>).data);
+        if (!parsed) return;
+        handlers.onEvent(parsed);
+        if (['completed', 'paused', 'error'].includes(parsed.type)) {
+          terminal = true;
+          source.close();
+        }
+      };
+      source.addEventListener(type, listener);
+      return { type, listener };
+    });
+    source.onopen = () => {
+      consecutiveErrors = 0;
+    };
+    source.onerror = () => {
+      if (terminal) return;
+      consecutiveErrors += 1;
+      if (consecutiveErrors >= 3) {
+        source.close();
+        handlers.onConnectionError?.('实时连接已断开，任务仍会在后台继续执行');
+      }
+    };
+    return () => {
+      terminal = true;
+      for (const { type, listener } of listeners) source.removeEventListener(type, listener);
+      source.close();
+    };
   }
 
   // 获取垃圾桶任务

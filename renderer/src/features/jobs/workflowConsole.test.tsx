@@ -52,6 +52,15 @@ const runningJob = makeJob({
   },
 });
 
+const pausedJob = makeJob({
+  steps: {
+    transcribe: { status: 'succeeded', attempts: 1 },
+    clean: { status: 'succeeded', attempts: 1 },
+    generate_video_prompts: { status: 'paused', attempts: 1, lastError: '应用重启时中断，已暂停' },
+    generate_video: { status: 'pending', attempts: 0 },
+  },
+});
+
 // ── Tests ──
 
 test('WorkflowStepper renders four step labels once each', () => {
@@ -105,4 +114,28 @@ test('WorkflowConsole shows running progress when available', () => {
     }),
   );
   assert.match(markup, /42%/);
+});
+
+test('WorkflowConsole lets a running step pause and a paused step restart', () => {
+  const runningMarkup = renderToStaticMarkup(
+    React.createElement(WorkflowConsole, {
+      job: runningJob,
+      runningStep: null,
+      actionError: null,
+      onRunStep: noop,
+      onPauseStep: noop,
+    }),
+  );
+  assert.match(runningMarkup, /暂停当前步骤/);
+
+  const pausedMarkup = renderToStaticMarkup(
+    React.createElement(WorkflowConsole, {
+      job: pausedJob,
+      runningStep: null,
+      actionError: null,
+      onRunStep: noop,
+    }),
+  );
+  assert.match(pausedMarkup, /重新执行 生成分镜/);
+  assert.match(pausedMarkup, /应用重启时中断/);
 });

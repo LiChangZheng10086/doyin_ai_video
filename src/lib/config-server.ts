@@ -8,6 +8,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import type { AiProvider } from "../types.js";
 
 const CONFIG_DIR = path.join(homedir(), ".douyin-ai-video");
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
@@ -15,7 +16,7 @@ const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 export interface AIKeyConfig {
   id: string;
   name: string;
-  provider: "deepseek" | "openai" | "custom";
+  provider: AiProvider;
   apiKey: string;
   baseURL?: string;
   model: string;

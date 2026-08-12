@@ -1,10 +1,12 @@
 import OpenAI from "openai";
 import { toSimplifiedChinese } from "./chinese.js";
 import { diagnoseAiError } from "./ai-errors.js";
+import { extractAiMessageText } from "./ai-response.js";
 import { buildScriptDraft, buildTranscriptDraft } from "./script-builder.js";
 import type { DouyinShareParseResult } from "./douyin.js";
 import type { DouyinPageInfo } from "./douyin-page.js";
 import type {
+  AiProvider,
   ScriptAsset,
   ShortVideoPlan,
   ShortVideoShot,
@@ -23,9 +25,17 @@ export interface ScriptCleanerInput {
   pageInfo?: DouyinPageInfo | null;
 }
 
+export interface AiStreamUpdate {
+  delta: string;
+  text: string;
+  model: string;
+}
+
+export type AiStreamListener = (update: AiStreamUpdate) => void;
+
 export interface ScriptCleaner {
-  clean(input: ScriptCleanerInput): Promise<ScriptAsset>;
-  planShortVideo?(script: ScriptAsset): Promise<ShortVideoPlan>;
+  clean(input: ScriptCleanerInput, signal?: AbortSignal, onStream?: AiStreamListener): Promise<ScriptAsset>;
+  planShortVideo?(script: ScriptAsset, signal?: AbortSignal, onStream?: AiStreamListener): Promise<ShortVideoPlan>;
 }
 
 export interface OpenAiScriptCleanerOptions {
@@ -33,7 +43,7 @@ export interface OpenAiScriptCleanerOptions {
   model?: string;
   baseURL?: string;
   thinkingMode?: "enabled" | "disabled";
-  provider?: "deepseek" | "openai";
+  provider?: AiProvider;
 }
 
 export class RuntimeScriptCleaner implements ScriptCleaner {
@@ -42,14 +52,14 @@ export class RuntimeScriptCleaner implements ScriptCleaner {
     private readonly createCleaner: (options: OpenAiScriptCleanerOptions) => ScriptCleaner = (options) => new OpenAiScriptCleaner(options)
   ) {}
 
-  async clean(input: ScriptCleanerInput) {
-    return (await this.current()).clean(input);
+  async clean(input: ScriptCleanerInput, signal?: AbortSignal, onStream?: AiStreamListener) {
+    return (await this.current()).clean(input, signal, onStream);
   }
 
-  async planShortVideo(script: ScriptAsset) {
+  async planShortVideo(script: ScriptAsset, signal?: AbortSignal, onStream?: AiStreamListener) {
     const cleaner = await this.current();
     if (!cleaner.planShortVideo) throw new Error("AI 分镜服务不可用");
-    return cleaner.planShortVideo(script);
+    return cleaner.planShortVideo(script, signal, onStream);
   }
 
   private async current() {
@@ -80,19 +90,22 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
   private readonly model: string;
   private readonly baseURL?: string;
   private readonly thinkingMode: "enabled" | "disabled";
-  private readonly provider: "deepseek" | "openai";
+  private readonly provider: AiProvider;
 
   constructor(options: OpenAiScriptCleanerOptions = {}) {
     this.model = options.model ?? process.env.AI_MODEL ?? "deepseek-v4-pro";
     this.baseURL = options.baseURL;
     this.provider = options.provider ?? (options.baseURL ? "deepseek" : "openai");
     this.thinkingMode = options.thinkingMode ?? (process.env.AI_THINKING_MODE as "enabled" | "disabled") ?? "disabled";
+    if (this.provider === "custom" && !this.baseURL?.trim()) {
+      throw new Error("自定义 AI 配置缺少 Base URL");
+    }
     if (options.apiKey) {
       this.client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL });
     }
   }
 
-  async clean(input: ScriptCleanerInput): Promise<ScriptAsset> {
+  async clean(input: ScriptCleanerInput, signal?: AbortSignal, onStream?: AiStreamListener): Promise<ScriptAsset> {
     if (!this.client) {
       throw new Error("未配置 AI API Key，无法执行 AI 洗稿");
     }
@@ -122,7 +135,7 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
               correction
             ].filter(Boolean).join("\n")
           }
-        ], 2400);
+        ], 2400, signal, onStream);
       } catch (error) {
         const diagnosis = await diagnoseAiError(error, { baseURL: this.baseURL, model: this.model });
         throw new Error(`AI 洗稿失败：${diagnosis.message}`);
@@ -142,7 +155,7 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
     throw new Error("AI 洗稿失败");
   }
 
-  async planShortVideo(script: ScriptAsset): Promise<ShortVideoPlan> {
+  async planShortVideo(script: ScriptAsset, signal?: AbortSignal, onStream?: AiStreamListener): Promise<ShortVideoPlan> {
     if (!this.client) {
       throw new Error("未配置 AI API Key，无法生成分镜");
     }
@@ -167,14 +180,21 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
               "headline 最多 18 字，supporting_text 最多 40 字，caption_lines 为 1 到 2 行且每行最多 16 字。",
               "visual_items 为 2 到 5 项，每项包含最多 12 字的 label、可选的最多 12 字 value 和 tone(primary/success/danger/muted)。",
               "source_key_points 必须引用核心要点索引，并覆盖每一条核心要点。没有原文数字时禁止使用 metric。",
+              "shot_type、layout、transition 必须使用规定枚举；可使用的 shot_type 为 hook/problem/explain/proof/contrast/process/summary/cta，layout 必须与 shot_type 对应。explain 只能使用 concept-map；没有原文数字时不要使用 proof/metric。",
               "不要把 SHOT、镜头运动、节奏、转场名、9:16、动态图形、视觉层等制作术语写进观众文字。",
               "JSON 字段：target_duration, shots。每个 shot 字段：index, duration, shot_type, layout, headline, supporting_text, caption_lines, visual_items, source_key_points, transition, pacing。",
               correction
             ].filter(Boolean).join("\n")
           }
-        ], 3600);
-        const parsed = JSON.parse(text) as unknown;
-        const validated = validateShortVideoPlan(parsed, keyPoints.length, script.shortVideoScript || script.cleanScript);
+        ], undefined, signal, onStream);
+        const parsed = parseAiJson(text);
+        const sourceText = [
+          script.shortVideoScript,
+          script.cleanScript,
+          script.summary,
+          ...(script.keyPoints ?? [])
+        ].filter(Boolean).join("\n");
+        const validated = validateShortVideoPlan(parsed, keyPoints.length, sourceText);
         return {
           planVersion: 2,
           targetDuration: 60,
@@ -192,18 +212,52 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
     throw new Error("AI 分镜生成失败");
   }
 
-  private async completeJson(messages: Array<{ role: "system" | "user"; content: string }>, maxTokens: number) {
-    const response = await this.client!.chat.completions.create({
+  private async completeJson(
+    messages: Array<{ role: "system" | "user"; content: string }>,
+    maxTokens?: number,
+    signal?: AbortSignal,
+    onStream?: AiStreamListener
+  ) {
+    const request = {
       model: this.model,
       messages,
-      max_tokens: maxTokens,
       response_format: { type: "json_object" },
-      ...(this.baseURL ? { extra_body: { thinking: { type: this.thinkingMode } } } : {})
-    } as any);
-    const text = response?.choices?.[0]?.message?.content?.trim?.() ?? "";
+      ...(onStream ? { stream: true } : {}),
+      ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
+      ...(this.provider === "deepseek" ? { extra_body: { thinking: { type: this.thinkingMode } } } : {})
+    } as any;
+    const requestOptions = signal ? { signal } : undefined;
+    let response: any;
+    try {
+      response = await this.client!.chat.completions.create(request, requestOptions);
+    } catch (error) {
+      if (!onStream || !isStreamingUnsupportedError(error)) throw error;
+      const { stream: _stream, ...fallbackRequest } = request;
+      response = await this.client!.chat.completions.create(fallbackRequest, requestOptions);
+    }
+    if (onStream && isAsyncIterable(response)) {
+      let text = "";
+      for await (const chunk of response) {
+        const choice = (chunk as { choices?: Array<{ delta?: { content?: unknown }; finish_reason?: string | null }> }).choices?.[0];
+        if (choice?.finish_reason === "length") {
+          throw new Error("AI 输出被截断（达到输出长度上限）");
+        }
+        const delta = extractDeltaText(choice?.delta?.content);
+        if (!delta) continue;
+        text += delta;
+        onStream({ delta, text, model: this.model });
+      }
+      if (!text.trim()) throw new Error("AI 返回了空内容");
+      return text;
+    }
+    if (response?.choices?.[0]?.finish_reason === "length") {
+      throw new Error("AI 输出被截断（达到输出长度上限）");
+    }
+    const text = extractAiMessageText(response?.choices?.[0]?.message);
     if (!text) {
       throw new Error("AI 返回了空内容");
     }
+    onStream?.({ delta: text, text, model: this.model });
     return text;
   }
 
@@ -245,6 +299,28 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
   }
 }
 
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return Boolean(value && typeof value === "object" && Symbol.asyncIterator in value);
+}
+
+function extractDeltaText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => {
+    if (typeof part === "string") return part;
+    if (!part || typeof part !== "object") return "";
+    const text = (part as { text?: unknown; content?: unknown }).text
+      ?? (part as { content?: unknown }).content;
+    return typeof text === "string" ? text : "";
+  }).join("");
+}
+
+function isStreamingUnsupportedError(error: unknown) {
+  const status = Number((error as { status?: unknown })?.status);
+  const message = error instanceof Error ? error.message : String(error);
+  return [400, 405, 415, 422].includes(status) && /stream|streaming|流式/i.test(message);
+}
+
 export function validateShortVideoPlan(raw: unknown, keyPointCount: number, sourceText = "") {
   const plan = objectValue(raw, "分镜必须是 JSON 对象");
   const shotValues = arrayValue(plan.shots, "shots 必须是数组");
@@ -256,7 +332,7 @@ export function validateShortVideoPlan(raw: unknown, keyPointCount: number, sour
     errors.push("镜头数量必须为 8 到 10 个");
   }
 
-  const shots = shotValues.map((value, index) => normalizeShot(value, index, errors));
+  const shots = shotValues.map((value, index) => normalizeShot(value, index, errors, sourceText));
   const total = shots.reduce((sum, shot) => sum + shot.duration, 0);
   if (total < 50 || total > 60) {
     errors.push(`总时长 ${total} 秒，必须在 50 到 60 秒之间`);
@@ -279,31 +355,46 @@ export function validateShortVideoPlan(raw: unknown, keyPointCount: number, sour
       errors.push(`核心要点 ${index} 未被镜头覆盖`);
     }
   }
-  for (const shot of shots.filter((candidate) => candidate.layout === "metric")) {
-    const values = (shot.visualItems ?? []).map((item) => item.value).filter(Boolean) as string[];
-    if (!values.length || values.some((value) => !sourceText.includes(value))) {
-      errors.push(`镜头 ${shot.index} 的 metric 数值不在原文中`);
-    }
-  }
   if (errors.length) {
     throw new Error(errors.join("；"));
   }
   return { targetDuration: 60 as const, shots };
 }
 
-function normalizeShot(value: unknown, arrayIndex: number, errors: string[]): ShortVideoShot {
+function normalizeShot(value: unknown, arrayIndex: number, errors: string[], sourceText: string): ShortVideoShot {
   const shot = objectValue(value, `镜头 ${arrayIndex + 1} 必须是对象`);
   const index = numberValue(shot.index, arrayIndex + 1);
   const duration = numberValue(shot.duration, 0);
-  const shotType = checkedEnum(shot.shot_type ?? shot.shotType, SHOT_TYPES, "explain", `镜头 ${index} shotType 无效`, errors);
-  const layout = checkedEnum(shot.layout, SHOT_LAYOUTS, "concept-map", `镜头 ${index} layout 无效`, errors);
+  let shotType = normalizeEnumAlias(
+    shot.shot_type ?? shot.shotType,
+    SHOT_TYPES,
+    SHOT_TYPE_ALIASES,
+    "explain",
+    `镜头 ${index} shotType 无效`,
+    errors
+  );
+  normalizeEnumAlias(
+    shot.layout,
+    SHOT_LAYOUTS,
+    SHOT_LAYOUT_ALIASES,
+    layoutForShotType(shotType),
+    `镜头 ${index} layout 无效`,
+    errors
+  );
   const headline = textValue(shot.headline);
   const supportingText = textValue(shot.supporting_text ?? shot.supportingText);
   const captionLines = arrayValue(shot.caption_lines ?? shot.captionLines, "caption_lines 必须是数组").map(textValue).filter(Boolean);
-  const visualItems = arrayValue(shot.visual_items ?? shot.visualItems, "visual_items 必须是数组")
+  let visualItems = arrayValue(shot.visual_items ?? shot.visualItems, "visual_items 必须是数组")
     .map((item, itemIndex) => normalizeVisualItem(item, index, itemIndex, errors));
   const sourceKeyPoints = arrayValue(shot.source_key_points ?? shot.sourceKeyPoints, "source_key_points 必须是数组").map((item) => numberValue(item, -1));
-  const transition = checkedEnum(shot.transition, SHOT_TRANSITIONS, "cut", `镜头 ${index} transition 无效`, errors);
+  const transition = normalizeEnumAlias(
+    shot.transition,
+    SHOT_TRANSITIONS,
+    SHOT_TRANSITION_ALIASES,
+    "cut",
+    `镜头 ${index} transition 无效`,
+    errors
+  );
   const pacing = checkedEnum(shot.pacing, SHOT_PACING, "medium", `镜头 ${index} pacing 无效`, errors);
 
   if (index !== arrayIndex + 1) errors.push(`镜头索引必须连续，期望 ${arrayIndex + 1}`);
@@ -317,7 +408,12 @@ function normalizeShot(value: unknown, arrayIndex: number, errors: string[]): Sh
     errors.push(`镜头 ${index} visualItems 文本为空或超过 12 字`);
   }
   const expectedLayout = layoutForShotType(shotType);
-  if (layout !== expectedLayout) errors.push(`镜头 ${index} 的 ${shotType} 必须使用 ${expectedLayout} 布局`);
+  let layout = expectedLayout;
+  visualItems = removeUngroundedNumericValues(visualItems, sourceText);
+  if (layout === "metric" && !hasGroundedNumericValue(visualItems, sourceText)) {
+    shotType = "explain";
+    layout = "concept-map";
+  }
   if ([headline, supportingText, ...captionLines, ...visualItems.flatMap((item) => [item.label, item.value ?? ""])].some((text) => PRODUCTION_TEXT.test(text))) {
     errors.push(`镜头 ${index} 观众文字包含制作术语`);
   }
@@ -342,6 +438,123 @@ function normalizeShot(value: unknown, arrayIndex: number, errors: string[]): Sh
     pacing,
     narration: captionLines.join(" ")
   };
+}
+
+const SHOT_TYPE_ALIASES: Record<string, ShotType> = {
+  explanation: "explain",
+  detail: "explain",
+  content: "explain",
+  讲解: "explain",
+  解释: "explain",
+  介绍: "explain",
+  内容: "explain",
+  开场: "hook",
+  开头: "hook",
+  问题: "problem",
+  痛点: "problem",
+  证明: "proof",
+  数据: "proof",
+  证据: "proof",
+  对比: "contrast",
+  比较: "contrast",
+  流程: "process",
+  步骤: "process",
+  总结: "summary",
+  结论: "summary",
+  收束: "summary",
+  号召: "cta",
+  行动号召: "cta",
+  "call-to-action": "cta",
+  "call_to_action": "cta"
+};
+
+const SHOT_LAYOUT_ALIASES: Record<string, ShotLayout> = {
+  card: "concept-map",
+  cards: "concept-map",
+  diagram: "concept-map",
+  map: "concept-map",
+  关系图: "concept-map",
+  节点图: "concept-map",
+  process: "process-flow",
+  flow: "process-flow",
+  流程: "process-flow",
+  comparison: "comparison",
+  compare: "comparison",
+  对比: "comparison",
+  metric: "metric",
+  metrics: "metric",
+  数字: "metric",
+  数据: "metric",
+  summary: "summary-stack",
+  stack: "summary-stack",
+  总结: "summary-stack",
+  kinetic: "kinetic-title",
+  title: "kinetic-title",
+  "kinetic typography": "kinetic-title",
+  动态标题: "kinetic-title"
+};
+
+const SHOT_TRANSITION_ALIASES: Record<string, ShotTransition> = {
+  dissolve: "cut",
+  fade: "cut",
+  crossfade: "cut",
+  "cross-fade": "cut",
+  溶解: "cut",
+  淡入淡出: "cut",
+  "hard-cut": "cut",
+  hardcut: "cut",
+  直接切换: "cut",
+  slide: "push",
+  "slide-in": "push",
+  滑动: "push",
+  "match_cut": "match-cut",
+  "match cut": "match-cut",
+  匹配剪辑: "match-cut",
+  闪白: "flash",
+  闪光: "flash",
+  擦除: "wipe",
+  "zoom-in": "zoom",
+  放大: "zoom"
+};
+
+function normalizeEnumAlias<T extends string>(
+  value: unknown,
+  choices: Set<T>,
+  aliases: Record<string, T>,
+  fallback: T,
+  message: string,
+  errors: string[]
+): T {
+  const token = enumToken(value);
+  if (choices.has(token as T)) return token as T;
+  const alias = aliases[token];
+  if (alias) return alias;
+  if (!token) errors.push(message);
+  else if (!alias) errors.push(message);
+  return fallback;
+}
+
+function enumToken(value: unknown) {
+  return typeof value === "string"
+    ? toSimplifiedChinese(value).trim().toLowerCase().replace(/\s+/g, " ").replace(/_/g, "-")
+    : "";
+}
+
+function removeUngroundedNumericValues(items: ShortVideoVisualItem[], sourceText: string) {
+  const corpus = toSimplifiedChinese(sourceText);
+  return items.map((item) => {
+    if (!item.value || !looksLikeNumericValue(item.value) || corpus.includes(toSimplifiedChinese(item.value))) return item;
+    return { ...item, value: undefined };
+  });
+}
+
+function hasGroundedNumericValue(items: ShortVideoVisualItem[], sourceText: string) {
+  const corpus = toSimplifiedChinese(sourceText);
+  return items.some((item) => Boolean(item.value && looksLikeNumericValue(item.value) && corpus.includes(toSimplifiedChinese(item.value))));
+}
+
+function looksLikeNumericValue(value: string) {
+  return /[0-9０-９]|%|％|百分比|倍|万|千|亿|秒|分钟|小时|元|个|条|次|位|岁|年|月|天/u.test(value);
 }
 
 function normalizeVisualItem(value: unknown, shotIndex: number, itemIndex: number, errors: string[]): ShortVideoVisualItem {
@@ -369,7 +582,7 @@ function layoutForShotType(type: ShotType): ShotLayout {
 function parseCleanPayload(text: string): CleanScriptPayload {
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    raw = parseAiJson(text);
   } catch {
     throw new Error("AI 返回的洗稿结果不是合法 JSON");
   }
@@ -399,6 +612,25 @@ function parseCleanPayload(text: string): CleanScriptPayload {
     throw new Error("key_points 必须为 3 到 6 条");
   }
   return payload;
+}
+
+function parseAiJson(text: string): unknown {
+  const normalized = text.replace(/^\uFEFF/u, "").trim();
+  const fenced = normalized.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu)?.[1]?.trim();
+  const candidates = [fenced, normalized].filter((candidate): candidate is string => Boolean(candidate));
+  const start = normalized.indexOf("{");
+  const end = normalized.lastIndexOf("}");
+  if (start >= 0 && end > start) candidates.push(normalized.slice(start, end + 1));
+
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as unknown;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("AI 返回的内容不是合法 JSON");
 }
 
 function objectValue(value: unknown, message: string): Record<string, unknown> {

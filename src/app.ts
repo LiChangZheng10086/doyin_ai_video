@@ -15,18 +15,19 @@ import { registerConfigRoutes } from "./lib/config-server.js";
 import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import { simplifyChineseValue } from "./lib/chinese.js";
 import { buildSkillContext, getSkillErrorMessage, isRetryableSkillError } from "./lib/skill-generation.js";
+import { extractAiMessageText } from "./lib/ai-response.js";
 import { resolveJobVideo, VideoOutputError, type ResolvedVideoFile } from "./lib/video-output.js";
 import { PublishingStore } from "./lib/publishing-store.js";
 import { PublishingCopyService } from "./lib/publishing-copy.js";
 import { PublishingAssetService } from "./lib/publishing-assets.js";
 import { PublishingService } from "./lib/publishing-service.js";
 import { registerPublishingRoutes } from "./lib/publishing-routes.js";
-import type { CollectionRecord, DueNotification, PipelineStep, ScriptAsset } from "./types.js";
+import type { AiProvider, CollectionRecord, DueNotification, PipelineStep, ScriptAsset, StreamablePipelineStep } from "./types.js";
 
 export interface ServerConfig {
   storagePath: string;
   rootDir: string;
-  aiProvider?: string;
+  aiProvider?: AiProvider;
   aiModel?: string;
   aiApiKey?: string;
   aiBaseURL?: string;
@@ -48,7 +49,7 @@ export interface ServerConfig {
 }
 
 export interface AiRuntimeConfig {
-  provider: "deepseek" | "openai" | "custom";
+  provider: AiProvider;
   model: string;
   apiKey: string;
   baseURL?: string;
@@ -79,7 +80,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     apiKey: aiApiKey,
     model: aiModel,
     baseURL: aiBaseURL,
-    provider: aiProvider === "deepseek" ? "deepseek" : "openai"
+    provider: aiProvider
   } as const;
   const cleaner = config.resolveAiConfig
     ? new RuntimeScriptCleaner(async () => {
@@ -89,7 +90,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
           apiKey: current.apiKey,
           model: current.model,
           baseURL: current.baseURL,
-          provider: current.provider === "deepseek" ? "deepseek" : "openai"
+          provider: current.provider
         };
       })
     : new OpenAiScriptCleaner(staticCleanerOptions);
@@ -129,7 +130,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       if (config.resolveAiConfig) return config.resolveAiConfig();
       if (!aiApiKey) return null;
       return {
-        provider: aiProvider === "deepseek" || aiProvider === "openai" ? aiProvider : "custom",
+        provider: aiProvider,
         model: aiModel,
         apiKey: aiApiKey,
         baseURL: aiBaseURL,
@@ -179,7 +180,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Local-Session');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Local-Session, Last-Event-ID');
     if (req.method === 'OPTIONS') {
       res.sendStatus(200);
       return;
@@ -325,6 +326,57 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
   };
 
+  app.get("/api/jobs/:id/steps/:step/events", async (req, res) => {
+    const step = req.params.step;
+    if (step !== "clean" && step !== "generate_video_prompts") {
+      res.status(400).json({ message: "该步骤不支持实时输出" });
+      return;
+    }
+    const record = await jobs.get(req.params.id);
+    if (!record) {
+      res.status(404).json({ message: "job not found" });
+      return;
+    }
+
+    req.setTimeout(0);
+    res.setTimeout(0);
+    res.status(200);
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
+
+    const afterId = Number.parseInt(req.header("last-event-id") ?? "0", 10) || 0;
+    let unsubscribe: () => void = () => undefined;
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) res.write(": heartbeat\n\n");
+    }, 15_000);
+    let closed = false;
+    const cleanup = () => {
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe();
+    };
+    res.once("close", cleanup);
+
+    unsubscribe = jobs.subscribeStepEvents(
+      req.params.id,
+      step as StreamablePipelineStep,
+      (event) => {
+        if (res.writableEnded) return;
+        res.write(`id: ${event.id}\n`);
+        res.write(`event: ${event.type}\n`);
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+        if (["completed", "paused", "error"].includes(event.type)) {
+          res.end();
+        }
+      },
+      afterId
+    );
+    if (closed) unsubscribe();
+  });
+
   app.post("/api/jobs/:id/steps/transcribe", async (req, res) => {
     const result = await runStepRoute(req.params.id, "transcribe");
     res.status(result.status).json(result.body);
@@ -343,6 +395,19 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   app.post("/api/jobs/:id/steps/generate-video", async (req, res) => {
     const result = await runStepRoute(req.params.id, "generate_video");
     res.status(result.status).json(result.body);
+  });
+
+  app.post("/api/jobs/:id/steps/pause", async (req, res) => {
+    try {
+      const job = await jobs.pauseStep(req.params.id);
+      res.json({ job, message: "step paused" });
+    } catch (error) {
+      if (error instanceof JobStepError) {
+        res.status(error.statusCode).json({ message: error.message, job: error.job });
+        return;
+      }
+      res.status(500).json({ message: error instanceof Error ? error.message : "step pause failed" });
+    }
   });
 
   app.get("/api/jobs/:id", async (req, res) => {
@@ -1012,7 +1077,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
               max_tokens: maxTokens,
               temperature: 0.7,
             });
-            return completion.choices[0]?.message?.content || "";
+            return extractAiMessageText(completion.choices[0]?.message);
           } catch (error) {
             if (attempt === 0 && isRetryableSkillError(error)) {
               onRetry?.();
@@ -1955,7 +2020,7 @@ ${aggregatedText}`;
   const aiProvider = _config.aiProvider ?? "deepseek";
   const aiConfig = _config.resolveAiConfig
     ? await _config.resolveAiConfig()
-    : { provider: aiProvider as string, model: _config.aiModel ?? "deepseek-chat", apiKey: _config.aiApiKey, baseURL: _config.aiBaseURL ?? (aiProvider === "deepseek" ? "https://api.deepseek.com" : undefined) };
+    : { provider: aiProvider, model: _config.aiModel ?? "deepseek-chat", apiKey: _config.aiApiKey, baseURL: _config.aiBaseURL ?? (aiProvider === "deepseek" ? "https://api.deepseek.com" : undefined) };
 
   if (!aiConfig?.apiKey) return;
 
@@ -1975,7 +2040,7 @@ ${aggregatedText}`;
     temperature: 0.7,
   });
 
-  const skillContent = completion.choices[0]?.message?.content || "";
+  const skillContent = extractAiMessageText(completion.choices[0]?.message);
   if (!skillContent.trim()) return;
 
   mkdirSync(skillsDir, { recursive: true });

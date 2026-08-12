@@ -25,6 +25,7 @@ export interface HyperframesCommandRunner {
       captureStdout?: boolean;
       captureStderr?: boolean;
       timeoutMs?: number;
+      signal?: AbortSignal;
     }
   ): Promise<{ stdout: string; stderr: string }>;
 }
@@ -105,7 +106,8 @@ export class HyperframesVideoGenerator {
   async generate(
     script: ScriptAsset,
     jobId: string,
-    onProgress?: (progress: HyperframesProgress) => Promise<void> | void
+    onProgress?: (progress: HyperframesProgress) => Promise<void> | void,
+    signal?: AbortSignal
   ): Promise<HyperframesVideoResult> {
     const jobOutputPath = path.join(this.options.storageRoot, "output", "videos", jobId);
     const projectPath = path.join(jobOutputPath, "hyperframes");
@@ -118,14 +120,15 @@ export class HyperframesVideoGenerator {
 
     try {
       await onProgress?.({ phase: "checking_environment", progress: 5 });
-      await this.ensureEnvironment();
+      await this.ensureEnvironment(signal);
       await rm(stagingPath, { recursive: true, force: true });
       await mkdir(jobOutputPath, { recursive: true });
 
       await onProgress?.({ phase: "building_project", progress: 15 });
       await this.runHyperframes(["init", stagingPath, "--non-interactive", "--example=blank"], {
         cwd: this.options.storageRoot,
-        timeoutMs: 120_000
+        timeoutMs: 120_000,
+        signal
       });
       await mkdir(path.join(stagingPath, "renders"), { recursive: true });
       await mkdir(path.join(stagingPath, "assets"), { recursive: true });
@@ -155,20 +158,22 @@ export class HyperframesVideoGenerator {
       await writeFile(path.join(stagingPath, "index.html"), this.renderIndexHtml(script, scenes, duration), "utf8");
 
       await onProgress?.({ phase: "validating", progress: 35 });
-      await this.runHyperframes(["lint"], { cwd: stagingPath, timeoutMs: 120_000 });
-      await this.runHyperframes(["validate"], { cwd: stagingPath, timeoutMs: 120_000 });
-      await this.runHyperframes(["inspect"], { cwd: stagingPath, timeoutMs: 120_000 });
+      await this.runHyperframes(["lint"], { cwd: stagingPath, timeoutMs: 120_000, signal });
+      await this.runHyperframes(["validate"], { cwd: stagingPath, timeoutMs: 120_000, signal });
+      await this.runHyperframes(["inspect"], { cwd: stagingPath, timeoutMs: 120_000, signal });
 
       await onProgress?.({ phase: "snapshotting", progress: 45 });
       await this.runHyperframes(["snapshot", "--at", this.sceneMidpoints(scenes).join(",")], {
         cwd: stagingPath,
-        timeoutMs: 180_000
+        timeoutMs: 180_000,
+        signal
       });
 
       await onProgress?.({ phase: "rendering", progress: 50 });
       await this.runHyperframes(["render", "--quality", "high", "--fps", "30", "--output", "renders/video.mp4"], {
         cwd: stagingPath,
-        timeoutMs: 900_000
+        timeoutMs: 900_000,
+        signal
       });
       const rendered = await stat(stagingVideoPath).catch(() => null);
       if (!rendered || rendered.size <= 0) {
@@ -176,7 +181,7 @@ export class HyperframesVideoGenerator {
       }
 
       await onProgress?.({ phase: "verifying", progress: 95 });
-      await this.verifyVideo(stagingVideoPath, script.planVersion === 2);
+      await this.verifyVideo(stagingVideoPath, script.planVersion === 2, signal);
       await this.promoteProject(stagingPath, projectPath);
 
       const result: HyperframesVideoResult = {
@@ -219,14 +224,14 @@ export class HyperframesVideoGenerator {
     }
   }
 
-  private async verifyVideo(videoPath: string, enforceShortDuration: boolean) {
+  private async verifyVideo(videoPath: string, enforceShortDuration: boolean, signal?: AbortSignal) {
     if (!this.options.ffprobeBinary) return;
     const result = await this.runner.run(this.options.ffprobeBinary, [
       "-v", "error",
       "-show_entries", "stream=codec_type,codec_name,width,height,r_frame_rate:format=duration,size",
       "-of", "json",
       videoPath
-    ], { captureStdout: true, captureStderr: true, timeoutMs: 120_000, env: this.buildEnv() });
+    ], { captureStdout: true, captureStderr: true, timeoutMs: 120_000, env: this.buildEnv(), signal });
     const payload = JSON.parse(result.stdout) as {
       streams?: Array<{ codec_type?: string; codec_name?: string; width?: number; height?: number; r_frame_rate?: string }>;
       format?: { duration?: string; size?: string };
@@ -242,7 +247,7 @@ export class HyperframesVideoGenerator {
     if (Number(payload.format?.size) <= 0) throw new Error("生成的视频文件为空");
   }
 
-  private async ensureEnvironment() {
+  private async ensureEnvironment(signal?: AbortSignal) {
     const major = Number(process.versions.node.split(".")[0]);
     if (!Number.isFinite(major) || major < 22) throw this.dependencyError(`current Node.js is ${process.version}`);
     try {
@@ -250,7 +255,8 @@ export class HyperframesVideoGenerator {
         cwd: this.options.storageRoot,
         captureStdout: true,
         captureStderr: true,
-        timeoutMs: 120_000
+        timeoutMs: 120_000,
+        signal
       });
       if (!result.stdout.trim()) return;
       const payload = JSON.parse(result.stdout) as {
@@ -270,7 +276,7 @@ export class HyperframesVideoGenerator {
 
   private async runHyperframes(
     args: string[],
-    options: { cwd?: string; env?: NodeJS.ProcessEnv; captureStdout?: boolean; captureStderr?: boolean; timeoutMs?: number } = {}
+    options: { cwd?: string; env?: NodeJS.ProcessEnv; captureStdout?: boolean; captureStderr?: boolean; timeoutMs?: number; signal?: AbortSignal } = {}
   ) {
     const command = this.options.cliPath ? (this.options.nodeBinary ?? process.execPath) : this.npxBinary;
     const commandArgs = this.options.cliPath ? [this.options.cliPath, ...args] : ["--yes", this.packageSpec, ...args];

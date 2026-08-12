@@ -1,4 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import type { AiProvider } from './utils/ai-config';
+
+export type { AiProvider } from './utils/ai-config';
 
 // 定义暴露给渲染进程的 API
 export interface ElectronAPI {
@@ -31,7 +34,7 @@ export interface ElectronAPI {
 export interface AIKeyConfig {
   id: string;
   name: string; // 用户自定义名称，如 "我的 DeepSeek"
-  provider: 'deepseek' | 'openai' | 'custom';
+  provider: AiProvider;
   apiKey: string;
   baseURL?: string;
   model: string;

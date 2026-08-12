@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -19,6 +19,7 @@ import { WorkflowConsole } from '../features/jobs/WorkflowConsole';
 import { ArtifactNavigator, type ArtifactKey } from '../features/jobs/artifacts/ArtifactNavigator';
 import { TranscriptArtifact } from '../features/jobs/artifacts/TranscriptArtifact';
 import { RewriteArtifact } from '../features/jobs/artifacts/RewriteArtifact';
+import { StreamingArtifact } from '../features/jobs/artifacts/StreamingArtifact';
 import { ShotArtifact } from '../features/jobs/artifacts/ShotArtifact';
 import { VideoArtifact } from '../features/jobs/artifacts/VideoArtifact';
 import { JobContextSidebar } from '../features/jobs/JobContextSidebar';
@@ -29,6 +30,9 @@ import type {
   RawTranscript,
   PipelineStep,
   HyperframesVideoOutput,
+  AiStreamPreview,
+  JobStepStreamEvent,
+  StreamablePipelineStep,
 } from '../types';
 
 type OutcomeTab = 'transcript' | 'script' | 'prompts' | 'video';
@@ -47,6 +51,8 @@ export function JobDetailPage() {
   const [videoError, setVideoError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [runningStep, setRunningStep] = useState<PipelineStep | null>(null);
+  const [streamPreview, setStreamPreview] = useState<AiStreamPreview | null>(null);
+  const streamCloseRef = useRef<(() => void) | null>(null);
   const [activeTab, setActiveTab] = useState<OutcomeTab>('script');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
@@ -57,6 +63,44 @@ export function JobDetailPage() {
   const [showPublishDialog, setShowPublishDialog] = useState(false);
   const [publishError, setPublishError] = useState('');
   const currentUser = useOperatorStore((state) => state.currentUser);
+
+  const handleStreamEvent = useCallback((event: JobStepStreamEvent) => {
+    setStreamPreview((current) => ({
+      step: event.step,
+      status: event.type === 'started'
+        ? 'connecting'
+        : event.type === 'preview'
+          ? 'streaming'
+          : event.type,
+      text: event.text ?? (current?.step === event.step ? current.text : ''),
+      model: event.model ?? (current?.step === event.step ? current.model : undefined),
+      receivedLength: (event.text ?? (current?.step === event.step ? current.text : '')).length,
+      message: event.message,
+    }));
+    if (event.type === 'error' && event.message) setActionError(event.message);
+    if (['completed', 'paused', 'error'].includes(event.type)) {
+      streamCloseRef.current?.();
+      streamCloseRef.current = null;
+    }
+  }, []);
+
+  const openStepStream = useCallback(async (jobId: string, step: StreamablePipelineStep) => {
+    streamCloseRef.current?.();
+    setStreamPreview({ step, status: 'connecting', text: '', receivedLength: 0 });
+    const close = await apiClient.subscribeJobStepEvents(jobId, step, {
+      onEvent: handleStreamEvent,
+      onConnectionError: (message) => {
+        setStreamPreview((current) => current?.step === step ? { ...current, message } : current);
+      },
+    });
+    streamCloseRef.current = close;
+    return close;
+  }, [handleStreamEvent]);
+
+  useEffect(() => () => {
+    streamCloseRef.current?.();
+    streamCloseRef.current = null;
+  }, []);
 
   const loadJobArtifacts = async (jobData: Job, isInitialLoad = false) => {
     setCleanedError(null);
@@ -173,6 +217,17 @@ export function JobDetailPage() {
   }, [id, runningStep]);
 
   useEffect(() => {
+    if (!job || streamCloseRef.current) return;
+    const step = job.steps?.clean?.status === 'running'
+      ? 'clean'
+      : job.steps?.generate_video_prompts?.status === 'running'
+        ? 'generate_video_prompts'
+        : null;
+    if (!step) return;
+    void openStepStream(job.id, step);
+  }, [job?.id, job?.steps?.clean?.status, job?.steps?.generate_video_prompts?.status, openStepStream]);
+
+  useEffect(() => {
     if (!videoOutput || !job) return;
     setStreamError(false);
     const loadVideoUrl = async () => {
@@ -243,12 +298,20 @@ export function JobDetailPage() {
   };
 
   const handleRunStep = async (step: PipelineStep) => {
+    let closeStream: (() => void) | null = null;
     try {
       setActionError(null);
+      if (step === 'clean' || step === 'generate_video_prompts') {
+        setActiveTab(step === 'clean' ? 'script' : 'prompts');
+        closeStream = await openStepStream(job.id, step);
+      } else {
+        setStreamPreview(null);
+      }
       setRunningStep(step);
       const updated = await apiClient.runJobStep(job.id, step);
       setJob(updated);
       await loadJobArtifacts(updated);
+      setStreamPreview(null);
     } catch (err: any) {
       const responseJob = err.response?.data?.job as Job | undefined;
       if (responseJob) {
@@ -257,7 +320,29 @@ export function JobDetailPage() {
       }
       setActionError(err.response?.data?.message || '步骤执行失败');
     } finally {
+      closeStream?.();
+      if (streamCloseRef.current === closeStream) streamCloseRef.current = null;
       setRunningStep(null);
+    }
+  };
+
+  const handlePauseStep = async () => {
+    try {
+      setActionError(null);
+      const updated = await apiClient.pauseJobStep(job.id);
+      setJob(updated);
+      streamCloseRef.current?.();
+      streamCloseRef.current = null;
+      setStreamPreview((current) => current ? {
+        ...current,
+        status: 'paused',
+        message: '已暂停，可重新执行当前步骤',
+      } : current);
+      setRunningStep(null);
+    } catch (err: any) {
+      const responseJob = err.response?.data?.job as Job | undefined;
+      if (responseJob) setJob(responseJob);
+      setActionError(err.response?.data?.message || '暂停步骤失败');
     }
   };
 
@@ -333,6 +418,7 @@ export function JobDetailPage() {
         runningStep={runningStep}
         actionError={actionError}
         onRunStep={handleRunStep}
+        onPauseStep={handlePauseStep}
       />
 
       {/* Outcome tabs */}
@@ -357,10 +443,17 @@ export function JobDetailPage() {
               />
             )}
             {activeArtifactKey === 'script' && (
-              <RewriteArtifact cleaned={cleaned} cleanedError={cleanedError} />
+              <RewriteArtifact
+                cleaned={cleaned}
+                cleanedError={cleanedError}
+                streamPreview={streamPreview?.step === 'clean' ? streamPreview : null}
+              />
             )}
             {activeArtifactKey === 'shots' && (
-              <ShotsContent cleaned={cleaned} />
+              <ShotsContent
+                cleaned={cleaned}
+                streamPreview={streamPreview?.step === 'generate_video_prompts' ? streamPreview : null}
+              />
             )}
             {activeArtifactKey === 'video' && videoOutput ? (
               <VideoArtifact
@@ -415,13 +508,13 @@ export function JobDetailPage() {
 
 // ── Shots display content (delegates to ShotArtifact) ──
 
-function ShotsContent({ cleaned }: { cleaned: CleanedScript | null }) {
+function ShotsContent({ cleaned, streamPreview }: { cleaned: CleanedScript | null; streamPreview?: AiStreamPreview | null }) {
   const output = cleaned?.output;
   const shots = output?.shortVideoShots ?? [];
   const prompts = output?.videoPrompts ?? [];
   const scenes = output?.enhancedScenes ?? [];
 
-  if (!shots.length && !prompts.length && !scenes.length) {
+  if (!shots.length && !prompts.length && !scenes.length && !streamPreview) {
     return (
       <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
         <h3 className="font-semibold text-tech-text">镜头列表还没生成</h3>
@@ -432,6 +525,7 @@ function ShotsContent({ cleaned }: { cleaned: CleanedScript | null }) {
 
   return (
     <div className="space-y-5">
+      {streamPreview && <StreamingArtifact kind="shots" preview={streamPreview} />}
       <div>
         <h3 className="text-lg font-semibold text-tech-text">镜头列表</h3>
         <p className="mt-1 text-sm text-tech-muted">基于 AI 洗稿结果生成的短视频镜头、字幕、动效节奏和视觉层级。</p>

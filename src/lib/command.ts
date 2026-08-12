@@ -23,6 +23,7 @@ export async function runCommand(
     captureStdout?: boolean;
     captureStderr?: boolean;
     timeoutMs?: number;
+    signal?: AbortSignal;
   } = {}
 ) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
@@ -76,7 +77,22 @@ export async function runCommand(
     const clearTimers = () => {
       if (timeout) clearTimeout(timeout);
       if (forceKillTimer) clearTimeout(forceKillTimer);
+      options.signal?.removeEventListener("abort", abort);
     };
+
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      killProcessTree("SIGTERM");
+      forceKillTimer = setTimeout(() => killProcessTree("SIGKILL"), 1_000);
+      forceKillTimer.unref();
+      reject(new CommandError("Command aborted", command, args, stdout, stderr, null));
+    };
+    if (options.signal?.aborted) {
+      abort();
+      return;
+    }
+    options.signal?.addEventListener("abort", abort, { once: true });
 
     child.on("error", (error) => {
       if (settled) return;

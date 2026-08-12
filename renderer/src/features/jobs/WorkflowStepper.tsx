@@ -55,6 +55,7 @@ function getStepCardClass(status: WorkflowStepView['status']) {
     running: 'border-cyan-200 bg-cyan-50',
     succeeded: 'border-emerald-200 bg-emerald-50',
     failed: 'border-red-200 bg-red-50',
+    paused: 'border-amber-200 bg-amber-50',
   };
   return classes[status];
 }
@@ -65,6 +66,7 @@ function getStepIconClass(status: WorkflowStepView['status']) {
     running: 'bg-cyan-100 text-cyan-700',
     succeeded: 'bg-emerald-100 text-emerald-700',
     failed: 'bg-red-100 text-red-700',
+    paused: 'bg-amber-100 text-amber-700',
   };
   return classes[status];
 }

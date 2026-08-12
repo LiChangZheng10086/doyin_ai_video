@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ApiClient, parseApiError } from './api.js';
+import { ApiClient, parseApiError, parseJobStepStreamEvent } from './api.js';
 
 test('all publishing API methods reject with one parsed error shape', async () => {
   const axiosError = {
@@ -64,4 +64,26 @@ test('publishing API parser never exposes Axios English when backend omits messa
     code: 'publish_package_not_found',
     message: '发布请求失败，请稍后重试',
   });
+});
+
+test('AI step stream parser accepts valid events and rejects malformed data', () => {
+  assert.deepEqual(parseJobStepStreamEvent(JSON.stringify({
+    id: 2,
+    type: 'preview',
+    jobId: 'job-1',
+    step: 'clean',
+    delta: '第二段',
+    text: '第一段第二段',
+    model: 'deepseek-chat',
+  })), {
+    id: 2,
+    type: 'preview',
+    jobId: 'job-1',
+    step: 'clean',
+    delta: '第二段',
+    text: '第一段第二段',
+    model: 'deepseek-chat',
+  });
+  assert.equal(parseJobStepStreamEvent('{broken'), null);
+  assert.equal(parseJobStepStreamEvent(JSON.stringify({ type: 'preview', step: 'transcribe' })), null);
 });
