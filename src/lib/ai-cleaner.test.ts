@@ -338,6 +338,31 @@ test("OpenAiScriptCleaner stores AI content as Simplified Chinese", async () => 
   assert.match(prompt, /中国大陆规范简体中文/);
 });
 
+test("OpenAiScriptCleaner injects supplemental text into the rewrite prompt", async () => {
+  const cleaner = new OpenAiScriptCleaner({ apiKey: "test" });
+  let prompt = "";
+  (cleaner as any).client = {
+    chat: {
+      completions: {
+        create: async ({ messages }: { messages: Array<{ content: string }> }) => {
+          prompt = messages.map((message) => message.content).join("\n");
+          return { choices: [{ message: { content: JSON.stringify(validCleanPayload()) } }] };
+        }
+      }
+    }
+  };
+
+  await cleaner.clean({
+    topic: "内容生产",
+    transcriptText: "原始转录",
+    draft: draft(),
+    supplementalText: "补充要点：三步流程"
+  });
+
+  assert.match(prompt, /用户补充信息/);
+  assert.match(prompt, /补充要点：三步流程/);
+});
+
 test("OpenAiScriptCleaner streams clean JSON deltas and still validates the final result", async () => {
   const cleaner = new OpenAiScriptCleaner({ apiKey: "test", model: "deepseek-chat" });
   const payload = JSON.stringify({
@@ -442,6 +467,45 @@ test("OpenAiScriptCleaner falls back to one-shot completion when a gateway rejec
   assert.deepEqual(requests.map((request) => request.stream), [true, undefined]);
   assert.deepEqual(updates, [payload]);
   assert.equal(result.title, "内容工作流");
+});
+
+test("OpenAiScriptCleaner falls back to one-shot completion when streaming is prematurely closed", async () => {
+  const cleaner = new OpenAiScriptCleaner({ apiKey: "test", model: "deepseek-v4-flash" });
+  const payload = JSON.stringify({
+    title: "内容工作流",
+    summary: "简洁摘要",
+    hook: "别再重复返工",
+    key_points: ["明确目标", "拆解步骤", "验证结果"],
+    clean_script: "先明确目标，再拆解步骤，最后验证结果。",
+    short_video_script: "这是完整短视频文案内容".repeat(18),
+    cover_title: "内容工作流",
+    tags: [],
+    quality_notes: []
+  });
+  const requests: Array<Record<string, unknown>> = [];
+  const updates: string[] = [];
+  (cleaner as any).client = {
+    chat: { completions: { create: async (request: Record<string, unknown>) => {
+      requests.push(request);
+      if (request.stream) {
+        return (async function* () {
+          yield { choices: [{ delta: { content: payload.slice(0, 20) }, finish_reason: null }] };
+          throw new Error("Premature close");
+        })();
+      }
+      return { choices: [{ message: { content: payload } }] };
+    } } }
+  };
+
+  const result = await cleaner.clean(
+    { topic: "内容生产", transcriptText: "原始转录", draft: draft() },
+    undefined,
+    (update) => updates.push(update.text)
+  );
+
+  assert.deepEqual(requests.map((request) => request.stream), [true, undefined]);
+  assert.equal(result.title, "内容工作流");
+  assert.equal(updates.at(-1), payload);
 });
 
 test("OpenAiScriptCleaner asks the model to repair a short video script once", async () => {
@@ -626,4 +690,26 @@ test("validateShortVideoPlan normalizes common model aliases and removes ungroun
   assert.equal(result.shots[2]?.shotType, "explain");
   assert.equal(result.shots[2]?.layout, "concept-map");
   assert.equal(result.shots[2]?.visualItems?.[0]?.value, undefined);
+});
+
+test("validateShortVideoPlan normalizes pacing aliases and casing instead of rejecting them", () => {
+  const shots = Array.from({ length: 8 }, (_, index) => ({
+    index: index + 1,
+    duration: index < 4 ? 7 : 6,
+    shotType: index === 0 ? "hook" : index === 7 ? "summary" : "explain",
+    layout: index === 0 ? "kinetic-title" : index === 7 ? "summary-stack" : "concept-map",
+    headline: `有效标题${index + 1}`,
+    captionLines: ["有效字幕"],
+    visualItems: [{ label: "输入" }, { label: "输出" }],
+    sourceKeyPoints: [0],
+    transition: "cut",
+    pacing: index === 0 ? "Fast" : index === 1 ? "快速" : index === 2 ? "normal" : "medium"
+  }));
+
+  const result = validateShortVideoPlan({ shots }, 1);
+
+  assert.equal(result.shots[0]?.pacing, "fast");
+  assert.equal(result.shots[1]?.pacing, "fast");
+  assert.equal(result.shots[2]?.pacing, "medium");
+  assert.equal(result.shots[3]?.pacing, "medium");
 });

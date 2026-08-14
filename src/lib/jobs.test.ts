@@ -427,3 +427,57 @@ test("JobStore attempts video rendering only once and preserves the failure phas
   assert.equal(result?.steps?.generate_video.phase, "validating");
   assert.equal(result?.steps?.generate_video.progress, 35);
 });
+
+test("JobStore reclean resets downstream steps and persists supplemental text for a done job", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-reclean-done-"));
+  const storage = new LocalStorage(storageRoot);
+  let capturedSupplemental = "";
+  const cleaner: ScriptCleaner = {
+    async clean(input) {
+      capturedSupplemental = input.supplementalText ?? "";
+      return { ...input.draft, title: "补充后洗稿", cleanScript: "补充后的内容", status: "ready" };
+    }
+  };
+  const jobs = new JobStore(storage, cleaner, {} as MediaService, {} as AsrService);
+  await jobs.init();
+  await storage.writeJson("cache/jobs-index.json", {
+    done: {
+      id: "done",
+      sourceUrl: "https://example.com/video",
+      topic: "AI 内容生产",
+      status: "done",
+      stage: "rendered",
+      workflowMode: "manual",
+      steps: {
+        transcribe: { status: "succeeded", attempts: 1 },
+        clean: { status: "succeeded", attempts: 1 },
+        generate_video_prompts: { status: "succeeded", attempts: 1 },
+        generate_video: { status: "succeeded", attempts: 1 }
+      },
+      storagePath: "processed/scripts/done.json",
+      videoProjectPath: "output/videos/done/hyperframes",
+      videoOutputPath: "output/videos/done/hyperframes/renders/video.mp4",
+      videoGeneratedAt: "2026-08-12T18:00:00.000Z",
+      createdAt: "2026-08-12T00:00:00.000Z",
+      updatedAt: "2026-08-12T18:00:00.000Z"
+    }
+  });
+  await storage.writeJson("raw/transcripts/done.json", {
+    transcript: "这是完整的视频转录文本",
+    text: "这是完整的视频转录文本"
+  });
+
+  const result = await jobs.reclean("done", "补充要点：三步流程");
+
+  assert.equal(capturedSupplemental, "补充要点：三步流程");
+  assert.equal(result.steps?.clean.status, "succeeded");
+  assert.equal(result.steps?.generate_video_prompts.status, "pending");
+  assert.equal(result.steps?.generate_video.status, "pending");
+  assert.equal(result.videoProjectPath, undefined);
+  assert.equal(result.videoOutputPath, undefined);
+  assert.equal(result.videoGeneratedAt, undefined);
+
+  const cleaned = await storage.readJson<{ supplementalText?: string; output: ScriptAsset }>("processed/cleaned/done.json");
+  assert.equal(cleaned.supplementalText, "补充要点：三步流程");
+  assert.equal(cleaned.output.title, "补充后洗稿");
+});

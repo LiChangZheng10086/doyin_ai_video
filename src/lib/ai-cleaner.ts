@@ -23,6 +23,7 @@ export interface ScriptCleanerInput {
   topic: string;
   draft: ScriptAsset;
   pageInfo?: DouyinPageInfo | null;
+  supplementalText?: string | null;
 }
 
 export interface AiStreamUpdate {
@@ -131,6 +132,9 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
               `分享文本：${input.parsed?.shareText ?? "无"}`,
               "视频转录（最高优先级）：",
               input.transcriptText ?? draft.rawText,
+              ...(input.supplementalText?.trim()
+                ? ["用户补充信息（需与转录合并考虑，补全遗漏的数据与细节）：", input.supplementalText.trim()]
+                : []),
               "要求：不得编造原文没有的能力、数据或结论；修正明显口语废词和重复；技术名词优先参考页面标题与分享文本。",
               "short_video_script 必须为 180 到 260 个中文字符，形成完整的钩子、核心内容和结论。",
               "key_points 为 3 到 6 条；summary 不超过 80 字；不要输出 video_outline、bullets、scene_list 或视觉提示词。",
@@ -240,15 +244,29 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
     }
     if (onStream && isAsyncIterable(response)) {
       let text = "";
-      for await (const chunk of response) {
-        const choice = (chunk as { choices?: Array<{ delta?: { content?: unknown }; finish_reason?: string | null }> }).choices?.[0];
-        if (choice?.finish_reason === "length") {
+      try {
+        for await (const chunk of response) {
+          const choice = (chunk as { choices?: Array<{ delta?: { content?: unknown }; finish_reason?: string | null }> }).choices?.[0];
+          if (choice?.finish_reason === "length") {
+            throw this.outputLimitError();
+          }
+          const delta = extractDeltaText(choice?.delta?.content);
+          if (!delta) continue;
+          text += delta;
+          onStream({ delta, text, model: this.model });
+        }
+      } catch (error) {
+        if (!isStreamTransportError(error)) throw error;
+        // 中转服务在流式返回中途掐断了连接（如 Premature close），降级为非流式一次性请求重试。
+        const { stream: _stream, ...fallbackRequest } = request;
+        const fallbackResponse = await this.client!.chat.completions.create(fallbackRequest, requestOptions);
+        if (fallbackResponse?.choices?.[0]?.finish_reason === "length") {
           throw this.outputLimitError();
         }
-        const delta = extractDeltaText(choice?.delta?.content);
-        if (!delta) continue;
-        text += delta;
-        onStream({ delta, text, model: this.model });
+        const fallbackText = extractAiMessageText(fallbackResponse?.choices?.[0]?.message);
+        if (!fallbackText) throw new Error("AI 返回了空内容");
+        onStream({ delta: fallbackText, text: fallbackText, model: this.model });
+        return fallbackText;
       }
       if (!text.trim()) throw new Error("AI 返回了空内容");
       return text;
@@ -330,6 +348,11 @@ function isStreamingUnsupportedError(error: unknown) {
   return [400, 405, 415, 422].includes(status) && /stream|streaming|流式/i.test(message);
 }
 
+function isStreamTransportError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /premature close|econnreset|socket hang up|terminated|fetch failed/i.test(message);
+}
+
 export function validateShortVideoPlan(raw: unknown, keyPointCount: number, sourceText = "") {
   const plan = objectValue(raw, "分镜必须是 JSON 对象");
   const shotValues = arrayValue(plan.shots, "shots 必须是数组");
@@ -404,7 +427,14 @@ function normalizeShot(value: unknown, arrayIndex: number, errors: string[], sou
     `镜头 ${index} transition 无效`,
     errors
   );
-  const pacing = checkedEnum(shot.pacing, SHOT_PACING, "medium", `镜头 ${index} pacing 无效`, errors);
+  const pacing = normalizeEnumAlias(
+    shot.pacing,
+    SHOT_PACING,
+    SHOT_PACING_ALIASES,
+    "medium",
+    `镜头 ${index} pacing 无效`,
+    errors
+  );
 
   if (index !== arrayIndex + 1) errors.push(`镜头索引必须连续，期望 ${arrayIndex + 1}`);
   if (duration < 3 || duration > 8) errors.push(`镜头 ${index} 时长必须为 3 到 8 秒`);
@@ -524,6 +554,24 @@ const SHOT_TRANSITION_ALIASES: Record<string, ShotTransition> = {
   擦除: "wipe",
   "zoom-in": "zoom",
   放大: "zoom"
+};
+
+const SHOT_PACING_ALIASES: Record<string, ShotPacing> = {
+  quick: "fast",
+  rapid: "fast",
+  快: "fast",
+  快速: "fast",
+  快节奏: "fast",
+  moderate: "medium",
+  normal: "medium",
+  中: "medium",
+  中等: "medium",
+  中速: "medium",
+  适中: "medium",
+  舒缓: "slow",
+  慢: "slow",
+  缓慢: "slow",
+  慢节奏: "slow"
 };
 
 function normalizeEnumAlias<T extends string>(
@@ -659,12 +707,6 @@ function textValue(value: unknown) {
 function numberValue(value: unknown, fallback: number) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
-}
-
-function checkedEnum<T extends string>(value: unknown, choices: Set<T>, fallback: T, message: string, errors: string[]): T {
-  if (typeof value === "string" && choices.has(value as T)) return value as T;
-  errors.push(message);
-  return fallback;
 }
 
 function dedupeTags(tags: string[]) {

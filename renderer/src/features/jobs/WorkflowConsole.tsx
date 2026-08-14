@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, RotateCcw, Loader2, Pause, Sparkles } from 'lucide-react';
+import { Play, RotateCcw, Loader2, Pause, Sparkles, PencilLine } from 'lucide-react';
 import type { Job, PipelineStep } from '../../types/index';
 import { buildWorkflowSteps } from './jobPresentation';
 import { WorkflowStepper } from './WorkflowStepper';
@@ -10,9 +10,10 @@ export interface WorkflowConsoleProps {
   actionError: string | null;
   onRunStep: (step: PipelineStep) => void;
   onPauseStep?: (step: PipelineStep) => void;
+  onReClean?: () => void;
 }
 
-export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPauseStep }: WorkflowConsoleProps) {
+export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPauseStep, onReClean }: WorkflowConsoleProps) {
   const steps = buildWorkflowSteps(job, runningStep);
   const focus = findFocusStep(steps);
 
@@ -27,6 +28,7 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPa
   const isBlocked = focus?.blocked ?? false;
   const isFailed = focus?.status === 'failed';
   const isPaused = focus?.status === 'paused';
+  const canReClean = job.steps?.clean?.status === 'succeeded';
 
   return (
     <section className="overflow-hidden rounded-lg border border-blue-100 bg-gradient-to-br from-blue-50 via-white to-purple-50 p-6 shadow-sm">
@@ -96,6 +98,17 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPa
             >
               <Pause size={18} />
               暂停当前步骤
+            </button>
+          )}
+          {canReClean && onReClean && (
+            <button
+              type="button"
+              onClick={onReClean}
+              disabled={isBusy || Boolean(job.deletedAt)}
+              className="inline-flex min-w-40 items-center justify-center gap-2 rounded-lg border border-tech-blue bg-white px-5 py-3 font-medium text-tech-blue transition-all hover:bg-tech-blue hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <PencilLine size={18} />
+              补充内容重新洗稿
             </button>
           )}
           <StatusChip job={job} />

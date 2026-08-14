@@ -134,6 +134,7 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 - `POST /api/jobs/:id/steps/clean`
 - `POST /api/jobs/:id/steps/generate-video-prompts`
 - `POST /api/jobs/:id/steps/generate-video`
+- `POST /api/jobs/:id/reclean` - 补充内容重新洗稿（body: `{ supplementalText }`），已完成的视频任务也可用
 
 ### 内容获取
 - `GET /api/jobs/:id/script` - 历史脚本资产
@@ -275,6 +276,8 @@ npm run prepare:whisper
 npm run package           # 会先检查 vendor/whisper 资源是否存在
 ```
 
+> ⚠️ **后端改动生效需两步**：开发模式下 Electron 加载的是编译产物 `dist/app.js`（见 `electron/server.ts`），而 `npm run dev` 的 `dev:electron` 只编译 Electron 主进程、**不编译后端**。因此改了 `src/`（`app.ts`、`lib/*.ts`）后，必须先 `npm run build:backend` 再重启 `npm run dev`，否则运行中的应用仍是旧后端。渲染器（`renderer/`）由 Vite 提供并 HMR 热更，改前端无需重启。`npm run check`（`--noEmit`）和 `npm test`（tsx 跑源码）都不产出 `dist/`，不能替代编译。
+
 ## 关键注意事项
 
 ### 数据来源
@@ -300,6 +303,12 @@ npm run package           # 会先检查 vendor/whisper 资源是否存在
 - 运行中重复触发步骤返回 `409`。
 - 每次用户触发某一步，后端自动最多尝试 3 次。
 - 新主链路顺序固定为 transcribe → clean → generate_video_prompts → generate_video。
+
+### 重新洗稿（reclean）
+- 重新洗稿走独立接口 `POST /api/jobs/:id/reclean`，不经过 `steps/clean`（后者对已 `succeeded` 的步骤返回 409）。
+- 传入的 `supplementalText` 会与视频转录合并，重新调用 AI 洗稿；结果持久化到 `processed/cleaned/{id}.json`（顶层含 `supplementalText` 字段）。
+- 重新洗稿成功后会把下游 `generate_video_prompts`、`generate_video` 重置为 `pending`，并清空 `videoProjectPath`/`videoOutputPath`/`videoGeneratedAt`，避免展示或复用旧的视频产物。
+- 前端入口：工作台始终显示「补充内容重新洗稿」按钮（只要 clean 步骤 `succeeded`），不限于未完成的任务；已生成视频的任务同样可重新洗稿。
 
 ### 垃圾桶
 - 删除任务是软删除：设置 `deletedAt` 和 `trashExpiresAt`。
@@ -345,6 +354,6 @@ npm run package           # 会先检查 vendor/whisper 资源是否存在
 
 ---
 
-**最后更新**: 2026-07-10
+**最后更新**: 2026-08-14
 **维护者**: Codex
 **仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git

@@ -473,6 +473,7 @@ export interface CleanedScript {
   sourceUrl: string;
   topic?: string;
   transcriptText?: string;
+  supplementalText?: string;
   cleaningMode?: string;
   createdAt?: string;
   output?: {

@@ -10,6 +10,7 @@ import {
 import { Layout } from '../components/Layout';
 import { CreatePublishPackageDialog } from '../components/CreatePublishPackageDialog';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { SupplementCleanDialog } from '../components/SupplementCleanDialog';
 import { InlineNotice } from '../components/ui/InlineNotice';
 import { apiClient } from '../services/api';
 import { useOperatorStore } from '../store/operator';
@@ -55,6 +56,9 @@ export function JobDetailPage() {
   const streamCloseRef = useRef<(() => void) | null>(null);
   const [activeTab, setActiveTab] = useState<OutcomeTab>('script');
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [recleanOpen, setRecleanOpen] = useState(false);
+  const [recleanBusy, setRecleanBusy] = useState(false);
+  const [recleanError, setRecleanError] = useState<string | null>(null);
 
   // ── Video player state (must be before any conditional returns) ──
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -346,6 +350,35 @@ export function JobDetailPage() {
     }
   };
 
+  const handleReclean = async (supplementalText: string) => {
+    let closeStream: (() => void) | null = null;
+    setRecleanBusy(true);
+    setRecleanError(null);
+    setActionError(null);
+    try {
+      setActiveTab('script');
+      closeStream = await openStepStream(job.id, 'clean');
+      setRunningStep('clean');
+      const updated = await apiClient.recleanJob(job.id, supplementalText);
+      setJob(updated);
+      await loadJobArtifacts(updated);
+      setStreamPreview(null);
+      setRecleanOpen(false);
+    } catch (err: any) {
+      const responseJob = err.response?.data?.job as Job | undefined;
+      if (responseJob) {
+        setJob(responseJob);
+        await loadJobArtifacts(responseJob);
+      }
+      setRecleanError(err.response?.data?.message || '补充洗稿失败');
+    } finally {
+      closeStream?.();
+      if (streamCloseRef.current === closeStream) streamCloseRef.current = null;
+      setRunningStep(null);
+      setRecleanBusy(false);
+    }
+  };
+
   const artifactAvailability = {
     transcriptReady: Boolean(rawTranscript?.transcript),
     rewriteReady: Boolean(cleaned?.output?.cleanScript || cleaned?.output?.summary),
@@ -419,6 +452,10 @@ export function JobDetailPage() {
         actionError={actionError}
         onRunStep={handleRunStep}
         onPauseStep={handlePauseStep}
+        onReClean={() => {
+          setRecleanError(null);
+          setRecleanOpen(true);
+        }}
       />
 
       {/* Outcome tabs */}
@@ -443,11 +480,30 @@ export function JobDetailPage() {
               />
             )}
             {activeArtifactKey === 'script' && (
-              <RewriteArtifact
-                cleaned={cleaned}
-                cleanedError={cleanedError}
-                streamPreview={streamPreview?.step === 'clean' ? streamPreview : null}
-              />
+              <>
+                {job.steps?.clean?.status === 'succeeded' && (
+                  <div className="mb-4 flex flex-col gap-3 rounded-lg border border-tech-border bg-gray-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm text-tech-muted">洗稿结果已生成。若转录遗漏了关键信息，可补充内容后让 AI 结合转录重新洗稿。</p>
+                    <button
+                      onClick={() => {
+                        setRecleanError(null);
+                        setRecleanOpen(true);
+                      }}
+                      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-tech-blue px-4 py-2 text-sm font-medium text-tech-blue transition-all hover:bg-tech-blue hover:text-white"
+                    >
+                      补充内容重新洗稿
+                    </button>
+                  </div>
+                )}
+                {recleanError && (
+                  <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{recleanError}</div>
+                )}
+                <RewriteArtifact
+                  cleaned={cleaned}
+                  cleanedError={cleanedError}
+                  streamPreview={streamPreview?.step === 'clean' ? streamPreview : null}
+                />
+              </>
             )}
             {activeArtifactKey === 'shots' && (
               <ShotsContent
@@ -501,6 +557,14 @@ export function JobDetailPage() {
         confirmLabel="删除"
         onConfirm={handleDeleteJob}
         onClose={() => setDeleteConfirmOpen(false)}
+      />
+
+      <SupplementCleanDialog
+        open={recleanOpen}
+        busy={recleanBusy}
+        error={recleanError}
+        onConfirm={handleReclean}
+        onClose={() => setRecleanOpen(false)}
       />
     </Layout>
   );

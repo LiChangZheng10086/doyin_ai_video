@@ -387,6 +387,13 @@ export class ApiClient {
     return response.data.job!;
   }
 
+  // 补充内容后重新洗稿
+  async recleanJob(id: string, supplementalText: string): Promise<Job> {
+    const client = await this.getClient();
+    const response = await client.post<ApiResponse>(`/api/jobs/${id}/reclean`, { supplementalText });
+    return response.data.job!;
+  }
+
   async subscribeJobStepEvents(
     id: string,
     step: StreamablePipelineStep,

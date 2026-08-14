@@ -392,6 +392,24 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     res.status(result.status).json(result.body);
   });
 
+  app.post("/api/jobs/:id/reclean", async (req, res) => {
+    const { supplementalText } = req.body as { supplementalText?: string };
+    if (!supplementalText || typeof supplementalText !== "string" || !supplementalText.trim()) {
+      res.status(400).json({ message: "supplementalText is required" });
+      return;
+    }
+    try {
+      const record = await jobs.reclean(req.params.id, supplementalText.trim());
+      res.json({ job: record, message: "reclean completed" });
+    } catch (error) {
+      if (error instanceof JobStepError) {
+        res.status(error.statusCode).json({ message: error.message, job: error.job });
+        return;
+      }
+      res.status(500).json({ message: error instanceof Error ? error.message : "reclean failed" });
+    }
+  });
+
   app.post("/api/jobs/:id/steps/generate-video-prompts", async (req, res) => {
     const result = await runStepRoute(req.params.id, "generate_video_prompts");
     res.status(result.status).json(result.body);

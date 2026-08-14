@@ -315,6 +315,85 @@ export class JobStore {
     return paused;
   }
 
+  async reclean(id: string, supplementalText: string) {
+    const text = supplementalText?.trim() ?? "";
+    if (!text) {
+      throw new JobStepError("补充内容不能为空", 400);
+    }
+    if (this.runningSteps.has(id)) {
+      throw new JobStepError("another step is already running for this job", 409);
+    }
+
+    const record = await this.get(id);
+    if (!record) {
+      throw new JobStepError("job not found", 404);
+    }
+    if (record.deletedAt) {
+      throw new JobStepError("deleted job cannot run steps", 409, record);
+    }
+    if (record.workflowMode !== "manual" || !record.steps) {
+      throw new JobStepError("manual workflow steps are not available for this job", 409, record);
+    }
+    const steps = this.ensurePipelineSteps(record.steps);
+    if (steps.clean.status === "running") {
+      throw new JobStepError("step is already running", 409, record);
+    }
+    if (steps.transcribe.status !== "succeeded") {
+      throw new JobStepError("previous step has not succeeded", 409, record);
+    }
+
+    this.runningSteps.add(id);
+    try {
+      await this.markStepRunning(record, "clean");
+      this.stepEvents.publish(id, "clean", { type: "started" });
+
+      const context = await this.buildCleanContext(id);
+      await this.storage.writeJson(context.record.storagePath, context.draft);
+      const cleaned = await this.cleaner.clean({
+        parsed: context.parsed,
+        transcriptText: context.transcriptText,
+        topic: context.record.topic,
+        draft: context.draft,
+        pageInfo: context.pageInfo,
+        supplementalText: text
+      }, undefined, (update) => {
+        this.stepEvents.publish(id, "clean", { type: "preview", ...update });
+      });
+      await this.persistCleaned(id, context, text, cleaned);
+
+      await this.resetDownstreamAfterReclean(id);
+      const succeeded = await this.markStepSucceeded(id, "clean");
+      this.stepEvents.publish(id, "clean", { type: "completed" });
+      return succeeded;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "reclean failed";
+      const failed = await this.markStepFailed(id, "clean", message);
+      this.stepEvents.publish(id, "clean", { type: "error", message });
+      throw new JobStepError(message, 500, failed);
+    } finally {
+      this.runningSteps.delete(id);
+    }
+  }
+
+  private async resetDownstreamAfterReclean(id: string) {
+    for (const step of ["generate_video_prompts", "generate_video"] as const) {
+      await this.updateStep(id, step, {
+        status: "pending",
+        attempts: 0,
+        lastError: undefined,
+        startedAt: undefined,
+        finishedAt: undefined,
+        phase: undefined,
+        progress: undefined
+      });
+    }
+    await this.update(id, {
+      videoProjectPath: undefined,
+      videoOutputPath: undefined,
+      videoGeneratedAt: undefined
+    });
+  }
+
   subscribeStepEvents(
     id: string,
     step: StreamablePipelineStep,
@@ -489,6 +568,22 @@ export class JobStore {
   }
 
   private async runCleanStep(id: string, signal?: AbortSignal) {
+    const context = await this.buildCleanContext(id);
+    await this.storage.writeJson(context.record.storagePath, context.draft);
+    const cleaned = await this.cleaner.clean({
+      parsed: context.parsed,
+      transcriptText: context.transcriptText,
+      topic: context.record.topic,
+      draft: context.draft,
+      pageInfo: context.pageInfo
+    }, signal, (update) => {
+      this.stepEvents.publish(id, "clean", { type: "preview", ...update });
+    });
+    await this.persistCleaned(id, context, undefined, cleaned);
+    await this.update(id, { errorMessage: undefined });
+  }
+
+  private async buildCleanContext(id: string) {
     const record = await this.requireRecord(id);
     const parsed = await this.readParsedShare(id);
     const pageInfo = await this.readPageInfo(id);
@@ -497,32 +592,35 @@ export class JobStore {
     if (!transcriptText) {
       throw new Error("transcript is missing; run ASR transcription first");
     }
-
     const draft = this.defaultScriptAsset(record.sourceUrl, record.topic, parsed, pageInfo, transcriptText);
-    await this.storage.writeJson(record.storagePath, draft);
-    const cleaned = await this.cleaner.clean({
-      parsed,
-      transcriptText,
-      topic: record.topic,
-      draft,
-      pageInfo
-    }, signal, (update) => {
-      this.stepEvents.publish(id, "clean", { type: "preview", ...update });
-    });
+    return { record, parsed, pageInfo, transcriptText, draft };
+  }
+
+  private async persistCleaned(
+    id: string,
+    context: {
+      record: JobRecord;
+      parsed: ParsedShare | null;
+      pageInfo: PageInfoRecord | null;
+      transcriptText: string;
+    },
+    supplementalText: string | undefined,
+    cleaned: ScriptAsset
+  ) {
+    await this.storage.writeJson(context.record.storagePath, cleaned);
     await this.storage.writeJson(path.join("processed", "cleaned", `${id}.json`), {
       jobId: id,
-      sourceUrl: record.sourceUrl,
-      topic: record.topic,
-      createdAt: record.createdAt,
+      sourceUrl: context.record.sourceUrl,
+      topic: context.record.topic,
+      createdAt: context.record.createdAt,
       aiModel: cleaned.aiModel,
       cleaningMode: cleaned.cleaningMode,
-      pageInfo,
-      parsed,
-      transcriptText,
+      pageInfo: context.pageInfo,
+      parsed: context.parsed,
+      transcriptText: context.transcriptText,
+      ...(supplementalText?.trim() ? { supplementalText: supplementalText.trim() } : {}),
       output: cleaned
     });
-    await this.storage.writeJson(record.storagePath, cleaned);
-    await this.update(id, { errorMessage: undefined });
   }
 
   private async runGenerateVideoPromptsStep(id: string, signal?: AbortSignal) {
