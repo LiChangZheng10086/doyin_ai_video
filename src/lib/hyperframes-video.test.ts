@@ -262,13 +262,13 @@ test("HyperframesVideoGenerator builds a vertical explainer project and renders 
   assert.ok((sourceJson.scenes[0]?.visualLayers?.length ?? 0) >= 4);
 
   const invoked = calls.map((call) => call.args.join(" "));
-  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 doctor --json")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 init")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 lint")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 validate")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 inspect")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 snapshot")));
-  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.48 render")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.108 doctor --json")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.108 init")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.108 lint")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.108 validate")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.108 inspect")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.108 snapshot")));
+  assert.ok(invoked.some((args) => args.includes("hyperframes@0.7.108 render")));
 });
 
 test("HyperframesVideoGenerator preserves the previous video when validation fails", async () => {
@@ -494,6 +494,6 @@ test("HyperframesVideoGenerator includes HyperFrames stderr when a command fails
 
   await assert.rejects(
     () => generator.generate(sampleScript(), "job-stderr"),
-    /HyperFrames 命令失败.*hyperframes@0\.7\.48 init.*Directory already exists/s
+    /HyperFrames 命令失败.*hyperframes@0\.7\.108 init.*Directory already exists/s
   );
 });

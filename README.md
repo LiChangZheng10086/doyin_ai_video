@@ -330,10 +330,10 @@ vendor/whisper/
 
 - **HyperFrames** — 本地 HTML 动画渲染为 MP4（开发模式生成视频步骤需要）
   ```bash
-  npx --yes hyperframes@0.7.48 doctor
+  npx --yes hyperframes@0.7.108 doctor
   ```
 
-HyperFrames 是本地 HTML/CSS/GSAP 到视频的渲染链路，不是 Sora、Remotion 自动成片或 HeyGen 云端视频生成 API。开发环境默认通过 `npx --yes hyperframes@0.7.48` 调用 CLI；打包后优先使用安装包内置的 HyperFrames CLI 和 Chrome headless shell。当前 v1 生成无真人、无数字人的图文解释视频；`voiceoverScript` 用作字幕和画面节奏，暂不自动生成 TTS 配音。
+HyperFrames 是本地 HTML/CSS/GSAP 到视频的渲染链路，不是 Sora、Remotion 自动成片或 HeyGen 云端视频生成 API。开发环境默认通过 `npx --yes hyperframes@0.7.108` 调用 CLI；打包后优先使用安装包内置的 HyperFrames CLI 和 Chrome headless shell。当前 v1 生成无真人、无数字人的图文解释视频；`voiceoverScript` 用作字幕和画面节奏，暂不自动生成 TTS 配音。
 
 ## 📖 使用指南
 
@@ -490,9 +490,9 @@ Skill 存储位置：`~/.claude/skills/douyin-{id}/SKILL.md`
 
 ### 视频生成失败
 - 开发模式确认当前 Node.js 版本 >= 22：`node -v`
-- 开发模式确认 FFmpeg 和 HyperFrames 可用：`ffmpeg -version`、`npx --yes hyperframes@0.7.48 doctor`
+- 开发模式确认 FFmpeg 和 HyperFrames 可用：`ffmpeg -version`、`npx --yes hyperframes@0.7.108 doctor`
 - 安装包确认 `resources/hyperframes/node_modules/hyperframes/dist/cli.js` 和 `resources/browser/.../chrome-headless-shell` 存在
-- 如果在生成项目目录内手动排查，优先使用项目脚本 `npm run check` / `npm run render`，或使用固定包版本的 `npx --yes hyperframes@0.7.48 ...`
+- 如果在生成项目目录内手动排查，优先使用项目脚本 `npm run check` / `npm run render`，或使用固定包版本的 `npx --yes hyperframes@0.7.108 ...`
 - 新版本会在任务错误详情里展示失败命令、stdout 和 stderr；若只看到 `Command failed with exit code 1`，请先更新到最新代码后重试
 - 查看任务详情页"生成视频"步骤的错误信息
 - 渲染成功后，MP4 位于 `output/videos/{jobId}/hyperframes/renders/video.mp4`

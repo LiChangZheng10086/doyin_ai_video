@@ -14,7 +14,7 @@ const packageAssetsDir = path.join(vendorDir, "package-assets");
 const cacheDir = path.join(runtimeDir, ".cache");
 const devWhisperDir = path.join(vendorDir, "whisper");
 const modelUrl = process.env.WHISPER_MODEL_URL || "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
-const hyperframesVersion = process.env.HYPERFRAMES_VERSION || "0.7.48";
+const hyperframesVersion = process.env.HYPERFRAMES_VERSION || "0.7.108";
 const chromeHeadlessShellVersion = process.env.HYPERFRAMES_CHROME_VERSION || "152.0.7928.2";
 
 const targets = {

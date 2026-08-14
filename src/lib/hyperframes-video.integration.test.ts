@@ -58,7 +58,7 @@ test("real HyperFrames validates snapshots and renders the Shot V2 composition",
   };
   const generator = new HyperframesVideoGenerator({
     storageRoot,
-    packageSpec: "hyperframes@0.7.48",
+    packageSpec: "hyperframes@0.7.108",
     ffprobeBinary: "ffprobe"
   });
 

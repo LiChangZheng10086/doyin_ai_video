@@ -51,6 +51,9 @@ export async function diagnoseAiError(
   if (/timeout|timed out|abort/i.test(rawMessage)) {
     return { code: "timeout", message: `连接 AI 服务超时（域名：${hostname}）${suffix}` };
   }
+  if (/premature close/i.test(rawMessage)) {
+    return { code: "upstream", message: `AI 服务在流式返回中连接中断（域名：${hostname}）${suffix}` };
+  }
   if (/certificate|ssl|tls|handshake|econnreset|socket hang up/i.test(rawMessage)) {
     return { code: "tls", message: `TLS、证书或代理连接失败（域名：${hostname}）${suffix}` };
   }

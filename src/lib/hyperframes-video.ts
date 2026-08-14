@@ -100,7 +100,7 @@ export class HyperframesVideoGenerator {
   constructor(private readonly options: HyperframesVideoGeneratorOptions) {
     this.runner = options.commandRunner ?? defaultRunner;
     this.npxBinary = options.npxBinary ?? (process.platform === "win32" ? "npx.cmd" : "npx");
-    this.packageSpec = options.packageSpec ?? process.env.HYPERFRAMES_PACKAGE ?? "hyperframes@0.7.48";
+    this.packageSpec = options.packageSpec ?? process.env.HYPERFRAMES_PACKAGE ?? "hyperframes@0.7.108";
   }
 
   async generate(
