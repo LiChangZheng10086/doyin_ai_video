@@ -81,7 +81,7 @@ GET /api/jobs/:id/raw-video/stream
 
 ### 4.2 分段切换与状态矩阵
 
-在 `JobDetailPage.tsx` 的「视频」成果格子（现 `514-537` 行分支）顶部放一个二选一分段控件，**常显**：`原视频 | 成片`。两侧各自独立处理三种状态：
+在 `JobDetailPage.tsx` 的「视频」成果格子（现 `514-537` 行分支）顶部放一个二选一分段控件，**常显**：`原视频 | 成片`。分段控件本身留在详情页，原视频面板抽成独立组件 `SourceVideoArtifact`（与既有 `VideoArtifact`、`TranscriptArtifact` 等并列），以便用 `renderToStaticMarkup` 独立测试三态，而不必渲染整个详情页。两侧各自独立处理三种状态：
 
 | | 有内容 | 没有内容 | 有记录但读不到 |
 | --- | --- | --- | --- |
@@ -139,5 +139,6 @@ GET /api/jobs/:id/raw-video/stream
 | `src/lib/video-output.ts` | 抽取 `resolveContainedMp4`，新增 `resolveSourceVideo` 与两个错误码 |
 | `src/app.ts` | 新增 `GET /api/jobs/:id/raw-video/stream` |
 | `renderer/src/services/api.ts` | 新增 `getRawVideoStreamUrl` |
-| `renderer/src/pages/JobDetailPage.tsx` | 视频格子内新增分段切换与两侧状态渲染 |
+| `renderer/src/features/jobs/artifacts/SourceVideoArtifact.tsx` | 新增：原视频面板（播放器 / 占位 / 错误三态），与既有 `VideoArtifact` 并列，便于独立测试 |
+| `renderer/src/pages/JobDetailPage.tsx` | 视频格子内新增分段切换，并把两侧各自的既有渲染分支接上 |
 | `src/lib/video-output.test.ts`、`src/app.test.ts`、`renderer/src/features/jobs/artifacts/artifacts.test.tsx` | 新增用例 |
