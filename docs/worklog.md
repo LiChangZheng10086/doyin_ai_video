@@ -31,6 +31,10 @@
 
 ## 最近操作
 
+- 2026-09-16：修 **P1 紫色滥用**（提交 `a4bb61c`）。元凶是一行：`ContentPreview.tsx` 的封面容器无条件铺 `from-tech-blue via-tech-purple to-tech-purple-dark`，被列表行/卡片/当前创作条三处复用 → 每张封面都是一块紫色。改为中性底（`bg-tech-bg`+`tech-border`，无图时标题 `tech-muted`），同类占位一并中性化（合集头像、Skill 头像、合集空状态图标）；`JobListView:59`/`JobCardView:45` 的 `Wand2` 与 AI 徽章等正当紫色用途保留；两处「处理进度」进度条有意保留。新增回归断言：封面占位不得出现任何 `purple` 类名且必须用中性 token。实测封面盒紫色 39/39 → **0/39**。
+- 2026-09-16：更正交接文档里两条判断。①「封面 403 是防盗链」**错**：实测 4 种请求头组合（含 `Referer: douyin.com`）全部 403，URL 是带 `x-expires`+`x-signature` 的**签名链接**，仓库数据 23/23 已过期、App 真实数据仅 5/162 过期（其余签名到 2036）；故**代理无用**，只有有效期内落本地才可靠。②交接文档里的「紫/蓝比例」**不是**可用的验收口径：剩下的 351/352 个紫色元素是同一个 AI `wand-sparkles` 图标（39 行 × 每图标 8 个 `<path>`），SVG 内部路径把计数放大了 8 倍。
+- 2026-09-16：修好两个插件故障并记录重放步骤（提交 `cf6722a`，改动在 `~/.dsh/profiles/web/node_modules/` 不在本仓库）：`dsh-cdp-browser` 5 个工具补 `output.schema`（只能用「任意属性对象」——运行期会用 schema 校验返回值且不支持 type 数组）；`dsh-computer-use` 的 Skill 名改为 `dsh-computer-use` 以消除与 `~/.agents/skills/computer-use` 的同名遮蔽。**需宿主重启 + 新会话才生效**。
+
 - 2026-09-16：去除登录/切换入口，改为单一「本机操作者」（提交 `f0d1c70`）。先纠正了一个事实：桌面端**本来就没有登录这一步** —— `operator.ts` 会自动从 localStorage 恢复上次的**发布者**（不需要 PIN），只有切到管理员才要 PIN；真正的摩擦点是「0 用户时整个应用被建管理员门顶掉」+ 顶部操作者 chip + 设置页用户管理。改动：新增 `POST /api/local-sessions/auto`（复用已有管理员，无管理员时创建无 PIN 的「本机用户」）；`openLocalOperator()` 独立承担无 PIN 分支，**`open()` 的管理员 PIN 契约一字未改**（实测无 PIN 仍 401「管理员 PIN 为必填项」、错误 PIN 仍 401「PIN 不正确」）；前端启动即自动会话，卸载三处 UI 与随之失效的 `utils/localUsers.ts`。全量 385 → 372 项（删 21 个 UI 专属用例、新增 11、store 重写 -3），仅剩 1 个既有失败。
 - 2026-09-16：全新安装场景已实测。空数据目录下 `POST /api/local-sessions/auto` 直接自举出「本机用户」（无 pinSalt/pinHash）；并用 `--user-data-dir=/tmp` 起了一个全新 profile 的 Electron —— 那条例用户记录**由渲染层自己写出**，说明它直接进了主界面而没有停在「创建本地管理员」门上（门若还在，自动会话请求根本不会发出，用户表会是空的）。附带确认：换成 `/tmp` 后 `workspace-write` 权限就够，之前两次 Electron 需要 `danger-full-access` 完全是因为数据目录在 `~/Library/Application Support` 下。
 - 2026-09-16：发现仓库开发数据 `storage/` 里 16 条任务的 `videoPath` 全部指向另一个检出 `/Users/mac/workspace/ai/codex/douyin`，原视频路由对它们正确返回 422（安全校验按预期生效）。要在仓库数据上验证该路由需先修正这些历史路径。
