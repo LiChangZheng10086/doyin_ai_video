@@ -27,8 +27,23 @@
   - `GET /api/jobs/:id/video/download`
 - 本地存储目录：`storage/`
 - 当前待办：Whisper 模型体积和速度优化、视频视觉样式优化、端到端样本回归测试
+- 新增待办（2026-09-15）：合集封面 CDN 403、创作中心紫色滥用（P1）；`Unknown User`、`1970/1/1`、`0:00` 已于 2026-09-16 修复；详见 `docs/handoff-2026-09-15-ui-audit.md`
 
 ## 最近操作
+
+- 2026-09-16：去除登录/切换入口，改为单一「本机操作者」（提交 `f0d1c70`）。先纠正了一个事实：桌面端**本来就没有登录这一步** —— `operator.ts` 会自动从 localStorage 恢复上次的**发布者**（不需要 PIN），只有切到管理员才要 PIN；真正的摩擦点是「0 用户时整个应用被建管理员门顶掉」+ 顶部操作者 chip + 设置页用户管理。改动：新增 `POST /api/local-sessions/auto`（复用已有管理员，无管理员时创建无 PIN 的「本机用户」）；`openLocalOperator()` 独立承担无 PIN 分支，**`open()` 的管理员 PIN 契约一字未改**（实测无 PIN 仍 401「管理员 PIN 为必填项」、错误 PIN 仍 401「PIN 不正确」）；前端启动即自动会话，卸载三处 UI 与随之失效的 `utils/localUsers.ts`。全量 385 → 372 项（删 21 个 UI 专属用例、新增 11、store 重写 -3），仅剩 1 个既有失败。
+- 2026-09-16：全新安装场景已实测。空数据目录下 `POST /api/local-sessions/auto` 直接自举出「本机用户」（无 pinSalt/pinHash）；并用 `--user-data-dir=/tmp` 起了一个全新 profile 的 Electron —— 那条例用户记录**由渲染层自己写出**，说明它直接进了主界面而没有停在「创建本地管理员」门上（门若还在，自动会话请求根本不会发出，用户表会是空的）。附带确认：换成 `/tmp` 后 `workspace-write` 权限就够，之前两次 Electron 需要 `danger-full-access` 完全是因为数据目录在 `~/Library/Application Support` 下。
+- 2026-09-16：发现仓库开发数据 `storage/` 里 16 条任务的 `videoPath` 全部指向另一个检出 `/Users/mac/workspace/ai/codex/douyin`，原视频路由对它们正确返回 422（安全校验按预期生效）。要在仓库数据上验证该路由需先修正这些历史路径。
+
+- 2026-09-16：实现「详情页能看原视频」。起因是用户反馈点进详情看不到视频：实测任务 `97db73e8`（马尾辫）`transcribe`/`clean` 已 succeeded、原视频已存在，但详情页只能播成片，**原视频只有一行文件路径文本**。改动：`video-output.ts` 抽出 `resolveContainedMp4`，让成片与原视频共用同一份根目录/扩展名/inode 校验（`job.videoPath` 是持久化绝对路径，校验若各写一份等于开放任意文件读取）；新增 `GET /api/jobs/:id/raw-video/stream`，复用既有 `sendResolvedVideo` 的 Range 实现；新增 `SourceVideoArtifact`（播放器 / 未下载引导 / 不可读三态）与详情页「原视频 | 成片」分段切换，默认侧为「有成片看成片，否则看原视频」。规格与计划见 `docs/superpowers/specs/2026-09-16-raw-video-playback-design.md`、`docs/superpowers/plans/2026-09-16-raw-video-playback.md`，提交 `f0a1846`。
+- 2026-09-16：实现过程中发现**仓库开发数据 `storage/` 里 16 条任务的 `videoPath` 全部指向另一个检出 `/Users/mac/workspace/ai/codex/douyin`**，文件在那边存在但不在本次 storage 根内，因此新路由对它们正确地返回 422 `source_video_unreadable`。这是安全校验按预期生效，不是 bug；要在仓库数据上验证该路由，需要先把这些历史路径修正或改用 App 真实数据（`~/Library/Application Support/douyin-ai-video/storage`，其 62 条任务路径均在自己的根内）。
+
+- 2026-09-16：修复走查发现的 P0 泄漏。创作者昵称兜底从英文 `Unknown User` 改为简体中文「未知用户」（新增 `src/lib/nickname.ts`，`user-page-crawler.ts` 5 处兜底收敛到该常量/normalizeNickname，注意其中 1 处在生成的 Playwright 子进程脚本里、无法 import）；`CollectionStore.readIndex()` 在读取边界归一化历史落盘值，**只治内存、不重写用户数据文件**（`storage/cache/collections-index.json` 里 3 条 `Unknown User` 原样保留）。渲染层新增 `renderer/src/utils/display.ts`：昵称、日期、时长三处兜底，`createTime=0` 显示「未知时间」而不再是 `1970/1/1`，`duration=0.119` 显示「未知时长」而不再是 `0:00`。已用仓库真实脏数据（awemeId `7670181536511533691`）与 `dist/` 产物双重验证。
+- 2026-09-16：查明交接文档第 0 节「看不到 `cdp_*` 就是没新开会话」的判断**不成立**，两个插件的真实原因都不是会话新旧：`dsh-cdp-browser` 的 5 个工具声明的是 `output: { render }`，缺少 DSH 强制的 `output.schema`，`tools.register()` 直接抛 `JsonSchemaError`，而插件 `apply()` 把每个注册异常 `console.error` 吞掉 → 任何会话都永远挂不上；`@anionex/dsh-computer-use` 的渐进暴露门按**内容指纹**校验，而 `~/.agents/skills/computer-use`（Hermes 版同名 Skill）遮蔽了插件自带的 `computer-use` Skill，导致 `containsSkillContent()` 永不匹配、11 个 `computer_*` 工具不暴露，`computer_use_activate` 也拒绝执行（实测报错「load the computer-use Skill first」）。详见交接文档第 9 节。
+
+- 2026-09-15：完成一轮前端 UI 走查（8 路由 × 3 视口），发现 `Unknown User` 硬编码兜底泄漏进合集页 H1、爬虫 `createTime=0`/`duration=0.119` 导致界面显示 1970/1/1 与 0:00、创作中心紫色实测 702 次 vs 蓝色 125 次（违背规格「紫=AI/Skill」）。**完整交接与新会话须知见 `docs/handoff-2026-09-15-ui-audit.md`。**
+- 2026-09-15：为走查装入 `@anionex/dsh-computer-use@0.3.2` 与 `dsh-cdp-browser`（commit `caecd3bded2e`）；两者写入 `~/.dsh/profiles/web`，需宿主重启**且新开会话**才会挂载工具。
+- 2026-09-15：确认 `src/server.ts` 的后端读仓库内 `storage/`，与 App 的 `~/.douyin-ai-video/storage` 不是同一份数据；Vite 只监听 IPv6 `[::1]:5173`；纯浏览器模式经 `electron-bridge.ts` polyfill 可用。
 
 - 2026-07-10：桌面主线 ASR 收敛为内置 whisper.cpp + ggml-small；音频提取改为 16kHz 单声道 WAV，设置页移除 ASR provider/API Key 输入。
 - 2026-07-10：`backend/` 与 `frontend/` Docker 栈标记为历史实现；当前维护主线是 Electron + Node 后端。

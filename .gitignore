@@ -62,3 +62,10 @@ vendor/whisper/models/*.bin
 # Platform runtime assets generated for installer packaging
 vendor/runtime/
 vendor/package-assets/
+
+# 本地 UI 走查产物（报告 + 截图），每次走查都重新生成，不进版本库
+# 注意：output/playwright/ 下已有跟踪文件，所以只忽略走查目录而不是整个 output/
+output/ui-audit-*/
+
+# Vision Toolkit 运行期产物
+.dsh-vision-toolkit/

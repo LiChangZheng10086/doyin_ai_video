@@ -17,6 +17,7 @@ import { ApiKeyWarning } from '../components/ApiKeyWarning';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { apiClient } from '../services/api';
 import { hasValidApiKey } from '../utils/apiKeyValidator';
+import { displayNickname } from '../utils/display';
 import type { CollectionOverview } from '../types';
 
 export function CollectionListPage() {
@@ -231,7 +232,7 @@ function CollectionCard({
           {showAvatar ? (
             <img
               src={collection.avatarUrl}
-              alt={collection.nickname || '用户头像'}
+              alt={displayNickname(collection.nickname)}
               className="h-full w-full object-cover"
               loading="lazy"
               referrerPolicy="no-referrer"
@@ -239,13 +240,13 @@ function CollectionCard({
             />
           ) : (
             <span className="absolute inset-0 flex items-center justify-center text-xl font-bold text-tech-purple">
-              {collection.nickname?.charAt(0) || 'U'}
+              {displayNickname(collection.nickname).charAt(0)}
             </span>
           )}
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="truncate text-lg font-semibold text-tech-text">
-            {collection.nickname || '未知用户'}
+            {displayNickname(collection.nickname)}
           </h3>
           <p className="mt-0.5 text-sm text-tech-muted">
             {collection.crawlResult.totalCollected} 个作品 · {progress.total > 0 ? `${progress.rendered} 部成片` : '待处理'}

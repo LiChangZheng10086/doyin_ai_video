@@ -5,6 +5,7 @@ import type {
   DouyinVideoItem,
   UserPageCrawlerConfig,
 } from "./user-page-crawler.js";
+import { normalizeNickname } from "./nickname.js";
 import type { LocalStorage } from "./storage.js";
 import type { JobRecord, PipelineStep } from "../types.js";
 
@@ -78,7 +79,7 @@ export class CollectionStore {
       id,
       sourcePageUrl: pageUrl,
       secUid: crawlResult.userInfo.secUid,
-      nickname: crawlResult.userInfo.nickname,
+      nickname: normalizeNickname(crawlResult.userInfo.nickname),
       avatarUrl: crawlResult.userInfo.avatarUrl,
       crawlResult: {
         items: crawlResult.items,
@@ -340,7 +341,13 @@ export class CollectionStore {
   }
 
   private async readIndex(): Promise<CollectionsIndex> {
-    return this.storage.readJson<CollectionsIndex>(COLLECTIONS_INDEX);
+    const index = await this.storage.readJson<CollectionsIndex>(COLLECTIONS_INDEX);
+    // 归一化读取边界：历史数据里存过英文占位昵称 `Unknown User`，这里直接在内存里治掉，
+    // 界面（合集 H1/列表）与 AI 提示词都走这条路径，无需改动用户已落盘的数据文件。
+    for (const record of Object.values(index)) {
+      if (record) record.nickname = normalizeNickname(record.nickname);
+    }
+    return index;
   }
 
   private async writeIndex(index: CollectionsIndex): Promise<void> {

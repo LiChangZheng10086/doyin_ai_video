@@ -24,6 +24,7 @@ import { CookieHint } from '../components/CookieHint';
 import { apiClient } from '../services/api';
 import type { CollectionOverview, DouyinVideoItem, Job, PipelineStep, CollectionTranscriptsResponse, GenerateSkillResponse } from '../types';
 import { SkillViewModal } from '../features/skills/SkillViewModal';
+import { displayNickname, formatDateFromSeconds, formatDuration, formatDurationWithLabel } from '../utils/display';
 
 const pipelineSteps: Array<{ id: PipelineStep; label: string; description: string; icon: typeof Video }> = [
   { id: 'transcribe', label: '批量转录', description: '全部子任务执行视频转录', icon: Mic },
@@ -383,7 +384,7 @@ export function CollectionDetailPage() {
           {collection.avatarUrl ? (
             <img
               src={collection.avatarUrl}
-              alt={collection.nickname}
+              alt={displayNickname(collection.nickname)}
               className="h-16 w-16 shrink-0 rounded-full object-cover ring-2 ring-tech-border"
               onError={(e) => {
                 (e.target as HTMLImageElement).style.display = 'none';
@@ -392,11 +393,11 @@ export function CollectionDetailPage() {
             />
           ) : null}
           <div className={`flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-tech-purple to-tech-blue text-2xl font-bold text-white shrink-0 ${collection.avatarUrl ? 'hidden' : ''}`}>
-            {collection.nickname?.charAt(0) || 'U'}
+            {displayNickname(collection.nickname).charAt(0)}
           </div>
           <div className="min-w-0 flex-1">
             <h1 className="text-xl font-semibold text-tech-text">
-              {collection.nickname || '未知用户'}
+              {displayNickname(collection.nickname)}
             </h1>
             <p className="mt-1 text-sm text-tech-muted">
               已采集 {collection.crawlResult.totalCollected} 个视频 ·
@@ -665,7 +666,7 @@ export function CollectionDetailPage() {
                   </p>
                   <p className="mt-1 text-xs text-tech-muted">
                     {formatDuration(item.duration)} ·{' '}
-                    {new Date(item.createTime * 1000).toLocaleDateString('zh-CN')}
+                    {formatDateFromSeconds(item.createTime)}
                     {item.statistics.diggCount > 0 &&
                       ` · 赞 ${formatCount(item.statistics.diggCount)}`}
                   </p>
@@ -790,12 +791,6 @@ function StatBadge({
   );
 }
 
-function formatDuration(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
 function formatCount(n: number): string {
   if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
   return String(n);
@@ -829,7 +824,7 @@ function TranscriptsModal({
         <div className="flex shrink-0 items-center justify-between border-b border-tech-border px-6 py-4">
           <div className="min-w-0">
             <h2 className="text-lg font-semibold text-tech-text truncate">
-              {data.collection.nickname} · 全部转录文本
+              {displayNickname(data.collection.nickname)} · 全部转录文本
             </h2>
             <p className="text-xs text-tech-muted mt-0.5">
               {data.summary.transcribed}/{data.summary.totalJobs} 个视频已转录
@@ -899,7 +894,7 @@ function TranscriptsModal({
                       </p>
                       {item.duration != null && (
                         <p className="text-xs text-tech-muted mt-0.5">
-                          时长 {formatDuration(item.duration)}
+                          {formatDurationWithLabel(item.duration)}
                           {item.segments?.length ? ` · ${item.segments.length} 个分段` : ''}
                         </p>
                       )}

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { CommandError, runCommand } from "./command.js";
+import { UNKNOWN_NICKNAME, normalizeNickname } from "./nickname.js";
 
 export interface DouyinUserPageInfo {
   secUid: string;
@@ -389,7 +390,7 @@ async function crawlViaApi(
     if (!userInfo && parsed.userInfo) {
       userInfo = {
         secUid,
-        nickname: parsed.userInfo.nickname ?? "Unknown User",
+        nickname: normalizeNickname(parsed.userInfo.nickname),
         avatarUrl: parsed.userInfo.avatarUrl ?? "",
         description: parsed.userInfo.description ?? "",
         followerCount: parsed.userInfo.followerCount ?? 0,
@@ -424,7 +425,7 @@ async function crawlViaApi(
   if (!userInfo) {
     userInfo = {
       secUid,
-      nickname: "Unknown User",
+      nickname: UNKNOWN_NICKNAME,
       avatarUrl: "",
       description: "",
       followerCount: 0,
@@ -531,7 +532,8 @@ while (hasMore && items.length < maxItems && noNewRounds < 3) {
 if (!userInfo) {
   userInfo = {
     secUid: secUid,
-    nickname: "Unknown User",
+    // 这段脚本在子进程里独立运行、无法 import，占位值必须与 nickname.ts 的 UNKNOWN_NICKNAME 保持一致
+    nickname: "未知用户",
     avatarUrl: "",
     description: "",
     followerCount: 0,
@@ -587,7 +589,7 @@ await browser.close();
     return {
       userInfo: result.userInfo ?? {
         secUid,
-        nickname: parsed.userInfo?.nickname ?? "Unknown User",
+        nickname: normalizeNickname(parsed.userInfo?.nickname),
         avatarUrl: parsed.userInfo?.avatarUrl ?? "",
         description: parsed.userInfo?.description ?? "",
         followerCount: parsed.userInfo?.followerCount ?? 0,
@@ -673,7 +675,7 @@ export async function crawlUserPage(
       ...apiResult,
       userInfo: {
         secUid,
-        nickname: htmlUserInfo.nickname ?? apiResult.userInfo.nickname ?? "Unknown User",
+        nickname: normalizeNickname(htmlUserInfo.nickname ?? apiResult.userInfo.nickname),
         avatarUrl: htmlUserInfo.avatarUrl ?? apiResult.userInfo.avatarUrl ?? "",
         description: htmlUserInfo.description ?? apiResult.userInfo.description ?? "",
         followerCount: htmlUserInfo.followerCount ?? apiResult.userInfo.followerCount ?? 0,
