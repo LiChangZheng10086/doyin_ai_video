@@ -82,7 +82,15 @@ POST /api/local-sessions/auto
 
 ### 4.2 需要顺带修正的文案
 
-`JobDetailPage.tsx:429`、`PublishingPage.tsx:92,298` 在 `currentUser` 为空时显示「需要选择操作者」。去除切换入口后不再有「可选的操作者」，该文案会变成误导。改为「本机操作者未就绪，请重试」——它现在只会在自动会话失败（例如后端不可达）时出现。
+`currentUser` 为空时共有三处面向用户的文案，其中两处明确要求用户「在顶部选择」：
+
+| 位置 | 现文案 | 改为 |
+| --- | --- | --- |
+| `features/jobs/artifacts/VideoArtifact.tsx:60` | 需要选择操作者 | 本机操作者未就绪 |
+| `pages/JobDetailPage.tsx:430` | 请先在顶部选择操作者 | 本机操作者未就绪，请重试 |
+| `pages/PublishingPage.tsx:299` | 请选择操作者 / 在顶部选择发布者或管理员后查看发布任务。 | 本机操作者未就绪 / 请重试后再查看发布任务。 |
+
+顶部切换入口被移除后，原文案里的「在顶部选择」已无对应操作，会变成误导。这些文案现在只会在自动会话失败（例如后端不可达）时出现。**分支逻辑与角色判定保持不动，只替换文案字符串**。
 
 ### 4.3 顺带清理的死代码
 
@@ -143,5 +151,5 @@ POST /api/local-sessions/auto
 | `renderer/src/components/shell/AppShell.tsx`、`UtilityBar.tsx` | 摘除 `OperatorSwitcher` 与 `onRequestRecovery` |
 | `renderer/src/pages/SettingsPage.tsx` | 删除 `users` 分组与 `LocalUsersSettings` |
 | `renderer/src/utils/settingsSections.ts` | 新增，承接 `settingsSections`（去掉 `users`） |
-| `renderer/src/pages/JobDetailPage.tsx`、`PublishingPage.tsx` | 仅修正未就绪文案，角色判定不变 |
+| `renderer/src/pages/JobDetailPage.tsx`、`PublishingPage.tsx`、`renderer/src/features/jobs/artifacts/VideoArtifact.tsx` | 仅按 4.2 修正未就绪文案，角色判定与分支逻辑不变 |
 | 删除 | `LocalUserSetup.tsx`、`OperatorSwitcher.tsx`、`LocalUsersSettings.tsx`、`utils/localUsers.ts` 及对应 21 个用例 |
