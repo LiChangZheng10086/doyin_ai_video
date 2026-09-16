@@ -1252,6 +1252,51 @@ test("AI step events endpoint streams SSE lifecycle events and rejects unsupport
   }
 });
 
+// ─── 本机操作者自动会话 ─────────────────────────────────────────────
+
+test("local sessions auto endpoint creates and adopts a pin-less local operator", async () => {
+  const fixture = await appFixture();
+  try {
+    const auto = await jsonFetch(fixture.baseUrl, "/api/local-sessions/auto", { method: "POST" });
+    assert.equal(auto.response.status, 201);
+    assert.equal(auto.body.user.role, "admin");
+    assert.equal(auto.body.user.displayName, "本机用户");
+    assert.equal(typeof auto.body.session.token, "string");
+    assert.ok(auto.body.session.token.length > 0);
+
+    const current = await jsonFetch(fixture.baseUrl, "/api/local-sessions/current", {
+      token: auto.body.session.token as string,
+    });
+    assert.equal(current.response.status, 200);
+    assert.equal(current.body.user.id, auto.body.user.id);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("local sessions auto endpoint reuses an existing administrator without adding users", async () => {
+  const fixture = await appFixture();
+  try {
+    const boot = await jsonFetch(fixture.baseUrl, "/api/local-users/bootstrap", {
+      method: "POST",
+      body: { displayName: "唯一管理员", pin: "123456" },
+    });
+    assert.equal(boot.response.status, 201);
+    const before = await jsonFetch(fixture.baseUrl, "/api/local-users");
+    assert.equal(before.body.users.length, 1);
+
+    const auto = await jsonFetch(fixture.baseUrl, "/api/local-sessions/auto", { method: "POST" });
+
+    assert.equal(auto.response.status, 201);
+    assert.equal(auto.body.user.id, boot.body.user.id);
+    assert.equal(auto.body.user.displayName, "唯一管理员");
+    const after = await jsonFetch(fixture.baseUrl, "/api/local-users");
+    assert.equal(after.body.users.length, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
 // ─── 原视频流式路由 ─────────────────────────────────────────────────
 
 function rawVideoRecord(id: string, videoPath?: string) {

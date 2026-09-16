@@ -57,7 +57,7 @@ export function VideoArtifact({
 
       {publishError && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-700">
-          <p className="font-semibold">需要选择操作者</p>
+          <p className="font-semibold">本机操作者未就绪</p>
           <p className="mt-1 text-sm">{publishError}</p>
         </div>
       )}

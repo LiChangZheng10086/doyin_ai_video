@@ -6,15 +6,13 @@ import { BottomSheet } from '../ui/BottomSheet';
 import { SECONDARY_NAV_ITEMS } from './navigation';
 import { ApiKeyStatusIndicator } from '../ApiKeyStatusIndicator';
 import { CookieStatusIndicator } from '../CookieStatusIndicator';
-import { OperatorSwitcher } from '../OperatorSwitcher';
 import { useNavigate } from 'react-router-dom';
 
 export interface AppShellProps {
   children: ReactNode;
-  onRequestRecovery: () => void;
 }
 
-export function AppShell({ children, onRequestRecovery }: AppShellProps) {
+export function AppShell({ children }: AppShellProps) {
   const [moreOpen, setMoreOpen] = useState(false);
   const navigate = useNavigate();
 
@@ -23,12 +21,12 @@ export function AppShell({ children, onRequestRecovery }: AppShellProps) {
       {/* Desktop: left rail + top bar */}
       <div className="hidden md:block">
         <PrimaryRail />
-        <UtilityBarDesktop onRequestRecovery={onRequestRecovery} />
+        <UtilityBarDesktop />
       </div>
 
       {/* Mobile context bar (page title) */}
       <div className="md:hidden">
-        <UtilityBar onRequestRecovery={onRequestRecovery} />
+        <UtilityBar />
       </div>
 
       {/* Main content area — offset for desktop rail + utility bar, mobile top bar */}
@@ -47,9 +45,6 @@ export function AppShell({ children, onRequestRecovery }: AppShellProps) {
           </div>
           <div className="flex items-center gap-3 px-3 py-2">
             <CookieStatusIndicator />
-          </div>
-          <div className="px-3 py-2">
-            <OperatorSwitcher onRequestRecovery={onRequestRecovery} />
           </div>
           <hr className="border-tech-border" />
           {SECONDARY_NAV_ITEMS.map((item) => (

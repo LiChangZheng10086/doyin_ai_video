@@ -251,3 +251,51 @@ test("getActor exposes a stable missing-session error", () => {
       && error.message === "请选择当前操作者"
   );
 });
+
+// ─── 本机操作者会话（无 PIN 分支）──────────────────────────────────
+
+test("openLocalOperator opens an administrator session without a pin", async () => {
+  const { sessions, admin } = await sessionFixture();
+
+  const session = await sessions.openLocalOperator(admin.id);
+
+  assert.equal(session.user.id, admin.id);
+  assert.equal(session.user.role, "admin");
+  assert.equal((await sessions.resolve(session.token))?.id, admin.id);
+});
+
+test("openLocalOperator invalidates the previous session like open does", async () => {
+  const { sessions, admin, publisher } = await sessionFixture();
+  const publisherSession = await sessions.open({ userId: publisher.id });
+
+  const operatorSession = await sessions.openLocalOperator(admin.id);
+
+  assert.equal(await sessions.resolve(publisherSession.token), null);
+  assert.equal((await sessions.resolve(operatorSession.token))?.id, admin.id);
+});
+
+test("openLocalOperator rejects missing or inactive users with a stable 404", async () => {
+  const { sessions, users, publisher } = await sessionFixture();
+  await users.update(ADMIN, publisher.id, { isActive: false });
+
+  for (const userId of ["absent-user", publisher.id]) {
+    await assert.rejects(
+      () => sessions.openLocalOperator(userId),
+      (error: LocalAuthError) => error.code === "local_user_not_found" && error.status === 404
+    );
+  }
+});
+
+test("open still requires a pin for administrators so the pin contract is unchanged", async () => {
+  const { sessions, admin } = await sessionFixture();
+
+  await assert.rejects(
+    () => sessions.open({ userId: admin.id }),
+    (error: LocalAuthError) => error.code === "local_user_pin_invalid" && error.status === 401
+  );
+  await assert.rejects(
+    () => sessions.open({ userId: admin.id, pin: "000000" }),
+    (error: LocalAuthError) => error.code === "local_user_pin_invalid" && error.status === 401
+  );
+  assert.equal((await sessions.open({ userId: admin.id, pin: "123456" })).user.id, admin.id);
+});

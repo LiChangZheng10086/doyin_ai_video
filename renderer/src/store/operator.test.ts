@@ -1,155 +1,76 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createOperatorStore, type LocalIdentityClient } from './operator.js';
-import type { LocalSession, LocalUser } from '../types/index.js';
+import type { LocalSession, LocalUser, LocalUserSessionResponse } from '../types/index.js';
 
-const publisher: LocalUser = {
-  id: 'publisher-1',
-  displayName: '发布员',
-  role: 'publisher',
-  isActive: true,
-  createdAt: '2026-08-10T00:00:00.000Z',
-  updatedAt: '2026-08-10T00:00:00.000Z',
-};
-
-const recoveredAdmin: LocalUser = {
-  id: 'admin-recovered',
-  displayName: '新管理员',
+const operator: LocalUser = {
+  id: 'operator-1',
+  displayName: '本机用户',
   role: 'admin',
   isActive: true,
   createdAt: '2026-08-10T00:00:00.000Z',
   updatedAt: '2026-08-10T00:00:00.000Z',
 };
 
-const recoveredSession: LocalSession = { token: 'recovered-token', user: recoveredAdmin };
-
-function memoryStorage(initial: Record<string, string> = {}) {
-  const values = new Map(Object.entries(initial));
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => values.set(key, value),
-    removeItem: (key: string) => values.delete(key),
-  };
-}
+const operatorSession: LocalSession = { token: 'operator-token', user: operator };
 
 function identityClient(overrides: Partial<LocalIdentityClient> = {}): LocalIdentityClient {
   return {
     setLocalSession: () => undefined,
-    getLocalUsers: async () => ({ users: [publisher], needsBootstrap: false }),
-    bootstrapLocalAdmin: async () => ({ user: recoveredAdmin, session: recoveredSession }),
-    recoverLocalIdentity: async () => ({ user: recoveredAdmin, session: recoveredSession }),
-    openLocalSession: async () => ({ session: { token: 'publisher-token', user: publisher } }),
-    closeLocalSession: async () => undefined,
-    createLocalUser: async () => ({ user: publisher }),
-    updateLocalUser: async () => ({ user: publisher }),
-    resetLocalUserPin: async () => undefined,
+    openLocalOperatorSession: async (): Promise<LocalUserSessionResponse> => ({
+      user: operator,
+      session: operatorSession,
+    }),
     ...overrides,
   };
 }
 
-test('recovery atomically adopts its response without opening another session', async () => {
-  let openSessionCalls = 0;
-  const sessionChanges: Array<string | null> = [];
+test('initialize adopts the local operator session returned by the server', async () => {
+  const tokens: Array<string | null> = [];
   const store = createOperatorStore(identityClient({
-    setLocalSession: (token) => sessionChanges.push(token),
-    openLocalSession: async () => {
-      openSessionCalls += 1;
-      return { session: { token: 'unexpected-token', user: publisher } };
-    },
-  }), memoryStorage({ 'douyin-ai-video.last-publisher-id': publisher.id }));
+    setLocalSession: (token) => tokens.push(token),
+  }));
 
-  await store.getState().recover('重置本地用户', '新管理员', '654321');
+  await store.getState().initialize();
 
-  assert.equal(openSessionCalls, 0);
-  assert.deepEqual(store.getState().users, [recoveredAdmin]);
-  assert.equal(store.getState().currentUser, recoveredAdmin);
-  assert.equal(store.getState().token, recoveredSession.token);
-  assert.equal(store.getState().needsBootstrap, false);
   assert.equal(store.getState().initialized, true);
-  assert.deepEqual(sessionChanges, [recoveredSession.token]);
+  assert.equal(store.getState().currentUser?.id, operator.id);
+  assert.equal(store.getState().currentUser?.role, 'admin');
+  assert.equal(store.getState().token, 'operator-token');
+  assert.deepEqual(tokens, ['operator-token']);
 });
 
-test('initialization remains unresolved when saved publisher restoration fails', async () => {
+test('initialize degrades to no current user when the auto session fails', async () => {
   const store = createOperatorStore(identityClient({
-    openLocalSession: async () => { throw new Error('network unavailable'); },
-  }), memoryStorage({ 'douyin-ai-video.last-publisher-id': publisher.id }));
+    openLocalOperatorSession: async () => {
+      throw new Error('backend unreachable');
+    },
+  }));
 
-  await assert.rejects(() => store.getState().initialize(), /network unavailable/);
+  await store.getState().initialize();
 
-  assert.equal(store.getState().initialized, false);
+  assert.equal(store.getState().initialized, true);
   assert.equal(store.getState().currentUser, null);
   assert.equal(store.getState().token, null);
 });
 
-test('syncUser immediately adopts a current administrator demotion and publisher persistence', async () => {
-  const storage = memoryStorage();
-  const store = createOperatorStore(identityClient(), storage);
-  await store.getState().bootstrap('管理员', '123456');
-  const demoted: LocalUser = {
-    ...recoveredAdmin,
-    displayName: '已改名的发布者',
-    role: 'publisher',
-    updatedAt: '2026-08-10T01:00:00.000Z',
-  };
+test('initialize never touches browser storage', async () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() {
+      throw new Error('localStorage must not be read for a single local operator');
+    },
+  });
 
-  store.getState().syncUser(demoted);
+  try {
+    const store = createOperatorStore(identityClient());
 
-  assert.equal(store.getState().currentUser, demoted);
-  assert.equal(store.getState().users[0], demoted);
-  assert.equal(storage.getItem('douyin-ai-video.last-publisher-id'), demoted.id);
-});
+    await store.getState().initialize();
 
-test('refreshUsers reconciles the latest same-id current user and clears publisher persistence after promotion', async () => {
-  const promoted: LocalUser = {
-    ...publisher,
-    displayName: '已改名的管理员',
-    role: 'admin',
-    updatedAt: '2026-08-10T02:00:00.000Z',
-  };
-  const storage = memoryStorage({ 'douyin-ai-video.last-publisher-id': publisher.id });
-  const store = createOperatorStore(identityClient({
-    getLocalUsers: async () => ({ users: [promoted], needsBootstrap: false }),
-  }), storage);
-  await store.getState().switchUser(publisher.id);
-
-  await store.getState().refreshUsers();
-
-  assert.equal(store.getState().currentUser, promoted);
-  assert.equal(store.getState().users[0], promoted);
-  assert.equal(storage.getItem('douyin-ai-video.last-publisher-id'), null);
-});
-
-test('syncUser clears the current session when the same user becomes inactive', async () => {
-  const sessionChanges: Array<string | null> = [];
-  const storage = memoryStorage();
-  const store = createOperatorStore(identityClient({
-    setLocalSession: (token) => sessionChanges.push(token),
-  }), storage);
-  await store.getState().switchUser(publisher.id);
-
-  store.getState().syncUser({ ...publisher, isActive: false });
-
-  assert.equal(store.getState().currentUser, null);
-  assert.equal(store.getState().token, null);
-  assert.equal(store.getState().users[0].isActive, false);
-  assert.equal(storage.getItem('douyin-ai-video.last-publisher-id'), null);
-  assert.deepEqual(sessionChanges, ['publisher-token', null]);
-});
-
-test('refreshUsers clears the current session when its user disappears', async () => {
-  const sessionChanges: Array<string | null> = [];
-  const storage = memoryStorage();
-  const store = createOperatorStore(identityClient({
-    setLocalSession: (token) => sessionChanges.push(token),
-    getLocalUsers: async () => ({ users: [], needsBootstrap: false }),
-  }), storage);
-  await store.getState().switchUser(publisher.id);
-
-  await store.getState().refreshUsers();
-
-  assert.equal(store.getState().currentUser, null);
-  assert.equal(store.getState().token, null);
-  assert.deepEqual(store.getState().users, []);
-  assert.equal(storage.getItem('douyin-ai-video.last-publisher-id'), null);
-  assert.deepEqual(sessionChanges, ['publisher-token', null]);
+    assert.equal(store.getState().currentUser?.id, operator.id);
+  } finally {
+    if (original) Object.defineProperty(globalThis, 'localStorage', original);
+    else delete (globalThis as { localStorage?: unknown }).localStorage;
+  }
 });

@@ -42,6 +42,25 @@ export class LocalSessionStore {
       }
     }
 
+    return this.startSession(user);
+  }
+
+  /**
+   * 为「本机操作者」开启会话，**不校验管理员 PIN**。
+   *
+   * 单一用户的本机应用启动时调用。刻意做成独立方法而不是给 `open()` 加一个开关：
+   * 「管理员必须提供 PIN」这条规则因此仍然只由 `open()` 承担，两条路径不会互相污染语义。
+   */
+  async openLocalOperator(userId: string): Promise<LocalSessionView> {
+    const user = await this.users.getActive(userId);
+    if (!user) {
+      throw new LocalAuthError("local_user_not_found", 404, "未找到可用的本地用户");
+    }
+
+    return this.startSession(user);
+  }
+
+  private startSession(user: LocalUserView): LocalSessionView {
     this.clearAll();
     const token = this.createToken();
     this.sessions.set(token, { userId: user.id, createdAt: new Date().toISOString() });

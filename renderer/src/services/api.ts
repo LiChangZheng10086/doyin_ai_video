@@ -15,11 +15,7 @@ import type {
   Job,
   JobOverview,
   JobStepStreamEvent,
-  LocalSessionResponse,
-  LocalUserResponse,
-  LocalUsersResponse,
   LocalUserSessionResponse,
-  LocalUserRole,
   ParsedApiError,
   PipelineStep,
   StreamablePipelineStep,
@@ -100,50 +96,11 @@ export class ApiClient {
     this.localSessionToken = token;
   }
 
-  async getLocalUsers(): Promise<LocalUsersResponse> {
+  // 单一本机操作者：启动时向服务端索取一个无需 PIN 的本机操作者会话。
+  async openLocalOperatorSession(): Promise<LocalUserSessionResponse> {
     const client = await this.getClient();
-    const response = await client.get<LocalUsersResponse>('/api/local-users');
+    const response = await client.post<LocalUserSessionResponse>('/api/local-sessions/auto');
     return response.data;
-  }
-
-  async bootstrapLocalAdmin(displayName: string, pin: string): Promise<LocalUserSessionResponse> {
-    const client = await this.getClient();
-    const response = await client.post<LocalUserSessionResponse>('/api/local-users/bootstrap', { displayName, pin });
-    return response.data;
-  }
-
-  async recoverLocalIdentity(confirmation: string, displayName: string, pin: string): Promise<LocalUserSessionResponse> {
-    const client = await this.getClient();
-    const response = await client.post<LocalUserSessionResponse>('/api/local-users/recover', { confirmation, displayName, pin });
-    return response.data;
-  }
-
-  async openLocalSession(userId: string, pin?: string): Promise<LocalSessionResponse> {
-    const client = await this.getClient();
-    const response = await client.post<LocalSessionResponse>('/api/local-sessions', { userId, ...(pin === undefined ? {} : { pin }) });
-    return response.data;
-  }
-
-  async closeLocalSession(): Promise<void> {
-    const client = await this.getClient();
-    await client.delete('/api/local-sessions/current');
-  }
-
-  async createLocalUser(input: { displayName: string; role: LocalUserRole; pin?: string }): Promise<LocalUserResponse> {
-    const client = await this.getClient();
-    const response = await client.post<LocalUserResponse>('/api/local-users', input);
-    return response.data;
-  }
-
-  async updateLocalUser(id: string, input: { displayName?: string; role?: LocalUserRole; isActive?: boolean; pin?: string }): Promise<LocalUserResponse> {
-    const client = await this.getClient();
-    const response = await client.patch<LocalUserResponse>(`/api/local-users/${id}`, input);
-    return response.data;
-  }
-
-  async resetLocalUserPin(id: string, pin: string): Promise<void> {
-    const client = await this.getClient();
-    await client.post(`/api/local-users/${id}/reset-pin`, { pin });
   }
 
   private async publishingRequest<T>(config: AxiosRequestConfig): Promise<T> {

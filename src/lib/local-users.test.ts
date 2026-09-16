@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -240,4 +240,110 @@ test("getActive excludes inactive users", async () => {
   await store.update(ADMIN, publisher.id, { isActive: false });
 
   assert.equal(await store.getActive(publisher.id), null);
+});
+
+// ─── 本机操作者（单一操作者场景）────────────────────────────────────
+
+function storedUser(input: {
+  id: string;
+  role: "admin" | "publisher";
+  isActive?: boolean;
+  createdAt?: string;
+  displayName?: string;
+}): StoredLocalUser {
+  const createdAt = input.createdAt ?? "2026-08-10T00:00:00.000Z";
+  return {
+    id: input.id,
+    displayName: input.displayName ?? input.id,
+    role: input.role,
+    isActive: input.isActive ?? true,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+async function seedUsers(root: string, users: StoredLocalUser[]) {
+  await writeFile(
+    path.join(root, "cache", "local-users.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      users: Object.fromEntries(users.map((user) => [user.id, user])),
+    }),
+    "utf8"
+  );
+}
+
+async function readStoredUsers(root: string): Promise<LocalUsersIndex> {
+  return JSON.parse(await readFile(path.join(root, "cache", "local-users.json"), "utf8")) as LocalUsersIndex;
+}
+
+test("ensureLocalOperator reuses the earliest active administrator without creating a user", async () => {
+  const { root, store } = await fixture();
+  await seedUsers(root, [
+    storedUser({ id: "admin-late", role: "admin", createdAt: "2026-08-11T00:00:00.000Z" }),
+    storedUser({ id: "admin-early", role: "admin", createdAt: "2026-08-10T00:00:00.000Z" }),
+    storedUser({ id: "publisher-1", role: "publisher" }),
+  ]);
+
+  const operator = await store.ensureLocalOperator();
+
+  assert.equal(operator.id, "admin-early");
+  assert.equal(operator.role, "admin");
+  assert.equal((await store.list()).length, 3);
+});
+
+test("ensureLocalOperator breaks createdAt ties by id and stays stable across calls", async () => {
+  const { root, store } = await fixture();
+  const createdAt = "2026-08-10T00:00:00.000Z";
+  await seedUsers(root, [
+    storedUser({ id: "b-admin", role: "admin", createdAt }),
+    storedUser({ id: "a-admin", role: "admin", createdAt }),
+  ]);
+
+  assert.equal((await store.ensureLocalOperator()).id, "a-admin");
+  assert.equal((await store.ensureLocalOperator()).id, "a-admin");
+  assert.equal((await store.list()).length, 2);
+});
+
+test("ensureLocalOperator creates a pin-less local administrator when none exists", async () => {
+  const { root, store } = await fixture();
+
+  const operator = await store.ensureLocalOperator();
+
+  assert.equal(operator.role, "admin");
+  assert.equal(operator.displayName, "本机用户");
+  assert.equal(operator.isActive, true);
+  const stored = (await readStoredUsers(root)).users[operator.id];
+  assert.equal(stored.pinSalt, undefined);
+  assert.equal(stored.pinHash, undefined);
+});
+
+test("ensureLocalOperator is idempotent and only creates the local operator once", async () => {
+  const { root, store } = await fixture();
+
+  const first = await store.ensureLocalOperator();
+  const second = await store.ensureLocalOperator();
+
+  assert.equal(first.id, second.id);
+  assert.equal((await store.list()).length, 1);
+  assert.equal(Object.keys((await readStoredUsers(root)).users).length, 1);
+});
+
+test("ensureLocalOperator ignores inactive administrators and publishers", async () => {
+  const { root, store } = await fixture();
+  await seedUsers(root, [
+    storedUser({ id: "admin-inactive", role: "admin", isActive: false, createdAt: "2026-08-01T00:00:00.000Z" }),
+    storedUser({ id: "publisher-1", role: "publisher", createdAt: "2026-08-02T00:00:00.000Z" }),
+  ]);
+
+  const operator = await store.ensureLocalOperator();
+
+  assert.notEqual(operator.id, "admin-inactive");
+  assert.notEqual(operator.id, "publisher-1");
+  assert.equal(operator.role, "admin");
+  assert.equal(operator.displayName, "本机用户");
+  assert.equal((await store.list()).length, 3);
+  // 只是停用而非删除：既有记录必须原样保留
+  assert.equal((await store.getActive("publisher-1"))?.id, "publisher-1");
+  assert.equal((await readStoredUsers(root)).users["admin-inactive"].isActive, false);
 });

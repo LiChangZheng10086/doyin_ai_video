@@ -90,6 +90,19 @@ export function registerLocalUserRoutes(app: Express, deps: LocalUserRouteDeps):
     }
   });
 
+  // 单一用户场景：启动即自动采用「本机操作者」，不再要求选择登录身份。
+  // 无管理员时创建一个无 PIN 的管理员；已有管理员则复用（不新增用户）。
+  // 注意这条路径不校验管理员 PIN —— 普通 /local-sessions 的 PIN 规则保持不变。
+  router.post("/local-sessions/auto", async (_req, res, next) => {
+    try {
+      const user = await deps.users.ensureLocalOperator();
+      const session = await deps.sessions.openLocalOperator(user.id);
+      res.status(201).json({ user, session });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.delete("/local-sessions/current", (req, res) => {
     deps.sessions.close(req.header("X-Local-Session") ?? undefined);
     res.status(204).end();

@@ -296,7 +296,7 @@ export function PublishingPage() {
 
       {!desktop.capabilities.showNotification && <div className="mb-4 flex items-start gap-2 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-800"><AlertTriangle size={17} className="mt-0.5 shrink-0" />浏览器模式不会显示系统排期通知，任务状态仍会正常更新。</div>}
       {!currentUser ? (
-        <div className="border-y border-tech-border py-16 text-center"><p className="text-lg font-semibold text-tech-text">请选择操作者</p><p className="mt-2 text-sm text-tech-muted">在顶部选择发布者或管理员后查看发布任务。</p></div>
+        <div className="border-y border-tech-border py-16 text-center"><p className="text-lg font-semibold text-tech-text">本机操作者未就绪</p><p className="mt-2 text-sm text-tech-muted">请重试后再查看发布任务。</p></div>
       ) : (
         <>
           {/* Status filter chips with counts */}

@@ -427,7 +427,7 @@ export function JobDetailPage() {
 
   const openPublishingDialog = () => {
     if (!currentUser) {
-      setPublishError('请先在顶部选择操作者');
+      setPublishError('本机操作者未就绪，请重试');
       return;
     }
     setPublishError('');

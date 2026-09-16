@@ -22,10 +22,9 @@ import {
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
-import { LocalUsersSettings } from '../components/LocalUsersSettings';
 import { apiClient } from '../services/api';
 import { parseOutputLimit, toOutputLimitForm, type OutputLimitMode } from '../utils/ai-output-limit';
-import { settingsSections } from '../utils/localUsers';
+import { settingsSections } from '../utils/settingsSections';
 import type { AiProvider } from '../types';
 
 interface AIKeyConfig {
@@ -78,7 +77,6 @@ const settingsSectionIcons: Record<SettingsSection, typeof KeyRound> = {
   douyin: QrCode,
   asr: Mic,
   storage: HardDrive,
-  users: ShieldCheck,
   advanced: SlidersHorizontal,
 };
 
@@ -358,7 +356,6 @@ export function SettingsPage() {
           {activeSection === 'douyin' && <DouyinSection />}
           {activeSection === 'asr' && <AsrSection />}
           {activeSection === 'storage' && <StorageSection />}
-          {activeSection === 'users' && <LocalUsersSettings />}
           {activeSection === 'advanced' && <AdvancedSection />}
         </main>
       </div>

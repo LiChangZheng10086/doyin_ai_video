@@ -1,14 +1,9 @@
 import React from 'react';
 import { ApiKeyStatusIndicator } from '../ApiKeyStatusIndicator';
 import { CookieStatusIndicator } from '../CookieStatusIndicator';
-import { OperatorSwitcher } from '../OperatorSwitcher';
 import { usePageContext } from './navigation';
 
-export interface UtilityBarProps {
-  onRequestRecovery: () => void;
-}
-
-export function UtilityBar({ onRequestRecovery }: UtilityBarProps) {
+export function UtilityBar() {
   const { title, subtitle } = usePageContext();
 
   return (
@@ -21,7 +16,7 @@ export function UtilityBar({ onRequestRecovery }: UtilityBarProps) {
   );
 }
 
-export function UtilityBarDesktop({ onRequestRecovery }: UtilityBarProps) {
+export function UtilityBarDesktop() {
   const { title, subtitle } = usePageContext();
 
   return (
@@ -33,7 +28,6 @@ export function UtilityBarDesktop({ onRequestRecovery }: UtilityBarProps) {
       <div className="flex items-center gap-3 shrink-0">
         <ApiKeyStatusIndicator compact />
         <CookieStatusIndicator compact />
-        <OperatorSwitcher onRequestRecovery={onRequestRecovery} />
       </div>
     </header>
   );

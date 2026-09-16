@@ -38,6 +38,9 @@ export const SYSTEM_ACTOR: ActorSnapshot = {
   role: "system",
 };
 
+/** 单一用户场景下自动创建的本机操作者展示名（见 `ensureLocalOperator()`）。 */
+export const LOCAL_OPERATOR_DISPLAY_NAME = "本机用户";
+
 export class LocalUserError extends Error {
   constructor(readonly code: LocalUserErrorCode) {
     super(LOCAL_USER_ERROR_MESSAGES[code]);
@@ -102,6 +105,32 @@ export class LocalUserStore {
 
       const index = await this.readIndex();
       const user = await this.newUser(input.displayName, input.role, input.pin);
+      index.users[user.id] = user;
+      await this.writeIndex(index);
+      return toView(user);
+    });
+  }
+
+  /**
+   * 选取「本机操作者」：单一用户场景下启动即用的那个管理员。
+   *
+   * 存在 `isActive` 的管理员时，按 `createdAt` 升序、再按 `id` 升序取第一个 —— 顺序完全确定，
+   * 不依赖对象键顺序，保证同一份数据下每次启动都选到同一个人；一个都没有时创建一个无 PIN 的管理员。
+   *
+   * 这是唯一允许创建无 PIN 管理员的入口：`create()` 对 admin 仍强制要求 PIN。
+   */
+  async ensureLocalOperator(): Promise<LocalUserView> {
+    return this.mutate(async () => {
+      const index = await this.readIndex();
+      const activeAdmins = Object.values(index.users)
+        .filter((user) => user.role === "admin" && user.isActive)
+        .sort((left, right) =>
+          left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id)
+        );
+      const existing = activeAdmins[0];
+      if (existing) return toView(existing);
+
+      const user = await this.newUser(LOCAL_OPERATOR_DISPLAY_NAME, "admin");
       index.users[user.id] = user;
       await this.writeIndex(index);
       return toView(user);

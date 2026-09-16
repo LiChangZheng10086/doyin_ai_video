@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { JobListPage } from './pages/JobListPage';
 import { JobDetailPage } from './pages/JobDetailPage';
@@ -8,7 +8,6 @@ import { CollectionListPage } from './pages/CollectionListPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SkillListPage } from './pages/SkillListPage';
 import { PublishingPage } from './pages/PublishingPage';
-import { LocalUserSetup } from './components/LocalUserSetup';
 import { PublishingDuePoller } from './components/PublishingDuePoller';
 import { AppShell } from './components/shell/AppShell';
 import { useOperatorStore } from './store/operator';
@@ -16,40 +15,29 @@ import { useOperatorStore } from './store/operator';
 function AppContent() {
   const initialize = useOperatorStore((state) => state.initialize);
   const initialized = useOperatorStore((state) => state.initialized);
-  const needsBootstrap = useOperatorStore((state) => state.needsBootstrap);
   const initializationStarted = useRef(false);
-  const [initializationError, setInitializationError] = useState(false);
-  const [recoveryRequested, setRecoveryRequested] = useState(false);
 
   useEffect(() => {
     if (initializationStarted.current) return;
     initializationStarted.current = true;
-    void initialize().catch(() => setInitializationError(true));
+    // 本机操作者会话失败时 store 会降级为「未就绪」，不会 reject，
+    // 因此这里不再有初始化失败分支：应用照常进入，缺会话的操作会各自提示重试。
+    void initialize();
   }, [initialize]);
 
   if (!initialized) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-canvas p-6">
-        <div className="w-full max-w-sm rounded-lg border border-tech-border bg-white px-5 py-4 text-sm text-tech-muted shadow-sm" role={initializationError ? 'alert' : 'status'}>
-          {initializationError ? '无法读取本地用户信息，请重新打开应用后再试。' : '正在读取本地用户信息...'}
+        <div className="w-full max-w-sm rounded-lg border border-tech-border bg-white px-5 py-4 text-sm text-tech-muted shadow-sm" role="status">
+          正在准备本机操作者...
         </div>
       </main>
     );
   }
 
-  if (needsBootstrap || recoveryRequested) {
-    return (
-      <LocalUserSetup
-        recoveryOnly={!needsBootstrap}
-        onClose={recoveryRequested ? () => setRecoveryRequested(false) : undefined}
-        onRecoveryComplete={recoveryRequested ? () => setRecoveryRequested(false) : undefined}
-      />
-    );
-  }
-
   return (
     <BrowserRouter>
-      <AppShell onRequestRecovery={() => setRecoveryRequested(true)}>
+      <AppShell>
         <Routes>
           <Route path="/" element={<JobListPage />} />
           <Route path="/jobs/:id" element={<JobDetailPage />} />
