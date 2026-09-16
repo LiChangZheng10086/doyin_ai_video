@@ -349,7 +349,7 @@ function SkillAvatar({ avatarUrl, nickname }: { avatarUrl?: string; nickname?: s
   }
 
   return (
-    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-tech-purple to-tech-blue text-white text-sm font-bold">
+    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-tech-border bg-tech-bg text-sm font-bold text-tech-muted">
       {nickname?.charAt(0) || <Brain size={16} />}
     </div>
   );

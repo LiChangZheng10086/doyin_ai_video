@@ -133,7 +133,7 @@ export function CollectionListPage() {
 
       {collections.length === 0 ? (
         <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface px-6 py-20 text-center">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-lg bg-gradient-to-br from-tech-purple to-tech-blue text-white shadow-lg">
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-lg border border-tech-border bg-tech-bg text-tech-muted">
             <Users size={34} />
           </div>
           <h3 className="text-xl font-semibold text-tech-text">还没有合集</h3>

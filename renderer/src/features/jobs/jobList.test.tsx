@@ -63,6 +63,21 @@ test('ContentPreview renders title and optional image', () => {
   assert.doesNotMatch(withoutImage, /Creative workspace|Video/);
 });
 
+// 设计规格：蓝色=主操作、紫色=AI/Skill。封面占位不是 AI 能力，不得用紫色铺底
+// （走查实测创作中心紫 702 次 vs 蓝 125 次，主因就是每张封面都是一块紫色）。
+test('ContentPreview placeholder never paints the cover box purple', () => {
+  const cases = [
+    { title: '有图作品', imageUrl: 'https://example.com/thumb.jpg' },
+    { title: '无图作品', imageUrl: undefined },
+  ];
+
+  for (const props of cases) {
+    const markup = renderToStaticMarkup(React.createElement(ContentPreview, props));
+    assert.doesNotMatch(markup, /purple/i, `封面容器不该出现紫色：${JSON.stringify(props)}`);
+    assert.match(markup, /bg-tech-bg/, '封面占位应使用中性表面色 token');
+  }
+});
+
 test('ActiveJobStrip shows current step, progress percentage, and primary action', () => {
   const running = makeOverview();
   const markup = renderToStaticMarkup(

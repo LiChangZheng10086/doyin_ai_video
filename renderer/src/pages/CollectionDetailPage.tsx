@@ -392,7 +392,7 @@ export function CollectionDetailPage() {
               }}
             />
           ) : null}
-          <div className={`flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-tech-purple to-tech-blue text-2xl font-bold text-white shrink-0 ${collection.avatarUrl ? 'hidden' : ''}`}>
+          <div className={`flex h-16 w-16 items-center justify-center rounded-full border border-tech-border bg-tech-bg text-2xl font-bold text-tech-muted shrink-0 ${collection.avatarUrl ? 'hidden' : ''}`}>
             {displayNickname(collection.nickname).charAt(0)}
           </div>
           <div className="min-w-0 flex-1">
