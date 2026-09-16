@@ -169,3 +169,40 @@ assertSupportedJsonSchema(output.schema);
 - 仓库内后端 3100 在跑（`/health` 返回 `ok`，`publishing.readOnly=false`），Vite 5173 返回 200；**9222 上没有浏览器在跑**。
 - 运行中的 3100 加载的是我改 `src/` **之前**编译的 `dist/`，所以它仍然返回 `Unknown User`（实测 `/api/collections` 3 条为英文）。改了后端要生效必须 `npm run build:backend` **并重启后端进程**——`npm run check`/`npm test` 都不产出 `dist/`。
 - 全量测试基线：376 tests / 374 pass / 1 skipped / **1 个既有失败** `src/lib/publishing-service.test.ts` → `startup recovery reports asset phases before due handling and purge`。已用 `git stash` 在原始源码上复现同一失败，与本轮改动无关。
+
+## 10. 插件故障已修（2026-09-16），及如何重放
+
+9.1 / 9.2 两处已按下面的方式修好，**改动只落在 `~/.dsh/profiles/web/node_modules/` 里（不在本仓库）**，因此重装/升级这两个插件会丢失，需要按本节重放。
+
+### 10.1 `dsh-cdp-browser`：补 `output.schema`
+
+文件 `~/.dsh/profiles/web/node_modules/dsh-cdp-browser/dsh/index.js`，两处改动：
+
+1. 在 `renderText` 定义之后新增常量：
+   ```js
+   const ARBITRARY_OBJECT_OUTPUT = { type: 'object', additionalProperties: true }
+   ```
+2. 5 个工具的 `output: { render: renderText }` 全部改为 `output: { schema: ARBITRARY_OBJECT_OUTPUT, render: renderText }`。
+
+**为什么用「任意属性的对象」而不是精确字段类型**：DSH 不只在校验 schema，运行期还会用它校验返回值（`createSuccessResult` → `validateJsonSchemaValue` → 违规即抛 `ToolOutputError`，`dsh-tools/lib/index.js:3418`）。这些工具的返回里存在 `null` 字段（如 `cdp_status.browser`、`cdp_assert.screenshotPath`），而校验器**不支持 `type` 数组**（实测「schema.properties.x.type must be a single type string」），把类型写窄会让工具从「挂不上」变成「一调用就报错」。另外 `additionalProperties` 只接受布尔值，不能写 schema。
+
+已用 DSH 真实校验器验证：**5/5 注册成功**（修复前 5/5 被拒，报 `schema must be a schema object`），且对 9 组真实返回形状（含 `browser: null` / `screenshotPath: null` / `value: null`）的运行期校验违规数为 **0**。
+
+### 10.2 `@anionex/dsh-computer-use`：改插件自带 Skill 名
+
+文件 `~/.dsh/profiles/web/node_modules/@anionex/dsh-computer-use/lib/skill.js:3`：
+
+```js
+export const COMPUTER_USE_SKILL_NAME = 'dsh-computer-use';   // 原为 'computer-use'
+```
+
+选这个方向而不是改 `~/.agents/skills/computer-use`：后者是用户全局技能库、可能被其他 harness 使用，改插件名的影响面只限于本 DSH profile。注意**不要**顺手改 `client.js` 的 `NS = 'computer-use'`（UI 组件 id）与 `config.js` 的 `COMPUTER_USE_SETTINGS_NAMESPACE`（对应 `cordis.patch.yml` 里的 `id: computer-use` 行），那两处与 Skill 名无关。
+
+已验证：`COMPUTER_USE_SKILL.name` 与新常量一致；模拟会话跑插件自己的 `hasLoadedComputerUseSkill()`，`tool/result` 与 `user/message` 两条路径均返回 `true`。**对照断言**：名字对但内容是他人的 Skill 内容时仍返回 `false` —— 证明只是消除了同名冲突，内容指纹门本身没有被放宽。
+
+### 10.3 生效条件与遗留
+
+- **两处都要宿主重启 + 新开会话**才会挂载（插件在启动时加载，Skill 目录按会话生成）；当前会话内看不到 `cdp_*` / `computer_*` 是预期的。
+- 顺带发现：`~/.agents/skills/computer-use`（Hermes/Open Design 版）教的是 `computer_use(action=...)` 这套 **Hermes/cua-driver 工具词汇**，在 DSH 里并不存在——它改名后仍会出现在技能目录里，加载它会得到对 DSH 无效的指令。是否清理这条全局技能由用户决定（本次未动）。
+- 想彻底不怕重装，可把这两个包按本 profile 已有的 `file:` 本地插件模式（参考 `dsh-filetree-bridge`）vendored 到 `~/.dsh/local-plugins/`；本次未做，以免改动依赖管理方式。
+
