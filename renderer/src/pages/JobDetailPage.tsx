@@ -23,6 +23,7 @@ import { RewriteArtifact } from '../features/jobs/artifacts/RewriteArtifact';
 import { StreamingArtifact } from '../features/jobs/artifacts/StreamingArtifact';
 import { ShotArtifact } from '../features/jobs/artifacts/ShotArtifact';
 import { VideoArtifact } from '../features/jobs/artifacts/VideoArtifact';
+import { SourceVideoArtifact } from '../features/jobs/artifacts/SourceVideoArtifact';
 import { JobContextSidebar } from '../features/jobs/JobContextSidebar';
 import { buildArtifactStates } from '../features/jobs/jobPresentation';
 import type {
@@ -64,6 +65,11 @@ export function JobDetailPage() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [streamUrl, setStreamUrl] = useState<string | null>(null);
   const [streamError, setStreamError] = useState(false);
+  // 原视频（视频转录步骤下载的原片）与「原视频 | 成片」的选择。
+  // 选择为 null 表示跟随默认：有成片就看成片，否则看原视频。
+  const [rawStreamUrl, setRawStreamUrl] = useState<string | null>(null);
+  const [rawStreamError, setRawStreamError] = useState(false);
+  const [videoSide, setVideoSide] = useState<'raw' | 'final' | null>(null);
   const [showPublishDialog, setShowPublishDialog] = useState(false);
   const [publishError, setPublishError] = useState('');
   const currentUser = useOperatorStore((state) => state.currentUser);
@@ -249,6 +255,34 @@ export function JobDetailPage() {
     };
     loadVideoUrl();
   }, [videoOutput, job?.id]);
+
+  // 原视频流地址：只要转录步骤下载过原视频（job.videoPath 有值）就解析，
+  // 与成片是否存在无关 —— 这正是「还没生成成片也能先看原视频」的关键。
+  useEffect(() => {
+    if (!job?.videoPath) {
+      setRawStreamUrl(null);
+      setRawStreamError(false);
+      return;
+    }
+    let cancelled = false;
+    setRawStreamError(false);
+    void (async () => {
+      try {
+        const url = await apiClient.getRawVideoStreamUrl(job.id);
+        if (!cancelled) setRawStreamUrl(url);
+      } catch (err) {
+        console.error('Failed to get raw video URL:', err);
+        if (!cancelled) setRawStreamError(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.id, job?.videoPath]);
+
+  // 默认侧：有成片看成片（保持既有行为），否则看原视频 —— 后者让「只下载了原视频」
+  // 的任务点进视频格子就直接能看，而不是先看到「视频还没生成」。
+  const activeVideoSide: 'raw' | 'final' = videoSide ?? (videoOutput ? 'final' : 'raw');
 
   if (isLoading) {
     return (
@@ -511,30 +545,69 @@ export function JobDetailPage() {
                 streamPreview={streamPreview?.step === 'generate_video_prompts' ? streamPreview : null}
               />
             )}
-            {activeArtifactKey === 'video' && videoOutput ? (
-              <VideoArtifact
-                output={videoOutput}
-                jobId={job.id}
-                title={cleaned?.output?.title || job.topic || '未命名作品'}
-                videoError={videoError}
-                videoUrl={videoUrl}
-                streamUrl={streamUrl}
-                streamError={streamError}
-                publishError={publishError}
-                onOpenPublishing={openPublishingDialog}
-                onVideoError={() => setStreamError(true)}
-              />
-            ) : activeArtifactKey === 'video' && videoError ? (
-              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
-                <p className="font-semibold">视频成片不可用</p>
-                <p className="mt-1 text-sm">{videoError}</p>
-              </div>
-            ) : activeArtifactKey === 'video' ? (
-              <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
-                <h3 className="font-semibold text-tech-text">视频还没生成</h3>
-                <p className="mt-2 text-sm text-tech-muted">完成生成分镜后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。</p>
-              </div>
-            ) : null}
+            {activeArtifactKey === 'video' && (
+              <>
+                <div
+                  role="tablist"
+                  aria-label="视频来源"
+                  className="mb-5 inline-flex rounded-lg border border-tech-border bg-gray-50 p-1"
+                >
+                  {([
+                    { key: 'raw' as const, label: '原视频' },
+                    { key: 'final' as const, label: '成片' },
+                  ]).map((side) => {
+                    const selected = activeVideoSide === side.key;
+                    return (
+                      <button
+                        key={side.key}
+                        type="button"
+                        role="tab"
+                        aria-selected={selected}
+                        onClick={() => setVideoSide(side.key)}
+                        className={`rounded-md px-4 py-1.5 text-sm font-medium transition-all ${
+                          selected
+                            ? 'bg-white text-tech-text shadow-sm'
+                            : 'text-tech-muted hover:text-tech-text'
+                        }`}
+                      >
+                        {side.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {activeVideoSide === 'raw' ? (
+                  <SourceVideoArtifact
+                    videoPath={job.videoPath}
+                    streamUrl={rawStreamUrl}
+                    streamError={rawStreamError}
+                    onVideoError={() => setRawStreamError(true)}
+                  />
+                ) : videoOutput ? (
+                  <VideoArtifact
+                    output={videoOutput}
+                    jobId={job.id}
+                    title={cleaned?.output?.title || job.topic || '未命名作品'}
+                    videoError={videoError}
+                    videoUrl={videoUrl}
+                    streamUrl={streamUrl}
+                    streamError={streamError}
+                    publishError={publishError}
+                    onOpenPublishing={openPublishingDialog}
+                    onVideoError={() => setStreamError(true)}
+                  />
+                ) : videoError ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
+                    <p className="font-semibold">视频成片不可用</p>
+                    <p className="mt-1 text-sm">{videoError}</p>
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
+                    <h3 className="font-semibold text-tech-text">视频还没生成</h3>
+                    <p className="mt-2 text-sm text-tech-muted">完成生成分镜后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。</p>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </div>
 

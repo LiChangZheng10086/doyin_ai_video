@@ -512,6 +512,12 @@ export class ApiClient {
     return `http://localhost:${serverPort}/api/jobs/${id}/video/stream`;
   }
 
+  // 已下载的原视频（视频转录步骤产出），与成片流地址同构
+  async getRawVideoStreamUrl(id: string): Promise<string> {
+    const serverPort = this.serverPort || (typeof window !== 'undefined' && window.electron?.getServerPort ? await window.electron.getServerPort() : 5173);
+    return `http://localhost:${serverPort}/api/jobs/${id}/raw-video/stream`;
+  }
+
   // 健康检查
   async healthCheck(): Promise<boolean> {
     try {

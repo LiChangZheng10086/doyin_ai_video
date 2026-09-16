@@ -16,7 +16,7 @@ import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import { simplifyChineseValue } from "./lib/chinese.js";
 import { buildSkillContext, getSkillErrorMessage, isRetryableSkillError } from "./lib/skill-generation.js";
 import { extractAiMessageText } from "./lib/ai-response.js";
-import { resolveJobVideo, VideoOutputError, type ResolvedVideoFile } from "./lib/video-output.js";
+import { resolveJobVideo, resolveSourceVideo, VideoOutputError, type ResolvedVideoFile } from "./lib/video-output.js";
 import { PublishingStore } from "./lib/publishing-store.js";
 import { PublishingCopyService } from "./lib/publishing-copy.js";
 import { PublishingAssetService } from "./lib/publishing-assets.js";
@@ -47,6 +47,7 @@ export interface ServerConfig {
   hyperframesBrowserPath?: string;
   resolveAiConfig?: () => Promise<AiRuntimeConfig | null>;
   resolveJobVideo?: typeof resolveJobVideo;
+  resolveSourceVideo?: typeof resolveSourceVideo;
 }
 
 export interface AiRuntimeConfig {
@@ -128,6 +129,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   const jobs = new JobStore(storage, cleaner, media, asr, videoGenerator);
   await jobs.init();
   const resolveVideo = config.resolveJobVideo ?? resolveJobVideo;
+  const resolveSource = config.resolveSourceVideo ?? resolveSourceVideo;
 
   const publishingStore = new PublishingStore(storage);
   const publishingCopy = new PublishingCopyService({
@@ -635,6 +637,31 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
     try {
       const video = await resolveVideo(config.storagePath, record);
+      await sendResolvedVideo(req, res, video);
+    } catch (error) {
+      if (error instanceof VideoOutputError) {
+        res.status(error.status).json({ code: error.code, message: error.message });
+        return;
+      }
+      if (isMissingFileError(error)) {
+        res.status(404).json({ message: "script not found" });
+        return;
+      }
+      throw error;
+    }
+  });
+
+  // 已下载的原视频（视频转录步骤落盘到 raw/videos/<jobId>.mp4）。
+  // 与 /video/stream 的区别只在解析的候选来源：这里读 job.videoPath，安全校验共用同一份实现。
+  app.get("/api/jobs/:id/raw-video/stream", async (req, res) => {
+    const record = await jobs.get(req.params.id);
+    if (!record) {
+      res.status(404).json({ message: "job not found" });
+      return;
+    }
+
+    try {
+      const video = await resolveSource(config.storagePath, record);
       await sendResolvedVideo(req, res, video);
     } catch (error) {
       if (error instanceof VideoOutputError) {

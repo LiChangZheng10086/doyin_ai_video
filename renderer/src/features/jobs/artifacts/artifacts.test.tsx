@@ -7,6 +7,7 @@ import { TranscriptArtifact } from './TranscriptArtifact.js';
 import { RewriteArtifact } from './RewriteArtifact.js';
 import { ShotArtifact } from './ShotArtifact.js';
 import { VideoArtifact } from './VideoArtifact.js';
+import { SourceVideoArtifact } from './SourceVideoArtifact.js';
 import { StreamingArtifact } from './StreamingArtifact.js';
 import type { RawTranscript, CleanedScript, HyperframesVideoOutput, ShortVideoShot, ShotType, ShotLayout, ShotTransition, ShotPacing } from '../../../types/index.js';
 
@@ -196,4 +197,45 @@ test('VideoArtifact renders player with controls and 9:16 wrapper', () => {
   assert.match(markup, /无声动效版/);
   assert.match(markup, /下载 MP4/);
   assert.match(markup, /加入发布中心/);
+});
+
+test('SourceVideoArtifact plays the downloaded source video', () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(SourceVideoArtifact, {
+      videoPath: '/storage/raw/videos/job-1.mp4',
+      streamUrl: 'http://localhost:5173/api/jobs/job-1/raw-video/stream',
+      streamError: false,
+      onVideoError: noop,
+    }),
+  );
+  assert.match(markup, /controls/);
+  assert.match(markup, /raw-video\/stream/);
+  assert.match(markup, /原视频/);
+});
+
+test('SourceVideoArtifact guides to 视频转录 when no source video was downloaded', () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(SourceVideoArtifact, {
+      videoPath: undefined,
+      streamUrl: null,
+      streamError: false,
+      onVideoError: noop,
+    }),
+  );
+  assert.match(markup, /原视频尚未下载/);
+  assert.match(markup, /视频转录/);
+  assert.doesNotMatch(markup, /<video/);
+});
+
+test('SourceVideoArtifact reports an unreadable source video instead of a blank player', () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(SourceVideoArtifact, {
+      videoPath: '/storage/raw/videos/job-1.mp4',
+      streamUrl: 'http://localhost:5173/api/jobs/job-1/raw-video/stream',
+      streamError: true,
+      onVideoError: noop,
+    }),
+  );
+  assert.match(markup, /原视频文件不可读取/);
+  assert.doesNotMatch(markup, /<video/);
 });

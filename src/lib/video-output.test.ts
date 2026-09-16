@@ -8,6 +8,7 @@ import { createExpressApp } from "../app.js";
 import type { JobRecord } from "../types.js";
 import {
   resolveJobVideo,
+  resolveSourceVideo,
   VideoOutputError,
   type ResolvedVideoFile,
 } from "./video-output.js";
@@ -332,4 +333,85 @@ test("stream and download share the injected resolver without changing headers o
     jobId: "endpoint-job",
   })));
   for (const handle of handles) await assert.rejects(handle.stat(), { code: "EBADF" });
+});
+
+// ─── 原视频（job.videoPath）────────────────────────────────────────
+
+function sourceJob(id: string, videoPath?: string): JobRecord {
+  return {
+    id,
+    sourceUrl: "https://example.test/video",
+    topic: "测试原视频",
+    status: "queued",
+    stage: "cleaned",
+    storagePath: path.join("processed", "scripts", `${id}.json`),
+    videoPath,
+    createdAt: "2026-08-10T00:00:00.000Z",
+    updatedAt: "2026-08-10T00:00:00.000Z",
+  };
+}
+
+test("resolves the downloaded source MP4 from job.videoPath to its canonical path and exact size", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "video-output-source-"));
+  const videoPath = path.join(storageRoot, "raw", "videos", "source-job.mp4");
+  const bytes = Buffer.from("downloaded douyin source bytes");
+  await mkdir(path.dirname(videoPath), { recursive: true });
+  await writeFile(videoPath, bytes);
+
+  const resolved = await resolveSourceVideo(storageRoot, sourceJob("source-job", videoPath));
+
+  assert.equal(resolved.path, await realpath(videoPath));
+  assert.equal(resolved.size, bytes.byteLength);
+  assert.equal(resolved.mimeType, "video/mp4");
+  const pathStats = await stat(videoPath);
+  assert.equal((await resolved.handle.stat()).ino, pathStats.ino);
+  assert.deepEqual(resolved.identity, { dev: pathStats.dev, ino: pathStats.ino });
+  await resolved.close();
+  await resolved.close();
+});
+
+test("reports a stable missing-source error when the job has no downloaded video", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "video-output-source-none-"));
+
+  await assertVideoError(resolveSourceVideo(storageRoot, sourceJob("no-source")), {
+    code: "source_video_missing",
+    message: "未找到原视频，请先执行视频转录",
+  });
+});
+
+test("reports a stable missing-source error for an absent or empty source MP4", async () => {
+  for (const kind of ["absent", "empty"] as const) {
+    const storageRoot = await mkdtemp(path.join(tmpdir(), `video-output-source-${kind}-`));
+    const videoPath = path.join(storageRoot, "raw", "videos", `${kind}.mp4`);
+    await mkdir(path.dirname(videoPath), { recursive: true });
+    if (kind === "empty") await writeFile(videoPath, "");
+
+    await assertVideoError(resolveSourceVideo(storageRoot, sourceJob(kind, videoPath)), {
+      code: "source_video_missing",
+      message: "未找到原视频，请先执行视频转录",
+    });
+  }
+});
+
+test("rejects non-MP4 and storage-root escape source candidates with a stable unreadable error", async () => {
+  const outsideRoot = await mkdtemp(path.join(tmpdir(), "video-output-source-outside-"));
+  const outsideVideo = path.join(outsideRoot, "outside.mp4");
+  await writeFile(outsideVideo, "outside bytes");
+
+  for (const candidate of ["video.mov", outsideVideo]) {
+    const id = path.extname(candidate) === ".mov" ? "source-wrong-extension" : "source-escaped";
+    const storageRoot = await mkdtemp(path.join(tmpdir(), `video-output-source-${id}-`));
+    const videoPath = path.isAbsolute(candidate)
+      ? candidate
+      : path.join(storageRoot, "raw", "videos", candidate);
+    if (!path.isAbsolute(candidate)) {
+      await mkdir(path.dirname(videoPath), { recursive: true });
+      await writeFile(videoPath, "not an mp4");
+    }
+
+    await assertVideoError(resolveSourceVideo(storageRoot, sourceJob(id, videoPath)), {
+      code: "source_video_unreadable",
+      message: "原视频文件不可读取，请检查文件权限后重试",
+    });
+  }
 });

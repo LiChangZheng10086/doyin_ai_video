@@ -1251,3 +1251,96 @@ test("AI step events endpoint streams SSE lifecycle events and rejects unsupport
     await fixture.close();
   }
 });
+
+// ─── 原视频流式路由 ─────────────────────────────────────────────────
+
+function rawVideoRecord(id: string, videoPath?: string) {
+  return {
+    id,
+    sourceUrl: "https://example.test/video",
+    topic: "原视频路由测试",
+    status: "queued",
+    stage: "cleaned",
+    storagePath: path.join("processed", "scripts", `${id}.json`),
+    videoPath,
+    createdAt: "2026-08-10T00:00:00.000Z",
+    updatedAt: "2026-08-10T00:00:00.000Z",
+  };
+}
+
+async function rawVideoFixture(records: Record<string, unknown>) {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "app-raw-video-"));
+  await mkdir(path.join(storageRoot, "cache"), { recursive: true });
+  await writeFile(
+    path.join(storageRoot, "cache", "jobs-index.json"),
+    JSON.stringify(records),
+    "utf8",
+  );
+  return { storageRoot, ...(await serveApp(storageRoot)) };
+}
+
+test("raw-video stream serves the downloaded source MP4 with byte ranges", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "app-raw-video-serve-"));
+  const videoPath = path.join(storageRoot, "raw", "videos", "raw-video-job.mp4");
+  const bytes = Buffer.from("0123456789");
+  await mkdir(path.dirname(videoPath), { recursive: true });
+  await mkdir(path.join(storageRoot, "cache"), { recursive: true });
+  await writeFile(videoPath, bytes);
+  await writeFile(
+    path.join(storageRoot, "cache", "jobs-index.json"),
+    JSON.stringify({ "raw-video-job": rawVideoRecord("raw-video-job", videoPath) }),
+    "utf8",
+  );
+
+  const served = await serveApp(storageRoot);
+  const url = `${served.baseUrl}/api/jobs/raw-video-job/raw-video/stream`;
+
+  try {
+    const full = await fetch(url);
+    assert.equal(full.status, 200);
+    assert.equal(full.headers.get("content-type"), "video/mp4");
+    assert.equal(full.headers.get("content-disposition"), "inline");
+    assert.equal(full.headers.get("accept-ranges"), "bytes");
+    assert.equal(full.headers.get("content-length"), String(bytes.length));
+    assert.equal(await full.text(), bytes.toString());
+
+    const ranged = await fetch(url, { headers: { Range: "bytes=2-5" } });
+    assert.equal(ranged.status, 206);
+    assert.equal(ranged.headers.get("content-range"), `bytes 2-5/${bytes.length}`);
+    assert.equal(ranged.headers.get("content-length"), "4");
+    assert.equal(await ranged.text(), "2345");
+
+    const head = await fetch(url, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get("content-length"), String(bytes.length));
+    assert.equal(await head.text(), "");
+  } finally {
+    await served.close();
+  }
+});
+
+test("raw-video stream maps missing job, missing source and escape candidates", async () => {
+  const outsideRoot = await mkdtemp(path.join(tmpdir(), "app-raw-video-outside-"));
+  const outsideVideo = path.join(outsideRoot, "outside.mp4");
+  await writeFile(outsideVideo, "outside bytes", "utf8");
+
+  const fixture = await rawVideoFixture({
+    "no-source": rawVideoRecord("no-source"),
+    "escaped-source": rawVideoRecord("escaped-source", outsideVideo),
+  });
+
+  try {
+    const notFound = await jsonFetch(fixture.baseUrl, "/api/jobs/absent-job/raw-video/stream");
+    assert.equal(notFound.response.status, 404);
+
+    const missing = await jsonFetch(fixture.baseUrl, "/api/jobs/no-source/raw-video/stream");
+    assert.equal(missing.response.status, 422);
+    assert.equal(missing.body.code, "source_video_missing");
+
+    const escaped = await jsonFetch(fixture.baseUrl, "/api/jobs/escaped-source/raw-video/stream");
+    assert.equal(escaped.response.status, 422);
+    assert.equal(escaped.body.code, "source_video_unreadable");
+  } finally {
+    await fixture.close();
+  }
+});
