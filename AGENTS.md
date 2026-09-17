@@ -454,6 +454,9 @@ npm run package           # 会先检查 vendor/whisper 资源是否存在
   「一直循环到超时（900s）→ `failed`」，`awaiting_code` 在图文通路上**不可达**，写验证码文件对图文
   **没有效果**。界面与提示必须让操作者知道：图文发布卡住的正确动作是**去抖音后台核实**，而重试前
   必须先确认上一次是否已发出（上游会 `force=True` 重复点击发布，重复发布是本功能最大的风险）。
+- **我们对上游打了 1 个本地补丁**（见 `docs/patches/`）：抖音把图文发布页标题框的 placeholder 从
+  「填写作品标题」改成「添加作品标题」，上游仍按旧文案匹配 → 图文发布稳定 120s 超时。
+  补丁只把匹配放宽成 `作品标题`。**上游 `git pull` 会覆盖它，升级后必须重新 `git apply`**。
 - 媒体元素（`<img>`/`<video>`）**不能用相对 URL、也不能带自定义请求头**：页面在 Vite(5173)、API 在
   另一个端口，相对路径会打到 Vite 的开发代理。图片走 `apiClient` 取 blob，视频走
   `apiClient.getJobVideoStreamUrl()` 的**绝对 URL**（与既有 `getAssetRawUrl` 同一套做法）。
