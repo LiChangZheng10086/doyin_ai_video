@@ -1297,6 +1297,158 @@ test("local sessions auto endpoint reuses an existing administrator without addi
   }
 });
 
+// ─── 素材库 ─────────────────────────────────────────────────────────
+
+/** 最小但结构正确的 PNG（仅头部，用于断言尺寸解析）。 */
+function assetPngBytes(width: number, height: number): Buffer {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const ihdr = Buffer.alloc(25);
+  ihdr.writeUInt32BE(13, 0);
+  ihdr.write("IHDR", 4, "ascii");
+  ihdr.writeUInt32BE(width, 8);
+  ihdr.writeUInt32BE(height, 12);
+  ihdr[16] = 8;
+  ihdr[17] = 6;
+  return Buffer.concat([signature, ihdr]);
+}
+
+async function uploadAssets(
+  baseUrl: string,
+  kind: "images" | "audio",
+  files: Array<{ name: string; data: Buffer; type?: string }>,
+): Promise<Response> {
+  const form = new FormData();
+  for (const file of files) {
+    form.append("files", new Blob([new Uint8Array(file.data)], { type: file.type ?? "application/octet-stream" }), file.name);
+  }
+  return fetch(`${baseUrl}/api/assets/${kind}`, { method: "POST", body: form });
+}
+
+test("assets upload stores images and audio and lists them by kind", async () => {
+  const fixture = await appFixture();
+  try {
+    const imageResponse = await uploadAssets(fixture.baseUrl, "images", [
+      { name: "封面.png", data: assetPngBytes(1080, 1920), type: "image/png" },
+    ]);
+    assert.equal(imageResponse.status, 201);
+    const imageBody = await imageResponse.json() as { assets: Array<Record<string, unknown>> };
+    assert.equal(imageBody.assets.length, 1);
+    assert.equal(imageBody.assets[0].width, 1080);
+    assert.equal(imageBody.assets[0].height, 1920);
+    assert.equal(imageBody.assets[0].originalName, "封面.png");
+    assert.match(String(imageBody.assets[0].filename), /^[0-9a-f-]{36}\.png$/u);
+
+    const audioResponse = await uploadAssets(fixture.baseUrl, "audio", [
+      { name: "bgm.mp3", data: Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x00]), type: "audio/mpeg" },
+    ]);
+    assert.equal(audioResponse.status, 201);
+
+    const all = await jsonFetch(fixture.baseUrl, "/api/assets");
+    assert.equal((all.body.assets as unknown[]).length, 2);
+    const imagesOnly = await jsonFetch(fixture.baseUrl, "/api/assets?kind=image");
+    assert.equal((imagesOnly.body.assets as unknown[]).length, 1);
+    const audioOnly = await jsonFetch(fixture.baseUrl, "/api/assets?kind=audio");
+    assert.equal((audioOnly.body.assets as unknown[]).length, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("assets upload rejects forbidden extensions and kind mismatches with 415", async () => {
+  const fixture = await appFixture();
+  try {
+    const exe = await uploadAssets(fixture.baseUrl, "images", [
+      { name: "evil.exe", data: Buffer.from("MZ") },
+    ]);
+    assert.equal(exe.status, 415);
+    assert.equal(((await exe.json()) as { code: string }).code, "asset_extension_forbidden");
+
+    const mismatch = await uploadAssets(fixture.baseUrl, "audio", [
+      { name: "cover.png", data: assetPngBytes(4, 4) },
+    ]);
+    assert.equal(mismatch.status, 415);
+    assert.equal(((await mismatch.json()) as { code: string }).code, "asset_kind_mismatch");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("assets upload enforces the size and file-count limits", async () => {
+  const storageRoot = await mkdtemp(path.join(tmpdir(), "app-assets-limits-"));
+  const served = await serveApp(storageRoot, {
+    assetUploadLimits: { maxFileBytes: 64, maxFiles: 2 },
+  });
+  try {
+    const tooBig = await uploadAssets(served.baseUrl, "images", [
+      { name: "big.png", data: Buffer.concat([assetPngBytes(4, 4), Buffer.alloc(128)]) },
+    ]);
+    assert.equal(tooBig.status, 413);
+
+    const tooMany = await uploadAssets(served.baseUrl, "images", [
+      { name: "a.png", data: assetPngBytes(4, 4) },
+      { name: "b.png", data: assetPngBytes(4, 4) },
+      { name: "c.png", data: assetPngBytes(4, 4) },
+    ]);
+    assert.equal(tooMany.status, 400);
+  } finally {
+    await served.close();
+  }
+});
+
+test("assets raw preview supports byte ranges for audio seeking", async () => {
+  const fixture = await appFixture();
+  try {
+    const upload = await uploadAssets(fixture.baseUrl, "images", [
+      { name: "range.png", data: assetPngBytes(64, 32), type: "image/png" },
+    ]);
+    const created = ((await upload.json()) as { assets: Array<{ id: string; bytes: number }> }).assets[0];
+
+    const full = await fetch(`${fixture.baseUrl}/api/assets/${created.id}/raw`);
+    assert.equal(full.status, 200);
+    assert.equal(full.headers.get("content-type"), "image/png");
+    assert.equal(full.headers.get("content-length"), String(created.bytes));
+    assert.equal(full.headers.get("accept-ranges"), "bytes");
+
+    const ranged = await fetch(`${fixture.baseUrl}/api/assets/${created.id}/raw`, {
+      headers: { Range: "bytes=2-5" },
+    });
+    assert.equal(ranged.status, 206);
+    assert.equal(ranged.headers.get("content-range"), `bytes 2-5/${created.bytes}`);
+    assert.equal(ranged.headers.get("content-length"), "4");
+
+    const head = await fetch(`${fixture.baseUrl}/api/assets/${created.id}/raw`, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("assets delete removes the record and the file, and unknown ids are 404", async () => {
+  const fixture = await appFixture();
+  try {
+    const upload = await uploadAssets(fixture.baseUrl, "images", [
+      { name: "gone.png", data: assetPngBytes(8, 8) },
+    ]);
+    const created = ((await upload.json()) as { assets: Array<{ id: string; filename: string }> }).assets[0];
+    const diskPath = path.join(fixture.storageRoot, "assets", "images", created.filename);
+    assert.equal((await stat(diskPath)).isFile(), true);
+
+    const deleted = await fetch(`${fixture.baseUrl}/api/assets/${created.id}`, { method: "DELETE" });
+    assert.equal(deleted.status, 204);
+    await assert.rejects(() => stat(diskPath), { code: "ENOENT" });
+
+    const missingRaw = await fetch(`${fixture.baseUrl}/api/assets/${created.id}/raw`);
+    assert.equal(missingRaw.status, 404);
+    const missingDelete = await fetch(`${fixture.baseUrl}/api/assets/${created.id}`, { method: "DELETE" });
+    assert.equal(missingDelete.status, 404);
+    const traversal = await fetch(`${fixture.baseUrl}/api/assets/${encodeURIComponent("../../etc/passwd")}/raw`);
+    assert.equal(traversal.status, 404);
+  } finally {
+    await fixture.close();
+  }
+});
+
 // ─── 原视频流式路由 ─────────────────────────────────────────────────
 
 function rawVideoRecord(id: string, videoPath?: string) {

@@ -37,6 +37,7 @@
     "express": "^4.21.2",
     "gsap": "3.14.2",
     "lucide-react": "^1.23.0",
+    "multer": "^2.4.0",
     "openai": "^4.104.0",
     "opencc-js": "1.4.0",
     "playwright": "^1.62.1",
@@ -49,6 +50,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.2",
     "@types/express": "^5.0.1",
+    "@types/multer": "^2.2.0",
     "@types/node": "^22.15.21",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

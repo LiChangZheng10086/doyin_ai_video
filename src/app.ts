@@ -9,6 +9,9 @@ import { LocalStorage } from "./lib/storage.js";
 import { LocalSessionStore } from "./lib/local-auth.js";
 import { registerLocalUserErrorBoundary, registerLocalUserRoutes } from "./lib/local-user-routes.js";
 import { LocalUserStore } from "./lib/local-users.js";
+import { AssetStore } from "./lib/assets-store.js";
+import { registerAssetRoutes } from "./lib/assets-routes.js";
+import { sendRangeResponse } from "./lib/range-response.js";
 import { JobStepError, JobStore } from "./lib/jobs.js";
 import { CollectionStore } from "./lib/collections.js";
 import { registerConfigRoutes } from "./lib/config-server.js";
@@ -48,6 +51,8 @@ export interface ServerConfig {
   resolveAiConfig?: () => Promise<AiRuntimeConfig | null>;
   resolveJobVideo?: typeof resolveJobVideo;
   resolveSourceVideo?: typeof resolveSourceVideo;
+  /** 素材上传限额（测试注入更小值以免构造大文件）。 */
+  assetUploadLimits?: { maxFileBytes?: number; maxFiles?: number };
 }
 
 export interface AiRuntimeConfig {
@@ -197,6 +202,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   app.use(express.json({ limit: "2mb" }));
   registerLocalUserRoutes(app, { users: localUsers, sessions: localSessions });
+  registerAssetRoutes(app, { assets: new AssetStore(storage), limits: config.assetUploadLimits });
   registerLocalUserErrorBoundary(app);
   registerPublishingRoutes(app, { publishing, sessions: localSessions });
 
@@ -1957,59 +1963,18 @@ async function sendResolvedVideo(
   video: ResolvedVideoFile,
   downloadFilename?: string,
 ): Promise<void> {
-  try {
-    res.setHeader("Accept-Ranges", "bytes");
-    if (downloadFilename) res.attachment(downloadFilename);
-    else res.setHeader("Content-Disposition", "inline");
-    res.setHeader("Content-Type", video.mimeType);
-
-    const parsedRange = req.headers.range ? req.range(video.size, { combine: true }) : undefined;
-    if (parsedRange === -1 || parsedRange === -2) {
-      res.status(416);
-      res.setHeader("Content-Range", `bytes */${video.size}`);
-      res.end();
-      return;
-    }
-
-    const range = Array.isArray(parsedRange) && parsedRange.length === 1 ? parsedRange[0] : undefined;
-    const start = range?.start ?? 0;
-    const end = range?.end ?? video.size - 1;
-    if (range) {
-      res.status(206);
-      res.setHeader("Content-Range", `bytes ${start}-${end}/${video.size}`);
-    }
-    res.setHeader("Content-Length", String(end - start + 1));
-    if (req.method === "HEAD") {
-      res.end();
-      return;
-    }
-
-    const stream = video.handle.createReadStream({ start, end, autoClose: false });
-    await new Promise<void>((resolve, reject) => {
-      let settled = false;
-      const settle = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        res.off("finish", onFinish);
-        res.off("close", onClose);
-        stream.off("error", onError);
-        if (error) reject(error);
-        else resolve();
-      };
-      const onFinish = () => settle();
-      const onClose = () => {
-        if (!res.writableFinished) stream.destroy();
-        settle();
-      };
-      const onError = (error: Error) => settle(error);
-      res.once("finish", onFinish);
-      res.once("close", onClose);
-      stream.once("error", onError);
-      stream.pipe(res);
-    });
-  } finally {
-    await video.close().catch(() => undefined);
-  }
+  // Range/HEAD/416 的具体实现已抽到 range-response，与素材预览共用同一份
+  await sendRangeResponse(
+    req,
+    res,
+    {
+      size: video.size,
+      mimeType: video.mimeType,
+      createReadStream: (options) => video.handle.createReadStream(options),
+      close: () => video.close(),
+    },
+    downloadFilename,
+  );
 }
 
 async function generateSkillForCollection(
