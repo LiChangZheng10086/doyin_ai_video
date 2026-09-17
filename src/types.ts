@@ -24,8 +24,11 @@ export type PublishTaskStatus = "scheduled" | "ready" | "published" | "failed" |
 export type PublishPackageState = "active" | "trashed" | "purged";
 export type PublishCopySource = "ai" | "cleaned_fallback" | "user_edited";
 export type PackageVideoMethod = "clone" | "copy";
-export type PublishAssetHealth = "healthy" | "missing_cover" | "broken_video";
+export type PublishAssetHealth = "healthy" | "missing_cover" | "broken_video" | "missing_images";
 export type PublishingListStatus = "action" | "all" | PublishTaskStatus | "broken" | "trash";
+
+/** 交付包内容类型；缺省（含存量包）一律按 `video` 处理。 */
+export type PackageContentType = "video" | "note";
 
 export interface PlatformCopy {
   title: string;
@@ -46,6 +49,12 @@ export interface DeliveryPackage {
   videoSize: number;
   videoMethod: PackageVideoMethod;
   assetHealth: PublishAssetHealth;
+  /** 缺省视为 `video`，因此存量包无需迁移。 */
+  contentType?: PackageContentType;
+  /** 仅图文包：包目录内 `images/NN.ext` 的有序列表。 */
+  imagePaths?: string[];
+  /** 仅图文包：抖音图文口径的文案（title ≤20 / note(=description) ≤1000）。 */
+  noteCopy?: PlatformCopy;
   createdBy: ActorSnapshot;
   createdAt: string;
   updatedAt: string;
@@ -67,6 +76,25 @@ export interface PublishTask extends PlatformCopy {
   contentRevision: number;
   createdAt: string;
   updatedAt: string;
+  /**
+   * 自动发布（外部 sau CLI）的进度记录。
+   *
+   * 刻意**不扩展 `PublishTaskStatus`**：机器动作的结果只记在这里，
+   * `succeeded` 的语义是「已提交」；是否真的发出去了，仍由人工点「标记已发布」确认。
+   */
+  autoPublish?: PublishAutoPublish;
+}
+
+export type PublishAutoPublishStatus = "running" | "awaiting_code" | "succeeded" | "failed";
+
+export interface PublishAutoPublish {
+  status: PublishAutoPublishStatus;
+  startedAt: string;
+  finishedAt?: string;
+  /** CLI 输出摘要，便于事后追查。 */
+  message?: string;
+  /** 单次尝试的唯一 id。 */
+  attemptId: string;
 }
 
 export interface PublishAuditEvent {

@@ -54,6 +54,22 @@ export const PUBLISH_PLATFORMS: Record<PublishPlatform, PlatformPolicy> = {
   },
 };
 
+/**
+ * 图文（note）口径。与视频口径**故意分开**：抖音图文标题上限是 20 字，而视频是 55 字
+ * （见上游 `DouYinNote.validate_upload_args()`），共用一份会让现有视频标题一律不合格。
+ * 未列出的平台表示「暂未接入图文」，调用 `validateNoteCopy` 会直接抛错。
+ */
+export const PUBLISH_NOTE_POLICIES: Partial<Record<PublishPlatform, PlatformPolicy>> = {
+  douyin: {
+    label: "抖音",
+    titleMax: 20,
+    descriptionMax: 1000,
+    hashtagMax: 10,
+    hashtagLengthMax: 20,
+    creatorUrl: "https://creator.douyin.com/creator-micro/content/upload",
+  },
+};
+
 function codePointLength(value: string): number {
   return [...value].length;
 }
@@ -81,7 +97,29 @@ export function validatePlatformCopy(
   platform: PublishPlatform,
   copy: PlatformCopy
 ): PlatformCopyValidationError[] {
-  const policy = PUBLISH_PLATFORMS[platform];
+  return validateCopyAgainstPolicy(platform, PUBLISH_PLATFORMS[platform], copy);
+}
+
+/**
+ * 校验图文文案。与视频校验收敛到同一个实现，只换政策来源，
+ * 避免两条链路各写一份长度规则后慢慢漂移。
+ */
+export function validateNoteCopy(
+  platform: PublishPlatform,
+  copy: PlatformCopy
+): PlatformCopyValidationError[] {
+  const policy = PUBLISH_NOTE_POLICIES[platform];
+  if (!policy) {
+    throw new Error(`平台 ${platform} 尚未接入图文发布，不能按图文口径校验`);
+  }
+  return validateCopyAgainstPolicy(platform, policy, copy);
+}
+
+function validateCopyAgainstPolicy(
+  platform: PublishPlatform,
+  policy: PlatformPolicy,
+  copy: PlatformCopy
+): PlatformCopyValidationError[] {
   const normalized = normalizePlatformCopy(copy);
   const errors: PlatformCopyValidationError[] = [];
   const titleLength = codePointLength(normalized.title);
