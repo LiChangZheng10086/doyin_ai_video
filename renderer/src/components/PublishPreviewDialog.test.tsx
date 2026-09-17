@@ -215,3 +215,23 @@ test('preview dialog disables the confirm action while submitting', () => {
 
   assert.match(html, /disabled=""/);
 });
+
+test('preview dialog tells the operator what is happening while a submission runs', () => {
+  const html = renderToStaticMarkup(
+    <PublishPreviewDialog open preview={notePreview()} onClose={noop} onConfirm={noop} confirmLabel="确认发布到抖音" busy />,
+  );
+
+  // 同步请求要跑 1–3 分钟；没有提示的话界面就是个不动的转圈（用户实测反馈过）
+  assert.match(html, /正在提交到抖音/);
+  assert.match(html, /不要关闭窗口/);
+  assert.match(html, /已用 0 秒/);
+  assert.match(html, /role="status"/);
+});
+
+test('preview dialog shows no progress note when it is not submitting', () => {
+  const html = renderToStaticMarkup(
+    <PublishPreviewDialog open preview={notePreview()} onClose={noop} onConfirm={noop} />,
+  );
+
+  assert.doesNotMatch(html, /正在提交到抖音/);
+});

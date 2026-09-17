@@ -11,6 +11,7 @@ import type {
   PublishingPackageDetail,
   PublishingPreview,
 } from '../types/index.js';
+import { stripAnsi } from './display.js';
 
 export const PUBLISHING_PLATFORMS: Array<{
   id: PublishPlatform;
@@ -408,7 +409,8 @@ export function getPublishingAutoPublishHint(task: PublishTask): string | null {
   if (record.status === 'succeeded') {
     return '已提交，请在抖音后台确认后点「标记已发布」';
   }
-  return record.message ? `提交失败：${record.message}` : '提交失败，请查看审计记录后重试';
+  // 外部 CLI 的原始输出带 ANSI 色码（历史记录里已经存了），展示前统一清掉
+  return record.message ? `提交失败：${stripAnsi(record.message)}` : '提交失败，请查看审计记录后重试';
 }
 
 /**

@@ -59,6 +59,27 @@ function CountedField({ name, value }: { name: string; value: PublishingPackageP
   );
 }
 
+/**
+ * 提交中的进度提示。
+ *
+ * 提交是**同步**请求：先 `sau douyin check`（会起一次无头浏览器，实测约 100 秒），再跑上传。
+ * 没有提示的话界面就是一个不动的转圈、按钮还是灰的，用户会以为卡死了
+ * （2026-09-17 用户实测反馈：「一直停留在这个页面，按钮也无法点击」）。
+ */
+function SubmitProgress() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setSeconds((current) => current + 1), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <p className="text-xs text-tech-muted" role="status">
+      正在提交到抖音…已用 {seconds} 秒。校验登录态与上传通常需要 1–3 分钟，
+      请<strong className="font-medium text-tech-text">不要关闭窗口</strong>，也别重复点击。
+    </p>
+  );
+}
+
 /** 取这份检查对应的文案正文：包级检查看 `noteCopy`，任务级检查看对应任务的文案。 */
 function copyForCheck(
   preview: PublishPreviewDialogPreview,
@@ -234,7 +255,8 @@ export function PublishPreviewDialog({
           </section>
         </div>
 
-        <footer className="flex items-center justify-end gap-3 border-t border-tech-border px-5 py-3">
+        <footer className="flex items-center justify-between gap-3 border-t border-tech-border px-5 py-3">
+          {busy ? <SubmitProgress /> : <span />}
           <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-sm text-tech-muted hover:bg-tech-bg">
             关闭
           </button>

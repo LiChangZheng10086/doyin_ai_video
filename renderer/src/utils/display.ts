@@ -72,3 +72,15 @@ export function formatDurationWithLabel(seconds?: number | null): string {
   const text = formatDuration(seconds);
   return text === UNKNOWN_DURATION_TEXT ? "时长未知" : `时长 ${text}`;
 }
+
+/**
+ * 去掉终端 ANSI 色码。
+ *
+ * 外部 CLI（如 `sau`）用 loguru 给每行上色，其原始输出会被我们存进
+ * `autoPublish.message` 与审计 `reason`。历史记录里已经存了带色码的脏数据，
+ * 渲染层再兜一层，避免把 `[38;2;112;172;222m` 这种控制序列糊到界面上。
+ */
+export function stripAnsi(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/\u001B\[[0-9;]*[A-Za-z]/gu, "");
+}

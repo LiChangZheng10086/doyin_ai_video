@@ -24,7 +24,7 @@ import {
   publishingWizardReducer,
 } from './publishing.js';
 import { desktop } from '../electron-bridge.js';
-import { parseApiError } from '../services/api.js';
+import { isStaleLocalSession, parseApiError } from '../services/api.js';
 
 const publisher: ActorSnapshot = {
   userId: 'publisher-1',
@@ -551,4 +551,52 @@ test('the next-step hint matches the actions offered for each task status', () =
   const published = notePackageDetail({ status: 'published' });
   assert.match(publishingNextStep(published), /创建新版本/);
   assert.ok(getPublishingActionIds(published, published.tasks[0], 'publisher').includes('create-version'));
+});
+
+test('external CLI colour codes never reach the operator facing hint', () => {
+  // 历史数据里真存过带 loguru 色码的 message（用户截图反馈过）
+  const task = notePackageDetail({
+    autoPublish: {
+      status: 'failed',
+      startedAt: '2026-08-10T08:00:00.000Z',
+      finishedAt: '2026-08-10T08:01:00.000Z',
+      attemptId: 'a',
+      message: '\u001B[38;2;112;172;222m16:55:12\u001B[0m | \u001B[97m✍️ 开始填标题\u001B[0m \u001B[31mTimeoutError: Timeout 120000ms exceeded\u001B[0m',
+    },
+  }).tasks[0];
+
+  const hint = getPublishingAutoPublishHint(task)!;
+
+  assert.match(hint, /提交失败/);
+  assert.match(hint, /Timeout 120000ms exceeded/, '失败原因必须在提示里可见');
+  assert.doesNotMatch(hint, /\u001B\[/u, '不能把 ANSI 控制序列显示给用户');
+  assert.doesNotMatch(hint, /38;2;112;172;222/u);
+});
+
+// ─── 会话自愈：后端重启后不该再冒「请选择当前操作者」 ──────────────────────
+
+function staleSessionError(overrides: Record<string, unknown> = {}) {
+  return {
+    response: { status: 401, data: { code: 'local_session_required', message: '请选择当前操作者' } },
+    config: { url: '/api/publishing/packages', ...(overrides.config as object ?? {}) },
+    ...overrides,
+  };
+}
+
+test('a session invalidated by a backend restart is recognised and healed once', () => {
+  // 会话是内存的：后端重启即失效，而登录界面已移除，客户端必须自动重开会话
+  assert.equal(isStaleLocalSession(staleSessionError()), true);
+
+  // 只重放一次，避免死循环
+  assert.equal(isStaleLocalSession(staleSessionError({ config: { url: '/api/x', _sessionRetried: true } })), false);
+
+  // 会话接口自身失败不再递归重开
+  assert.equal(isStaleLocalSession(staleSessionError({ config: { url: '/api/local-sessions/auto' } })), false);
+
+  // 其它 401（例如真的权限不足）与其它状态码都不该被吞掉重试
+  assert.equal(isStaleLocalSession({ response: { status: 401, data: { code: 'local_user_pin_invalid' } }, config: { url: '/api/x' } }), false);
+  assert.equal(isStaleLocalSession({ response: { status: 403, data: { code: 'local_session_required' } }, config: { url: '/api/x' } }), false);
+  assert.equal(isStaleLocalSession({ response: { status: 409, data: { code: 'publish_revision_conflict' } }, config: { url: '/api/x' } }), false);
+  assert.equal(isStaleLocalSession(new Error('Network Error')), false);
+  assert.equal(isStaleLocalSession(undefined), false);
 });
