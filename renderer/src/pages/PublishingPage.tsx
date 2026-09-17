@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { PublishPreviewDialog } from '../components/PublishPreviewDialog.js';
 import {
   AlertTriangle,
   Check,
@@ -10,7 +11,6 @@ import {
   ImageIcon,
   Loader2,
   RefreshCw,
-  RotateCcw,
   Search,
   Send,
   Trash2,
@@ -20,11 +20,14 @@ import { Layout } from '../components/Layout';
 import { desktop } from '../electron-bridge';
 import { apiClient, parseApiError } from '../services/api';
 import { useOperatorStore } from '../store/operator';
-import type { PublishPlatform, PublishTask, PublishingListFilters, PublishingListStatus, PublishingPackageDetail } from '../types';
+import type { PublishPlatform, PublishTask, PublishingListFilters, PublishingListStatus, PublishingPackageDetail, PublishingPackagePreview } from '../types';
 import {
   formatPublishingCopy,
   formatDueNotification,
   getPublishingActionIds,
+  getPublishingAutoPublishBlocker,
+  getPublishingAutoPublishHint,
+  publishingNextStep,
   groupPublishingPackages,
   PUBLISH_FILTERS,
   PUBLISH_STATUS_LABELS,
@@ -65,6 +68,17 @@ export function PublishingPage() {
   const actionLock = useRef(false);
 
   // ── Action dialog state ──
+  // 「发布图文到抖音」必经预览：先取包级预览（它产出 previewRevision），确认后才真正提交。
+  const [publishPreview, setPublishPreview] = useState<{
+    open: boolean;
+    busy: boolean;
+    preview: PublishingPackagePreview | null;
+    taskId: string;
+    /** `publish` = 必经确认（可提交）；`preview` = 只读查看（无确认按钮）。 */
+    mode: 'preview' | 'publish';
+    /** 成片流的绝对 URL：相对路径在 Electron 里会打到 Vite 的开发代理（错误的后端）。 */
+    videoUrl: string;
+  }>({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '' });
   const [actionDialog, setActionDialog] = useState<ActionDialogConfig & { open: boolean; busy?: boolean; resolve: ((value: any) => void) | null }>({
     type: 'confirm',
     title: '',
@@ -198,6 +212,30 @@ export function PublishingPage() {
       );
       return;
     }
+    if (action === 'preview') {
+      await openPackagePreview(detail.package.id, 'preview', '');
+      return;
+    }
+    if (action === 'auto-publish') {
+      const blocker = getPublishingAutoPublishBlocker(detail, task);
+      if (blocker) {
+        setError(blocker);
+        return;
+      }
+      await openPackagePreview(detail.package.id, 'publish', task.id);
+      return;
+    }
+    if (action === 'submit-code') {
+      const code = await showDialog<string>({
+        type: 'prompt',
+        title: '提交短信验证码',
+        inputLabel: '填写手机收到的验证码',
+        inputPlaceholder: '如 123456',
+      });
+      if (!code?.trim()) return;
+      await run(() => apiClient.submitPublishingAutoPublishCode(task.id, code.trim()), '验证码已提交');
+      return;
+    }
     if (action === 'mark-published') {
       const confirmed = await showDialog({ type: 'confirm', title: '标记已发布', description: '确认已在平台完成发布？' });
       if (!confirmed) return;
@@ -255,6 +293,39 @@ export function PublishingPage() {
           `${notification.platformLabel} 待发布`,
           `${notification.title}，${formatDueNotification(notification)}`,
         ).catch(() => undefined);
+      }
+    }
+  };
+
+  /** 打开预览弹窗：先取包级预览，视频包再把成片流解析成绝对 URL。 */
+  const openPackagePreview = async (packageId: string, mode: 'preview' | 'publish', taskId: string) => {
+    const preview = await run(() => apiClient.getPublishingPackagePreview(packageId), '');
+    if (!preview) return;
+    const videoUrl = preview.package.contentType === 'note'
+      ? ''
+      : await apiClient.getJobVideoStreamUrl(preview.package.sourceJobId).catch(() => '');
+    setPublishPreview({ open: true, busy: false, preview, taskId, mode, videoUrl });
+  };
+
+  const confirmPublish = async () => {
+    const { preview, taskId } = publishPreview;
+    if (!preview) return;
+    setPublishPreview((current) => ({ ...current, busy: true }));
+    const task = await run(
+      () => apiClient.autoPublishPublishingTask(taskId, preview.previewRevision),
+      '已提交，请在抖音后台确认后点「标记已发布」',
+    );
+    setPublishPreview({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '' });
+    // 提交后落在 awaiting_code 时，直接把验证码入口摆出来（图文通路当前不触发，见 spec §7）
+    if (task?.autoPublish?.status === 'awaiting_code') {
+      const code = await showDialog<string>({
+        type: 'prompt',
+        title: '提交短信验证码',
+        inputLabel: '抖音要求短信验证，请填写手机收到的验证码',
+        inputPlaceholder: '如 123456',
+      });
+      if (code?.trim()) {
+        await run(() => apiClient.submitPublishingAutoPublishCode(task.id, code.trim()), '验证码已提交');
       }
     }
   };
@@ -394,6 +465,15 @@ export function PublishingPage() {
           setActionDialog((prev) => ({ ...prev, open: false, resolve: null }));
         }}
       />
+      <PublishPreviewDialog
+        open={publishPreview.open}
+        preview={publishPreview.preview}
+        busy={publishPreview.busy}
+        videoUrl={publishPreview.videoUrl}
+        confirmLabel="确认发布到抖音"
+        onClose={() => setPublishPreview({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '' })}
+        onConfirm={publishPreview.mode === 'publish' ? () => void confirmPublish() : undefined}
+      />
     </Layout>
   );
 }
@@ -422,21 +502,23 @@ function CoverThumbnail({ packageId, title, hasCover }: { packageId: string; tit
   return <span className="flex h-16 w-11 shrink-0 items-center justify-center overflow-hidden rounded-md bg-tech-bg text-tech-muted">{url ? <img src={url} alt={`${title}封面`} className="h-full w-full object-cover" /> : <ImageIcon size={18} aria-hidden="true" />}</span>;
 }
 
-function publishingNextStep(detail: PublishingPackageDetail): string {
-  if (detail.package.state === 'trashed') return '由管理员恢复发布包';
-  if (detail.package.assetHealth === 'broken_video') return '创建新版本并修复视频';
-  if (detail.tasks.some((task) => task.status === 'ready')) return '打开平台并完成发布';
-  if (detail.tasks.some((task) => task.status === 'failed')) return '处理失败原因并恢复任务';
-  if (detail.tasks.some((task) => task.status === 'scheduled')) return '等待排期提醒';
-  if (detail.tasks.every((task) => task.status === 'published')) return '已完成，可创建新版本';
-  return '恢复已取消任务或创建新版本';
-}
 
 function TaskRow({ detail, task, role, busy, onAction }: { detail: PublishingPackageDetail; task: PublishTask; role: 'admin' | 'publisher'; busy: boolean; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const policy = PUBLISHING_PLATFORMS.find((item) => item.id === task.platform)!;
   const actions = getPublishingActionIds(detail, task, role);
-  const labels: Record<string, string> = { 'copy-title': '复制标题', 'copy-description': '复制正文', 'copy-hashtags': '复制标签', 'copy-full': '复制全部', 'show-in-finder': 'Finder', 'open-platform': '打开平台', 'edit-content': '编辑文案', schedule: '修改排期', 'mark-published': '标记已发布', 'record-failure': '记录失败', cancel: '取消任务', restore: '恢复任务', 'create-version': '创建新版本', withdraw: '撤回本地状态', 'trash-package': '删除发布包', 'restore-package': '恢复发布包' };
-  return <div className="rounded-lg border border-tech-border bg-tech-surface p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-tech-text">{policy.label}</span><StatusBadge task={task} /><span className="text-xs text-tech-muted">版本 {task.contentRevision} · {task.copySource === 'user_edited' ? '已编辑' : task.copySource === 'ai' ? 'AI' : '洗稿回退'}</span></div><p className="mt-2 font-medium text-tech-text">{task.title}</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-tech-muted">{task.description}</p><p className="mt-2 text-sm text-tech-purple">{formatPublishingCopy(task).hashtags}</p>{task.scheduledAt && <p className="mt-2 text-xs text-tech-muted">计划 {new Date(task.scheduledAt).toLocaleString('zh-CN')}</p>}{task.publishedAt && <p className="mt-1 text-xs text-emerald-600">发布于 {new Date(task.publishedAt).toLocaleString('zh-CN')}</p>}{task.lastError && <p className="mt-2 text-sm text-red-600">{task.lastError}</p>}</div><div className="flex max-w-md flex-wrap gap-2 lg:justify-end">{actions.map((action) => <button key={action} type="button" title={labels[action]} disabled={busy} onClick={() => void onAction(detail, task, action)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${action === 'mark-published' || action === 'open-platform' ? 'border-tech-blue bg-blue-50 text-tech-blue' : action === 'trash-package' || action === 'withdraw' ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-tech-border text-tech-muted hover:bg-tech-bg hover:text-tech-text'}`}>{action.startsWith('copy-') ? <Clipboard size={14} aria-label={labels[action]} /> : action === 'show-in-finder' ? <FolderOpen size={14} aria-label={labels[action]} /> : action === 'open-platform' ? <ExternalLink size={14} aria-label={labels[action]} /> : action === 'trash-package' ? <Trash2 size={14} aria-label={labels[action]} /> : action === 'restore-package' || action === 'restore' ? <RotateCcw size={14} aria-label={labels[action]} /> : labels[action]}</button>)}</div></div></div>;
+  const labels: Record<string, string> = { 'copy-title': '复制标题', 'copy-description': '复制正文', 'copy-hashtags': '复制标签', 'copy-full': '复制全部', 'show-in-finder': 'Finder', 'open-platform': '打开平台', 'edit-content': '编辑文案', schedule: '修改排期', 'mark-published': '标记已发布', 'record-failure': '记录失败', cancel: '取消任务', restore: '恢复任务', 'create-version': '创建新版本', withdraw: '撤回本地状态', 'trash-package': '删除发布包', 'restore-package': '恢复发布包', 'auto-publish': '发布图文到抖音', 'submit-code': '提交验证码', preview: '预览' };
+  return <div className="rounded-lg border border-tech-border bg-tech-surface p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-tech-text">{policy.label}</span><StatusBadge task={task} /><span className="text-xs text-tech-muted">版本 {task.contentRevision} · {task.copySource === 'user_edited' ? '已编辑' : task.copySource === 'ai' ? 'AI' : '洗稿回退'}</span></div><p className="mt-2 font-medium text-tech-text">{task.title}</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-tech-muted">{task.description}</p><p className="mt-2 text-sm text-tech-purple">{formatPublishingCopy(task).hashtags}</p>{task.scheduledAt && <p className="mt-2 text-xs text-tech-muted">计划 {new Date(task.scheduledAt).toLocaleString('zh-CN')}</p>}{task.publishedAt && <p className="mt-1 text-xs text-emerald-600">发布于 {new Date(task.publishedAt).toLocaleString('zh-CN')}</p>}{task.lastError && <p className="mt-2 text-sm text-red-600">{task.lastError}</p>}<AutoPublishHint task={task} /></div><div className="flex max-w-md flex-wrap gap-2 lg:justify-end">{actions.map((action) => <button key={action} type="button" title={labels[action]} disabled={busy} onClick={() => void onAction(detail, task, action)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${action === 'mark-published' || action === 'open-platform' || action === 'auto-publish' ? 'border-tech-blue bg-blue-50 text-tech-blue' : action === 'trash-package' || action === 'withdraw' ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-tech-border text-tech-muted hover:bg-tech-bg hover:text-tech-text'}`}>{action.startsWith('copy-') ? <Clipboard size={14} aria-label={labels[action]} /> : action === 'show-in-finder' ? <FolderOpen size={14} aria-label={labels[action]} /> : action === 'open-platform' ? <ExternalLink size={14} aria-label={labels[action]} /> : action === 'trash-package' ? <Trash2 size={14} aria-label={labels[action]} /> : labels[action]}</button>)}</div></div></div>;
+}
+
+function AutoPublishHint({ task }: { task: PublishTask }) {
+  const hint = getPublishingAutoPublishHint(task);
+  if (!hint) return null;
+  const tone = task.autoPublish?.status === 'failed'
+    ? 'bg-red-50 text-red-700'
+    : task.autoPublish?.status === 'succeeded'
+      ? 'bg-emerald-50 text-emerald-700'
+      : 'bg-amber-50 text-amber-700';
+  return <p className={`mt-2 rounded-lg px-3 py-2 text-xs ${tone}`}>{hint}</p>;
 }
 
 function StatusBadge({ task }: { task: PublishTask }) { const colors = { scheduled: 'bg-cyan-50 text-cyan-700', ready: 'bg-blue-50 text-blue-700', published: 'bg-emerald-50 text-emerald-700', failed: 'bg-red-50 text-red-700', cancelled: 'bg-gray-100 text-gray-600' }; return <span className={`rounded-full px-2 py-1 text-xs font-medium ${colors[task.status]}`}>{PUBLISH_STATUS_LABELS[task.status]}</span>; }

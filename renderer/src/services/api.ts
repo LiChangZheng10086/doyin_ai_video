@@ -25,8 +25,10 @@ import type {
   PublishingActionErrorType,
   PublishingAssetInspection,
   PublishingListFilters,
+  PublishingPackagePreview,
   PublishingPackageDetail,
   PublishingPreview,
+  PackageContentType,
   PublishTask,
   RawTranscript,
   RestoredPublishingPackage,
@@ -38,13 +40,26 @@ export function parseApiError(error: unknown): ParsedApiError {
   const response = (error as {
     response?: { status?: unknown; data?: { code?: unknown; message?: unknown; details?: unknown } };
   })?.response;
+  // `publishingRequest` 抛出的是**扁平化**的 PublishingApiError：code/message/details 直接挂在
+  // error 上，没有 axios 的 `response`。只认 response 会让所有发布错误退化成通用文案，
+  // 后端辛苦写的明确提示（例如未配置 sau 的安装指引）就到不了用户眼前。
+  const flat = error as {
+    name?: unknown; code?: unknown; message?: unknown; details?: unknown; status?: unknown;
+  };
+  const flattened = flat?.name === 'PublishingApiError';
+  const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value : undefined);
+
   return {
-    code: typeof response?.data?.code === 'string' ? response.data.code : 'request_failed',
-    message: typeof response?.data?.message === 'string' && response.data.message.trim()
-      ? response.data.message
-      : '发布请求失败，请稍后重试',
-    ...(response?.data?.details === undefined ? {} : { details: response.data.details }),
-    ...(typeof response?.status === 'number' ? { status: response.status } : {}),
+    code: text(response?.data?.code) ?? (flattened ? text(flat.code) : undefined) ?? 'request_failed',
+    message: text(response?.data?.message)
+      ?? (flattened ? text(flat.message) : undefined)
+      ?? '发布请求失败，请稍后重试',
+    ...((response?.data?.details ?? (flattened ? flat.details : undefined)) === undefined
+      ? {}
+      : { details: response?.data?.details ?? flat.details }),
+    ...(typeof (response?.status ?? (flattened ? flat.status : undefined)) === 'number'
+      ? { status: (response?.status ?? flat.status) as number }
+      : {}),
   };
 }
 
@@ -130,6 +145,18 @@ export class ApiClient {
     await client.delete(`/api/assets/${id}`);
   }
 
+  /**
+   * 成片流的**绝对** URL。
+   *
+   * 不能用相对路径 `/api/jobs/:id/video/stream`：在 Electron 里页面来源是 Vite（5173），
+   * 相对路径会打到 Vite 的开发代理（→ 独立后端的仓库 storage），而不是 App 自己的内嵌后端，
+   * 结果是播放器黑屏 0:00（实测 404）。与 `getAssetRawUrl` 同一套做法。
+   */
+  async getJobVideoStreamUrl(jobId: string): Promise<string> {
+    const serverPort = this.serverPort || (typeof window !== 'undefined' && window.electron?.getServerPort ? await window.electron.getServerPort() : 5173);
+    return `http://localhost:${serverPort}/api/jobs/${jobId}/video/stream`;
+  }
+
   async getAssetRawUrl(id: string): Promise<string> {
     const serverPort = this.serverPort || (typeof window !== 'undefined' && window.electron?.getServerPort ? await window.electron.getServerPort() : 5173);
     return `http://localhost:${serverPort}/api/assets/${id}/raw`;
@@ -145,13 +172,45 @@ export class ApiClient {
     }
   }
 
-  async previewPublishing(id: string, platforms: PublishPlatform[]): Promise<PublishingPreview> {
+  async previewPublishing(
+    id: string,
+    platforms: PublishPlatform[],
+    contentType?: PackageContentType,
+  ): Promise<PublishingPreview> {
     const response = await this.publishingRequest<{ preview: PublishingPreview }>({
       method: 'POST',
       url: `/api/jobs/${id}/publishing/preview`,
-      data: { platforms },
+      data: { platforms, ...(contentType ? { contentType } : {}) },
     });
     return response.preview;
+  }
+
+  /** 包级预览：拿到 `previewRevision` 才能提交自动发布（服务端强制「发布前必经预览」）。 */
+  async getPublishingPackagePreview(packageId: string): Promise<PublishingPackagePreview> {
+    const response = await this.publishingRequest<{ preview: PublishingPackagePreview }>({
+      method: 'GET',
+      url: `/api/publishing/packages/${packageId}/preview`,
+    });
+    return response.preview;
+  }
+
+  /** 提交抖音图文。必须带上预览拿到的 `previewRevision`，缺/过期都会被服务端拒绝。 */
+  async autoPublishPublishingTask(taskId: string, previewRevision: string): Promise<PublishTask> {
+    const response = await this.publishingRequest<{ task: PublishTask }>({
+      method: 'POST',
+      url: `/api/publishing/tasks/${taskId}/auto-publish`,
+      data: { previewRevision },
+    });
+    return response.task;
+  }
+
+  async submitPublishingAutoPublishCode(taskId: string, code: string): Promise<PublishTask> {
+    const response = await this.publishingRequest<{ task: PublishTask }>({
+      method: 'POST',
+      url: `/api/publishing/tasks/${taskId}/auto-publish/code`,
+      data: { code },
+    });
+    return response.task;
   }
 
   async inspectPublishingAssets(id: string): Promise<PublishingAssetInspection> {
@@ -190,6 +249,21 @@ export class ApiClient {
       url: `/api/publishing/packages/${id}`,
     });
     return response.package;
+  }
+
+  /**
+   * 图文包的第 `index` 张图（0 基）。
+   *
+   * 走**带会话的请求**取 blob，而不是把 URL 直接塞给 `<img src>`：图片接口是 `authenticated`
+   * 的，而浏览器给 `<img>` 发请求时不会带 `X-Local-Session` 头 → 401 → 破图。
+   * 与既有 `getPublishingCover` 同一套做法。
+   */
+  async getPublishingPackageImage(id: string, index: number): Promise<Blob> {
+    return this.publishingRequest<Blob>({
+      method: 'GET',
+      url: `/api/publishing/packages/${id}/images/${index}`,
+      responseType: 'blob',
+    });
   }
 
   async getPublishingCover(id: string): Promise<Blob> {

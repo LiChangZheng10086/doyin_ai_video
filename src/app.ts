@@ -21,6 +21,7 @@ import { buildSkillContext, getSkillErrorMessage, isRetryableSkillError } from "
 import { extractAiMessageText } from "./lib/ai-response.js";
 import { resolveJobVideo, resolveSourceVideo, VideoOutputError, type ResolvedVideoFile } from "./lib/video-output.js";
 import { PublishingStore } from "./lib/publishing-store.js";
+import { SauRunner } from "./lib/sau-runner.js";
 import { PublishingCopyService } from "./lib/publishing-copy.js";
 import { PublishingAssetService } from "./lib/publishing-assets.js";
 import { PublishingService } from "./lib/publishing-service.js";
@@ -43,6 +44,12 @@ export interface ServerConfig {
   whisperCliPath?: string;
   whisperModelPath?: string;
   hyperframesNpxBinary?: string;
+  /** social-auto-upload 的 `sau` 可执行文件路径（env: SAU_BINARY）。 */
+  sauBinary?: string;
+  /** sau 仓库根目录（含 conf.py）；cookies/ 与 verify_code.txt 都相对它（env: SAU_BASE_DIR）。 */
+  sauBaseDir?: string;
+  /** 直接注入自动发布引擎（测试用）；省略时按 sauBinary/sauBaseDir 构造。 */
+  sauRunner?: SauRunner;
   runtimeBinDir?: string;
   hyperframesCliPath?: string;
   hyperframesNodeBinary?: string;
@@ -150,12 +157,19 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     },
   });
   const publishingAssets = new PublishingAssetService({ storageRoot: config.storagePath });
+  // 未配置 sauBinary 时仍构造实例：缺配置的报错发生在每条自动发布通路上，
+  // 而不是让「发布中心整体不可用」（人工交付通路不受影响）。
+  const sauRunner = config.sauRunner ?? new SauRunner({
+    ...(config.sauBinary ? { sauBinary: config.sauBinary } : {}),
+    ...(config.sauBaseDir ? { sauBaseDir: config.sauBaseDir } : {}),
+  });
   const publishingService = new PublishingService({
     storageRoot: config.storagePath,
     jobs,
     store: publishingStore,
     assets: publishingAssets,
     copy: publishingCopy,
+    sau: sauRunner,
     resolveVideo,
   });
   const checkPublishingDue = publishingService.checkDue.bind(publishingService);

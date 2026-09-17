@@ -1,7 +1,33 @@
 # 交接：抖音图文自动发布（2026-09-17）
 
-> 给下一个会话读的。目标：**接着做 ②「抖音图文自动发布」的 Task 2「图文打包」**。
-> A handoff brief for the next session. Read this before touching anything.
+> **状态更新（后续会话追加）**：**Task 1–6 + 计划外 Task 5.5 全部完成；Task 7 的 Step 1–3 也已完成。**
+> **只剩 Task 7 Step 4–6**：Step 4（配置后只跑预检）与 Step 5（真实发布）需要真实 `sau` 引擎 ——
+> **本机没有，约 970MB 需重装**；Step 5 按设计本来就留给人工决定；Step 6 是提交。
+> 详见 `docs/worklog.md` 顶部与计划里的执行记录。
+>
+> **本次真机验证的结论与遗留**：
+> 1. `npm run build:backend` 已跑，**独立后端已用新代码重启**（托管后台作业 `bash-23`，`node dist/server.js`，
+>    `http://localhost:3100`）。⚠️ 它是本会话的托管作业，**会话结束后可能被回收**；要长期运行请自行
+>    `cd <repo> && node dist/server.js` 起一个。
+> 2. **Electron 已重启**（用户要求，托管后台作业 `bash-24`，内嵌后端 `http://localhost:58056`，已加载新
+>    `dist/app.js`、新路由均 401 挂上）。⚠️ **但从 DSH 沙箱内启动的 Electron 读不到 macOS keychain**，
+>    而 API Key 是 `safeStorage` 加密存的 → 解密失败会**静默退化**成空串/密文，表现为「AI 未配置」或
+>    AI 调用 401。**要正常用 AI，请从自己的终端（沙箱外）重启**：
+>    `cd <repo> && NODE_ENV=development node_modules/.bin/electron . --no-sandbox`。
+>    这两个后台作业（后端 3100、Electron）**会话结束后可能被回收**，长期运行请自行起。
+> 3. 仓库 `storage/` 里留了一个**联调图文包**（`packageId=devnotev1`、`taskId=devnotetask1`、
+>    `sourceJobId=dev-note-demo`，3 张 1×1 假静帧），用于复现 Step 3。它只在 gitignored 的 `storage/` 里，
+>    删除方式：删掉 `storage/output/publishing/dev-note-demo/`，并把 `storage/cache/publishing-index.json`
+>    的 `packages.devnotev1`、`tasks.devnotetask1` 去掉。
+> 4. Step 3 是用 **headless Chrome + CDP** 真点出来的（截图 `/tmp/step3-preview-dialog.png`、
+>    `/tmp/step3-install-guidance.png`）；启动方式见 `docs/handoff-2026-09-15-ui-audit.md` 第 9/10 节 +
+>    本会话：`withPage` / `savePng` 从 `/Users/mac/.dsh/profiles/web/node_modules/dsh-cdp-browser/dsh/cdp.js` import。
+>
+> **三个必须知道的坑**：① spec §7 已更正 —— `verify_code.txt` 只有上游**视频**通路会读，`upload-note`
+> 既不读它、发布循环也没有次数上限，图文发布遇到短信挑战的真实结局是「超时 → failed」，`awaiting_code`
+> 当前不可达；② 任何「重试前」都必须先到抖音后台确认上一次是否已发出（重复发布是最大风险）；
+> ③ 图文包**只支持抖音**，且发布中心**还没有图文包的创建向导**（只有 API 能造包）。
+
 
 ## 0. 先做这三件事
 

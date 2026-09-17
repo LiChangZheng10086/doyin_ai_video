@@ -1,9 +1,14 @@
 import { Router, type Express, type NextFunction, type Request, type RequestHandler, type Response } from "express";
 import type {
+  ActorSnapshot,
   CreatePublishingPackageInput,
+  PackageContentType,
+  PublishingPreview,
   PublishPlatform,
   PublishingListFilters,
   PublishingPackageDetail,
+  PublishingPackagePreview,
+  PublishTask,
 } from "../types.js";
 import { getActor, LocalAuthError, LocalSessionStore, requireActor } from "./local-auth.js";
 import { PublishingAssetError } from "./publishing-assets.js";
@@ -15,6 +20,7 @@ import {
   type UpdatePublishContentInput,
 } from "./publishing-service.js";
 import { PublishingError } from "./publishing-store.js";
+import { SauRunnerError } from "./sau-runner.js";
 import { VideoOutputError } from "./video-output.js";
 
 const PLATFORMS = new Set<PublishPlatform>(["douyin", "xiaohongshu", "wechat_channels", "bilibili"]);
@@ -22,6 +28,11 @@ const LIST_STATUSES = new Set(["action", "all", "scheduled", "ready", "published
 const SERVER_FIELDS = new Set(["actor", "role", "createdBy", "status", "publishedAt", "videoPath", "packagePath"]);
 
 export type PublishingRouteService = PublishingService & {
+  preview(jobId: string, platforms: PublishPlatform[], contentType?: PackageContentType): Promise<PublishingPreview>;
+  packagePreview(packageId: string): Promise<PublishingPackagePreview>;
+  readPackageImage(packageId: string, index: number): Promise<{ bytes: Buffer; extension: string } | null>;
+  autoPublish(taskId: string, input: { previewRevision: string }, actor: ActorSnapshot): Promise<PublishTask>;
+  submitAutoPublishCode(taskId: string, code: string, actor: ActorSnapshot): Promise<PublishTask>;
   list(filters: PublishingListFilters): Promise<PublishingPackageDetail[]>;
   getPackage(packageId: string): Promise<PublishingPackageDetail | null>;
 };
@@ -62,7 +73,11 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
 
   router.post("/jobs/:id/publishing/preview", authenticated, route(async (req, res) => {
     const input = requestBody(req);
-    const preview = await deps.publishing.preview(requiredId(req.params.id), platforms(input.platforms));
+    const preview = await deps.publishing.preview(
+      requiredId(req.params.id),
+      platforms(input.platforms),
+      contentType(input.contentType),
+    );
     res.json({ preview });
   }));
 
@@ -91,6 +106,22 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
     if (!cover) throw new PublishingRouteError(404, "publish_cover_missing", "发布包没有可用封面");
     res.setHeader("Cache-Control", "private, no-store");
     res.type("jpg").send(cover);
+  }));
+
+  // 发布前预览：产出 previewRevision，auto-publish 必须带上它（spec §14.3）。
+  router.get("/publishing/packages/:id/preview", authenticated, route(async (req, res) => {
+    res.json({ preview: await deps.publishing.packagePreview(requiredId(req.params.id)) });
+  }));
+
+  // 图片按 imagePaths 的序号（0 基）逐张读取；越界或包内缺图 → 404。
+  router.get("/publishing/packages/:id/images/:index", authenticated, route(async (req, res) => {
+    const image = await deps.publishing.readPackageImage(
+      requiredId(req.params.id),
+      requiredImageIndex(req.params.index),
+    );
+    if (!image) throw new PublishingRouteError(404, "publish_image_missing", "发布包没有这张图片");
+    res.setHeader("Cache-Control", "private, no-store");
+    res.type(image.extension === ".png" ? "png" : image.extension.replace(".", "")).send(image.bytes);
   }));
 
   router.post("/publishing/due/check", writable, route(async (req, res) => {
@@ -138,6 +169,27 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
       task: await deps.publishing.restoreTask(
         requiredId(req.params.id),
         nullableString(input.scheduledAt),
+        getActor(req),
+      ),
+    });
+  }));
+
+  // 「发布前必经预览」是服务端约束：body 必须带 previewRevision，缺失 400、不一致 409，
+  // 两种失败都不会产生 autoPublish 记录（见 spec §14.3）。
+  router.post("/publishing/tasks/:id/auto-publish", authenticated, writable, route(async (req, res) => {
+    const input = requestBody(req);
+    const previewRevision = requiredPreviewRevision(input.previewRevision);
+    res.json({
+      task: await deps.publishing.autoPublish(requiredId(req.params.id), { previewRevision }, getActor(req)),
+    });
+  }));
+
+  router.post("/publishing/tasks/:id/auto-publish/code", authenticated, writable, route(async (req, res) => {
+    const input = requestBody(req);
+    res.json({
+      task: await deps.publishing.submitAutoPublishCode(
+        requiredId(req.params.id),
+        requiredNonEmptyString(input.code, "验证码不能为空"),
         getActor(req),
       ),
     });
@@ -223,10 +275,29 @@ function rejectServerFields(value: unknown): void {
 
 function createPackageInput(input: Record<string, unknown>): CreatePublishingPackageInput {
   if (!Array.isArray(input.platforms)) invalid("发布平台不能为空");
-  return {
+  const resolvedContentType = contentType(input.contentType);
+  const base = {
     sourceJobId: requiredNonEmptyString(input.sourceJobId),
     previewRevision: requiredNonEmptyString(input.previewRevision),
     title: requiredNonEmptyString(input.title),
+  };
+
+  if (resolvedContentType === "note") {
+    // 图文包的文案只认包级 noteCopy：任务文案由服务端同步，免得两处各写一份后互相漂移。
+    const noteCopy = platformCopy(object(input.noteCopy));
+    return {
+      ...base,
+      contentType: "note",
+      noteCopy,
+      platforms: input.platforms.map((item) => ({
+        platform: platform(object(item).platform),
+        copy: noteCopy,
+      })),
+    };
+  }
+
+  return {
+    ...base,
     platforms: input.platforms.map((item) => {
       const record = object(item);
       const copy = object(record.copy);
@@ -237,6 +308,13 @@ function createPackageInput(input: Record<string, unknown>): CreatePublishingPac
       };
     }),
   };
+}
+
+/** `contentType` 缺省视为 `video`（存量请求不变）。 */
+function contentType(value: unknown): PackageContentType {
+  if (value === undefined) return "video";
+  if (value === "video" || value === "note") return value;
+  invalid("发布内容类型无效");
 }
 
 function createVersionInput(input: Record<string, unknown>): CreateVersionInput {
@@ -315,6 +393,23 @@ function platform(value: unknown): PublishPlatform {
   return value as PublishPlatform;
 }
 
+/**
+ * `previewRevision` 是「发布前必经预览」的服务端硬要求，所以键缺失、空串、纯空白
+ * 都要给同一条可执行的中文提示（`requiredNonEmptyString` 对非字符串会退回通用文案）。
+ */
+/** 图片序号：必须是非负安全整数（0 基）。越界交给服务返回 404，格式错则是 400。 */
+function requiredImageIndex(value: unknown): number {
+  if (typeof value !== "string" || !/^\d+$/u.test(value)) invalid("图片序号无效");
+  const index = Number(value);
+  if (!Number.isSafeInteger(index)) invalid("图片序号无效");
+  return index;
+}
+
+function requiredPreviewRevision(value: unknown): string {
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  invalid("缺少预览版本（previewRevision），请先预览待发布内容再提交");
+}
+
 function requireConfirmation(input: Record<string, unknown>): void {
   if (input.confirmation !== true) invalid("请确认本次操作");
 }
@@ -376,7 +471,12 @@ function publishingErrorMapper(error: unknown, req: Request, res: Response, next
       : { code: error.code, message: error.message });
     return;
   }
-  if (error instanceof PublishingCopyError || error instanceof PublishingAssetError || error instanceof VideoOutputError) {
+  if (
+    error instanceof PublishingCopyError
+    || error instanceof PublishingAssetError
+    || error instanceof VideoOutputError
+    || error instanceof SauRunnerError
+  ) {
     res.status(error.status).json({ code: error.code, message: error.message });
     return;
   }
@@ -394,7 +494,8 @@ function publishingErrorMapper(error: unknown, req: Request, res: Response, next
 function publishingErrorStatus(code: PublishingError["code"]): number {
   if (code === "publish_package_not_found" || code === "publish_task_not_found") return 404;
   if (code === "publish_permission_denied") return 403;
-  if (code === "publish_asset_broken") return 422;
+  if (code === "publish_asset_broken" || code === "publish_not_a_note_package") return 422;
+  if (code === "publish_auto_publish_in_progress" || code === "publish_auto_publish_code_unexpected") return 409;
   if (code === "publish_invalid_transition" || code === "publish_revision_conflict") return 409;
   if (code === "publish_index_corrupt") return 500;
   return 400;

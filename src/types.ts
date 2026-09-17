@@ -1,3 +1,5 @@
+import type { PlatformCopyValidationError } from "./lib/publishing-platforms.js";
+
 export type AiProvider = "deepseek" | "openai" | "custom";
 export type JobStatus = "queued" | "processing" | "done" | "failed";
 
@@ -166,6 +168,79 @@ export interface PublishingPreview {
   copies: Partial<Record<PublishPlatform, PlatformCopy & { copySource: PublishCopySource }>>;
   warning?: { code: string; message: string };
   expectedPackagePath: string;
+  /** 缺省视为 `video`（存量行为不变）。 */
+  contentType?: PackageContentType;
+  /** 仅图文：将被打包进包的场景静帧，按场景序。 */
+  images?: Array<{ name: string; size: number }>;
+  /** 仅图文：压缩到图文口径后的默认文案。 */
+  noteCopy?: PlatformCopy;
+  /** 仅图文：标题是否因超过 20 字被压缩（界面需标注「已压缩，可编辑」）。 */
+  noteCopyTitleCompressed?: boolean;
+}
+
+/** 文案字段的字数与上限，由服务端按对应口径算好，前端只渲染不复刻规则。 */
+export interface PublishingPreviewCopyField {
+  actual: number;
+  limit: number;
+  over: boolean;
+}
+
+export interface PublishingPreviewCopyCheck {
+  platform: PublishPlatform;
+  /**
+   * `package` 表示检查的是包级文案（图文包用 `noteCopy`，与 auto-publish 实际提交的一致）；
+   * `task` 表示检查的是某个平台任务自己的文案（视频包）。
+   */
+  scope: "package" | "task";
+  taskId?: string;
+  /** 平台中文名，如「抖音」。 */
+  label: string;
+  title: PublishingPreviewCopyField;
+  description: PublishingPreviewCopyField;
+  hashtags: PublishingPreviewCopyField;
+  violations: PlatformCopyValidationError[];
+}
+
+export interface PublishingPreviewTask {
+  id: string;
+  platform: PublishPlatform;
+  status: PublishTaskStatus;
+  contentRevision: number;
+  scheduledAt?: string;
+  copy: PlatformCopy;
+}
+
+/** 包级预览：发布前「看得见将要发出去的内容」的唯一数据面（spec §14）。 */
+export interface PublishingPackagePreview {
+  package: {
+    id: string;
+    sourceJobId: string;
+    version: number;
+    state: PublishPackageState;
+    title: string;
+    packagePath: string;
+    contentType: PackageContentType;
+    assetHealth: PublishAssetHealth;
+    createdBy: ActorSnapshot;
+    createdAt: string;
+    updatedAt: string;
+  };
+  /** 内容指纹；带它调用 auto-publish 才被接受（缺失 400 / 不一致 409）。 */
+  previewRevision: string;
+  /** 仅视频包：成片元数据，前端据此接既有 `/api/jobs/:id/video/stream` 播放。 */
+  video?: {
+    path: string;
+    sha256: string;
+    size: number;
+    method: PackageVideoMethod;
+    hasCover: boolean;
+  };
+  /** 仅图文包：**有序**包内相对路径，前端用 `/images/:index` 逐张取。 */
+  imagePaths?: string[];
+  /** 仅图文包：将被提交的文案（= 包级 `noteCopy`）。 */
+  noteCopy?: PlatformCopy;
+  copyChecks: PublishingPreviewCopyCheck[];
+  tasks: PublishingPreviewTask[];
 }
 
 export interface PublishingAssetInspection {
@@ -183,6 +258,13 @@ export interface CreatePublishingPackageInput {
   sourceJobId: string;
   previewRevision: string;
   title: string;
+  /** 缺省视为 `video`。 */
+  contentType?: PackageContentType;
+  /**
+   * 仅图文包：包级文案（title ≤20 / note ≤1000）。
+   * 图文包的平台任务文案由服务端从它同步生成，避免两处各写一份后互相漂移。
+   */
+  noteCopy?: PlatformCopy;
   platforms: Array<{
     platform: PublishPlatform;
     copy: PlatformCopy;

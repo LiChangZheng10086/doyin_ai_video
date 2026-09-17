@@ -38,7 +38,10 @@ const app = await createExpressApp({
   cookiesFromBrowser: process.env.YTDLP_COOKIES_FROM_BROWSER,
   whisperCliPath: process.env.WHISPER_CLI_BINARY,
   whisperModelPath: process.env.WHISPER_MODEL_PATH,
-  hyperframesNpxBinary: process.env.HYPERFRAMES_NPX_BINARY
+  hyperframesNpxBinary: process.env.HYPERFRAMES_NPX_BINARY,
+  // 抖音图文自动发布的外部引擎（social-auto-upload）；未配置时该通路给出明确安装指引
+  sauBinary: process.env.SAU_BINARY,
+  sauBaseDir: process.env.SAU_BASE_DIR
 });
 
 const port = Number(process.env.PORT ?? 3100);

@@ -24,6 +24,7 @@ douyin/
 │   │   ├── local-auth.ts    # 会话与 requireActor 鉴权守卫
 │   │   ├── local-user-routes.ts # 本机操作者路由（含自动会话）
 │   │   ├── publishing-*.ts  # 发布中心（资产/文案/平台/服务/存储/路由）
+│   │   ├── sau-runner.ts    # 抖音图文自动发布的外部引擎封装（social-auto-upload CLI）
 │   │   ├── collections.ts   # 合集采集与索引
 │   │   ├── nickname.ts      # 创作者昵称兜底（简体中文）
 │   │   └── user-page-crawler.ts # 抖音主页采集
@@ -37,11 +38,12 @@ douyin/
 │   │   │   ├── JobDetailPage.tsx      # 作品详情（工作流控制台 + 成果画布）
 │   │   │   ├── CollectionListPage.tsx / CollectionDetailPage.tsx
 │   │   │   ├── SkillListPage.tsx      # Skill 蒸馏产物
-│   │   │   ├── PublishingPage.tsx     # 发布中心（人工交付）
+│   │   │   ├── PublishingPage.tsx     # 发布中心（人工交付 + 图文自动发布）
 │   │   │   ├── AssetsPage.tsx         # 素材库（图片/音频）
 │   │   │   ├── TrashPage.tsx
 │   │   │   └── SettingsPage.tsx
 │   │   ├── components/shell/          # 导航框架（侧栏/顶栏/移动端导航）
+│   │   ├── components/PublishPreviewDialog.tsx # 发布前预览弹窗（视频播放器 / 图文横滑）
 │   │   ├── components/
 │   │   ├── services/api.ts
 │   │   └── types/index.ts
@@ -189,8 +191,12 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 - `POST /api/local-sessions` - 普通开会话（管理员仍需 PIN）
 
 ### 发布中心（人工交付）
-- `POST /api/jobs/:id/publishing/preview` / `GET /api/jobs/:id/publishing/assets`
-- `POST /api/publishing/packages`、`GET /api/publishing/packages`、`GET /api/publishing/packages/:id`
+- `POST /api/jobs/:id/publishing/preview`（body 可带 `contentType: "note"` 走图文） / `GET /api/jobs/:id/publishing/assets`
+- `POST /api/publishing/packages`（body 可带 `contentType: "note"` + `noteCopy` 建图文包）、`GET /api/publishing/packages`、`GET /api/publishing/packages/:id`
+- `GET /api/publishing/packages/:id/preview` - **包级预览**（产出 `previewRevision`；下发 `copyChecks`，前端只渲染不复刻字数规则）
+- `GET /api/publishing/packages/:id/images/:index` - 图文包第 `index` 张图（0 基，对应 `imagePaths`；越界 404）
+- `POST /api/publishing/tasks/:id/auto-publish` - 提交抖音图文（**必须带 `previewRevision`**：缺失 400 / 不一致 409）
+- `POST /api/publishing/tasks/:id/auto-publish/code` - 投喂短信验证码（写入 `<sauBaseDir>/verify_code.txt`）
 - `PATCH /api/publishing/tasks/:id/content` / `/schedule`、`POST .../cancel` `/restore` `/mark-published` `/record-failure`（`withdraw` 与删除/恢复发布包仅管理员）
 
 ## 关键数据结构
@@ -281,6 +287,13 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 
 独立后端（`npm run dev:server` 形态）通过环境变量读取 AI 配置：`AI_PROVIDER` / `AI_API_KEY` /
 `AI_MODEL` / `AI_BASE_URL`（见 `src/server.ts`）。
+
+**抖音图文自动发布**（外部引擎）同样走环境变量，两条入口（独立后端与 Electron）都已透传：
+
+- `SAU_BINARY`：`social-auto-upload` 的 `sau` 可执行文件路径，例如 `<repo-of-sau>/.venv/bin/sau`
+- `SAU_BASE_DIR`：其仓库根目录（含 `conf.py`）；`cookies/` 与 `verify_code.txt` 都相对它
+
+两者都缺省时**不静默失败**：该通路返回 422 并给出安装指引（含下述三个坑），其余发布中心功能不受影响。
 
 ### AI 配置
 
@@ -408,6 +421,32 @@ npm run package           # 会先检查 vendor/whisper 资源是否存在
 - 侧栏宽度只有一个真源：`AppShell` 根节点声明的 CSS 变量 `--rail-w`（收起 `md:56px` / `xl:64px`，展开 `208px`），由侧栏、内容区与两个顶栏变体共同消费 —— **不要在别处再写死 56px/64px 偏移**。
 - 折叠开关固定在侧栏**底部**且两个状态都可见。早期版本把它做成「整个 logo 行」，导致收起态与改造前毫无差别、用户找不到入口（已按实测反馈修正）。
 
+### 抖音图文自动发布（外部 sau 引擎）
+
+- 只做**抖音图文**（`sau douyin upload-note`），视频与其它平台仍是人工交付。
+- 引擎是外部依赖，**不内置**：需自装 `social-auto-upload`（约 970MB）。三个已知坑（2026-09-17 实测）：
+  ① 按其官方步骤装完 CLI 起不来 —— `pyproject.toml` 只声明 `patchright`，但仍有 7 个 uploader 与 `myUtils`
+  在 `import playwright`，需手动 `uv pip install playwright`；② `requires-python = ">=3.10,<3.13"`，
+  Python 3.13 不在范围内，需另装 3.12；③ 仓库+venv 约 440MB、patchright chromium 约 520MB。
+  另注意上游 `uploader/__init__.py` 在 **import 阶段**就会 `mkdir <BASE_DIR>/cookies`，因此该目录必须可写。
+- **`task.status` 全程不变**：`autoPublish` 只是任务上的子记录，`succeeded` 的语义是**已提交**，
+  绝不写 `published` —— 是否真的发出去了由人工点「标记已发布」确认。这是本功能最关键的不变式。
+- **一次只允许一个**：运行中/等待验证码时再次触发返回 409；遗留的 `running` 记录超过 30 分钟视为
+  「进程已死」允许重试（否则同步请求被杀后会永久锁死任务）。
+- **不自动重试**：失败后必须人工再次点击（人知道上一次到底发出去没有）。
+- 「发布前必经预览」是**服务端约束**：`auto-publish` 必须带 `previewRevision`（包内容指纹，图文包覆盖
+  有序 `imagePaths` 与 `noteCopy`），缺失 400、不一致 409，两种情况都**不产生** `autoPublish` 记录。
+- 图文包的 `video*` 字段「不适用」，其中 `videoSha256` 承载**图片清单哈希**（各图 sha256 有序拼接再哈希）
+  作为等价完整性凭据；`PublishAssetHealth` 的 `missing_images` 即由它判定。
+- **验证码通路当前对图文不通**（2026-09-17 从上游源码实测更正）：`verify_code.txt` 只有上游**视频**发布
+  通路会读；`upload-note` 既不读它、发布循环也没有次数上限。因此图文发布遇到短信挑战的真实结局是
+  「一直循环到超时（900s）→ `failed`」，`awaiting_code` 在图文通路上**不可达**，写验证码文件对图文
+  **没有效果**。界面与提示必须让操作者知道：图文发布卡住的正确动作是**去抖音后台核实**，而重试前
+  必须先确认上一次是否已发出（上游会 `force=True` 重复点击发布，重复发布是本功能最大的风险）。
+- 媒体元素（`<img>`/`<video>`）**不能用相对 URL、也不能带自定义请求头**：页面在 Vite(5173)、API 在
+  另一个端口，相对路径会打到 Vite 的开发代理。图片走 `apiClient` 取 blob，视频走
+  `apiClient.getJobVideoStreamUrl()` 的**绝对 URL**（与既有 `getAssetRawUrl` 同一套做法）。
+
 ## 故障排查
 
 ### 转录功能不工作
@@ -428,6 +467,12 @@ npm run package           # 会先检查 vendor/whisper 资源是否存在
 2. 确认 FFmpeg 可用：`ffmpeg -version`。
 3. 确认 HyperFrames 环境可用：`npx hyperframes doctor`。
 4. 查看任务详情页“生成视频”步骤错误和后端日志。
+
+### 抖音图文自动发布不工作
+1. 报「未配置 sau 可执行文件」→ 按提示装好引擎并设置 `SAU_BINARY` / `SAU_BASE_DIR`，**然后重启后端**（env 只在启动时读）。
+2. 预检输出 `invalid` → 登录态失效，需重新扫码登录（`~/.douyin-ai-video/douyin-cookie.txt` 是唯一真源）。
+3. 点「发布图文到抖音」时先弹出预览是**预期行为**（必经确认），确认后才真正提交。
+4. 提交后长时间无变化 → 上游发布循环没有次数上限，超时前不会返回；超时落在 `failed` 时**先去抖音后台核实**再重试。
 
 ### 前端无法连接后端
 1. Electron 内嵌后端使用随机本地端口，前端通过 `window.electron.getServerPort()` 获取。

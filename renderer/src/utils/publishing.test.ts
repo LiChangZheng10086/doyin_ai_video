@@ -9,12 +9,16 @@ import type {
   PublishingPackageDetail,
 } from '../types/index.js';
 import {
+  AUTO_PUBLISH_STALE_MS,
+  getPublishingActionIds,
+  getPublishingAutoPublishBlocker,
+  getPublishingAutoPublishHint,
   buildCreatePublishingInput,
   createPublishingWizardState,
   formatDueNotification,
   formatPublishingCopy,
-  getPublishingActionIds,
   getPublishingScheduleStatus,
+  publishingNextStep,
   groupPublishingPackages,
   isPublishingEligibleVideo,
   publishingWizardReducer,
@@ -227,6 +231,27 @@ function publishingPreview(): import('../types/index.js').PublishingPreview {
   };
 }
 
+test('API error parser keeps the backend message for the flattened publishing error', () => {
+  // publishingRequest 抛出的是扁平化形状（code/message 直接挂在 error 上，没有 response）。
+  // 这条用例守住它：否则界面上所有发布错误都会退化成「发布请求失败，请稍后重试」。
+  const flattened = Object.assign(new Error('未配置 sau 可执行文件（sauBinary / SAU_BINARY）。'), {
+    code: 'sau_not_configured',
+    status: 422,
+    details: { hint: 'install' },
+    name: 'PublishingApiError',
+  });
+
+  assert.deepEqual(parseApiError(flattened), {
+    code: 'sau_not_configured',
+    message: '未配置 sau 可执行文件（sauBinary / SAU_BINARY）。',
+    details: { hint: 'install' },
+    status: 422,
+  });
+
+  // 普通网络错误不该把英文原文糊到用户脸上，仍走中文兜底
+  assert.equal(parseApiError(new Error('Network Error')).message, '发布请求失败，请稍后重试');
+});
+
 test('wizard cannot leave platform selection when no platform is selected', () => {
   const state = { ...createPublishingWizardState(), step: 'platforms' as const };
   const next = publishingWizardReducer(state, { type: 'advance' });
@@ -348,4 +373,182 @@ test('publishing entry requires a complete usable MP4 output', () => {
   assert.equal(isPublishingEligibleVideo({ ...output, videoPath: '' }), false);
   assert.equal(isPublishingEligibleVideo({ ...output, duration: 0 }), false);
   assert.equal(isPublishingEligibleVideo(null), false);
+});
+
+// ─── ② 抖音图文自动发布：动作可见性与状态提示 ────────────────────────────────
+
+function notePackageDetail(
+  overrides: { assetHealth?: PublishingPackageDetail['package']['assetHealth']; status?: PublishTask['status']; autoPublish?: PublishTask['autoPublish'] } = {},
+): PublishingPackageDetail {
+  const detail = packageDetail("job-note", 1);
+  return {
+    ...detail,
+    package: {
+      ...detail.package,
+      contentType: 'note',
+      imagePaths: ['images/01.png', 'images/02.png'],
+      noteCopy: { title: '抖音图文标题', description: '抖音图文正文', hashtags: ['内容创作'] },
+      assetHealth: overrides.assetHealth ?? 'healthy',
+      videoPath: undefined,
+    },
+    tasks: [{
+      ...detail.tasks[0],
+      status: overrides.status ?? 'ready',
+      ...(overrides.autoPublish ? { autoPublish: overrides.autoPublish } : {}),
+    }],
+  };
+}
+
+test('note packages offer the Douyin auto publish action, video packages do not', () => {
+  const note = notePackageDetail();
+  assert.ok(getPublishingActionIds(note, note.tasks[0], 'publisher').includes('auto-publish'));
+
+  const video = packageDetail("job-video", 1);
+  assert.equal(getPublishingActionIds(video, video.tasks[0], 'publisher').includes('auto-publish'), false);
+  assert.match(getPublishingAutoPublishBlocker(video, video.tasks[0]) ?? '', /视频包|人工/);
+});
+
+test('auto publish is blocked with a readable reason when the note images are missing', () => {
+  const missing = notePackageDetail({ assetHealth: 'missing_images' });
+
+  assert.equal(getPublishingActionIds(missing, missing.tasks[0], 'publisher').includes('auto-publish'), false);
+  assert.match(getPublishingAutoPublishBlocker(missing, missing.tasks[0]) ?? '', /图片/);
+});
+
+test('auto publish is withheld for published, cancelled and scheduled tasks', () => {
+  for (const [status, expected] of [
+    ['published', /已发布|标记/],
+    ['cancelled', /已取消/],
+    ['scheduled', /排期/],
+  ] as const) {
+    const detail = notePackageDetail({ status });
+    assert.equal(
+      getPublishingActionIds(detail, detail.tasks[0], 'publisher').includes('auto-publish'),
+      false,
+      `${status} 不应提供自动发布`,
+    );
+    assert.match(getPublishingAutoPublishBlocker(detail, detail.tasks[0]) ?? '', expected);
+  }
+  // 失败后人工重试是本设计的既定通路（spec §9：绝不自动重试，由人再次点击）
+  const failed = notePackageDetail({ status: 'failed' });
+  assert.ok(getPublishingActionIds(failed, failed.tasks[0], 'publisher').includes('auto-publish'));
+  assert.equal(getPublishingAutoPublishBlocker(failed, failed.tasks[0]), null);
+});
+
+test('auto publish is withheld inside the trash and for a publisher in a foreign package state', () => {
+  const trashed = notePackageDetail();
+  trashed.package.state = 'trashed';
+
+  assert.equal(getPublishingActionIds(trashed, trashed.tasks[0], 'publisher').includes('auto-publish'), false);
+  assert.match(getPublishingAutoPublishBlocker(trashed, trashed.tasks[0]) ?? '', /垃圾桶/);
+});
+
+test('auto publish status hints tell the operator what actually happened', () => {
+  const running = notePackageDetail({ autoPublish: { status: 'running', startedAt: '2026-08-10T08:00:00.000Z', attemptId: 'a' } });
+  assert.match(getPublishingAutoPublishHint(running.tasks[0]) ?? '', /正在/);
+
+  const awaiting = notePackageDetail({ autoPublish: { status: 'awaiting_code', startedAt: '2026-08-10T08:00:00.000Z', attemptId: 'a' } });
+  assert.match(getPublishingAutoPublishHint(awaiting.tasks[0]) ?? '', /验证码/);
+
+  // 退出码 0 只表示「已提交」，必须引导人去抖音后台核对后再点「标记已发布」
+  const succeeded = notePackageDetail({ autoPublish: { status: 'succeeded', startedAt: '2026-08-10T08:00:00.000Z', finishedAt: '2026-08-10T08:01:00.000Z', attemptId: 'a', message: '已提交' } });
+  assert.equal(getPublishingAutoPublishHint(succeeded.tasks[0]), '已提交，请在抖音后台确认后点「标记已发布」');
+
+  const failed = notePackageDetail({ autoPublish: { status: 'failed', startedAt: '2026-08-10T08:00:00.000Z', finishedAt: '2026-08-10T08:01:00.000Z', attemptId: 'a', message: '预检失败' } });
+  assert.match(getPublishingAutoPublishHint(failed.tasks[0]) ?? '', /预检失败/);
+
+  const untouched = notePackageDetail();
+  assert.equal(getPublishingAutoPublishHint(untouched.tasks[0]), null);
+});
+
+test('a read-only preview entry is offered for both note and video packages', () => {
+  // spec §14.2：预览是独立入口，「随时查看」，视频包也走它
+  const note = notePackageDetail();
+  assert.ok(getPublishingActionIds(note, note.tasks[0], 'publisher').includes('preview'));
+
+  const video = packageDetail('job-video', 1);
+  assert.ok(getPublishingActionIds(video, video.tasks[0], 'publisher').includes('preview'));
+
+  // 只读查看与任务状态无关：已发布 / 已取消 / 已排期都仍然可以看一眼
+  for (const status of ['published', 'cancelled', 'scheduled', 'failed'] as const) {
+    const detail = notePackageDetail({ status });
+    assert.ok(
+      getPublishingActionIds(detail, detail.tasks[0], 'publisher').includes('preview'),
+      `${status} 也应能预览`,
+    );
+  }
+
+  // 垃圾桶里不给（上面的 early return 已排除）
+  const trashed = notePackageDetail();
+  trashed.package.state = 'trashed';
+  assert.equal(getPublishingActionIds(trashed, trashed.tasks[0], 'admin').includes('preview'), false);
+});
+
+test('auto publish is withheld while an attempt is genuinely in flight, but not once it is stale', () => {
+  const inFlight = notePackageDetail({
+    autoPublish: { status: 'running', startedAt: new Date().toISOString(), attemptId: 'a' },
+  });
+  assert.equal(getPublishingActionIds(inFlight, inFlight.tasks[0], 'publisher').includes('auto-publish'), false);
+  assert.match(getPublishingAutoPublishBlocker(inFlight, inFlight.tasks[0]) ?? '', /正在进行中/);
+
+  // 进程被杀会留下永远 running 的记录；超过阈值必须重新可点，否则按钮永久灰掉
+  const stale = notePackageDetail({
+    autoPublish: {
+      status: 'running',
+      startedAt: new Date(Date.now() - AUTO_PUBLISH_STALE_MS - 60_000).toISOString(),
+      attemptId: 'dead',
+    },
+  });
+  assert.ok(getPublishingActionIds(stale, stale.tasks[0], 'publisher').includes('auto-publish'));
+
+  // 等验证码时给「提交验证码」，而不是再点一次自动发布
+  const awaiting = notePackageDetail({
+    autoPublish: { status: 'awaiting_code', startedAt: new Date().toISOString(), attemptId: 'a' },
+  });
+  const actions = getPublishingActionIds(awaiting, awaiting.tasks[0], 'publisher');
+  assert.ok(actions.includes('submit-code'));
+  assert.equal(actions.includes('auto-publish'), false);
+});
+
+test('the next-step hint never names an action that is not actually offered', () => {
+  // 用户实测反馈：已取消的任务提示「恢复已取消任务或创建新版本」，但「创建新版本」只在已发布时才有
+  const cancelled = notePackageDetail({ status: 'cancelled' });
+  const cancelledActions = getPublishingActionIds(cancelled, cancelled.tasks[0], 'publisher');
+  assert.equal(cancelledActions.includes('create-version'), false, '前提：已取消的任务没有创建新版本');
+  const hint = publishingNextStep(cancelled);
+  assert.match(hint, /恢复/);
+  assert.doesNotMatch(hint, /创建新版本/, '提示不得指向一个不存在的按钮');
+
+  // 但真的可用时（存在已发布任务）就该提它
+  const mixed = notePackageDetail({ status: 'cancelled' });
+  mixed.tasks = [
+    mixed.tasks[0],
+    { ...mixed.tasks[0], id: 'task-published', status: 'published' },
+  ];
+  // 动作是**逐任务**判定的：已发布的那一行才有创建新版本，所以前提要在那一行上检查
+  const publishedTask = mixed.tasks.find((task) => task.status === 'published')!;
+  assert.equal(getPublishingActionIds(mixed, publishedTask, 'publisher').includes('create-version'), true,
+    '前提：已发布任务那一行有创建新版本');
+  assert.equal(getPublishingActionIds(mixed, mixed.tasks[0], 'publisher').includes('create-version'), false,
+    '前提：已取消任务那一行没有创建新版本');
+  assert.match(publishingNextStep(mixed), /创建新版本/);
+});
+
+test('the next-step hint matches the actions offered for each task status', () => {
+  const video = packageDetail('job-video', 1);
+  const trashed = { ...video, package: { ...video.package, state: 'trashed' as const } };
+  assert.match(publishingNextStep(trashed), /恢复发布包/);
+
+  const ready = notePackageDetail({ status: 'ready' });
+  assert.match(publishingNextStep(ready), /打开平台/);
+
+  const failed = notePackageDetail({ status: 'failed' });
+  assert.match(publishingNextStep(failed), /恢复任务/);
+
+  const scheduled = notePackageDetail({ status: 'scheduled' });
+  assert.match(publishingNextStep(scheduled), /排期/);
+
+  const published = notePackageDetail({ status: 'published' });
+  assert.match(publishingNextStep(published), /创建新版本/);
+  assert.ok(getPublishingActionIds(published, published.tasks[0], 'publisher').includes('create-version'));
 });

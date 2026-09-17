@@ -30,7 +30,9 @@ export type PublishTaskStatus = 'scheduled' | 'ready' | 'published' | 'failed' |
 export type PublishPackageState = 'active' | 'trashed' | 'purged';
 export type PublishCopySource = 'ai' | 'cleaned_fallback' | 'user_edited';
 export type PackageVideoMethod = 'clone' | 'copy';
-export type PublishAssetHealth = 'healthy' | 'missing_cover' | 'broken_video';
+export type PublishAssetHealth = 'healthy' | 'missing_cover' | 'broken_video' | 'missing_images';
+/** 交付包内容类型；缺省（含存量包）一律按 `video` 处理。 */
+export type PackageContentType = 'video' | 'note';
 export type PublishingListStatus = 'action' | 'all' | PublishTaskStatus | 'broken' | 'trash';
 
 export interface PlatformCopy {
@@ -52,12 +54,34 @@ export interface DeliveryPackage {
   videoSize: number;
   videoMethod: PackageVideoMethod;
   assetHealth: PublishAssetHealth;
+  /** 缺省视为 `video`，因此存量包无需迁移。 */
+  contentType?: PackageContentType;
+  /** 仅图文包：包目录内 `images/NN.ext` 的有序列表。 */
+  imagePaths?: string[];
+  /** 仅图文包：抖音图文口径的文案（title ≤20 / note ≤1000）。 */
+  noteCopy?: PlatformCopy;
   createdBy: ActorSnapshot;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string;
   purgeAt?: string;
   purgedAt?: string;
+}
+
+export type PublishAutoPublishStatus = 'running' | 'awaiting_code' | 'succeeded' | 'failed';
+
+/**
+ * 自动发布（外部 sau CLI）的进度记录。
+ *
+ * 刻意**不扩展 `PublishTaskStatus`**：机器动作的结果只记在这里，
+ * `succeeded` 的语义是「已提交」；是否真的发出去了，仍由人工点「标记已发布」确认。
+ */
+export interface PublishAutoPublish {
+  status: PublishAutoPublishStatus;
+  startedAt: string;
+  finishedAt?: string;
+  message?: string;
+  attemptId: string;
 }
 
 export interface PublishTask extends PlatformCopy {
@@ -73,6 +97,7 @@ export interface PublishTask extends PlatformCopy {
   contentRevision: number;
   createdAt: string;
   updatedAt: string;
+  autoPublish?: PublishAutoPublish;
 }
 
 export interface PublishAuditEvent {
@@ -134,6 +159,62 @@ export interface PublishingPreview {
   copies: Partial<Record<PublishPlatform, PlatformCopy & { copySource: PublishCopySource }>>;
   warning?: { code: string; message: string };
   expectedPackagePath: string;
+  /** 缺省视为 `video`。 */
+  contentType?: PackageContentType;
+  /** 仅图文：将被打包进包的场景静帧，按场景序。 */
+  images?: Array<{ name: string; size: number }>;
+  /** 仅图文：压缩到图文口径后的默认文案。 */
+  noteCopy?: PlatformCopy;
+  /** 仅图文：标题是否因超过 20 字被压缩。 */
+  noteCopyTitleCompressed?: boolean;
+}
+
+/** 文案字段的字数与上限，由服务端按对应口径算好，前端只渲染不复刻规则。 */
+export interface PublishingPreviewCopyField {
+  actual: number;
+  limit: number;
+  over: boolean;
+}
+
+export interface PublishingPreviewCopyCheck {
+  platform: PublishPlatform;
+  scope: 'package' | 'task';
+  taskId?: string;
+  label: string;
+  title: PublishingPreviewCopyField;
+  description: PublishingPreviewCopyField;
+  hashtags: PublishingPreviewCopyField;
+  violations: Array<{ platform: PublishPlatform; field: string; actual: number; limit: number; message: string }>;
+}
+
+/** 包级预览：发布前「看得见将要发出去的内容」的唯一数据面（spec §14）。 */
+export interface PublishingPackagePreview {
+  package: {
+    id: string;
+    sourceJobId: string;
+    version: number;
+    state: PublishPackageState;
+    title: string;
+    packagePath: string;
+    contentType: PackageContentType;
+    assetHealth: PublishAssetHealth;
+    createdBy: ActorSnapshot;
+    createdAt: string;
+    updatedAt: string;
+  };
+  previewRevision: string;
+  video?: { path: string; sha256: string; size: number; method: PackageVideoMethod; hasCover: boolean };
+  imagePaths?: string[];
+  noteCopy?: PlatformCopy;
+  copyChecks: PublishingPreviewCopyCheck[];
+  tasks: Array<{
+    id: string;
+    platform: PublishPlatform;
+    status: PublishTaskStatus;
+    contentRevision: number;
+    scheduledAt?: string;
+    copy: PlatformCopy;
+  }>;
 }
 
 export interface PublishingAssetInspection {

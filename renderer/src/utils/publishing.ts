@@ -263,7 +263,10 @@ export type PublishingActionId =
   | 'create-version'
   | 'withdraw'
   | 'trash-package'
-  | 'restore-package';
+  | 'restore-package'
+  | 'preview'
+  | 'auto-publish'
+  | 'submit-code';
 
 export interface PublishingSourceGroup {
   sourceJobId: string;
@@ -315,6 +318,9 @@ export function getPublishingActionIds(
     'copy-hashtags',
     'copy-full',
   ];
+  // 只读预览（spec §14.2）：随时能看一眼「将要发出去的内容」，视频包走这个入口。
+  // 与任务状态无关（纯查看），垃圾桶里的包在上面的 early return 已经排除。
+  actions.push('preview');
   const healthyVideo = detail.package.assetHealth !== 'broken_video';
   if (healthyVideo && detail.package.videoPath) actions.push('show-in-finder');
 
@@ -332,10 +338,97 @@ export function getPublishingActionIds(
     if (task.status === 'ready' && healthyVideo) {
       actions.push('open-platform', 'mark-published');
     }
+    // 图文包的自动发布：只有「可以立刻提交」时才给动作，其余情况用 blocker 说明原因。
+    if (!getPublishingAutoPublishBlocker(detail, task)) actions.push('auto-publish');
+    if (task.autoPublish?.status === 'awaiting_code') actions.push('submit-code');
   }
 
   if (role === 'admin') actions.push('trash-package');
   return actions;
+}
+
+/**
+ * 图文自动发布当前是否可用；返回 `null` 表示可用，否则是给操作者看的中文原因。
+ *
+ * 做成「返回原因」而不是纯布尔：界面要能显示禁用态**为什么**灰掉，
+ * 否则用户只会看到一个点不动的按钮（本项目在侧栏折叠上已经吃过一次这个亏）。
+ */
+/**
+ * 与后端 `publishing-store.ts` 的 `AUTO_PUBLISH_STALE_MS` 保持一致。
+ *
+ * 超过这个时长仍停在 running/awaiting_code 视为「进程已死」：发布请求是同步的，
+ * 进程被杀会留下永远 running 的记录，界面若一直按「进行中」灰掉按钮就再也点不动了。
+ */
+export const AUTO_PUBLISH_STALE_MS = 30 * 60 * 1000;
+
+function autoPublishInFlight(task: PublishTask, now = Date.now()): boolean {
+  const record = task.autoPublish;
+  if (!record) return false;
+  if (record.status !== 'running' && record.status !== 'awaiting_code') return false;
+  const startedAt = new Date(record.startedAt).getTime();
+  if (!Number.isFinite(startedAt)) return false;
+  return now - startedAt < AUTO_PUBLISH_STALE_MS;
+}
+
+export function getPublishingAutoPublishBlocker(
+  detail: PublishingPackageDetail,
+  task: PublishTask,
+): string | null {
+  if (detail.package.state === 'trashed') return '发布包在垃圾桶中，先恢复后再发布';
+  if (detail.package.state !== 'active') return '发布包已清理，无法发布';
+  if ((detail.package.contentType ?? 'video') !== 'note') {
+    return '视频包仍走人工交付，不支持自动发布';
+  }
+  if (detail.package.assetHealth === 'missing_images') {
+    return '图文包缺少图片素材，请重新生成视频静帧或从素材库选择图片';
+  }
+  if (detail.package.assetHealth !== 'healthy') {
+    return '图文包资产异常，请先修复后再发布';
+  }
+  if (detail.package.imagePaths?.length === 0) return '图文包没有图片，无法发布';
+
+  // 同步请求还在跑（或正在等验证码）时不给第二次动作，避免必然 409
+  if (autoPublishInFlight(task)) return '自动发布正在进行中，请等本次结束后再试';
+  if (task.status === 'published') return '任务已标记为发布，如需改动请先撤回';
+  if (task.status === 'cancelled') return '任务已取消，先恢复任务再发布';
+  // 排期中的任务不该被「立即发布」绕过；失败后人工重试是既定通路（spec §9：绝不自动重试）
+  if (task.status === 'scheduled') return '任务已排期，如需立即发布请先取消排期';
+  if (task.status !== 'ready' && task.status !== 'failed') return '当前状态不允许自动发布';
+  return null;
+}
+
+/** 任务行上的一句话状态提示；没有自动发布记录时返回 `null`。 */
+export function getPublishingAutoPublishHint(task: PublishTask): string | null {
+  const record = task.autoPublish;
+  if (!record) return null;
+  if (record.status === 'running') return '正在提交到抖音…';
+  if (record.status === 'awaiting_code') {
+    return '等待短信验证码：请点「提交验证码」填入手机收到的验证码';
+  }
+  if (record.status === 'succeeded') {
+    return '已提交，请在抖音后台确认后点「标记已发布」';
+  }
+  return record.message ? `提交失败：${record.message}` : '提交失败，请查看审计记录后重试';
+}
+
+/**
+ * 发布包那一行显示的「下一步」提示。
+ *
+ * 这段文案必须**只提真实可用的动作**：之前对已取消的任务写「恢复已取消任务或创建新版本」，
+ * 但 `create-version` 只在任务处于 `published` 时才会出现在动作列表里 —— 提示词指向一个
+ * 不存在的按钮，用户会照着找却找不到（用户实测反馈）。见下方 `canCreateVersion` 判定。
+ */
+export function publishingNextStep(detail: PublishingPackageDetail): string {
+  if (detail.package.state === 'trashed') return '由管理员恢复发布包';
+  if (detail.package.assetHealth === 'broken_video') return '视频资产异常，请查看资产说明';
+  if (detail.tasks.some((task) => task.status === 'ready')) return '打开平台并完成发布';
+  if (detail.tasks.some((task) => task.status === 'failed')) return '处理失败原因并恢复任务';
+  if (detail.tasks.some((task) => task.status === 'scheduled')) return '等待排期提醒';
+  // 与 `getPublishingActionIds` 保持一致：只有存在已发布任务时「创建新版本」才真的可用
+  const canCreateVersion = detail.tasks.some((task) => task.status === 'published');
+  if (detail.tasks.every((task) => task.status === 'published')) return '已完成，可创建新版本';
+  if (canCreateVersion) return '恢复已取消的任务，或基于已发布版本创建新版本';
+  return '恢复已取消的任务后可继续人工发布';
 }
 
 export function formatDueNotification(notification: DueNotification): string {

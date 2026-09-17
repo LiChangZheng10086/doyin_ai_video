@@ -12,7 +12,7 @@ import type {
   PublishTaskStatus,
   PublishingIndex,
 } from "../types.js";
-import { PublishingError, PublishingStore } from "./publishing-store.js";
+import { PublishingError, PublishingStore, packagePreviewRevision } from "./publishing-store.js";
 
 const ACTOR: ActorSnapshot = {
   userId: "publisher-1",
@@ -842,4 +842,245 @@ test("lists packages using action, state, asset and field filters", async () => 
   assert.deepEqual(await ids({ platform: "xiaohongshu" }), ["package-broken"]);
   assert.deepEqual(await ids({ sourceJobId: "job-2", version: 2, createdBy: "admin-1" }), ["package-broken"]);
   assert.deepEqual(await ids({ search: "ai 标题" }), ["package-ready"]);
+});
+
+// ─── ② 抖音图文自动发布：包级 previewRevision 与 autoPublish 子记录 ───────────
+
+const NOTE_COPY = { title: "图文标题", description: "图文正文", hashtags: ["内容创作"] };
+const NOTE_IMAGE_HASH = "b".repeat(64);
+
+function notePackageRecord(overrides: Partial<DeliveryPackage> = {}): DeliveryPackage {
+  return packageRecord({
+    contentType: "note",
+    imagePaths: ["images/01.png", "images/02.png"],
+    noteCopy: { ...NOTE_COPY, hashtags: [...NOTE_COPY.hashtags] },
+    // note 包的 video* 字段「不适用」，videoSha256 承载图片清单哈希。
+    videoSha256: NOTE_IMAGE_HASH,
+    videoSize: 2048,
+    videoMethod: "copy",
+    ...overrides,
+  });
+}
+
+async function seededNoteFixture(
+  overrides: { autoPublish?: PublishTask["autoPublish"]; startedAt?: string } = {},
+) {
+  const root = await mkdtemp(path.join(tmpdir(), "publishing-store-note-"));
+  const storage = new LocalStorage(root);
+  const task = taskRecord("ready", {
+    ...(overrides.autoPublish ? { autoPublish: overrides.autoPublish } : {}),
+  });
+  await storage.writeJsonAtomic(
+    "cache/publishing-index.json",
+    seededIndex([notePackageRecord()], [task])
+  );
+  const store = new PublishingStore(storage, () => new Date(NOW));
+  await store.init();
+  return {
+    root,
+    storage,
+    store,
+    taskId: task.id,
+    readIndexBytes: () => readFile(path.join(root, "cache", "publishing-index.json")),
+  };
+}
+
+function isPublishingError(code: string) {
+  return (error: unknown) => {
+    assert.ok(error instanceof PublishingError, `期望 PublishingError，实际 ${String(error)}`);
+    assert.equal(error.code, code);
+    return true;
+  };
+}
+
+test("package preview revision covers ordered note images, note copy, and task copy", () => {
+  const base = packagePreviewRevision(notePackageRecord(), [taskRecord()]);
+  assert.match(base, /^[0-9a-f]{64}$/u);
+  // 同输入同输出
+  assert.equal(packagePreviewRevision(notePackageRecord(), [taskRecord()]), base);
+  // 图片顺序参与指纹（发错顺序事后只能删稿重发）
+  assert.notEqual(
+    packagePreviewRevision(notePackageRecord({ imagePaths: ["images/02.png", "images/01.png"] }), [taskRecord()]),
+    base,
+  );
+  assert.notEqual(
+    packagePreviewRevision(notePackageRecord({ noteCopy: { ...NOTE_COPY, description: "改过的正文" } }), [taskRecord()]),
+    base,
+  );
+  assert.notEqual(
+    packagePreviewRevision(notePackageRecord(), [taskRecord("ready", { title: "改过的标题" })]),
+    base,
+  );
+  // 视频包覆盖成片哈希
+  assert.notEqual(
+    packagePreviewRevision(packageRecord(), [taskRecord()]),
+    packagePreviewRevision(packageRecord({ videoSha256: "c".repeat(64) }), [taskRecord()]),
+  );
+});
+
+test("reads the current package preview revision from the index", async () => {
+  const { store } = await seededFixture();
+
+  assert.equal(await store.previewRevision("package-1"), packagePreviewRevision(packageRecord(), [taskRecord()]));
+  assert.equal(await store.previewRevision("package-absent"), null);
+});
+
+test("beginAutoPublish refuses a video package without writing anything", async () => {
+  const { store, readIndexBytes } = await seededFixture();
+  const before = await readIndexBytes();
+
+  await assert.rejects(
+    store.beginAutoPublish("task-1", { previewRevision: "whatever", attemptId: "attempt-1" }, ACTOR),
+    isPublishingError("publish_not_a_note_package"),
+  );
+
+  assert.deepEqual(await readIndexBytes(), before);
+  assert.equal((await store.getTask("task-1"))!.autoPublish, undefined);
+});
+
+test("beginAutoPublish refuses a stale or missing preview revision without writing anything", async () => {
+  const { store, readIndexBytes, taskId } = await seededNoteFixture();
+  const before = await readIndexBytes();
+
+  await assert.rejects(
+    store.beginAutoPublish(taskId, { previewRevision: "stale-revision", attemptId: "attempt-1" }, ACTOR),
+    isPublishingError("publish_revision_conflict"),
+  );
+  await assert.rejects(
+    store.beginAutoPublish(taskId, { previewRevision: "", attemptId: "attempt-1" }, ACTOR),
+    isPublishingError("publish_revision_conflict"),
+  );
+
+  assert.deepEqual(await readIndexBytes(), before);
+  assert.equal((await store.getTask(taskId))!.autoPublish, undefined);
+});
+
+test("beginAutoPublish records a running attempt without changing the task status", async () => {
+  const { store, taskId } = await seededNoteFixture();
+  const revision = (await store.previewRevision("package-1"))!;
+
+  const task = await store.beginAutoPublish(taskId, { previewRevision: revision, attemptId: "attempt-1" }, ACTOR);
+
+  assert.equal(task.autoPublish?.status, "running");
+  assert.equal(task.autoPublish?.attemptId, "attempt-1");
+  assert.equal(task.autoPublish?.startedAt, NOW);
+  // 不新增 PublishTaskStatus 取值：任务状态原样不动
+  assert.equal(task.status, "ready");
+  const auditActions = (await store.snapshot()).audit.map((event) => event.action);
+  assert.deepEqual(auditActions, ["task.auto_publish_start"]);
+});
+
+test("a second autoPublish cannot start while one is running or waiting for a code", async () => {
+  const { store, taskId } = await seededNoteFixture();
+  const revision = (await store.previewRevision("package-1"))!;
+  await store.beginAutoPublish(taskId, { previewRevision: revision, attemptId: "attempt-1" }, ACTOR);
+
+  await assert.rejects(
+    store.beginAutoPublish(taskId, { previewRevision: revision, attemptId: "attempt-2" }, ACTOR),
+    isPublishingError("publish_auto_publish_in_progress"),
+  );
+
+  await store.updateAutoPublish(taskId, { status: "awaiting_code", message: "等待验证码" }, ACTOR);
+  await assert.rejects(
+    store.beginAutoPublish(taskId, { previewRevision: revision, attemptId: "attempt-3" }, ACTOR),
+    isPublishingError("publish_auto_publish_in_progress"),
+  );
+
+  // 始终只有一条记录，且仍是第一次的 attempt
+  const task = (await store.getTask(taskId))!;
+  assert.equal(task.autoPublish?.attemptId, "attempt-1");
+  assert.equal(task.autoPublish?.status, "awaiting_code");
+});
+
+test("a stale running attempt does not block the task forever", async () => {
+  // 进程被杀 / 应用崩溃会留下永远 running 的记录；超过阈值必须能重试，否则任务被永久锁死。
+  const staleStartedAt = new Date(new Date(NOW).getTime() - 60 * 60 * 1000).toISOString();
+  const { store, taskId } = await seededNoteFixture({
+    autoPublish: { status: "running", startedAt: staleStartedAt, attemptId: "dead-attempt" },
+  });
+  const revision = (await store.previewRevision("package-1"))!;
+
+  const task = await store.beginAutoPublish(taskId, { previewRevision: revision, attemptId: "attempt-new" }, ACTOR);
+
+  assert.equal(task.autoPublish?.attemptId, "attempt-new");
+  assert.equal(task.autoPublish?.status, "running");
+  assert.equal(task.autoPublish?.startedAt, NOW);
+
+  // 阈值之内的 running 仍然要拦住
+  const fresh = await seededNoteFixture({
+    autoPublish: { status: "running", startedAt: NOW, attemptId: "alive-attempt" },
+  });
+  await assert.rejects(
+    fresh.store.beginAutoPublish(fresh.taskId, { previewRevision: revision, attemptId: "attempt-x" }, ACTOR),
+    isPublishingError("publish_auto_publish_in_progress"),
+  );
+});
+
+test("autoPublish outcomes never write published and survive an index reload", async () => {
+  const { root, store, taskId } = await seededNoteFixture();
+  const revision = (await store.previewRevision("package-1"))!;
+  await store.beginAutoPublish(taskId, { previewRevision: revision, attemptId: "attempt-1" }, ACTOR);
+
+  await store.updateAutoPublish(taskId, { status: "awaiting_code", message: "等待短信验证码" }, ACTOR);
+  let task = (await store.getTask(taskId))!;
+  assert.equal(task.autoPublish?.status, "awaiting_code");
+  assert.equal(task.status, "ready");
+
+  // 退出码 0 只记「已提交」，绝不写 published
+  await store.updateAutoPublish(taskId, { status: "succeeded", message: "sau: 图文发布成功", finishedAt: NOW }, ACTOR);
+  task = (await store.getTask(taskId))!;
+  assert.equal(task.autoPublish?.status, "succeeded");
+  assert.equal(task.autoPublish?.message, "sau: 图文发布成功");
+  assert.equal(task.autoPublish?.finishedAt, NOW);
+  assert.equal(task.status, "ready");
+  assert.equal(task.publishedAt, undefined);
+
+  await store.updateAutoPublish(taskId, { status: "failed", message: "预检失败：登录态失效" }, ACTOR);
+  task = (await store.getTask(taskId))!;
+  assert.equal(task.autoPublish?.status, "failed");
+  assert.equal(task.status, "ready");
+
+  // 落库：新实例（重新校验索引）必须能读回 autoPublish，且从没写过 published
+  const reopened = new PublishingStore(new LocalStorage(root), () => new Date(NOW));
+  await reopened.init();
+  const persisted = (await reopened.getTask(taskId))!;
+  assert.equal(persisted.autoPublish?.status, "failed");
+  assert.equal(persisted.autoPublish?.attemptId, "attempt-1");
+  assert.equal(persisted.status, "ready");
+  assert.deepEqual(
+    (await reopened.snapshot()).audit.map((event) => event.action),
+    [
+      "task.auto_publish_start",
+      "task.auto_publish_awaiting_code",
+      "task.auto_publish_succeeded",
+      "task.auto_publish_failed",
+    ],
+  );
+});
+
+test("submitting a verification code requires an attempt that is actually waiting", async () => {
+  const { store, taskId } = await seededNoteFixture();
+  const revision = (await store.previewRevision("package-1"))!;
+
+  // 没有尝试时拒绝
+  await assert.rejects(
+    store.recordAutoPublishCode(taskId, ACTOR),
+    isPublishingError("publish_auto_publish_code_unexpected"),
+  );
+
+  await store.beginAutoPublish(taskId, { previewRevision: revision, attemptId: "attempt-1" }, ACTOR);
+  // running（尚未进入等待验证码）同样拒绝
+  await assert.rejects(
+    store.recordAutoPublishCode(taskId, ACTOR),
+    isPublishingError("publish_auto_publish_code_unexpected"),
+  );
+
+  await store.updateAutoPublish(taskId, { status: "awaiting_code" }, ACTOR);
+  const task = await store.recordAutoPublishCode(taskId, ACTOR);
+
+  assert.equal(task.autoPublish?.status, "awaiting_code");
+  assert.equal(task.status, "ready");
+  const audit = (await store.snapshot()).audit;
+  assert.equal(audit.at(-1)?.action, "task.auto_publish_code");
+  assert.equal(audit.at(-1)?.taskId, taskId);
 });

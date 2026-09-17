@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import {
   copyFile as fsCopyFile,
@@ -28,6 +29,8 @@ import type {
 import {
   PublishingAssetError,
   PublishingAssetService,
+  collectSceneSnapshots,
+  type NotePackageAssetInput,
   type PackageAssetInput,
 } from "./publishing-assets.js";
 
@@ -135,6 +138,116 @@ function packageRecord(
     updatedAt: NOW.toISOString(),
     ...overrides,
   };
+}
+
+/** 合法最小 1×1 PNG（IHDR + IDAT + IEND，CRC 正确）。 */
+const MINIMAL_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+  "base64",
+);
+
+/** 每个场景一张「静帧」：最小 PNG + 一个区分字节，便于断言「改了哪一张」。 */
+function frameBytes(seed: number): Buffer {
+  return Buffer.concat([MINIMAL_PNG, Buffer.from([seed])]);
+}
+
+function sha256Of(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** 各图 sha256 有序拼接后再哈希 —— 测试内独立重算，不复用被测实现。 */
+function manifestHashOf(hashes: string[]): string {
+  return createHash("sha256").update(hashes.join("\n")).digest("hex");
+}
+
+function noteInput(overrides: Partial<NotePackageAssetInput> = {}): NotePackageAssetInput {
+  return {
+    packageId: "package-1",
+    sourceJobId: "job-1",
+    version: 1,
+    noteCopy: { title: "抖音图文标题", description: "抖音图文正文", hashtags: ["内容创作", "效率"] },
+    title: "发布包标题",
+    tasks: [task("task-douyin", "douyin")],
+    actor: ACTOR,
+    ...overrides,
+  };
+}
+
+/** 换包号/版本时必须同时换 tasks 的 packageId（`validateProjectionTasks` 校验任务归属）。 */
+function noteInputFor(
+  packageId: string,
+  version: number,
+  overrides: Partial<NotePackageAssetInput> = {},
+): NotePackageAssetInput {
+  return noteInput({
+    packageId,
+    version,
+    tasks: [task(`task-${packageId}`, "douyin", packageId)],
+    ...overrides,
+  });
+}
+
+async function emptyNoteStorageRoot(): Promise<string> {
+  return realpath(await mkdtemp(path.join(tmpdir(), "publishing-notes-empty-")));
+}
+
+async function noteFixture() {
+  const storageRoot = await emptyNoteStorageRoot();
+  const snapshotsDirectory = path.join(
+    storageRoot,
+    "output",
+    "videos",
+    "job-1",
+    "hyperframes",
+    "snapshots",
+  );
+  await mkdir(snapshotsDirectory, { recursive: true });
+  const snapshots = {
+    frame00: path.join(snapshotsDirectory, "frame-00-at-3s.png"),
+    frame01: path.join(snapshotsDirectory, "frame-01-at-9s.png"),
+    frame02: path.join(snapshotsDirectory, "frame-02-at-15s.png"),
+  };
+  await writeFile(snapshots.frame00, frameBytes(0));
+  await writeFile(snapshots.frame01, frameBytes(1));
+  await writeFile(snapshots.frame02, frameBytes(2));
+  // snapshot 目录里还有非场景产物：字典序排在 frame-* 之前，必须被排除。
+  await writeFile(path.join(snapshotsDirectory, "contact-sheet-1.jpg"), frameBytes(9));
+  await writeFile(path.join(snapshotsDirectory, "contact-sheet-2.jpg"), frameBytes(9));
+  return { storageRoot, snapshotsDirectory, snapshots, input: noteInput() };
+}
+
+function notePackageRecord(
+  result: Awaited<ReturnType<PublishingAssetService["createNotePackageAssets"]>>,
+  overrides: Partial<DeliveryPackage> = {},
+): DeliveryPackage {
+  return {
+    id: "package-1",
+    sourceJobId: "job-1",
+    version: 1,
+    state: "active",
+    title: "发布包标题",
+    packagePath: result.packagePath,
+    // note 包的 video* 字段「不适用」，用图片清单哈希充当等价完整性凭据。
+    videoSha256: result.imageManifestSha256,
+    videoSize: result.imageSize,
+    videoMethod: "copy",
+    assetHealth: result.assetHealth,
+    contentType: "note",
+    imagePaths: [...result.imagePaths],
+    noteCopy: { title: "抖音图文标题", description: "抖音图文正文", hashtags: ["内容创作", "效率"] },
+    createdBy: ACTOR,
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+    ...overrides,
+  };
+}
+
+function noteService(storageRoot: string): PublishingAssetService {
+  return new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => { throw new Error("图文打包不应调用任何外部命令"); },
+  });
 }
 
 test("packages one cloned MP4 with safe manifest and shared platform projections", async () => {
@@ -1054,4 +1167,298 @@ test("startup scan isolates a bad package and continues later verification and r
   assert.deepEqual(report.repairFailures.map((failure) => failure.packageId), ["m-bad"]);
   assert.equal(await readFile(path.join(first.packagePath, "platforms", "douyin", "title.txt"), "utf8"), "douyin 标题");
   assert.equal(await readFile(path.join(last.packagePath, "platforms", "bilibili", "title.txt"), "utf8"), "bilibili 标题");
+});
+
+test("collects scene snapshots in scene order and skips non-scene snapshot artifacts", async () => {
+  const { storageRoot, snapshotsDirectory, snapshots } = await noteFixture();
+  const frame10 = path.join(snapshotsDirectory, "frame-10-at-58.2s.png");
+  await writeFile(frame10, frameBytes(10));
+  await writeFile(path.join(snapshotsDirectory, "notes.txt"), "not an image");
+  const service = noteService(storageRoot);
+
+  const collected = await collectSceneSnapshots(storageRoot, "job-1");
+
+  // contact-sheet-*.jpg 字典序在 frame-* 之前，纯 readdir().sort() 会把它们排到最前；
+  // frame-10 也必须排在 frame-02 之后（按场景号数值序，不是字典序）。
+  assert.deepEqual(collected, [snapshots.frame00, snapshots.frame01, snapshots.frame02, frame10]);
+  assert.deepEqual(await collectSceneSnapshots(await emptyNoteStorageRoot(), "job-1"), []);
+  assert.deepEqual(await collectSceneSnapshots(storageRoot, "job-absent"), []);
+
+  // 目录里只有非场景产物 → 同样视为没有图。
+  const onlySheets = await emptyNoteStorageRoot();
+  const onlySheetsDirectory = path.join(onlySheets, "output", "videos", "job-1", "hyperframes", "snapshots");
+  await mkdir(onlySheetsDirectory, { recursive: true });
+  await writeFile(path.join(onlySheetsDirectory, "contact-sheet-1.jpg"), frameBytes(9));
+  assert.deepEqual(await collectSceneSnapshots(onlySheets, "job-1"), []);
+
+  // 打包侧自动收集：包内图片就是按场景序的静帧（frame-10 排在最末，contact sheet 不在内）。
+  const result = await service.createNotePackageAssets(noteInput());
+  assert.deepEqual(result.imagePaths, ["images/01.png", "images/02.png", "images/03.png", "images/04.png"]);
+  assert.deepEqual(await readFile(path.join(result.packagePath, "images", "04.png")), frameBytes(10));
+});
+
+test("packages note snapshots in order with an ordered image manifest hash", async () => {
+  const { storageRoot, snapshots, input } = await noteFixture();
+  const service = noteService(storageRoot);
+
+  const result = await service.createNotePackageAssets(input);
+  const files = await listFiles(result.packagePath);
+  const manifest = JSON.parse(await readFile(path.join(result.packagePath, "manifest.json"), "utf8")) as {
+    contentType: string;
+    assetHealth: string;
+    images: { paths: string[]; count: number; size: number; manifestSha256: string };
+    tasks: Array<{ imagePaths: string[] }>;
+  };
+
+  assert.equal(result.contentType, "note");
+  assert.equal(result.assetHealth, "healthy");
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(result.imagePaths, ["images/01.png", "images/02.png", "images/03.png"]);
+  assert.equal(result.imageCount, 3);
+  assert.equal(result.imageSize, frameBytes(0).length * 3);
+  assert.deepEqual(files.filter((file) => file.startsWith("images/")), [
+    "images/01.png",
+    "images/02.png",
+    "images/03.png",
+  ]);
+  // note 包里没有成片与封面。
+  assert.equal(files.includes("video.mp4"), false);
+  assert.equal(files.includes("cover.jpg"), false);
+  // 01 对应 frame-00、03 对应 frame-02：场景序而不是传入顺序的偶然巧合。
+  assert.deepEqual(await readFile(path.join(result.packagePath, "images", "01.png")), frameBytes(0));
+  assert.deepEqual(await readFile(path.join(result.packagePath, "images", "02.png")), frameBytes(1));
+  assert.deepEqual(await readFile(path.join(result.packagePath, "images", "03.png")), frameBytes(2));
+  // 平台文案投影与视频包一致（共用同一套写法）。
+  assert.equal(await readFile(path.join(result.packagePath, "platforms", "douyin", "title.txt"), "utf8"), "douyin 标题");
+  assert.equal(
+    await readFile(path.join(result.packagePath, "platforms", "douyin", "hashtags.txt"), "utf8"),
+    "#内容创作 #效率",
+  );
+
+  assert.equal(manifest.contentType, "note");
+  assert.equal(manifest.assetHealth, "healthy");
+  assert.deepEqual(manifest.images.paths, result.imagePaths);
+  assert.equal(manifest.images.count, 3);
+  assert.equal(manifest.images.size, result.imageSize);
+  assert.equal(manifest.images.manifestSha256, result.imageManifestSha256);
+  assert.deepEqual(manifest.tasks.map((entry) => entry.imagePaths), [result.imagePaths]);
+
+  // 清单哈希 = 各图 sha256 有序拼接后再哈希（用包内真实字节独立重算）。
+  const packageHashes = await Promise.all(
+    result.imagePaths.map(async (relativePath) => sha256Of(await readFile(path.join(result.packagePath, relativePath)))),
+  );
+  assert.deepEqual(packageHashes, [frameBytes(0), frameBytes(1), frameBytes(2)].map(sha256Of));
+  assert.equal(result.imageManifestSha256, manifestHashOf(packageHashes));
+
+  assert.doesNotMatch(JSON.stringify(manifest), /api.?key|cookie|password|pin(hash|salt)?|secret|token/iu);
+  assert.doesNotMatch(files.join("\n"), /api.?key|cookie|password|pin|secret|token/iu);
+  assert.deepEqual(await readdir(path.join(storageRoot, "output", "publishing", "job-1")), ["v1-package-1"]);
+});
+
+test("changing any image or reordering the list changes the image manifest hash", async () => {
+  const { storageRoot, snapshots, input } = await noteFixture();
+  const service = noteService(storageRoot);
+
+  const original = await service.createNotePackageAssets({
+    ...input,
+    sourceImagePaths: [snapshots.frame00, snapshots.frame01],
+  });
+  const reordered = await service.createNotePackageAssets(noteInputFor("package-b", 2, {
+    sourceImagePaths: [snapshots.frame01, snapshots.frame00],
+  }));
+  // 同样的两张图，仅调换顺序：清单哈希必须改变，且包内 01 换成原来的 frame-01。
+  assert.notEqual(reordered.imageManifestSha256, original.imageManifestSha256);
+  assert.deepEqual(original.imagePaths, ["images/01.png", "images/02.png"]);
+  assert.deepEqual(await readFile(path.join(original.packagePath, "images", "01.png")), frameBytes(0));
+  assert.deepEqual(await readFile(path.join(reordered.packagePath, "images", "01.png")), frameBytes(1));
+  assert.deepEqual(await readFile(path.join(reordered.packagePath, "images", "02.png")), frameBytes(0));
+
+  // 改动其中一张图的内容：清单哈希同样必须改变。
+  await writeFile(snapshots.frame01, frameBytes(7));
+  const changed = await service.createNotePackageAssets(noteInputFor("package-c", 3, {
+    sourceImagePaths: [snapshots.frame00, snapshots.frame01],
+  }));
+  assert.notEqual(changed.imageManifestSha256, original.imageManifestSha256);
+  assert.notEqual(changed.imageManifestSha256, reordered.imageManifestSha256);
+  assert.deepEqual(await readFile(path.join(changed.packagePath, "images", "02.png")), frameBytes(7));
+});
+
+test("keeps a note package usable with missing_images and an explicit warning when there are no images", async () => {
+  const storageRoot = await emptyNoteStorageRoot();
+  const service = noteService(storageRoot);
+
+  const discovered = await service.createNotePackageAssets(noteInput());
+  const explicit = await service.createNotePackageAssets(noteInputFor("package-b", 2, { sourceImagePaths: [] }));
+
+  for (const result of [discovered, explicit]) {
+    assert.equal(result.contentType, "note");
+    assert.equal(result.assetHealth, "missing_images");
+    assert.equal(result.imageCount, 0);
+    assert.deepEqual(result.imagePaths, []);
+    assert.equal(result.imageSize, 0);
+    assert.equal(result.warnings.length, 1);
+    assert.equal(result.warnings[0].code, "publish_images_missing");
+    assert.match(result.warnings[0].message, /图片|素材/u);
+    // 包仍然自包含地建出来（文案与清单可用），只是资产不健康。
+    assert.equal(await readFile(path.join(result.packagePath, "platforms", "douyin", "title.txt"), "utf8"), "douyin 标题");
+    assert.equal((await listFiles(result.packagePath)).some((file) => file.startsWith("images/")), false);
+    const manifest = JSON.parse(await readFile(path.join(result.packagePath, "manifest.json"), "utf8")) as {
+      assetHealth: string;
+      images: { paths: string[]; count: number };
+    };
+    assert.equal(manifest.assetHealth, "missing_images");
+    assert.deepEqual(manifest.images.paths, []);
+    assert.equal(manifest.images.count, 0);
+    assert.equal(await service.verifyPackageImages(notePackageRecord(result)), "missing_images");
+  }
+
+  assert.deepEqual(await readdir(path.join(storageRoot, "output", "publishing", "job-1")), [
+    "v1-package-1",
+    "v2-package-b",
+  ]);
+});
+
+test("verifies note package images and reports missing_images for absent, forged, or altered images", async () => {
+  const { storageRoot, input } = await noteFixture();
+  const service = noteService(storageRoot);
+  const result = await service.createNotePackageAssets(input);
+  const record = notePackageRecord(result);
+
+  assert.equal(await service.verifyPackageImages(record), "healthy");
+  // 调换记录里的顺序 → 与包内容指纹不符。
+  assert.equal(await service.verifyPackageImages({
+    ...record,
+    imagePaths: [...record.imagePaths!].reverse(),
+  }), "missing_images");
+  // 包内少一张。
+  await rm(path.join(result.packagePath, "images", "02.png"));
+  assert.equal(await service.verifyPackageImages(record), "missing_images");
+  // 内容被改写。
+  await writeFile(path.join(result.packagePath, "images", "02.png"), frameBytes(77));
+  assert.equal(await service.verifyPackageImages(record), "missing_images");
+  // 还原成原字节后重新健康 —— 证明上面的判定不是「恒为 missing_images」。
+  await writeFile(path.join(result.packagePath, "images", "02.png"), frameBytes(1));
+  assert.equal(await service.verifyPackageImages(record), "healthy");
+  // 声明越出包目录的路径。
+  for (const forged of ["../video.mp4", "images/../manifest.json", "images/../../job-1/v1-package-1/images/01.png", "/etc/passwd"]) {
+    assert.equal(await service.verifyPackageImages({ ...record, imagePaths: [forged] }), "missing_images");
+  }
+  // 包目录外带符号链接的图片名。
+  await symlink(path.join(storageRoot, "outside.png"), path.join(result.packagePath, "images", "09.png"), "file");
+  assert.equal(await service.verifyPackageImages({ ...record, imagePaths: ["images/09.png"] }), "missing_images");
+  // 记录指向另一个包。
+  assert.equal(await service.verifyPackageImages({
+    ...record,
+    version: 9,
+  }), "missing_images");
+});
+
+test("rejects note packing above the 35 image limit before writing anything", async () => {
+  const storageRoot = await emptyNoteStorageRoot();
+  const snapshotsDirectory = path.join(storageRoot, "frames");
+  await mkdir(snapshotsDirectory, { recursive: true });
+  const imagePaths: string[] = [];
+  for (let index = 0; index < 36; index += 1) {
+    const imagePath = path.join(snapshotsDirectory, `frame-${String(index).padStart(2, "0")}-at-1s.png`);
+    await writeFile(imagePath, frameBytes(index));
+    imagePaths.push(imagePath);
+  }
+  const service = noteService(storageRoot);
+
+  await assert.rejects(service.createNotePackageAssets(noteInput({ sourceImagePaths: imagePaths })), (error: unknown) => {
+    assert.ok(error instanceof PublishingAssetError);
+    assert.equal(error.status, 422);
+    assert.equal(error.code, "publish_too_many_images");
+    return true;
+  });
+
+  assert.deepEqual(await readdir(path.join(storageRoot, "output", "publishing", "job-1")).catch(() => []), []);
+});
+
+test("keeps the video package manifest byte-identical and reports contentType video without note parameters", async () => {
+  const { storageRoot, input } = await fixture();
+  const service = new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    // 固定走 copy 分支，让 manifest 里的 method 与哈希可逐字节比对。
+    copyFile: async (source, destination, mode = 0) => {
+      if (mode & constants.COPYFILE_FICLONE) throw Object.assign(new Error("clone unavailable"), { code: "ENOTSUP" });
+      await fsCopyFile(source, destination, mode);
+    },
+    runCommand: async () => { throw new Error("no cover"); },
+  });
+
+  const result = await service.createPackageAssets(input);
+
+  assert.equal(result.contentType, "video");
+  assert.deepEqual(await listFiles(result.packagePath), [
+    "manifest.json",
+    "platforms/bilibili/description.txt",
+    "platforms/bilibili/hashtags.txt",
+    "platforms/bilibili/publish.txt",
+    "platforms/bilibili/title.txt",
+    "platforms/douyin/description.txt",
+    "platforms/douyin/hashtags.txt",
+    "platforms/douyin/publish.txt",
+    "platforms/douyin/title.txt",
+    "video.mp4",
+  ]);
+  // 2026-09-17 改动前的实现产物，逐字节固定：视频包 manifest 不得被图文打包改动。
+  const baseline = `{
+  "schemaVersion": 1,
+  "package": {
+    "id": "package-1",
+    "sourceJobId": "job-1",
+    "version": 1,
+    "title": "发布包标题",
+    "createdBy": {
+      "userId": "user-1",
+      "displayName": "发布员",
+      "role": "publisher"
+    },
+    "createdAt": "2026-08-10T08:00:00.000Z"
+  },
+  "video": {
+    "path": "video.mp4",
+    "sha256": "e93091cd173f65c449034403ad0c0339263d8e65ab499eff88b5f8681c8cb063",
+    "size": 16,
+    "method": "copy"
+  },
+  "cover": null,
+  "assetHealth": "missing_cover",
+  "tasks": [
+    {
+      "id": "task-douyin",
+      "platform": "douyin",
+      "videoPath": "video.mp4",
+      "title": "douyin 标题",
+      "description": "douyin 正文",
+      "hashtags": [
+        "内容创作",
+        "效率"
+      ],
+      "copySource": "ai",
+      "status": "ready",
+      "contentRevision": 1
+    },
+    {
+      "id": "task-bilibili",
+      "platform": "bilibili",
+      "videoPath": "video.mp4",
+      "title": "bilibili 标题",
+      "description": "bilibili 正文",
+      "hashtags": [
+        "内容创作",
+        "效率"
+      ],
+      "copySource": "ai",
+      "status": "ready",
+      "contentRevision": 1
+    }
+  ]
+}`;
+  const manifestBytes = await readFile(path.join(result.packagePath, "manifest.json"));
+  assert.equal(manifestBytes.toString("utf8"), baseline);
+  assert.equal(sha256Of(manifestBytes), "469ba17f14e73a7a3cac710572ebdf6eb44adccca7e100b2e00750f431bb8722");
+  assert.deepEqual(await readFile(result.videoPath), await readFile(input.sourceVideoPath));
 });

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, open, readFile, stat } from "node:fs/promises";
+import { access, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   ActorSnapshot,
@@ -8,12 +8,15 @@ import type {
   DeliveryPackage,
   DueNotification,
   JobRecord,
+  PackageContentType,
   PlatformCopy,
   PublishCopySource,
   PublishPlatform,
   PublishingAssetInspection,
   PublishingPackageDetail,
+  PublishingPackagePreview,
   PublishingPreview,
+  PublishingPreviewCopyCheck,
   PublishTask,
   ScriptAsset,
 } from "../types.js";
@@ -23,17 +26,23 @@ import {
   type PublishingRecoveryReport,
   PublishingAssetError,
   PublishingAssetService,
+  collectSceneSnapshots,
 } from "./publishing-assets.js";
 import {
   normalizePlatformCopy,
+  PUBLISH_NOTE_POLICIES,
   PUBLISH_PLATFORMS,
+  type PlatformPolicy,
+  validateNoteCopy,
   validatePlatformCopy,
 } from "./publishing-platforms.js";
 import {
   PublishingError,
   PublishingStore,
+  packagePreviewRevision,
   type RestorePackageResult,
 } from "./publishing-store.js";
+import { SAU_INSTALL_GUIDANCE, SAU_NOTE_MAX_TITLE, SauRunner, SauRunnerError } from "./sau-runner.js";
 import { SYSTEM_ACTOR } from "./local-users.js";
 import { resolveJobVideo, VideoOutputError } from "./video-output.js";
 
@@ -65,6 +74,7 @@ type JobReader = {
 
 type CopyService = Pick<PublishingCopyService, "previewAll">;
 type Store = Pick<PublishingStore,
+  | "beginAutoPublish"
   | "cancel"
   | "commitPackage"
   | "getPackage"
@@ -72,6 +82,7 @@ type Store = Pick<PublishingStore,
   | "markPublished"
   | "markPurged"
   | "processDue"
+  | "recordAutoPublishCode"
   | "recordActionError"
   | "recordFailure"
   | "recordPurgeFailure"
@@ -81,17 +92,35 @@ type Store = Pick<PublishingStore,
   | "setAssetHealth"
   | "snapshot"
   | "trashPackage"
+  | "updateAutoPublish"
   | "updateContent"
   | "updateSchedule"
   | "withdraw"
 >;
 type Assets = Pick<PublishingAssetService,
+  | "createNotePackageAssets"
   | "createPackageAssets"
   | "purgeAssets"
+  | "readPackageImage"
   | "readPackageCover"
+  | "resolvePackageImages"
   | "scanAndRepair"
   | "stageTextProjection"
+  | "verifyPackageImages"
   | "verifyPackageVideo"
+>;
+
+/**
+ * 自动发布用到的那部分 `SauRunner`。单独取 Pick 而不是整类，
+ * 是为了让测试能注入只实现这几步的假引擎，也让依赖面一目了然。
+ */
+export type AutoPublishRunner = Pick<SauRunner,
+  | "assertConfigured"
+  | "checkLogin"
+  | "prepareAccountFile"
+  | "runUploadNote"
+  | "syncBackCookies"
+  | "verifyCodeFilePath"
 >;
 
 export interface PublishingServiceDependencies {
@@ -100,6 +129,8 @@ export interface PublishingServiceDependencies {
   store: Store;
   assets: Assets;
   copy: CopyService;
+  /** 抖音图文自动发布的外部引擎；未注入时按「未配置」明确报错。 */
+  sau?: AutoPublishRunner;
   now?: () => Date;
   createId?: () => string;
   resolveVideo?: typeof resolveJobVideo;
@@ -107,6 +138,12 @@ export interface PublishingServiceDependencies {
 
 type ServiceErrorCode =
   | "publish_asset_broken"
+  | "publish_auto_publish_code_unexpected"
+  | "publish_auto_publish_in_progress"
+  | "publish_images_unusable"
+  | "publish_note_platform_unsupported"
+  | "publish_not_a_note_package"
+  | "publish_sau_not_configured"
   | "publish_cleaned_missing"
   | "publish_consistency_failed"
   | "publish_index_corrupt"
@@ -121,7 +158,13 @@ type ServiceErrorCode =
   | "publish_validation_failed";
 
 const SERVICE_ERROR_MESSAGES: Record<ServiceErrorCode, string> = {
+  publish_sau_not_configured: SAU_INSTALL_GUIDANCE,
   publish_asset_broken: "发布包视频资产异常，无法执行此操作",
+  publish_auto_publish_code_unexpected: "该任务当前没有在等待短信验证码",
+  publish_auto_publish_in_progress: "该任务的图文自动发布正在进行中，请等本次结束后再试",
+  publish_images_unusable: "图文包的图片素材不完整，请重新生成或选择图片后再发布",
+  publish_note_platform_unsupported: "该平台尚未接入图文发布，目前只支持抖音图文",
+  publish_not_a_note_package: "该发布包不是图文包，无法执行抖音图文自动发布",
   publish_cleaned_missing: "未找到可用洗稿内容，请先完成 AI 洗稿",
   publish_consistency_failed: "发布索引写入失败，且发布包资产回滚失败，请重启应用执行修复",
   publish_index_corrupt: "发布索引已损坏，当前处于只读保护状态",
@@ -200,8 +243,13 @@ export class PublishingService {
     }
   }
 
-  async preview(jobId: string, platforms: PublishPlatform[]): Promise<PublishingPreview> {
+  async preview(
+    jobId: string,
+    platforms: PublishPlatform[],
+    contentType: PackageContentType = "video",
+  ): Promise<PublishingPreview> {
     const selected = validatePlatformSelection(platforms);
+    if (contentType === "note") return this.previewNotePackage(jobId, selected);
     const context = await this.readSourceContext(jobId);
     try {
       const index = await this.deps.store.snapshot();
@@ -214,6 +262,7 @@ export class PublishingService {
       }
 
       return {
+        contentType: "video",
         sourceJobId: jobId,
         nextVersion,
         previewRevision: sourceRevision(jobId, context, selected),
@@ -247,6 +296,10 @@ export class PublishingService {
     const selected = validatePlatformSelection(input.platforms.map((item) => item.platform));
     const context = await this.readSourceContext(input.sourceJobId);
     try {
+      if ((input.contentType ?? "video") === "note") {
+        return await this.createNote(input, context, selected, actor);
+      }
+
       const currentRevision = sourceRevision(input.sourceJobId, context, selected);
       if (currentRevision !== input.previewRevision) {
         throw new PublishingServiceError(409, "publish_revision_conflict", undefined, {
@@ -480,9 +533,272 @@ export class PublishingService {
     return report;
   }
 
+  /**
+   * 图文包的创建前预览：列出将被打包的场景静帧，并给出压缩到图文口径的默认文案。
+   *
+   * 抖音图文标题上限 20 字（视频是 55），所以默认文案由视频口径的文案**压缩**而来；
+   * 「是否被压缩过」要回给界面（spec §5 要求标注「已压缩，可编辑」）。
+   */
+  private async previewNotePackage(jobId: string, selected: PublishPlatform[]): Promise<PublishingPreview> {
+    assertNotePlatforms(selected);
+    const context = await this.readSourceContext(jobId);
+    try {
+      const index = await this.deps.store.snapshot();
+      const nextVersion = index.nextVersionBySource[jobId] ?? 1;
+      const copyPreview = await this.deps.copy.previewAll(context.cleaned, selected);
+      const sourceKey = sourceContextRevision(jobId, context);
+      for (const platform of selected) {
+        const copy = copyPreview.copies[platform];
+        if (copy) this.rememberCopy(sourceKey, platform, copy, copy.copySource);
+      }
+
+      const snapshots = await this.listSceneSnapshots(jobId);
+      const videoCopy = copyPreview.copies.douyin ?? { title: "", description: "", hashtags: [] };
+      const compressed = compressNoteTitle(videoCopy.title || context.cleaned.title || "", SAU_NOTE_MAX_TITLE);
+      const noteCopy: PlatformCopy = {
+        title: compressed.title,
+        description: videoCopy.description,
+        hashtags: [...videoCopy.hashtags],
+      };
+
+      return {
+        sourceJobId: jobId,
+        nextVersion,
+        previewRevision: sourceRevision(jobId, context, selected, snapshots.map((snapshot) => snapshot.name)),
+        video: {
+          filename: path.basename(context.video.path),
+          size: context.video.size,
+          width: context.width,
+          height: context.height,
+          duration: context.duration,
+          coverAvailable: Boolean(context.sourceCoverPath),
+        },
+        copies: copyPreview.copies,
+        ...(copyPreview.warning ? { warning: copyPreview.warning } : {}),
+        expectedPackagePath: path.join(this.storageRoot, "output", "publishing", jobId, `v${nextVersion}-preview`),
+        contentType: "note",
+        images: snapshots.map((snapshot) => ({ name: snapshot.name, size: snapshot.size })),
+        noteCopy,
+        noteCopyTitleCompressed: compressed.compressed,
+      };
+    } finally {
+      await context.video.close().catch(() => undefined);
+    }
+  }
+
+  /** 场景静帧的规范化清单（场景序），供图文预览与打包共用同一份顺序。 */
+  private async listSceneSnapshots(jobId: string): Promise<Array<{ name: string; size: number }>> {
+    const absolutePaths = await collectSceneSnapshots(this.storageRoot, jobId);
+    const snapshots: Array<{ name: string; size: number }> = [];
+    for (const absolutePath of absolutePaths) {
+      const stats = await stat(absolutePath).catch(() => undefined);
+      if (!stats || !stats.isFile() || stats.size === 0) continue;
+      snapshots.push({ name: path.basename(absolutePath), size: stats.size });
+    }
+    return snapshots;
+  }
+
+  /**
+   * 包级预览：把「将要发出去的内容」摊开给操作者看（spec §14）。
+   *
+   * 文案校验在这里一次算好（图文包按**图文口径**用 `noteCopy`、视频包按各平台视频口径
+   * 用任务文案），前端只渲染 `actual/limit/over` 与 `violations` —— 渲染层是独立 TS 工程、
+   * 引用不到 `src/lib`，所以规则必须留在服务端，否则两边会各写一份长度规则慢慢漂移。
+   */
+  async packagePreview(packageId: string): Promise<PublishingPackagePreview> {
+    const detail = await this.requirePackage(packageId);
+    const packageRecord = detail.package;
+    const contentType = packageRecord.contentType ?? "video";
+    const preview: PublishingPackagePreview = {
+      package: {
+        id: packageRecord.id,
+        sourceJobId: packageRecord.sourceJobId,
+        version: packageRecord.version,
+        state: packageRecord.state,
+        title: packageRecord.title,
+        packagePath: packageRecord.packagePath,
+        contentType,
+        assetHealth: packageRecord.assetHealth,
+        createdBy: structuredClone(packageRecord.createdBy),
+        createdAt: packageRecord.createdAt,
+        updatedAt: packageRecord.updatedAt,
+      },
+      previewRevision: packagePreviewRevision(packageRecord, detail.tasks),
+      copyChecks: [],
+      tasks: detail.tasks.map((task) => ({
+        id: task.id,
+        platform: task.platform,
+        status: task.status,
+        contentRevision: task.contentRevision,
+        ...(task.scheduledAt === undefined ? {} : { scheduledAt: task.scheduledAt }),
+        copy: { title: task.title, description: task.description, hashtags: [...task.hashtags] },
+      })),
+    };
+
+    if (contentType === "note") {
+      preview.imagePaths = [...(packageRecord.imagePaths ?? [])];
+      const noteCopy = packageRecord.noteCopy ?? {
+        title: packageRecord.title,
+        description: "",
+        hashtags: [],
+      };
+      preview.noteCopy = { ...noteCopy, hashtags: [...noteCopy.hashtags] };
+      const platform = detail.tasks[0]?.platform ?? "douyin";
+      preview.copyChecks.push(copyCheck(platform, "package", preview.noteCopy, undefined, true));
+    } else {
+      preview.video = {
+        path: packageRecord.videoPath ?? "",
+        sha256: packageRecord.videoSha256,
+        size: packageRecord.videoSize,
+        method: packageRecord.videoMethod,
+        hasCover: Boolean(packageRecord.coverPath),
+      };
+      for (const task of detail.tasks) {
+        preview.copyChecks.push(copyCheck(
+          task.platform,
+          "task",
+          { title: task.title, description: task.description, hashtags: [...task.hashtags] },
+          task.id,
+          false,
+        ));
+      }
+    }
+    return preview;
+  }
+
+  /** 读取图文包的某张图；序号对不上或图片缺失时返回 `null`（路由决定 404）。 */
+  async readPackageImage(
+    packageId: string,
+    index: number,
+  ): Promise<{ bytes: Buffer; extension: string } | null> {
+    const detail = await this.requirePackage(packageId);
+    if ((detail.package.contentType ?? "video") !== "note") return null;
+    return this.deps.assets.readPackageImage(detail.package, index);
+  }
+
   async verifyPackage(packageId: string): Promise<DeliveryPackage["assetHealth"]> {
     const detail = await this.requirePackage(packageId);
     return this.deps.assets.verifyPackageVideo(detail.package);
+  }
+
+  /**
+   * 把一条图文任务提交给抖音（外部 `sau` CLI），记录结果。
+   *
+   * 关键不变式：**退出码 0 只记 `succeeded`（已提交），绝不写 `published`**。
+   * 是否真的发出去了，仍由人工点「标记已发布」确认 —— 上游在等 URL 跳转时会
+   * `force=True` 再点一次发布，重复发布是本功能最大的风险（spec §9）。
+   *
+   * 校验顺序刻意如此：所有「不该产生记录」的检查都在 `beginAutoPublish` 之前或之内完成，
+   * 因此缺 previewRevision / 过期 revision / 缺配置 / 缺图这四种失败都不会留下 autoPublish 记录。
+   */
+  async autoPublish(
+    taskId: string,
+    input: { previewRevision: string },
+    actor: ActorSnapshot,
+  ): Promise<PublishTask> {
+    const task = await this.requireTask(taskId);
+    const detail = await this.requirePackage(task.packageId);
+
+    // 先判输入类别、再判配置：视频包不是「配置问题」，无论 sau 配没配都该报同一个明确错误。
+    if ((detail.package.contentType ?? "video") !== "note") {
+      throw new PublishingServiceError(422, "publish_not_a_note_package");
+    }
+    const runner = this.requireSauRunner();
+
+    // 图片必须在提交前是完好的：界面会禁用缺图的包，但接口仍可被直接调用。
+    if (await this.deps.assets.verifyPackageImages(detail.package) !== "healthy") {
+      throw new PublishingServiceError(422, "publish_images_unusable");
+    }
+    const imagePaths = await this.deps.assets.resolvePackageImages(detail.package);
+    const noteCopy = detail.package.noteCopy;
+
+    const attemptId = this.createId();
+    await this.storeCall(() => this.deps.store.beginAutoPublish(
+      taskId,
+      { previewRevision: input.previewRevision, attemptId },
+      actor,
+    ));
+
+    try {
+      const precheck = await runner.checkLogin();
+      if (!precheck.ok) {
+        return await this.finishAutoPublish(taskId, {
+          status: "failed",
+          message: `登录态预检未通过：${summarizeCliOutput(precheck.output)}`,
+        }, actor);
+      }
+
+      await runner.prepareAccountFile();
+      const upload = await runner.runUploadNote({
+        imagePaths,
+        title: noteCopy?.title ?? task.title,
+        note: noteCopy?.description ?? task.description,
+        tags: noteCopy?.hashtags ?? task.hashtags,
+      });
+
+      if (upload.ok) {
+        // sau 会回写刷新后的 cookie；回写失败不影响「已提交」这个事实。
+        await runner.syncBackCookies().catch(() => undefined);
+        return await this.finishAutoPublish(taskId, {
+          status: "succeeded",
+          message: `已提交：${summarizeCliOutput(upload.output)}`,
+        }, actor);
+      }
+      if (upload.needsVerificationCode) {
+        return await this.finishAutoPublish(taskId, {
+          status: "awaiting_code",
+          message: summarizeCliOutput(upload.output),
+        }, actor);
+      }
+      return await this.finishAutoPublish(taskId, {
+        status: "failed",
+        message: summarizeCliOutput(upload.output) || `sau 以退出码 ${upload.exitCode} 结束`,
+      }, actor);
+    } catch (error) {
+      // 引擎侧的可预期失败（Cookie 文件不可读、参数不合法……）记为该次尝试失败，
+      // 绝不能把任务永远留在 running。
+      if (error instanceof SauRunnerError) {
+        return await this.finishAutoPublish(taskId, { status: "failed", message: error.message }, actor);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 把短信验证码投喂给正在等待的 `sau` 进程。
+   *
+   * 注意（2026-09-17 从上游源码实测）：`verify_code.txt` 只有上游**视频**发布通路会读，
+   * `upload-note` 通路既不读该文件、发布循环也没有次数上限。所以图文发布遇到短信挑战的
+   * 实际结局是「一直循环到超时 → failed」，而不是真的在这里被喂进去。这条通路按 spec §7
+   * 保留接口，等上游补齐 note 侧支持即可生效。
+   */
+  async submitAutoPublishCode(taskId: string, code: string, actor: ActorSnapshot): Promise<PublishTask> {
+    const runner = this.requireSauRunner();
+    const task = await this.requireTask(taskId);
+    if (task.autoPublish?.status !== "awaiting_code") {
+      throw new PublishingServiceError(409, "publish_auto_publish_code_unexpected");
+    }
+
+    const codeFile = runner.verifyCodeFilePath;
+    await mkdir(path.dirname(codeFile), { recursive: true }).catch(() => undefined);
+    await writeFile(codeFile, code, "utf8");
+    return this.storeCall(() => this.deps.store.recordAutoPublishCode(taskId, actor));
+  }
+
+  private async finishAutoPublish(
+    taskId: string,
+    patch: { status: "awaiting_code" | "succeeded" | "failed"; message?: string },
+    actor: ActorSnapshot,
+  ): Promise<PublishTask> {
+    return this.storeCall(() => this.deps.store.updateAutoPublish(taskId, patch, actor));
+  }
+
+  private requireSauRunner(): AutoPublishRunner {
+    const runner = this.deps.sau;
+    if (!runner) throw new PublishingServiceError(422, "publish_sau_not_configured");
+    // 缺 `sauBinary` 时同样在写入任何记录之前失败。
+    runner.assertConfigured();
+    return runner;
   }
 
   async getFinderVideoPath(packageId: string): Promise<string> {
@@ -494,14 +810,24 @@ export class PublishingService {
     return detail.package.videoPath;
   }
 
-  private async createPackage(input: {
+  /**
+   * 「预留版本 → 建任务 → 打包 → 落库 → 失败回滚」的共用骨架。
+   *
+   * 视频与图文只在 `build` 上不同（一个 copy 成片、一个 copy 静帧），
+   * 而这段编排里的回滚与一致性错误处理很微妙（漏一次 rollback 就留下孤儿包目录），
+   * 所以只留一份实现 —— 与 assets 层「安全校验只允许有一个真源」同一个原则。
+   */
+  private async commitNewPackage(input: {
     sourceJobId: string;
-    sourceVideoPath: string;
-    sourceVideo: BoundSourceVideo;
-    sourceCoverPath?: string;
     title: string;
     drafts: ValidatedDraft[];
     actor: ActorSnapshot;
+    build: (context: {
+      packageId: string;
+      version: number;
+      tasks: PublishTask[];
+      timestamp: string;
+    }) => Promise<{ record: DeliveryPackage; rollback: () => Promise<void> }>;
   }): Promise<PublishingPackageDetail> {
     const version = await this.storeCall(() => this.deps.store.reserveVersion(input.sourceJobId, input.actor));
     const packageId = this.createId();
@@ -519,40 +845,13 @@ export class PublishingService {
       updatedAt: timestamp,
     }));
 
-    const assets = await this.deps.assets.createPackageAssets({
-      packageId,
-      sourceJobId: input.sourceJobId,
-      version,
-      sourceVideoPath: input.sourceVideoPath,
-      sourceVideo: input.sourceVideo,
-      ...(input.sourceCoverPath ? { sourceCoverPath: input.sourceCoverPath } : {}),
-      title: input.title,
-      tasks,
-      actor: input.actor,
-    });
-    const packageRecord: DeliveryPackage = {
-      id: packageId,
-      sourceJobId: input.sourceJobId,
-      version,
-      state: "active",
-      title: input.title,
-      packagePath: assets.packagePath,
-      videoPath: assets.videoPath,
-      ...(assets.coverPath ? { coverPath: assets.coverPath } : {}),
-      videoSha256: assets.videoSha256,
-      videoSize: assets.videoSize,
-      videoMethod: assets.videoMethod,
-      assetHealth: assets.assetHealth,
-      createdBy: structuredClone(input.actor),
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
+    const { record, rollback } = await input.build({ packageId, version, tasks, timestamp });
 
     try {
-      return await this.deps.store.commitPackage({ package: packageRecord, tasks }, input.actor);
+      return await this.deps.store.commitPackage({ package: record, tasks }, input.actor);
     } catch (error) {
       try {
-        await assets.rollback();
+        await rollback();
       } catch {
         throw new PublishingServiceError(500, "publish_consistency_failed", undefined, {
           failedStages: ["index_commit", "asset_rollback"],
@@ -561,6 +860,163 @@ export class PublishingService {
       }
       throw normalizeOperationError(error, "index");
     }
+  }
+
+  /**
+   * 图文创建：先按**图文口径**校验包级文案，再核对（含图片集合的）previewRevision，
+   * 最后把平台任务文案同步成 `noteCopy` —— 任务只是排期/审计载体，图文真正发出去的是包级文案。
+   */
+  private async createNote(
+    input: CreatePublishingPackageInput,
+    context: SourceContext,
+    selected: PublishPlatform[],
+    actor: ActorSnapshot,
+  ): Promise<PublishingPackageDetail> {
+    assertNotePlatforms(selected);
+    if (!input.noteCopy) {
+      throw new PublishingServiceError(400, "publish_validation_failed", "图文包必须提供 noteCopy 文案");
+    }
+    const noteCopy = normalizePlatformCopy(input.noteCopy);
+    const violations = selected.flatMap((platform) => validateNoteCopy(platform, noteCopy));
+    if (violations.length > 0) {
+      throw new PublishingServiceError(
+        422,
+        "publish_validation_failed",
+        violations[0].message,
+        { violations },
+      );
+    }
+
+    const snapshots = await this.listSceneSnapshots(input.sourceJobId);
+    const currentRevision = sourceRevision(
+      input.sourceJobId,
+      context,
+      selected,
+      snapshots.map((snapshot) => snapshot.name),
+    );
+    if (currentRevision !== input.previewRevision) {
+      throw new PublishingServiceError(409, "publish_revision_conflict", undefined, {
+        expectedRevision: input.previewRevision,
+        currentRevision,
+      });
+    }
+
+    const sourceKey = sourceContextRevision(input.sourceJobId, context);
+    const drafts = validateDrafts(
+      selected.map((platform) => ({ platform, copy: noteCopy })),
+      this.now(),
+      (platform, copy) => this.copyAttestations.get(copyAttestationKey(sourceKey, platform, copy)) ?? "user_edited",
+    );
+    return this.createNotePackage({
+      sourceJobId: input.sourceJobId,
+      title: requireTitle(input.title),
+      noteCopy,
+      drafts,
+      actor,
+    });
+  }
+
+  private async createPackage(input: {
+    sourceJobId: string;
+    sourceVideoPath: string;
+    sourceVideo: BoundSourceVideo;
+    sourceCoverPath?: string;
+    title: string;
+    drafts: ValidatedDraft[];
+    actor: ActorSnapshot;
+  }): Promise<PublishingPackageDetail> {
+    return this.commitNewPackage({
+      sourceJobId: input.sourceJobId,
+      title: input.title,
+      drafts: input.drafts,
+      actor: input.actor,
+      build: async ({ packageId, version, tasks, timestamp }) => {
+        const assets = await this.deps.assets.createPackageAssets({
+          packageId,
+          sourceJobId: input.sourceJobId,
+          version,
+          sourceVideoPath: input.sourceVideoPath,
+          sourceVideo: input.sourceVideo,
+          ...(input.sourceCoverPath ? { sourceCoverPath: input.sourceCoverPath } : {}),
+          title: input.title,
+          tasks,
+          actor: input.actor,
+        });
+        return {
+          record: {
+            id: packageId,
+            sourceJobId: input.sourceJobId,
+            version,
+            state: "active",
+            title: input.title,
+            packagePath: assets.packagePath,
+            videoPath: assets.videoPath,
+            ...(assets.coverPath ? { coverPath: assets.coverPath } : {}),
+            videoSha256: assets.videoSha256,
+            videoSize: assets.videoSize,
+            videoMethod: assets.videoMethod,
+            assetHealth: assets.assetHealth,
+            createdBy: structuredClone(input.actor),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+          rollback: assets.rollback,
+        };
+      },
+    });
+  }
+
+  /**
+   * 创建图文包：走 `createNotePackageAssets`（按场景序复制静帧进包）。
+   *
+   * note 包的 `video*` 字段「不适用」（spec §5），因此用**图片清单哈希**充当等价完整性凭据，
+   * `videoMethod` 记 `copy`、`videoSize` 记图片总字节 —— 诚实反映「不是成片」而不是留空。
+   */
+  private async createNotePackage(input: {
+    sourceJobId: string;
+    title: string;
+    noteCopy: PlatformCopy;
+    drafts: ValidatedDraft[];
+    actor: ActorSnapshot;
+  }): Promise<PublishingPackageDetail> {
+    return this.commitNewPackage({
+      sourceJobId: input.sourceJobId,
+      title: input.title,
+      drafts: input.drafts,
+      actor: input.actor,
+      build: async ({ packageId, version, tasks, timestamp }) => {
+        const assets = await this.deps.assets.createNotePackageAssets({
+          packageId,
+          sourceJobId: input.sourceJobId,
+          version,
+          noteCopy: input.noteCopy,
+          title: input.title,
+          tasks,
+          actor: input.actor,
+        });
+        return {
+          record: {
+            id: packageId,
+            sourceJobId: input.sourceJobId,
+            version,
+            state: "active",
+            title: input.title,
+            packagePath: assets.packagePath,
+            videoSha256: assets.imageManifestSha256,
+            videoSize: assets.imageSize,
+            videoMethod: "copy",
+            assetHealth: assets.assetHealth,
+            contentType: "note",
+            imagePaths: [...assets.imagePaths],
+            noteCopy: { ...input.noteCopy, hashtags: [...input.noteCopy.hashtags] },
+            createdBy: structuredClone(input.actor),
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+          rollback: assets.rollback,
+        };
+      },
+    });
   }
 
   private async readSourceContext(jobId: string): Promise<SourceContext> {
@@ -690,10 +1146,37 @@ function sourceRevision(
   jobId: string,
   context: SourceContext,
   platforms: PublishPlatform[],
+  noteImageNames?: string[],
 ): string {
-  return sourceContextHash(jobId, context)
-    .update([...platforms].sort().join(","))
-    .digest("hex");
+  const hash = sourceContextHash(jobId, context).update([...platforms].sort().join(","));
+  // 图文包的素材本身也是「预览过的内容」：静帧集合或顺序变了，旧 revision 必须失效。
+  // 视频路径不传这个参数，因此既有哈希逐字节不变。
+  if (noteImageNames) {
+    for (const name of noteImageNames) hash.update(`image:${name}\0`);
+  }
+  return hash.digest("hex");
+}
+
+/** 图文发布目前只接通抖音（上游只有 `sau douyin upload-note`）。 */
+const NOTE_PLATFORMS = new Set<PublishPlatform>(["douyin"]);
+
+function assertNotePlatforms(platforms: PublishPlatform[]): void {
+  for (const platform of platforms) {
+    if (!NOTE_PLATFORMS.has(platform)) {
+      throw new PublishingServiceError(
+        422,
+        "publish_note_platform_unsupported",
+        `平台 ${platform} 尚未接入图文发布，目前只支持抖音图文`,
+      );
+    }
+  }
+}
+
+/** 把源标题压到图文口径（按码点截断），并告知是否真的截断过。 */
+function compressNoteTitle(title: string, limit: number): { title: string; compressed: boolean } {
+  const characters = [...(title ?? "").trim()];
+  if (characters.length <= limit) return { title: characters.join(""), compressed: false };
+  return { title: characters.slice(0, limit).join(""), compressed: true };
 }
 
 function validatePlatformSelection(platforms: PublishPlatform[]): PublishPlatform[] {
@@ -892,6 +1375,48 @@ function normalizeOperationError(error: unknown, operation: "index" | "projectio
   return new PublishingServiceError(500, "publish_index_write_failed", "发布数据写入失败，请检查存储权限后重试");
 }
 
+/**
+ * 按口径生成一份文案检查结果。
+ *
+ * `noteScope` 为真时用图文口径（抖音 title ≤20），否则用视频口径（title ≤55）——
+ * 校验本身仍走 Task 1 收敛后的 `validateNoteCopy` / `validatePlatformCopy`，这里不重写规则。
+ */
+function copyCheck(
+  platform: PublishPlatform,
+  scope: "package" | "task",
+  copy: PlatformCopy,
+  taskId: string | undefined,
+  noteScope: boolean,
+): PublishingPreviewCopyCheck {
+  const policy: PlatformPolicy = (noteScope ? PUBLISH_NOTE_POLICIES[platform] : undefined)
+    ?? PUBLISH_PLATFORMS[platform];
+  const normalized = normalizePlatformCopy(copy);
+  const violations = noteScope ? validateNoteCopy(platform, copy) : validatePlatformCopy(platform, copy);
+  const field = (name: keyof PlatformCopy, actual: number, limit: number) => ({
+    actual,
+    limit,
+    over: actual > limit,
+  });
+  return {
+    platform,
+    scope,
+    ...(taskId === undefined ? {} : { taskId }),
+    label: policy.label,
+    title: field("title", [...normalized.title].length, policy.titleMax),
+    description: field("description", [...normalized.description].length, policy.descriptionMax),
+    hashtags: field("hashtags", normalized.hashtags.length, policy.hashtagMax),
+    // 话题单个长度上限不便于用「actual/limit」表达，交给 violations 给出原文提示
+    violations,
+  };
+}
+
+/** 把 sau 的原始输出压成适合写进审计与 `autoPublish.message` 的摘要。 */
+function summarizeCliOutput(output: string, maxLength = 500): string {
+  const flattened = output.replace(/\s+/gu, " ").trim();
+  if (flattened.length <= maxLength) return flattened;
+  return `${flattened.slice(0, maxLength)}…`;
+}
+
 function normalizeStoreError(error: PublishingError): PublishingServiceError {
   switch (error.code) {
     case "publish_permission_denied":
@@ -902,7 +1427,11 @@ function normalizeStoreError(error: PublishingError): PublishingServiceError {
     case "publish_validation_failed":
       return new PublishingServiceError(400, error.code, error.message, error.details);
     case "publish_asset_broken":
+    case "publish_not_a_note_package":
       return new PublishingServiceError(422, error.code, error.message, error.details);
+    case "publish_auto_publish_code_unexpected":
+    case "publish_auto_publish_in_progress":
+      return new PublishingServiceError(409, error.code, error.message, error.details);
     case "publish_index_corrupt":
       return new PublishingServiceError(500, error.code, error.message, error.details);
     case "publish_invalid_transition":

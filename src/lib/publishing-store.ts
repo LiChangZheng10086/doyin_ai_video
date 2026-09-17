@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import type {
@@ -7,6 +7,9 @@ import type {
   DueNotification,
   PublishAuditEvent,
   PublishAssetHealth,
+  PackageContentType,
+  PublishAutoPublish,
+  PublishAutoPublishStatus,
   PublishTask,
   PublishTaskStatus,
   PublishingIndex,
@@ -20,6 +23,13 @@ import { PUBLISH_PLATFORMS } from "./publishing-platforms.js";
 
 const PUBLISHING_INDEX = "cache/publishing-index.json";
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * 超过这个时长仍停在 running/awaiting_code 的自动发布视为「进程已死」：
+ * 我们的发布请求是同步的，进程被杀或应用崩溃会留下一条永远 running 的记录，
+ * 界面里没有任何入口能清掉它 —— 没有这个阈值，任务会被永久锁死。
+ * 取值必须大于单次上传的超时（sau-runner 的 900s），否则会误判活着的进程。
+ */
+const AUTO_PUBLISH_STALE_MS = 30 * 60 * 1000;
 const NO_WRITE = Symbol("publishing-no-write");
 
 type NoWrite<T> = { readonly [NO_WRITE]: true; readonly result: T };
@@ -37,6 +47,9 @@ const COORDINATORS = new Map<string, PublishingCoordinator>();
 
 type PublishingErrorCode =
   | "publish_asset_broken"
+  | "publish_auto_publish_code_unexpected"
+  | "publish_auto_publish_in_progress"
+  | "publish_not_a_note_package"
   | "publish_index_corrupt"
   | "publish_invalid_transition"
   | "publish_package_not_found"
@@ -47,6 +60,9 @@ type PublishingErrorCode =
 
 const ERROR_MESSAGES: Record<PublishingErrorCode, string> = {
   publish_asset_broken: "发布包视频资产异常，无法执行发布操作",
+  publish_auto_publish_code_unexpected: "该任务当前没有在等待短信验证码",
+  publish_auto_publish_in_progress: "该任务的图文自动发布正在进行中，请等本次结束后再试",
+  publish_not_a_note_package: "该发布包不是图文包，无法执行抖音图文自动发布",
   publish_index_corrupt: "发布索引已损坏，当前处于只读保护状态",
   publish_invalid_transition: "当前发布状态不允许执行此操作",
   publish_package_not_found: "未找到发布包",
@@ -348,6 +364,136 @@ export class PublishingStore {
         metadata: { action },
       }));
     });
+  }
+
+  /**
+   * 包内容指纹（`previewRevision` 的包级形态）。
+   *
+   * 沿用 `PublishingPreview.previewRevision` 的语义，不新造一套：它是「将要发出去的内容」
+   * 的指纹，`auto-publish` 必须带上一致的值，否则拒绝。图文包覆盖**有序** imagePaths 与
+   * noteCopy（图片顺序发错事后只能删稿重发），视频包覆盖成片哈希；两者都覆盖各平台文案。
+   */
+  async previewRevision(packageId: string): Promise<string | null> {
+    const index = await this.snapshot();
+    const packageRecord = index.packages[packageId];
+    if (!packageRecord) return null;
+    return packagePreviewRevision(packageRecord, tasksOfPackage(index, packageId));
+  }
+
+  /**
+   * 原子地开始一次自动发布：图文校验 + previewRevision 比对 + 并发互斥 + 写入 running 记录。
+   *
+   * 三件事必须在**同一次** `mutate` 里完成：任何一项不满足都直接抛错且**不写盘**，
+   * 因此「校验失败不留 autoPublish 记录」是结构上成立的，而不是靠调用方记得先检查。
+   */
+  async beginAutoPublish(
+    taskId: string,
+    input: { previewRevision: string; attemptId: string },
+    actor: ActorSnapshot
+  ): Promise<PublishTask> {
+    return this.mutate((draft) => {
+      const task = this.requireMutableTask(draft, taskId);
+      const packageRecord = this.requirePackage(draft, task.packageId);
+
+      // 只做图文：视频包仍是人工交付通路
+      if ((packageRecord.contentType ?? "video") !== "note") {
+        throw new PublishingError("publish_not_a_note_package", {
+          contentType: packageRecord.contentType ?? "video",
+        });
+      }
+
+      const current = packagePreviewRevision(packageRecord, tasksOfPackage(draft, task.packageId));
+      if (current !== input.previewRevision) {
+        throw new PublishingError("publish_revision_conflict", {
+          expectedRevision: input.previewRevision,
+          currentRevision: current,
+        });
+      }
+
+      if (this.autoPublishInFlight(task)) {
+        throw new PublishingError("publish_auto_publish_in_progress", {
+          attemptId: task.autoPublish?.attemptId,
+          status: task.autoPublish?.status,
+        });
+      }
+
+      const startedAt = this.timestamp();
+      task.autoPublish = { status: "running", startedAt, attemptId: input.attemptId };
+      task.updatedAt = startedAt;
+      draft.audit.push(this.auditEvent(task.packageId, "task.auto_publish_start", actor, {
+        taskId,
+        fromStatus: task.status,
+        toStatus: task.status,
+        metadata: { attemptId: input.attemptId },
+      }));
+      return task;
+    });
+  }
+
+  /**
+   * 更新自动发布进度。
+   *
+   * **绝不触碰 `task.status`**：退出码 0 只表示「已提交」，是否真的发出去了仍由人工点
+   * 「标记已发布」确认。这是本设计最关键的一条不变式。
+   */
+  async updateAutoPublish(
+    taskId: string,
+    patch: { status: PublishAutoPublishStatus; message?: string; finishedAt?: string },
+    actor: ActorSnapshot
+  ): Promise<PublishTask> {
+    return this.mutate((draft) => {
+      const task = this.requireMutableTask(draft, taskId);
+      const record = task.autoPublish;
+      if (!record) {
+        throw new PublishingError("publish_invalid_transition", { reason: "auto_publish_absent" });
+      }
+
+      const finished = patch.status === "awaiting_code"
+        ? undefined
+        : patch.finishedAt ?? this.timestamp();
+      task.autoPublish = {
+        status: patch.status,
+        startedAt: record.startedAt,
+        attemptId: record.attemptId,
+        ...(patch.message === undefined ? {} : { message: patch.message }),
+        ...(finished === undefined ? {} : { finishedAt: finished }),
+      };
+      task.updatedAt = this.timestamp();
+      draft.audit.push(this.auditEvent(task.packageId, `task.auto_publish_${patch.status}`, actor, {
+        taskId,
+        fromStatus: task.status,
+        toStatus: task.status,
+        ...(patch.message === undefined ? {} : { reason: patch.message }),
+      }));
+      return task;
+    });
+  }
+
+  /** 记录一次验证码投喂（内容本身写进 sau 的 `verify_code.txt`，不进索引）。 */
+  async recordAutoPublishCode(taskId: string, actor: ActorSnapshot): Promise<PublishTask> {
+    return this.mutate((draft) => {
+      const task = this.requireMutableTask(draft, taskId);
+      if (task.autoPublish?.status !== "awaiting_code") {
+        throw new PublishingError("publish_auto_publish_code_unexpected", {
+          status: task.autoPublish?.status,
+        });
+      }
+      draft.audit.push(this.auditEvent(task.packageId, "task.auto_publish_code", actor, {
+        taskId,
+        fromStatus: task.status,
+        toStatus: task.status,
+      }));
+      return task;
+    });
+  }
+
+  private autoPublishInFlight(task: PublishTask): boolean {
+    const record = task.autoPublish;
+    if (!record) return false;
+    if (record.status !== "running" && record.status !== "awaiting_code") return false;
+    const startedAt = new Date(record.startedAt).getTime();
+    if (!Number.isFinite(startedAt)) return false;
+    return this.now().getTime() - startedAt < AUTO_PUBLISH_STALE_MS;
   }
 
   async processDue(now = this.now()): Promise<DueNotification[]> {
@@ -866,6 +1012,46 @@ function emptyIndex(): PublishingIndex {
   };
 }
 
+function tasksOfPackage(index: PublishingIndex, packageId: string): PublishTask[] {
+  return Object.values(index.tasks).filter((task) => task.packageId === packageId);
+}
+
+/**
+ * 包级内容指纹：`sha256` over 内容类型、包的完整性凭据、图文文案、以及**排序后**的各平台文案。
+ *
+ * 顺序敏感的地方有三处：图文 `imagePaths` 的顺序、以及每个任务的 hashtags 顺序。
+ * 任务按 (platform, id) 排序，因此索引里的插入顺序不影响指纹。
+ */
+export function packagePreviewRevision(
+  packageRecord: DeliveryPackage,
+  tasks: PublishTask[]
+): string {
+  const hash = createHash("sha256");
+  const contentType = packageRecord.contentType ?? "video";
+  hash.update(`contentType:${contentType}\0`);
+  hash.update(`package:${packageRecord.id}:${packageRecord.version}\0`);
+  hash.update(`title:${packageRecord.title}\0`);
+  if (contentType === "note") {
+    for (const imagePath of packageRecord.imagePaths ?? []) hash.update(`image:${imagePath}\0`);
+    hash.update(`noteTitle:${packageRecord.noteCopy?.title ?? ""}\0`);
+    hash.update(`noteBody:${packageRecord.noteCopy?.description ?? ""}\0`);
+    hash.update(`noteTags:${(packageRecord.noteCopy?.hashtags ?? []).join(",")}\0`);
+  } else {
+    hash.update(`videoSha256:${packageRecord.videoSha256}\0`);
+    hash.update(`videoSize:${packageRecord.videoSize}\0`);
+  }
+  for (const task of [...tasks].sort((left, right) => (
+    left.platform.localeCompare(right.platform) || left.id.localeCompare(right.id)
+  ))) {
+    hash.update(`task:${task.id}:${task.platform}\0`);
+    hash.update(`taskTitle:${task.title}\0`);
+    hash.update(`taskBody:${task.description}\0`);
+    hash.update(`taskTags:${task.hashtags.join(",")}\0`);
+    hash.update(`taskRevision:${task.contentRevision}\0`);
+  }
+  return hash.digest("hex");
+}
+
 function isPublishingIndex(value: unknown): value is PublishingIndex {
   if (!value || typeof value !== "object") return false;
   const index = value as Partial<PublishingIndex>;
@@ -928,14 +1114,27 @@ function isDeliveryPackage(value: unknown, key: string): value is DeliveryPackag
     typeof value.videoSize === "number" &&
     Number.isFinite(value.videoSize) &&
     (value.videoMethod === "clone" || value.videoMethod === "copy") &&
-    (value.assetHealth === "healthy" || value.assetHealth === "missing_cover" || value.assetHealth === "broken_video") &&
+    (value.assetHealth === "healthy" ||
+      value.assetHealth === "missing_cover" ||
+      value.assetHealth === "broken_video" ||
+      value.assetHealth === "missing_images") &&
     isActor(value.createdBy) &&
     isString(value.createdAt) &&
     isString(value.updatedAt) &&
     isOptionalString(value.deletedAt) &&
     isOptionalString(value.purgeAt) &&
-    isOptionalString(value.purgedAt)
+    isOptionalString(value.purgedAt) &&
+    (value.contentType === undefined || value.contentType === "video" || value.contentType === "note") &&
+    (value.imagePaths === undefined
+      || (Array.isArray(value.imagePaths) && value.imagePaths.every(isString))) &&
+    (value.noteCopy === undefined || isPlatformCopyShape(value.noteCopy))
   );
+}
+
+function isPlatformCopyShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return isString(value.title) && isString(value.description)
+    && Array.isArray(value.hashtags) && value.hashtags.every(isString);
 }
 
 function isPublishTask(value: unknown, key: string): value is PublishTask {
@@ -955,8 +1154,21 @@ function isPublishTask(value: unknown, key: string): value is PublishTask {
     isOptionalString(value.publishedAt) &&
     isOptionalString(value.lastError) &&
     isPositiveInteger(value.contentRevision) &&
+    (value.autoPublish === undefined || isAutoPublish(value.autoPublish)) &&
     isString(value.createdAt) &&
     isString(value.updatedAt)
+  );
+}
+
+function isAutoPublish(value: unknown): value is PublishAutoPublish {
+  if (!isRecord(value)) return false;
+  return (
+    (value.status === "running" || value.status === "awaiting_code"
+      || value.status === "succeeded" || value.status === "failed") &&
+    isString(value.startedAt) &&
+    isString(value.attemptId) &&
+    (value.finishedAt === undefined || isString(value.finishedAt)) &&
+    (value.message === undefined || isString(value.message))
   );
 }
 

@@ -121,6 +121,26 @@ sau 在发布循环里检测到短信验证弹窗时会读 `<sauBaseDir>/verify_
 - 用户提交后写入 `<sauBaseDir>/verify_code.txt`（sau 验证通过后会自行删除）。
 - 超时未提交则该次尝试失败，落在 `failed`（不自动重试）。
 
+> **2026-09-17 更正（从上游源码实测，非推断）**：上面这段对**图文通路不成立**。
+> `_read_verify_code()` / `verify_code.txt` 与「检测到短信验证码弹窗」的等待循环，全部位于
+> `uploader/douyin_uploader/main.py` 的 **`DouYinVideo.upload`（628–1125 行）**；我们实际使用的
+> **`DouYinNote`（1126 行起）既不读 `verify_code.txt`，也没有任何短信处理**。核对方式：
+> 对 `main.py` 逐行做「归属类」分析，`verify_code` 的 4 处引用全部落在 `DouYinVideo` 内。
+>
+> 同时 `DouYinNote.upload_note_content()` 里有**两个没有次数上限的 `while True`**
+> （等 `content/post/image` 页面、点发布等 `content/manage` 跳转），因此图文发布的**真实失败语义**是：
+>
+> - 上传/发布迟迟不成功（含出现短信挑战、上游 DOM 变更）→ **一直循环，直到我们的 `timeoutMs`
+>   （`sau-runner` 默认 900s）杀掉进程** → `autoPublish.status = "failed"`；
+> - 这种情况下 `needsVerificationCode` 的关键字**永远不会出现**，所以 `awaiting_code` 在图文通路上
+>   **当前不可达**；写 `verify_code.txt` 对图文发布**没有任何效果**；
+> - Cookie 失效是另一条干净路径：`upload_note()` 会先跑 `douyin_setup(handle=False)`，失败即
+>   `RuntimeError` 非零退出（提示重新 `sau douyin login`），我们记为 `failed`。
+>
+> 因此：`awaiting_code` 与验证码接口按本节**保留为契约**（等上游补齐 note 侧支持、或将来改用视频
+> 通路时即可生效），但界面与提示必须让操作者知道**「图文发布卡住」的正确动作是去抖音后台核实**，
+> 而不是等一个验证码输入框；且超时与 §9 的重复点击风险叠加 —— **重试前必须先确认上一次是否已发出**。
+
 ## 8. 状态表达：`autoPublish` 子记录
 
 **不新增 `PublishTaskStatus`**（现有 `scheduled|ready|published|failed|cancelled` 与其 filter 语义、`PublishingListStatus` 里的 `"broken"` 全部保持不动）。改为在 `PublishTask` 上挂：
@@ -137,6 +157,11 @@ autoPublish?: {
 
 - `succeeded` 的语义是**已提交**，不是已发布 —— 最终结论由人点现有「标记已发布」给出。
 - 人工确认复用现有的 `mark-published` 动作与审计，不新增确认流程。
+- **`task.status` 全程不变**：`autoPublish` 的任何取值都只写子记录，任务状态仍停在 `ready`，
+  直到人工点「标记已发布」。这是本设计最关键的一条不变式（有用例守住）。
+- **遗留的 `running`/`awaiting_code` 超过 30 分钟视为「进程已死」**，允许重新发起。
+  我们的发布请求是同步的：进程被杀或应用崩溃会留下一条永远 `running` 的记录，而界面里
+  没有任何入口能清掉它 —— 没有这个阈值，任务会被永久锁死。阈值必须大于单次上传超时（900s）。
 
 ## 9. 兜底：重复发布是本功能最大的坑
 

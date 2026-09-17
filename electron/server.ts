@@ -64,6 +64,9 @@ export async function startServer(): Promise<number> {
         hyperframesNodeBinary: process.execPath,
         hyperframesUseElectronAsNode: electronApp.isPackaged,
         hyperframesBrowserPath: binaryPaths.hyperframesBrowser,
+        // 与独立后端同一套 env 契约（见 src/server.ts 与 AGENTS.md 的 SAU_* 说明）
+        sauBinary: process.env.SAU_BINARY,
+        sauBaseDir: process.env.SAU_BASE_DIR,
       });
 
       const PORT = 0; // 使用随机端口
