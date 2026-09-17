@@ -31,6 +31,8 @@
 
 ## 最近操作
 
+- 2026-09-17：**② 抖音图文自动发布全部提交**（`a777fc6`，27 个文件 / +5354 −253），并同步 `AGENTS.md`、`CLAUDE.md`、`README.md`（架构清单、4 个新接口、`SAU_BINARY`/`SAU_BASE_DIR` 配置、新增「抖音图文自动发布（外部 sau 引擎）」注意事项与故障排查节；AGENTS 与 CLAUDE 仍逐字一致）。**提交前做了私密数据审计**：无 `sk-` 密钥、无真实密码/PIN 字段、未带 `storage/`、`cookies/`、`.env`（`storage/` 本就被 .gitignore 覆盖），并把**真实 cookie 的每一段值**逐个在暂存内容里比对 —— 唯一命中是真实 cookie 里那个畸形段 `=douyin.com` 的域名字面串（非凭据，在文档里自然出现 18 次），**58 个真实凭据值零泄露**。顺带解释了一个既有数字：59 段 → 账号文件 58 个 cookie，正是因为 `parseCookieHeader` 跳过了这个空名段。
+
 - 2026-09-17：开始 **② 抖音图文自动发布**。**Task 1 完成**（`abe9d9e`）：`PUBLISH_NOTE_POLICIES`（抖音图文 title ≤20 / note ≤1000）+ `validateNoteCopy`，与视频校验收敛到同一实现 `validateCopyAgainstPolicy`（视频 55 字口径一字未改，既有 6 条平台用例作为回归门禁保持通过）；`types.ts` 增 `contentType`/`imagePaths`/`noteCopy`/`autoPublish` 与 `missing_images`。
 - 2026-09-17：**按用户要求装好了 `sau` 引擎，并完成 Task 7 Step 4（配置后只跑预检、未发布任何内容）**。安装位置 `~/social-auto-upload`（工作区之外，不污染仓库）：`git clone --depth 1`（HEAD `0012d2c`）→ `cp conf.example.py conf.py` → `uv venv --python 3.12`（本机 `python3` 是 3.13.12，确在 `>=3.10,<3.13` 之外，坑②实测成立）→ `uv pip install -e .` → **`uv pip install playwright`（坑①：pyproject 只声明 patchright）** → `uv run patchright install chromium`。**体积实测 442M + 520M ≈ 962M，与 spec §1.2 的"约 970MB"吻合**。完成后 `import playwright / patchright` 正常、`sau` CLI 能起。
 - 2026-09-17：Step 4 的实测结果（**只做登录态校验，未发布任何内容**）：用**我们自己的 `SauRunner`**（Task 3 的实现）跑真引擎 —— `assertConfigured()` OK → `prepareAccountFile()` 产出 `~/social-auto-upload/cookies/douyin_mine.json`（58 段 cookie、域全为 `.douyin.com`、含 `sessionid`、权限 **600**）→ **`checkLogin()` 返回 `ok: true`、exitCode 0、输出 `valid`**。这同时证明了 Task 3 的 argv（`douyin check --account mine`）与 `valid/invalid` 判定在真实 CLI 上是对的。用户的原始 `~/.douyin-ai-video/douyin-cookie.txt` **只被读取、未被修改**（仍 5900 字节 / Aug 5 21:12）。
