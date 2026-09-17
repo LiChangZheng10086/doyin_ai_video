@@ -15,23 +15,40 @@ douyin/
 │   │   ├── storage.ts       # 文件存储
 │   │   ├── media.ts         # 视频下载、音频提取
 │   │   ├── asr.ts           # 语音识别（内置 whisper.cpp）
-│   │   └── hyperframes-video.ts # HyperFrames 本地视频渲染
+│   │   ├── hyperframes-video.ts # HyperFrames 本地视频渲染
+│   │   ├── video-output.ts  # 成片/原视频路径解析与安全校验（根目录约束、inode 一致性）
+│   │   ├── range-response.ts# 通用 Range 流式响应（成片与素材预览共用）
+│   │   ├── assets-store.ts  # 素材库索引、落盘、白名单与限额
+│   │   ├── assets-routes.ts # 素材上传/列表/预览/删除
+│   │   ├── local-users.ts   # 本机操作者（用户、角色、PIN）
+│   │   ├── local-auth.ts    # 会话与 requireActor 鉴权守卫
+│   │   ├── local-user-routes.ts # 本机操作者路由（含自动会话）
+│   │   ├── publishing-*.ts  # 发布中心（资产/文案/平台/服务/存储/路由）
+│   │   ├── collections.ts   # 合集采集与索引
+│   │   ├── nickname.ts      # 创作者昵称兜底（简体中文）
+│   │   └── user-page-crawler.ts # 抖音主页采集
 │   └── types.ts             # 后端类型定义
 │
 ├── renderer/                 # 前端界面（React + Vite）
 │   ├── src/
 │   │   ├── App.tsx
 │   │   ├── pages/
-│   │   │   ├── JobListPage.tsx
-│   │   │   ├── JobDetailPage.tsx
+│   │   │   ├── JobListPage.tsx        # 创作中心
+│   │   │   ├── JobDetailPage.tsx      # 作品详情（工作流控制台 + 成果画布）
+│   │   │   ├── CollectionListPage.tsx / CollectionDetailPage.tsx
+│   │   │   ├── SkillListPage.tsx      # Skill 蒸馏产物
+│   │   │   ├── PublishingPage.tsx     # 发布中心（人工交付）
+│   │   │   ├── AssetsPage.tsx         # 素材库（图片/音频）
 │   │   │   ├── TrashPage.tsx
 │   │   │   └── SettingsPage.tsx
+│   │   ├── components/shell/          # 导航框架（侧栏/顶栏/移动端导航）
 │   │   ├── components/
 │   │   ├── services/api.ts
 │   │   └── types/index.ts
 │   └── vite.config.ts
 │
 ├── electron/                 # Electron 主进程与配置 IPC
+├── docs/superpowers/         # specs（设计规格）与 plans（实施计划）
 └── dist/                     # 后端编译输出
 ```
 
@@ -71,10 +88,15 @@ POST /api/jobs 创建任务并解析输入
 
 ### 数据存储
 
-默认目录：`~/Documents/抖音AI视频/`
+**实际目录取决于运行方式**（这一点容易踩坑，务必按模式确认）：
+
+| 运行方式 | storage 根目录 |
+| --- | --- |
+| 独立后端 `node dist/server.js`（开发） | **仓库内的 `storage/`**（`src/server.ts` 里 `path.join(rootDir, "storage")`） |
+| Electron 桌面端 | `app.getPath('userData')/storage`，即 `~/Library/Application Support/douyin-ai-video/storage`（配置文件里的 `storagePath` 可覆盖） |
 
 ```
-抖音AI视频/
+storage/
 ├── raw/
 │   ├── videos/              # 下载的视频
 │   ├── audio/               # 提取音频和 manifest
@@ -87,9 +109,17 @@ POST /api/jobs 创建任务并解析输入
 │   ├── scenes/              # 历史场景数据
 │   └── subtitles/           # 字幕文件
 ├── output/
-│   └── videos/              # HyperFrames 项目和 MP4 输出
+│   ├── videos/              # HyperFrames 项目、snapshots/ 静帧与 MP4
+│   └── publishing/          # 发布交付包（自包含：成片 + 封面 + images/）
+├── assets/                  # 素材库（图片/音频），手动上传
+│   ├── images/
+│   └── audio/
+├── cache/                   # 各类索引（jobs / collections / publishing / assets / local-users）
 └── logs/
 ```
+
+注意：`output/videos/{jobId}/hyperframes/snapshots/frame-NN-at-Xs.png` 是生成视频时
+`hyperframes snapshot` 的产物，每场景一张 1080×1920 静帧，可直接用作图文素材。
 
 ### 任务状态与步骤
 
@@ -143,6 +173,25 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 - `GET /api/jobs/:id/video-prompts` - 视频提示词
 - `GET /api/jobs/:id/video-output` - HyperFrames 视频输出信息
 - `GET /api/jobs/:id/video/download` - 下载 MP4
+- `GET /api/jobs/:id/video/stream` - 成片流（支持 Range）
+- `GET /api/jobs/:id/raw-video/stream` - **已下载的原视频**流（支持 Range；原视频在「视频转录」步骤落盘到 `raw/videos/{jobId}.mp4`）
+
+### 素材库
+- `GET /api/assets?kind=image|audio` - 列表
+- `POST /api/assets/images` / `POST /api/assets/audio` - 多文件上传（multipart，字段名 `files`）
+- `GET /api/assets/:id/raw` - 原文件（支持 Range，音频进度条依赖）
+- `DELETE /api/assets/:id` - 删除记录与磁盘文件
+
+### 本机操作者与权限
+- `POST /api/local-sessions/auto` - **启动即用的自动会话**（无 PIN）；无管理员时自动创建「本机用户」
+- `GET /api/local-sessions/current` - 当前会话用户
+- `GET /api/local-users` - 用户列表
+- `POST /api/local-sessions` - 普通开会话（管理员仍需 PIN）
+
+### 发布中心（人工交付）
+- `POST /api/jobs/:id/publishing/preview` / `GET /api/jobs/:id/publishing/assets`
+- `POST /api/publishing/packages`、`GET /api/publishing/packages`、`GET /api/publishing/packages/:id`
+- `PATCH /api/publishing/tasks/:id/content` / `/schedule`、`POST .../cancel` `/restore` `/mark-published` `/record-failure`（`withdraw` 与删除/恢复发布包仅管理员）
 
 ## 关键数据结构
 
@@ -222,7 +271,16 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 
 ## 配置管理
 
-配置文件位置：`~/.douyin-ai-video/config.json`
+**桌面端**的配置文件由 Electron 决定：`app.getPath('userData')/config.json`，即
+`~/Library/Application Support/douyin-ai-video/config.json`（macOS）。其中的 `storagePath`
+若无值则回落到同目录下的 `storage/`。API Key 由 Electron `safeStorage` 加密存储。
+
+> 注意：`~/.douyin-ai-video/` 目录另有用途（`douyin-cookie.txt` 抖音登录态、部分历史配置），
+> **它不是 Electron 读取配置文件的位置** —— 早期文档写成 `~/.douyin-ai-video/config.json` 是错的，
+> 已按实测（2026-09-17）更正。
+
+独立后端（`npm run dev:server` 形态）通过环境变量读取 AI 配置：`AI_PROVIDER` / `AI_API_KEY` /
+`AI_MODEL` / `AI_BASE_URL`（见 `src/server.ts`）。
 
 ### AI 配置
 
@@ -326,6 +384,30 @@ npm run package           # 会先检查 vendor/whisper 资源是否存在
 - 后端先执行 `doctor --json`，再生成项目、写入 `index.html` / `video-source.json` / `DESIGN.md`，然后执行 `lint`、`validate`、`inspect`、`render`。
 - 成功输出默认位于 `output/videos/{jobId}/hyperframes/renders/video.mp4`。
 
+### 素材库
+- 位置：主导航「素材」（`/assets`），只做上传/列表/缩略图/试听/删除；**图片可选入图文发布**，音频本轮不接入任何流程。
+- 安全约束：**落盘文件名一律服务端生成**（`randomUUID` + 白名单扩展名），客户端提供的名字只作 `originalName` 展示、**绝不参与路径拼接**；读取与删除都校验路径落在 `assets/` 内。
+- 限额：图片 `jpg/jpeg/png/webp` 单张 ≤20MB，音频 `mp3/wav/m4a/aac` 单个 ≤50MB，单次 ≤20 个文件。违规分别返回 415 / 413 / 400。
+- `GET /api/assets/:id/raw` 支持 Range（音频拖动进度条依赖），与成片流共用 `range-response.ts`。
+- 上传是 multipart，后端用 `multer`（memoryStorage）接收后再交给 store 落盘；**注意 busboy 按 latin1 解码 `filename`**，中文名需按 `decodeMultipartFilename()` 回退转换。
+- 图片尺寸（PNG/JPEG）与 WAV 时长由纯 Node 解析容器头得到；**MP3/M4A 时长为 `undefined`**（界面显示「—」），如需补全可接 `ffprobe`。
+
+### 原视频播放
+- 「视频转录」步骤会把原视频下载到 `raw/videos/{jobId}.mp4`；详情页成果画布的「视频」格子提供**原视频 / 成片**分段切换，默认侧为「有成片看成片，否则看原视频」。
+- `GET /api/jobs/:id/raw-video/stream` 与成片流共用同一份**根目录/inode 安全校验**（`video-output.ts` 的 `resolveContainedMp4`）——`job.videoPath` 是持久化绝对路径，校验若各写一份等于开放任意文件读取。
+- 未下载原视频时显示「原视频尚未下载」并引导先做视频转录，**不自动发起下载**。
+
+### 本机操作者（无登录/切换界面）
+- 面向使用者的登录、切换、用户管理界面**已全部移除**；启动时前端调用 `POST /api/local-sessions/auto` 自动取得会话。
+- 自动会话优先复用**已有的 `isActive` 管理员**（按 `createdAt`/`id` 升序确定性选取），只有在不存在管理员时才创建无 PIN 的「本机用户」。不删除、不改名任何历史用户。
+- **管理员 PIN 的契约没有被放宽**：普通 `POST /api/local-sessions` 对管理员无 PIN 仍返回 401。无 PIN 分支只存在于 `openLocalOperator()` 这一条被显式命名的路径上。
+- 发布中心的权限与审计模型完全保留（`requireActor` / `actor` 快照），只是永远只有本机操作者一个人。
+
+### 侧栏可折叠
+- 桌面端左侧主导航可展开/收起，收起为纯图标、展开显示导航文字；选择存 localStorage（`douyin-ai-video.rail-expanded`）。
+- 侧栏宽度只有一个真源：`AppShell` 根节点声明的 CSS 变量 `--rail-w`（收起 `md:56px` / `xl:64px`，展开 `208px`），由侧栏、内容区与两个顶栏变体共同消费 —— **不要在别处再写死 56px/64px 偏移**。
+- 折叠开关固定在侧栏**底部**且两个状态都可见。早期版本把它做成「整个 logo 行」，导致收起态与改造前毫无差别、用户找不到入口（已按实测反馈修正）。
+
 ## 故障排查
 
 ### 转录功能不工作
@@ -354,6 +436,6 @@ npm run package           # 会先检查 vendor/whisper 资源是否存在
 
 ---
 
-**最后更新**: 2026-08-14
+**最后更新**: 2026-09-17
 **维护者**: Codex
 **仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git
