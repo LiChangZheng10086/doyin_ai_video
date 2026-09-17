@@ -18,6 +18,7 @@
 - 图文素材取 `output/videos/{jobId}/hyperframes/snapshots/frame-*.png` 按场景序；打包时**复制进包目录**，保持包自包含（与视频/封面一致）。
 - CLI 退出码 0 只记为 `succeeded`（**已提交**），绝不写 `published`。
 - **失败绝不自动重试**；同一任务同时只允许一个 `autoPublish` 运行（冲突返回 409）。
+- **`auto-publish` 必须携带 `previewRevision`**：缺失 → 400，与当前内容不一致 → 409，两种情况都**不得产生 `autoPublish` 记录**。「发布前必经预览」因此是服务端约束，顺带拦住"预览之后内容被改"。校验实现在 Task 4（该路由的归属），产出 revision 的预览接口在 Task 5。
 - 测试**必须全部使用假 CLI**（临时目录里的 stub 脚本），不得联网、不得调用真实抖音；本计划不包含任何真实发布步骤。
 - 未配置 `sauBinary` 时必须给出明确错误（含 spec §1.2 的三个安装坑），不得静默失败。
 - 后端改动需 `npm run build:backend` 并重启才生效。
@@ -133,11 +134,13 @@ Expected: PASS。
 
 **Interfaces:**
 - Consumes: Task 3 的 runner、Task 2 的图文包
-- Produces: `POST /api/publishing/tasks/:id/auto-publish`、`POST /api/publishing/tasks/:id/auto-publish/code`；任务上的 `autoPublish` 记录
+- Produces: `POST /api/publishing/tasks/:id/auto-publish`（**要求 body 带 `previewRevision`**）、`POST /api/publishing/tasks/:id/auto-publish/code`；任务上的 `autoPublish` 记录；store 的包级 `previewRevision` 计算与比对
 
 - [ ] **Step 1: 写失败用例**
 
 - 对非图文包（`contentType` 缺省 video）调用 → 400/422 明确错误。
+- **不带 `previewRevision` → 400**，且任务状态与 `autoPublish` 均不被写入。
+- **带过期 `previewRevision`（预览后改过文案）→ 409**，同样不写入。
 - 未配置 `sauBinary` → 明确错误，且**任务状态与 `autoPublish` 均不被写入**。
 - 运行中再次调用 → **409**，且不产生第二条 `autoPublish`。
 - 预检 `invalid` → `autoPublish.status === "failed"`，任务**仍为 `ready`**（绝不写 `published`）。
@@ -158,7 +161,46 @@ Expected: FAIL —— 路由不存在。
 Run: `node --import tsx --test src/app.test.ts src/lib/publishing-store.test.ts`
 Expected: PASS。
 
-### Task 5: 发布中心 UI 与配置透传
+### Task 5: 发布前预览（弹窗 + 服务端必经确认）（测试先行）
+
+**Files:**
+- Modify: `src/lib/publishing-routes.ts`、`src/lib/publishing-store.ts`
+- Create: `renderer/src/components/PublishPreviewDialog.tsx`
+- Test: `src/app.test.ts`、`renderer/src/components/PublishPreviewDialog.test.tsx`
+
+**Interfaces:**
+- Consumes: 既有 `GET /api/publishing/packages/:id/cover` 的模式、Task 1 的 `validateNoteCopy`、Task 4 已实现的 `previewRevision` 比对
+- Produces: `GET /api/publishing/packages/:id/preview`（**产出** `previewRevision`）、`GET /api/publishing/packages/:id/images/:index`
+
+- [ ] **Step 1: 写失败用例**
+
+- 视频包预览返回视频元数据 + 各平台文案 + `previewRevision`；图文包返回**有序** `imagePaths` + `noteCopy`。
+- `GET .../images/:index`：序号与 `imagePaths` 一一对应；越界或缺图 → 404。
+- **两个接口产出的 `previewRevision` 必须能被 Task 4 的校验接受**（端到端串起来：先预览取 revision，再带它提交）。
+
+- [ ] **Step 2: 运行确认失败**
+
+Run: `node --import tsx --test src/app.test.ts`
+Expected: FAIL —— 预览接口不存在。
+
+- [ ] **Step 3: 实现服务端**
+
+包级 `previewRevision` 是内容指纹：图文包覆盖 `imagePaths`（含顺序）与 `noteCopy`；视频包覆盖视频哈希与各平台文案。沿用既有 `PublishingPreview.previewRevision` 的语义，不新造一套。
+
+- [ ] **Step 4: 写失败用例（组件）**
+
+`renderToStaticMarkup`：视频包渲染 `<video`；图文包渲染 N 张图与 `1/N` 序号；超限文案标红并显示上限。
+
+- [ ] **Step 5: 实现弹窗组件**
+
+按 `contentType` 分支渲染；文案区显示字数/上限并复用 `validateNoteCopy` 判定超限；公共区显示版本、包路径、创建人/时间与 `assetHealth`（缺失资产必须显眼）。
+
+- [ ] **Step 6: 运行确认通过**
+
+Run: `node --import tsx --test src/app.test.ts renderer/src/components/PublishPreviewDialog.test.tsx && npm run check`
+Expected: PASS，且既有 publishing 用例全部保持通过。
+
+### Task 6: 发布中心 UI 与配置透传
 
 **Files:**
 - Modify: `renderer/src/pages/PublishingPage.tsx`
@@ -187,7 +229,7 @@ Run: `node --import tsx --test renderer/src/utils/publishing.test.ts`
 Run: `node --import tsx --test renderer/src/utils/publishing.test.ts && npm run check`
 Expected: 用例通过、`tsc` 双端退出码 0。
 
-### Task 6: 全量验证、编译与人工复核
+### Task 7: 全量验证、编译与人工复核
 
 - [ ] **Step 1: 类型检查与全量测试**
 

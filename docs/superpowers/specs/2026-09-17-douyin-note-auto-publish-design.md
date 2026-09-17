@@ -39,6 +39,8 @@
 | 包模型 | `DeliveryPackage` 加 `contentType`，不新建并列类型 |
 | 任务状态机 | **一个状态都不加**，用任务上的 `autoPublish` 子记录表达机器动作 |
 | 失败重试 | **不自动重试** |
+| **发布前预览** | **通用预览**（视频包 + 图文包），弹窗形态；图文自动发布**必经确认**（见 §14） |
+| **必经确认的实现** | `auto-publish` **必须带 `previewRevision`**，后端比对不一致返回 409 —— 做成真约束而非 UI 装饰（见 §14.3） |
 
 ## 3. 素材来源（已实测）
 
@@ -101,6 +103,8 @@ noteCopy?: PlatformCopy;           // 仅 note 包，title ≤20 / note ≤1000 
 4. 回写   读回 storage_state，转回 Cookie 头写我们的 douyin-cookie.txt（爬取同样受益）
 ```
 
+> **接口契约（2026-09-17 修订）**：`POST /api/publishing/tasks/:id/auto-publish` **必须携带 `previewRevision`**（由包级预览接口返回，见 §14）。缺失 → 400；与当前内容不一致 → 409 且**不产生任何 `autoPublish` 记录**。这让"发布前必经预览"成为服务端约束，同时拦住"预览之后文案/图片被改动"的情况。
+
 配置沿用现有模式（`app.ts` 的 `ytDlpBinary` / `whisperCliPath` / `hyperframesNpxBinary` 同理）：
 
 - `sauBinary`：`sau` 可执行文件路径
@@ -139,6 +143,7 @@ autoPublish?: {
 上游的成功判定是"URL 跳到作品管理页"，而 `wait_for_url` 超时仅 3 秒，超时会落进 `except` 再 `force=True` 点一次「发布」——即**上游自身就可能重复点击**。我们的对策：
 
 1. 同一任务**同时只允许一个** `autoPublish` 在跑（运行中重复触发返回 409，与现有步骤并发语义一致）。
+2. **提交前必须有未过期的预览**：`previewRevision` 不匹配即 409（见 §14.3）。这条同时防住"预览后内容被改"。
 2. 失败**绝不自动重试**，必须人工再次点击（人知道上一次到底发出去没有）。
 3. 我方**不把 CLI 退出码当作"已发布"**，只标 `succeeded`（已提交），发布状态仍由人工判定。
 4. 把 sau 的原始输出摘要写入审计与 `autoPublish.message`，便于事后追。
@@ -183,9 +188,79 @@ autoPublish?: {
 | `src/lib/publishing-platforms.ts` | 新增图文口径 `PUBLISH_NOTE_POLICIES`（douyin: title 20 / note 1000 / hashtags 10） |
 | `src/lib/publishing-assets.ts` | 打包图文：复制静帧、图片清单哈希、`missing_images` 健康判定 |
 | `src/lib/sau-runner.ts`（新增） | 预检 / 凭据转换 / 执行 / 回写 |
-| `src/lib/publishing-routes.ts` | `POST /api/publishing/tasks/:id/auto-publish`、验证码提交接口 |
-| `src/lib/publishing-store.ts` | `autoPublish` 读写、并发互斥 |
-| `renderer/src/pages/PublishingPage.tsx` | 「发布图文到抖音」动作、验证码输入、待确认提示 |
+| `src/lib/publishing-routes.ts` | `POST /api/publishing/tasks/:id/auto-publish`（**必须带 `previewRevision`**）、验证码提交接口、`GET /api/publishing/packages/:id/preview`、`GET /api/publishing/packages/:id/images/:index` |
+| `src/lib/publishing-store.ts` | `autoPublish` 读写、并发互斥、包级 `previewRevision` 的计算与比对 |
+| `renderer/src/pages/PublishingPage.tsx` | 「发布图文到抖音」动作（先预览、确认后才提交）、「预览」入口、验证码输入、待确认提示 |
+| `renderer/src/components/PublishPreviewDialog.tsx`（新增） | 通用预览弹窗：视频播放器 / 图片横滑 + 文案字数校验 |
 | `renderer/src/utils/publishing.ts` | 动作可见性规则 |
 | `src/app.ts`、`src/server.ts`、`electron/server.ts` | `sauBinary` / `sauBaseDir` 透传 |
 | 测试 | 新增 sau runner/打包/文案/路由用例；既有 publishing 用例作为回归门禁 |
+
+## 14. 发布前预览（2026-09-17 追加）
+
+### 14.1 为什么需要
+
+自动发布是**不可逆**动作，而在此之前项目里**没有任何地方能"看见"将要发出去的内容**：
+
+- 现有的 `PublishingPreview`（`POST /api/jobs/:id/publishing/preview`）返回的是**视频元数据**（文件名/尺寸/时长/是否有封面）+ 各平台文案 + warning，供**创建发布包向导**使用，其"确认"步骤只是纯文字摘要。
+- 图文尤其危险：**图片顺序**与文案是两件事，发错了顺序或带错文案，事后只能删稿重发。
+
+### 14.2 形态与入口
+
+一个弹窗组件，两种进入方式：
+
+| 入口 | 行为 |
+| --- | --- |
+| 任务行「发布图文到抖音」 | 先弹预览 → 点「确认发布」才真正提交（**必经**） |
+| 包/任务行「预览」按钮 | 随时查看（视频包走这个） |
+
+视频包不设"必经"，是因为它本来就没有自动提交动作——最终仍由人自己去平台发布。
+
+内容按 `contentType` 分两支：
+
+| | 视频包 | 图文包 |
+| --- | --- | --- |
+| 主区 | 成片 `<video controls>`（走既有 `/video/stream` 的 Range 流）+ 封面 | **图片横滑**，按 `imagePaths` 顺序，带 `1/11` 序号指示 |
+| 文案区 | 各平台 标题 / 正文 / 话题 | 当前任务平台的 标题 / 正文 / 话题 |
+| 公共 | 版本、包路径、创建人/时间、`assetHealth`（缺资产必须显眼） | 同左 |
+
+文案区**必须带字数与上限**（如「标题 12/20」「正文 340/1000」），超限标红——直接复用 Task 1 的 `validateNoteCopy`，让预览成为"发布前最后一道校验"。
+
+### 14.3 「必经确认」必须是服务端约束
+
+只在界面上"不给点"是不可靠的：接口仍可被直接调用绕过。因此：
+
+```
+GET  /api/publishing/packages/:id/preview      → 返回包级预览数据 + previewRevision
+POST /api/publishing/tasks/:id/auto-publish    → 必须带 previewRevision
+                                                  缺失 → 400
+                                                  与当前内容不一致 → 409「预览已过期，请重新预览」
+                                                  且不产生任何 autoPublish 记录
+```
+
+`previewRevision` 沿用既有语义（现有 `PublishingPreview.previewRevision` 就是为向导的乐观并发设计的），不新造一套：它是**包内容指纹**，图文包需覆盖 `imagePaths`（含顺序）与 `noteCopy`，视频包覆盖视频哈希与各平台文案。
+
+两个收益：确认是真必经；且**预览之后内容被改动会被拦下**，避免"看到的"与"发出去的"不一致。
+
+### 14.4 图片读取接口
+
+照既有 `GET /api/publishing/packages/:id/cover` 的模式新增：
+
+```
+GET /api/publishing/packages/:id/images/:index     # index 为 imagePaths 中的序号（0 基）
+```
+
+越界或包内缺图 → 404；仍走既有的路径归属校验（不得越出包目录）。
+
+### 14.5 明确不做
+
+- **抖音信息流效果模拟**（手机框、标题在上、横滑轮播的平台样式复刻）——已与用户确认排除：多维护一套"模仿平台"的样式，平台改版就会失真。
+- 视频包的自动发布（仍是人工交付）。
+- 在预览弹窗里直接编辑文案——编辑仍走既有任务行，避免出现第二套编辑状态。
+
+### 14.6 测试
+
+- 包级预览接口：视频包返回视频元数据、图文包返回**有序** `imagePaths` 与 `noteCopy`，两者都带 `previewRevision`。
+- 图片接口：序号与 `imagePaths` 一一对应；越界 → 404。
+- **`previewRevision` 契约**：不带 → 400；带过期值 → 409 且**不产生 `autoPublish` 记录**；带正确值 → 通过。改动文案后旧 revision 失效（回归断言）。
+- 组件：视频包渲染播放器；图文包渲染 N 张图与序号指示；超限文案标红。
