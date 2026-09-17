@@ -31,6 +31,10 @@
 
 ## 最近操作
 
+- 2026-09-17：开始 **② 抖音图文自动发布**。**Task 1 完成**（`abe9d9e`）：`PUBLISH_NOTE_POLICIES`（抖音图文 title ≤20 / note ≤1000）+ `validateNoteCopy`，与视频校验收敛到同一实现 `validateCopyAgainstPolicy`（视频 55 字口径一字未改，既有 6 条平台用例作为回归门禁保持通过）；`types.ts` 增 `contentType`/`imagePaths`/`noteCopy`/`autoPublish` 与 `missing_images`。
+- 2026-09-17：按用户要求把**「发布前预览」写进 ② 的 spec 与计划**（`67825ea`）。spec 新增 §14：通用预览（视频包成片播放器 / 图文包图片横滑 + 文案字数校验）、弹窗形态、图文自动发布**必经确认**。关键决定：**「必经确认」做成服务端约束**而非 UI 装饰 —— `auto-publish` 必须带 `previewRevision`（缺失 400 / 不一致 409 且不写 `autoPublish`），顺带拦住「预览之后内容被改」。计划新增 Task 5（预览），revision 的**校验**归 Task 4（路由归属）、**产出**归 Task 5，避免先实现路由再改同一路由的返工。
+- 2026-09-17：**交接**。`Task 2 图文打包`未开始 —— 它要动 1484 行、安全加固过的 `publishing-assets.ts`（锁 → 临时目录 → 身份校验 → 原子提升 → 回滚），本会话上下文已很长，故留待新会话。交接文档：`docs/handoff-2026-09-17-note-auto-publish.md`（含硬约束、两个"不要做"、素材来源实测、环境事实与基线测试数）。计划里 Task 1 的 4 个 Step 已勾选。
+
 - 2026-09-17：**文档同步**（`AGENTS.md` / `CLAUDE.md` / `README.md`）。三件事：① 补上会话内新增能力的说明（素材库、原视频播放、本机操作者无登录界面、可折叠侧栏）与对应 API；② 按实测更正两处**过时/错误**描述 —— storage 根目录随运行方式不同（桌面端是 `~/Library/Application Support/douyin-ai-video/storage`，独立后端是仓库 `storage/`），以及 Electron 读的配置文件在 `app.getPath('userData')` 而**不是** `~/.douyin-ai-video/config.json`；③ `README` 里描述「发布者无需 PIN / 管理员切换需 PIN / 重置本地用户」的那一节已随界面移除而重写为「本机操作者与权限」。顺带把 `AGENTS.md` 与 `CLAUDE.md` **同步为完全一致**（此前 AGENTS 落后一轮，缺 reclean 与 `dist` 警告）。
 - 2026-09-17：实现**素材库**（③ 的 Task 1/2/4，提交 `90d6895`、`dfd9aa6`）：后端 `assets-store`（索引/落盘/白名单/限额/路径归属校验）+ `assets-routes`（multer 上传、列表、Range 预览、删除），前端 `/assets` 页面与主导航入口。新增 16 个用例；实时验证（真实后端上传真实封面 → 201、中文名正确、Range 206、删除后磁盘零残留）。测试抓到两个真 bug：类型校验里的死逻辑（`asset_kind_mismatch` 永远抛不出）、**busboy 按 latin1 解码文件名导致中文名乱码**。顺带把 Range 逻辑抽成 `range-response.ts` 供成片与素材共用（以既有 14 个 video-output 用例为回归门禁）。Task 3（图片接入图文）依赖 ② 的图文打包，已按用户决定推迟到做 ② 时合并。
 - 2026-09-17：实现**侧栏可折叠**（①，4 个 Task）：`railPreference` 持久化、`AppShell` 声明 CSS 变量 `--rail-w` 作为宽度唯一真源（消除四处硬编码偏移）、`PrimaryRail` 展开态显示导航文字。新增 12 个用例。**复核反馈修正**：初版把折叠开关做成「整个 logo 行」，收起态与此前长得一模一样，用户找不到入口；改为底部常驻按钮并把 logo 行恢复原样（提交 `1b94fcb`）。教训记在 spec 第 5 节：视觉零变化与新增功能可发现性冲突时，应先问用户而不是自己按洁癖选。

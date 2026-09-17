@@ -34,23 +34,23 @@
 - Consumes: 现有 `PlatformCopy`、`validatePlatformCopy`
 - Produces: `PublishNotePolicy` + `PUBLISH_NOTE_POLICIES`、`validateNoteCopy(copy): PlatformCopyValidationError[]`、`DeliveryPackage.contentType/imagePaths/noteCopy`、`PublishTask.autoPublish`、`PublishAssetHealth` 增 `missing_images`
 
-- [ ] **Step 1: 写失败用例**
+- [x] **Step 1: 写失败用例**
 
 - douyin 图文 title 21 字 → 报错且 message 指出 20 字上限；20 字 → 通过。
 - note 1001 字 → 报错；1000 字 → 通过。
 - hashtags 超过 10 个 → 报错（沿用既有 hashtag 规则）。
 - 视频口径未受影响：`validatePlatformCopy("douyin", …)` 对 55 字标题仍通过（回归断言）。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --import tsx --test src/lib/publishing-platforms.test.ts`
 Expected: FAIL —— `validateNoteCopy` 不存在。
 
-- [ ] **Step 3: 实现类型与校验**
+- [x] **Step 3: 实现类型与校验**
 
 `PUBLISH_NOTE_POLICIES` 只为 douyin 定义图文口径（结构化 `Record<PublishPlatform, PlatformPolicy>` 可先仅含 douyin，其余平台待后续接入时补）。`validateNoteCopy` 复用 `normalizePlatformCopy` 与既有错误形状，仅替换上限来源。
 
-- [ ] **Step 4: 运行确认通过，并跑既有 publishing 用例作为回归**
+- [x] **Step 4: 运行确认通过，并跑既有 publishing 用例作为回归**
 
 Run: `node --import tsx --test src/lib/publishing-platforms.test.ts src/lib/publishing-store.test.ts`
 Expected: PASS。
