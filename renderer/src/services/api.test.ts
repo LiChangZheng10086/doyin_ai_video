@@ -87,3 +87,68 @@ test('AI step stream parser accepts valid events and rejects malformed data', ()
   assert.equal(parseJobStepStreamEvent('{broken'), null);
   assert.equal(parseJobStepStreamEvent(JSON.stringify({ type: 'preview', step: 'transcribe' })), null);
 });
+
+test('a session invalidated by a backend restart is reopened and the request replayed', async () => {
+  // 会话是内存的（后端重启即失效），登录界面又已移除 —— 客户端必须静默自救，
+  // 否则用户会看到属于已移除功能的「请选择当前操作者」。
+  const client = new ApiClient();
+  await (client as any).initialize();
+  const instance = (client as any).client as {
+    defaults: { adapter?: unknown };
+    request: (config: unknown) => Promise<{ data: unknown }>;
+  };
+  (client as any).setLocalSession('stale-token');
+
+  const seen: Array<{ url: string; token: unknown }> = [];
+  let packageCalls = 0;
+  instance.defaults.adapter = async (config: any) => {
+    seen.push({ url: String(config.url), token: config.headers?.['X-Local-Session'] ?? (config.headers?.get?.('X-Local-Session') ?? null) });
+    if (String(config.url).includes('/api/local-sessions/auto')) {
+      return { data: { session: { token: 'fresh-token' } }, status: 200, statusText: 'OK', headers: {}, config };
+    }
+    packageCalls += 1;
+    if (packageCalls === 1) {
+      return Promise.reject({
+        isAxiosError: true,
+        message: 'Request failed with status code 401',
+        config,
+        response: { status: 401, data: { code: 'local_session_required', message: '请选择当前操作者' }, config },
+      });
+    }
+    return { data: { packages: [] }, status: 200, statusText: 'OK', headers: {}, config };
+  };
+
+  const result = await client.listPublishingPackages();
+
+  assert.deepEqual(result, []);
+  assert.deepEqual(seen.map((entry) => entry.url), [
+    '/api/publishing/packages',
+    '/api/local-sessions/auto',
+    '/api/publishing/packages',
+  ]);
+  // 重放时必须带上新 token，否则又会 401
+  assert.equal(seen[2].token, 'fresh-token');
+});
+
+test('a genuine 401 is surfaced instead of being retried forever', async () => {
+  const client = new ApiClient();
+  await (client as any).initialize();
+  const instance = (client as any).client as { defaults: { adapter?: unknown } };
+  (client as any).setLocalSession('token');
+  let calls = 0;
+  instance.defaults.adapter = async (config: any) => {
+    calls += 1;
+    return Promise.reject({
+      isAxiosError: true,
+      message: 'Request failed with status code 401',
+      config,
+      response: { status: 401, data: { code: 'local_user_pin_invalid' }, config },
+    });
+  };
+
+  await assert.rejects(client.listPublishingPackages(), (error: unknown) => {
+    assert.equal(parseApiError(error).code, 'local_user_pin_invalid');
+    return true;
+  });
+  assert.equal(calls, 1, '非会话失效的 401 不应被重放');
+});

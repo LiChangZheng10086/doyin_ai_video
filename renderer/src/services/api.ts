@@ -75,10 +75,33 @@ export function parseJobStepStreamEvent(value: string): JobStepStreamEvent | nul
   }
 }
 
+/**
+ * 这个 401 是否属于「后端重启导致内存会话失效」，值得静默重开会话后重放一次。
+ *
+ * 背景：`LocalSessionStore` 的会话是**纯内存**的，后端一重启全部作废；而本项目按
+ * AGENTS.md 的要求频繁重启后端。界面里的登录/切换入口**已全部移除**，所以客户端
+ * 没有别的自救手段 —— 不自动重开会话，用户就会看到一句属于已移除功能的
+ * 「请选择当前操作者」（2026-09-17 用户实测反馈）。
+ */
+export function isStaleLocalSession(error: unknown): boolean {
+  const candidate = error as {
+    response?: { status?: unknown; data?: { code?: unknown } };
+    config?: { url?: unknown; _sessionRetried?: unknown };
+  };
+  if (candidate?.response?.status !== 401) return false;
+  if (candidate.response.data?.code !== 'local_session_required') return false;
+  if (candidate.config?._sessionRetried === true) return false;   // 只重放一次，避免死循环
+  const url = typeof candidate.config?.url === 'string' ? candidate.config.url : '';
+  if (url.includes('/api/local-sessions')) return false;          // 会话接口自身失败不再递归重开
+  return true;
+}
+
 export class ApiClient {
   private client: AxiosInstance | null = null;
   private serverPort: number | null = null;
   private localSessionToken: string | null = null;
+  /** 并发的 401 只触发一次重开会话（避免惊群）。 */
+  private sessionRefresh: Promise<void> | null = null;
 
   async initialize() {
     if (!this.serverPort) {
@@ -98,6 +121,20 @@ export class ApiClient {
         }
         return request;
       });
+      // 会话过期（后端重启）时静默重开并重放一次：登录界面已移除，客户端必须自救。
+      // 请求拦截器会在重放时自动带上新 token，所以这里不用手工改 header。
+      this.client.interceptors.response.use(undefined, async (error: unknown) => {
+        if (!isStaleLocalSession(error)) throw error;
+        const config = (error as { config?: { _sessionRetried?: boolean } }).config;
+        if (!config) throw error;
+        config._sessionRetried = true;
+        try {
+          await this.refreshLocalOperatorSession();
+        } catch {
+          throw error;
+        }
+        return this.client!.request(config as Parameters<AxiosInstance['request']>[0]);
+      });
     }
     return this.client!;
   }
@@ -107,6 +144,19 @@ export class ApiClient {
       await this.initialize();
     }
     return this.client!;
+  }
+
+  /** 静默重开一次本机操作者会话（无 PIN），并把新 token 装上。 */
+  private async refreshLocalOperatorSession(): Promise<void> {
+    if (!this.sessionRefresh) {
+      this.sessionRefresh = (async () => {
+        const response = await this.client!.post<LocalUserSessionResponse>('/api/local-sessions/auto');
+        this.localSessionToken = response.data.session.token;
+      })();
+      // 无论成败都清空，让后续请求可以再试
+      this.sessionRefresh = this.sessionRefresh.finally(() => { this.sessionRefresh = null; });
+    }
+    return this.sessionRefresh;
   }
 
   setLocalSession(token: string | null): void {

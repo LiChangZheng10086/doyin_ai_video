@@ -1410,11 +1410,22 @@ function copyCheck(
   };
 }
 
-/** 把 sau 的原始输出压成适合写进审计与 `autoPublish.message` 的摘要。 */
-function summarizeCliOutput(output: string, maxLength = 500): string {
-  const flattened = output.replace(/\s+/gu, " ").trim();
+/**
+ * 把 sau 的原始输出压成适合写进审计与 `autoPublish.message` 的摘要。
+ *
+ * 两个细节都是实测踩出来的：
+ * ① **必须去 ANSI 色码** —— 上游 loguru 给每一行上色，直接落库既难读又白占长度；
+ * ② **截断必须保尾** —— `sau` 的正常进度在开头、**失败原因在末尾**。
+ *    2026-09-17 真实上传失败时，只保头的实现把「标题输入框 120s 超时」这段丢掉了，
+ *    导致界面上只剩一堆 INFO 进度、完全看不出为什么失败。
+ */
+export function summarizeCliOutput(output: string, maxLength = 500): string {
+  const plain = output.replace(/\u001B\[[0-9;]*m/gu, "");
+  const flattened = plain.replace(/\s+/gu, " ").trim();
   if (flattened.length <= maxLength) return flattened;
-  return `${flattened.slice(0, maxLength)}…`;
+  const head = Math.floor(maxLength / 3);
+  const tail = maxLength - head - 1;
+  return `${flattened.slice(0, head)}…${flattened.slice(-tail)}`;
 }
 
 function normalizeStoreError(error: PublishingError): PublishingServiceError {

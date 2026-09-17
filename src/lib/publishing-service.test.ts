@@ -23,7 +23,7 @@ import type {
   PublishingPackageDetail,
 } from "../types.js";
 import { PublishingAssetService } from "./publishing-assets.js";
-import { PublishingService, PublishingServiceError } from "./publishing-service.js";
+import { PublishingService, PublishingServiceError, summarizeCliOutput } from "./publishing-service.js";
 import { PublishingStore } from "./publishing-store.js";
 import { LocalStorage } from "./storage.js";
 import { resolveJobVideo } from "./video-output.js";
@@ -731,3 +731,21 @@ async function snapshotBytes(root: string): Promise<Record<string, string>> {
   await visit(root);
   return result;
 }
+
+test('CLI output summary strips ANSI colour and keeps the end where failures are', () => {
+  const coloured = [
+    "\u001B[38;2;112;172;222m16:55:12\u001B[0m | \u001B[97m✍️ 小人开始填标题、描述和话题\u001B[0m",
+    "\u001B[31mTraceback (most recent call last): TimeoutError: locator.wait_for: Timeout 120000ms exceeded\u001B[0m",
+  ].join("\n");
+
+  const summary = summarizeCliOutput(coloured);
+
+  assert.doesNotMatch(summary, /\u001B\[/u, "不应保留 ANSI 色码");
+  // 真实事故：只保留开头会把失败原因丢掉
+  assert.match(summary, /Timeout 120000ms exceeded/u);
+  assert.doesNotMatch(summary, /\n/u, "应压成单行");
+
+  // 短输出原样保留（压平后）
+  assert.equal(summarizeCliOutput("valid"), "valid");
+  assert.equal(summarizeCliOutput("  多行\n输出  "), "多行 输出");
+});
