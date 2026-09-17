@@ -7,6 +7,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { CollectionListPage } from './pages/CollectionListPage';
 import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SkillListPage } from './pages/SkillListPage';
+import { AssetsPage } from './pages/AssetsPage';
 import { PublishingPage } from './pages/PublishingPage';
 import { PublishingDuePoller } from './components/PublishingDuePoller';
 import { AppShell } from './components/shell/AppShell';
@@ -44,6 +45,7 @@ function AppContent() {
           <Route path="/collections" element={<CollectionListPage />} />
           <Route path="/collections/:id" element={<CollectionDetailPage />} />
           <Route path="/skills" element={<SkillListPage />} />
+          <Route path="/assets" element={<AssetsPage />} />
           <Route path="/publishing" element={<PublishingPage />} />
           <Route path="/trash" element={<TrashPage />} />
           <Route path="/settings" element={<SettingsPage />} />

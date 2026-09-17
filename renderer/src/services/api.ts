@@ -5,6 +5,8 @@ import type {
   CollectionOverview,
   CollectionTranscriptsResponse,
   ConfirmedPublishingAction,
+  AssetKind,
+  AssetRecord,
   CreatePublishingPackageInput,
   CreatePublishingVersionInput,
   CrawlUserPageResult,
@@ -101,6 +103,36 @@ export class ApiClient {
     const client = await this.getClient();
     const response = await client.post<LocalUserSessionResponse>('/api/local-sessions/auto');
     return response.data;
+  }
+
+  // ─── 素材库 ───────────────────────────────────────────────────────
+
+  async getAssets(kind?: AssetKind): Promise<AssetRecord[]> {
+    const client = await this.getClient();
+    const response = await client.get<{ assets: AssetRecord[] }>('/api/assets', {
+      params: kind ? { kind } : {},
+    });
+    return response.data.assets;
+  }
+
+  async uploadAssets(kind: AssetKind, files: File[]): Promise<AssetRecord[]> {
+    const client = await this.getClient();
+    const form = new FormData();
+    for (const file of files) form.append('files', file);
+    // 不要手写 Content-Type：让运行时带上 multipart 的 boundary
+    const route = kind === 'image' ? 'images' : 'audio';
+    const response = await client.post<{ assets: AssetRecord[] }>(`/api/assets/${route}`, form);
+    return response.data.assets;
+  }
+
+  async deleteAsset(id: string): Promise<void> {
+    const client = await this.getClient();
+    await client.delete(`/api/assets/${id}`);
+  }
+
+  async getAssetRawUrl(id: string): Promise<string> {
+    const serverPort = this.serverPort || (typeof window !== 'undefined' && window.electron?.getServerPort ? await window.electron.getServerPort() : 5173);
+    return `http://localhost:${serverPort}/api/assets/${id}/raw`;
   }
 
   private async publishingRequest<T>(config: AxiosRequestConfig): Promise<T> {

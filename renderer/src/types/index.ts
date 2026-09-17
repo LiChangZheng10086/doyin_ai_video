@@ -663,3 +663,19 @@ export interface CollectionTranscriptsResponse {
   aggregatedText: string;
   summary: { totalJobs: number; transcribed: number };
 }
+
+// ─── 素材库 ─────────────────────────────────────────────────────────
+
+export type AssetKind = 'image' | 'audio';
+
+export interface AssetRecord {
+  id: string;
+  kind: AssetKind;
+  filename: string;
+  originalName: string;
+  bytes: number;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  createdAt: string;
+}

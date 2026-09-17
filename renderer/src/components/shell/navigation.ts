@@ -4,6 +4,7 @@ import {
   Users,
   Brain,
   Send,
+  Images,
   Trash2,
   Settings,
   MoreHorizontal,
@@ -27,6 +28,7 @@ export const PRIMARY_NAV_ITEMS = [
   { to: '/', label: '作品', icon: LayoutDashboard, matchPrefixes: ['/jobs/'] },
   { to: '/collections', label: '合集', icon: Users, matchPrefixes: ['/collections/'] },
   { to: '/skills', label: 'Skills', icon: Brain, matchPrefixes: [] },
+  { to: '/assets', label: '素材', icon: Images, matchPrefixes: [] },
   { to: '/publishing', label: '发布', icon: Send, matchPrefixes: [] },
 ] satisfies NavigationItem[];
 
@@ -55,6 +57,7 @@ export function getPageContext(pathname: string): { title: string; subtitle: str
   if (pathname.startsWith('/collections/')) return { title: '合集详情', subtitle: '创作者内容库' };
   if (pathname === '/collections') return { title: '合集', subtitle: '创作者内容库' };
   if (pathname === '/skills') return { title: 'Skills', subtitle: '知识资产' };
+  if (pathname === '/assets') return { title: '素材', subtitle: '图片与音频素材库' };
   if (pathname === '/publishing') return { title: '发布工作台', subtitle: '人工交付队列' };
   if (pathname === '/settings') return { title: '设置', subtitle: '连接与本地环境' };
   if (pathname === '/trash') return { title: '垃圾桶', subtitle: '恢复已删除作品' };
