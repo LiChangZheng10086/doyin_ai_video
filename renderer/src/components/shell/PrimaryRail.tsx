@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { PanelLeftClose, Video } from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen, Video } from 'lucide-react';
 import { PRIMARY_NAV_ITEMS, SECONDARY_NAV_ITEMS, isNavigationItemActive } from './navigation';
 import { useLocation } from 'react-router-dom';
 
@@ -45,30 +45,37 @@ export function PrimaryRail({ expanded, onToggle }: PrimaryRailProps) {
       className="fixed left-0 top-0 bottom-0 z-40 flex w-14 flex-col border-r border-tech-border bg-white transition-[width] duration-200 md:w-[var(--rail-w)]"
     >
       {/*
-        整个 logo 行就是折叠开关：收起态若只显示 logo，用户就没有入口可以展开。
-        这样收起时的视觉与改造前逐像素一致，同时两个状态都有明确的点击目标。
+        logo 行保持原来的非交互样式。折叠开关固定在底部且两个状态都可见 ——
+        早先把整行 logo 当开关，结果收起态与改造前长得一模一样，用户根本发现不了能点。
+        可用性优先于"逐像素一致"。
       */}
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={expanded}
-        aria-label={expanded ? '收起侧栏' : '展开侧栏'}
-        title={expanded ? '收起侧栏' : '展开侧栏'}
-        className={`flex h-14 shrink-0 items-center border-b border-tech-border transition-colors hover:bg-tech-bg ${
-          expanded ? 'justify-between px-3' : 'justify-center'
-        }`}
-      >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-tech-blue to-tech-purple">
+      <div className="flex h-14 shrink-0 items-center justify-center border-b border-tech-border">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-tech-blue to-tech-purple">
           <Video size={16} className="text-white" />
-        </span>
-        {expanded && <PanelLeftClose size={18} className="text-tech-muted" />}
-      </button>
+        </div>
+      </div>
 
       <div className="flex flex-1 flex-col gap-1 py-4">
         {renderNavItems(PRIMARY_NAV_ITEMS)}
       </div>
+
       <div className="flex flex-col gap-1 border-t border-tech-border py-4">
         {renderNavItems(SECONDARY_NAV_ITEMS)}
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-label={expanded ? '收起侧栏' : '展开侧栏'}
+          title={expanded ? '收起侧栏' : '展开侧栏'}
+          className={`mt-1 flex h-10 items-center rounded-lg text-tech-muted transition-colors hover:bg-tech-bg hover:text-tech-text ${
+            expanded ? 'mx-2 gap-3 px-3' : 'mx-auto w-12 justify-center'
+          }`}
+        >
+          {expanded
+            ? <PanelLeftClose size={18} className="shrink-0" />
+            : <PanelLeftOpen size={18} className="shrink-0" />}
+          {expanded && <span className="truncate text-sm">收起侧栏</span>}
+        </button>
       </div>
     </nav>
   );
