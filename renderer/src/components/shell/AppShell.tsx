@@ -7,20 +7,43 @@ import { SECONDARY_NAV_ITEMS } from './navigation';
 import { ApiKeyStatusIndicator } from '../ApiKeyStatusIndicator';
 import { CookieStatusIndicator } from '../CookieStatusIndicator';
 import { useNavigate } from 'react-router-dom';
+import { readStoredRailExpanded, writeStoredRailExpanded } from '../../utils/railPreference';
 
 export interface AppShellProps {
   children: ReactNode;
+  /**
+   * 侧栏初始是否展开。测试用它绕开 localStorage；默认由持久化偏好决定。
+   */
+  initialExpanded?: boolean;
 }
 
-export function AppShell({ children }: AppShellProps) {
+export function AppShell({ children, initialExpanded }: AppShellProps) {
   const [moreOpen, setMoreOpen] = useState(false);
+  const [railExpanded, setRailExpanded] = useState(() => {
+    if (initialExpanded !== undefined) return initialExpanded;
+    // 静态渲染（组件测试）里没有 window，必须判断后再访问 localStorage
+    if (typeof window === 'undefined') return false;
+    return readStoredRailExpanded(window.localStorage);
+  });
   const navigate = useNavigate();
 
+  const toggleRail = () => {
+    setRailExpanded((current) => {
+      const next = !current;
+      if (typeof window !== 'undefined') writeStoredRailExpanded(window.localStorage, next);
+      return next;
+    });
+  };
+
   return (
-    <div className="min-h-screen bg-canvas">
+    <div
+      className={`min-h-screen bg-canvas ${
+        railExpanded ? '[--rail-w:208px]' : 'md:[--rail-w:56px] xl:[--rail-w:64px]'
+      }`}
+    >
       {/* Desktop: left rail + top bar */}
       <div className="hidden md:block">
-        <PrimaryRail />
+        <PrimaryRail expanded={railExpanded} onToggle={toggleRail} />
         <UtilityBarDesktop />
       </div>
 
@@ -30,7 +53,7 @@ export function AppShell({ children }: AppShellProps) {
       </div>
 
       {/* Main content area — offset for desktop rail + utility bar, mobile top bar */}
-      <main className="pt-14 md:ml-[56px] xl:ml-16 md:pt-14 pb-14 md:pb-0 min-h-screen">
+      <main className="pt-14 pb-14 min-h-screen transition-[margin] duration-200 md:ml-[var(--rail-w)] md:pt-14 md:pb-0">
         {children}
       </main>
 

@@ -35,7 +35,9 @@ test('MOBILE_NAV_ITEMS ends with more', () => {
 
 test('PrimaryRail renders nav with icon links', () => {
   const markup = renderToStaticMarkup(
-    React.createElement(MemoryRouter, { children: React.createElement(PrimaryRail) }),
+    React.createElement(MemoryRouter, {
+      children: React.createElement(PrimaryRail, { expanded: false, onToggle: () => {} }),
+    }),
   );
   assert.match(markup, /aria-label="主导航"/);
   for (const label of ['作品', '合集', 'Skills', '素材', '发布', '垃圾桶', '设置']) {

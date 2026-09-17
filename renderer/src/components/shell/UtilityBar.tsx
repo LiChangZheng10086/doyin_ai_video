@@ -7,7 +7,7 @@ export function UtilityBar() {
   const { title, subtitle } = usePageContext();
 
   return (
-    <header className="fixed top-0 left-0 md:left-[56px] xl:left-16 right-0 z-30 flex items-center justify-between h-14 px-4 bg-white border-b border-tech-border md:hidden">
+    <header className="fixed top-0 left-0 right-0 z-30 flex items-center justify-between h-14 px-4 bg-white border-b border-tech-border transition-[left] duration-200 md:left-[var(--rail-w)] md:hidden">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-tech-text truncate">{title}</h2>
         {subtitle && <p className="text-xs text-tech-muted truncate">{subtitle}</p>}
@@ -20,7 +20,7 @@ export function UtilityBarDesktop() {
   const { title, subtitle } = usePageContext();
 
   return (
-    <header className="fixed top-0 left-14 md:left-[56px] xl:left-16 right-0 z-30 hidden md:flex items-center justify-between h-14 px-5 bg-white border-b border-tech-border">
+    <header className="fixed top-0 left-14 right-0 z-30 hidden md:flex items-center justify-between h-14 px-5 bg-white border-b border-tech-border transition-[left] duration-200 md:left-[var(--rail-w)]">
       <div className="min-w-0">
         <h2 className="text-sm font-semibold text-tech-text truncate">{title}</h2>
         <p className="text-xs text-tech-muted truncate">{subtitle}</p>
