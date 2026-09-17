@@ -347,7 +347,18 @@ npm run prepare:whisper
 npm run package           # 会先检查 vendor/whisper 资源是否存在
 ```
 
-> ⚠️ **后端改动生效需两步**：开发模式下 Electron 加载的是编译产物 `dist/app.js`（见 `electron/server.ts`），而 `npm run dev` 的 `dev:electron` 只编译 Electron 主进程、**不编译后端**。因此改了 `src/`（`app.ts`、`lib/*.ts`）后，必须先 `npm run build:backend` 再重启 `npm run dev`，否则运行中的应用仍是旧后端。渲染器（`renderer/`）由 Vite 提供并 HMR 热更，改前端无需重启。`npm run check`（`--noEmit`）和 `npm test`（tsx 跑源码）都不产出 `dist/`，不能替代编译。
+> ⚠️ **改了源码必须编译对应的产物，再重启**。这里有**两套**独立的编译产物，踩错任一个的表现都是"改了没生效"：
+
+| 改动位置 | 产物 | 编译命令 | 生效方式 |
+| --- | --- | --- | --- |
+| `src/`（`app.ts`、`lib/*.ts`） | `dist/` | `npm run build:backend` | 重启后端（含 Electron 内嵌后端） |
+| `electron/`（主进程、配置 IPC、`electron/server.ts`） | `dist-electron/` | `npm run build:electron` | 重启 Electron |
+| `renderer/` | Vite 内存 | 无需 | HMR 自动热更，不必重启 |
+
+- `npm run dev` 的 `dev:electron` 里带了 `build:electron`，所以走它启动时主进程一定是新的；但**直接 `electron .`（或 `node_modules/.bin/electron .`）会绕过这一步**，此时 `dist-electron/` 仍是旧的。
+- **`build:backend` 不产出 `dist-electron/`，反之亦然** —— 两者互不覆盖。
+- 典型事故（2026-09-17 实测）：在 `electron/server.ts` 里加了 `SAU_BINARY` / `SAU_BASE_DIR` 透传，环境变量确实传进了 Electron 进程，但 `dist-electron/server.js` 还是旧的、里里外外没人读它，于是无论怎么配都报「未配置」。
+- `npm run check`（`--noEmit`）与 `npm test`（tsx 跑源码）都**不产出任何产物**，不能替代编译。
 
 ## 关键注意事项
 
@@ -469,6 +480,10 @@ npm run package           # 会先检查 vendor/whisper 资源是否存在
 4. 查看任务详情页“生成视频”步骤错误和后端日志。
 
 ### 抖音图文自动发布不工作
+0. **明明配了 `SAU_BINARY` / `SAU_BASE_DIR`，重启后仍报「未配置」** → 先查 `dist-electron/` 是不是旧的：
+   `grep -c SAU_BINARY dist-electron/server.js`（应为 ≥1，为 0 就是没编译主进程，跑 `npm run build:electron` 再重启）。
+   用 `lsof -nP -iTCP -sTCP:LISTEN | grep -i electron` 找内嵌后端端口，`ps -Eww -p <PID> | grep -o "SAU_[A-Z_]*=[^ ]*"`
+   可确认环境变量是否真的进了进程（注意用 `grep -o`，`ps -Eww` 的环境段不一定在行首）。
 1. 报「未配置 sau 可执行文件」→ 按提示装好引擎并设置 `SAU_BINARY` / `SAU_BASE_DIR`，**然后重启后端**（env 只在启动时读）。
 2. 预检输出 `invalid` → 登录态失效，需重新扫码登录（`~/.douyin-ai-video/douyin-cookie.txt` 是唯一真源）。
 3. 点「发布图文到抖音」时先弹出预览是**预期行为**（必经确认），确认后才真正提交。

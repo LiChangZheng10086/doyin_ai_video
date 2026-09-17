@@ -23,6 +23,11 @@
 >    `/tmp/step3-install-guidance.png`）；启动方式见 `docs/handoff-2026-09-15-ui-audit.md` 第 9/10 节 +
 >    本会话：`withPage` / `savePng` 从 `/Users/mac/.dsh/profiles/web/node_modules/dsh-cdp-browser/dsh/cdp.js` import。
 >
+> **重启时最容易踩的坑（2026-09-17 实测）**：本项目有**两套**编译产物 —— `src/` → `dist/`（`npm run build:backend`）、
+> `electron/` → `dist-electron/`（`npm run build:electron`）。**改了 `electron/server.ts` 只跑 `build:backend` 等于没改**，
+> 表现为「环境变量明明进了进程，App 却报未配置」。自查：`grep -c SAU_BINARY dist-electron/server.js`（为 0 就是没编译）。
+> 另外**直接 `electron .` 会绕过 `dev:electron` 里的 `build:electron`**。
+>
 > **三个必须知道的坑**：① spec §7 已更正 —— `verify_code.txt` 只有上游**视频**通路会读，`upload-note`
 > 既不读它、发布循环也没有次数上限，图文发布遇到短信挑战的真实结局是「超时 → failed」，`awaiting_code`
 > 当前不可达；② 任何「重试前」都必须先到抖音后台确认上一次是否已发出（重复发布是最大风险）；

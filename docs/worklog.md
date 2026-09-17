@@ -31,6 +31,8 @@
 
 ## 最近操作
 
+- 2026-09-17：**修掉一个我自己造成的"改了没生效"事故，并把坑写进文档**。用户反馈"配了 `SAU_BINARY`/`SAU_BASE_DIR` 重启后仍报未配置"——根因是**我改了 `electron/server.ts` 加环境变量透传，但只跑了 `npm run build:backend`，没跑 `npm run build:electron`**：Electron 跑的是 `dist-electron/`（`package.json` 的 `main`），而 `build:backend` 不产出它。事后核实 `dist-electron/server.js` 是 Sep 16 的、`grep -c SAU_BINARY` 为 0，而 `electron/server.ts` 已是 Sep 17 —— 环境变量确实进了 Electron 进程，但旧产物里没人读它。`npm run build:electron` 后重启即通（`dist-electron/server.js` 第 66/67 行出现透传）。**验证方式**：用 `POST .../auto-publish/code`（该任务并非 `awaiting_code`）做**安全探针** —— `requireSauRunner()` 在方法最前面，未配置先抛 422，配置好则走到状态检查抛 409（实测得到 409），全程不起浏览器、不发布。文档改动：`AGENTS.md`+`CLAUDE.md` 的「后端改动生效需两步」扩写成**两套编译产物对照表**（`src/`→`dist/`、`electron/`→`dist-electron/`、`renderer/`→HMR），并点明"直接 `electron .` 会绕过 `dev:electron` 里的 `build:electron`"；故障排查新增第 0 条（含 `grep -c SAU_BINARY dist-electron/server.js` 与 `ps -Eww | grep -o "SAU_[A-Z_]*=[^ ]*"` 两条自查命令）。
+
 - 2026-09-17：**② 抖音图文自动发布全部提交**（`a777fc6`，27 个文件 / +5354 −253），并同步 `AGENTS.md`、`CLAUDE.md`、`README.md`（架构清单、4 个新接口、`SAU_BINARY`/`SAU_BASE_DIR` 配置、新增「抖音图文自动发布（外部 sau 引擎）」注意事项与故障排查节；AGENTS 与 CLAUDE 仍逐字一致）。**提交前做了私密数据审计**：无 `sk-` 密钥、无真实密码/PIN 字段、未带 `storage/`、`cookies/`、`.env`（`storage/` 本就被 .gitignore 覆盖），并把**真实 cookie 的每一段值**逐个在暂存内容里比对 —— 唯一命中是真实 cookie 里那个畸形段 `=douyin.com` 的域名字面串（非凭据，在文档里自然出现 18 次），**58 个真实凭据值零泄露**。顺带解释了一个既有数字：59 段 → 账号文件 58 个 cookie，正是因为 `parseCookieHeader` 跳过了这个空名段。
 
 - 2026-09-17：开始 **② 抖音图文自动发布**。**Task 1 完成**（`abe9d9e`）：`PUBLISH_NOTE_POLICIES`（抖音图文 title ≤20 / note ≤1000）+ `validateNoteCopy`，与视频校验收敛到同一实现 `validateCopyAgainstPolicy`（视频 55 字口径一字未改，既有 6 条平台用例作为回归门禁保持通过）；`types.ts` 增 `contentType`/`imagePaths`/`noteCopy`/`autoPublish` 与 `missing_images`。
