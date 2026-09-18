@@ -1779,7 +1779,9 @@ async function notePublishFixture(
       });
     },
     async waitForStatus(status: string) {
-      for (let attempt = 0; attempt < 200; attempt += 1) {
+      // 预算给足：这条用例靠轮询索引等 running，测试文件并行时机器负载会把它拖慢
+      // （曾出现过一次瞬时失败，见 worklog）
+      for (let attempt = 0; attempt < 600; attempt += 1) {
         const index = await this.readIndex();
         if (index.tasks[taskId]?.autoPublish?.status === status) return index.tasks[taskId]!;
         await new Promise((resolve) => setTimeout(resolve, 25));

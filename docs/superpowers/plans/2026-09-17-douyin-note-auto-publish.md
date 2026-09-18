@@ -295,8 +295,10 @@ Expected: 用例通过、`tsc` 双端退出码 0。
 
 ### Task 7: 全量验证、编译与人工复核
 
-> **执行记录（2026-09-17）**：Step 1–3 已完成（下面已勾选）。**Step 4–6 未做**：Step 4/5 需要真实
-> `sau` 引擎（本机已不在，约 970MB 需重装），Step 5 的真实发布按计划本来就留给人工决定。
+> **执行记录（2026-09-17，全部完成）**：Step 1–6 均已勾选。Step 4 用**我们自己的 `SauRunner`** 跑真引擎
+> （`prepareAccountFile` 产出 58 段 cookie / 权限 600；`checkLogin` 返回 `valid`），未发布任何内容；
+> **Step 5 已由用户人工执行并成功**（首个真实成功发布，见 Step 5 的记录）。**真实发布过程中发现上游一处
+> 选择器过时并打了本地补丁**，补丁与取舍见 `docs/patches/`。
 >
 > **Step 3 的实际验证方式**（比计划更严）：造了一个联调图文包种进仓库 `storage/`，重启独立后端后
 > **先用 curl 打真接口**（7 条断言），再用 **headless Chrome 经 CDP 真点界面**（11 条断言，见截图
@@ -321,15 +323,30 @@ Run: `npm run build:backend`，随后重启独立后端与 Electron。
 
 不配置 `sauBinary`，在发布中心对图文包点「发布图文到抖音」→ 应看到明确的安装指引错误（含 Python 3.12 与补装 `playwright` 两个坑），且任务状态不变。
 
-- [ ] **Step 4: 配置后只跑预检（不发布）**
+- [x] **Step 4: 配置后只跑预检（不发布）**
 
-配置 `SAU_BINARY` / `SAU_BASE_DIR` 后，触发动作应先在界面上体现预检结果；**本步骤不执行真实发布**。
+引擎装在 `~/social-auto-upload`（`uv venv --python 3.12` + 补装 `playwright` + `patchright install chromium`，
+442M+520M≈962M；两个坑实测成立）。用**我们自己的 `SauRunner`** 跑真引擎：`assertConfigured()` →
+`prepareAccountFile()` 产出 `cookies/douyin_mine.json`（58 段、域全 `.douyin.com`、含 `sessionid`、权限 600）→
+**`checkLogin()` 返回 `ok: true`、exitCode 0、输出 `valid`**。这同时证明 Task 3 的 argv 与 `valid/invalid`
+判定在真实 CLI 上成立。用户的原始 `douyin-cookie.txt` 只被读取、未被修改。
 
-- [ ] **Step 5: 真实发布留给人工决定**
+> 安全探针（供后人复用）：想知道「配置是否生效」又不触发上传，可打 `POST .../auto-publish/code`——
+> `requireSauRunner()` 在方法最前面，未配置先抛 422，配置好则走到状态检查抛 409。全程不起浏览器。
 
-真实发布会产生公开内容，**不在本计划的自动步骤内**。若你决定执行：先在抖音后台核对素材与文案，发布后回到发布中心点「标记已发布」完成确认。
+- [x] **Step 5: 真实发布留给人工决定 —— 已由用户执行并成功**
 
-- [ ] **Step 6: 只暂存本特性文件并提交**
+**首次尝试失败**：`sau douyin upload-note` 在「开始填标题」后整整 120 秒退出（`failed`，**死在点「发布」之前，未发出任何内容**）。
+**只读 DOM 排查定位根因**（进发布页、塞图、不填表不点发布）：抖音把图文发布页标题框 placeholder 从
+「填写作品标题」改成「**添加作品标题**」，上游仍按旧文案匹配 → 旧选择器命中 **0**、`input[placeholder*="作品标题"]` 命中 **1**；
+描述框与发布按钮均命中 1（**无需改**）。**一行补丁**解决，patch 见 `docs/patches/sau-note-title-selector.patch`。
+**补丁后真实发布成功**（2026-09-17 21:14:36 → 21:15:09，整轮 34 秒）：日志逐行为
+`进入图文发布页面 → 填标题/描述/话题（标题 20 字、描述+话题 277 字、9 个话题）→ 图文发布成功 → cookie 更新完毕`；
+`autoPublish.status = succeeded`、message 结尾保留成功行；**任务仍为 `ready`、`publishedAt` 为空** ——
+最关键的不变式（退出码 0 只记「已提交」，绝不写 `published`）在真实成功场景下得到确认。
+副作用（设计如此）：`~/.douyin-ai-video/douyin-cookie.txt` 被 sau 回写刷新（5900 → 6102 字节）。
+
+- [x] **Step 6: 只暂存本特性文件并提交**（实际按特性/修复/文档拆成多个提交，见 worklog；提交前做了私密数据审计）
 
 ```bash
 git add src/types.ts src/lib/publishing-platforms.ts src/lib/publishing-platforms.test.ts \
