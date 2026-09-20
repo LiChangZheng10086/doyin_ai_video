@@ -362,7 +362,8 @@ npm run dev              # 启动 Vite + Electron
 npm run dev:renderer     # 单独启动前端
 npm run dev:electron     # 构建 Electron 并启动桌面端
 npm test                  # Node 内置测试（tsx）
-npm run check            # 后端类型检查
+npm run check            # 后端类型检查 + 前端类型检查 + **凭据扫描**（三合一门禁）
+npm run check:secrets    # 单独跑凭据扫描（提交前/CI 都能用）
 npm run build:backend
 npm run build:renderer
 npm run build:electron
@@ -474,6 +475,25 @@ npm run package           # 会先检查 vendor/whisper 资源是否存在
   **视频那条必须写明「不会自动上传」**）；空态按渠道给**可照抄的入口**。
 - 规格与计划：`docs/superpowers/specs/2026-09-18-publishing-channel-tabs-design.md`、
   `docs/superpowers/plans/2026-09-18-publishing-channel-tabs.md`。
+
+### 凭据扫描（提交前门禁）
+
+- **`npm run check` 现在包含 `check:secrets`**：扫被 git 跟踪与未忽略的新文件，命中「像真凭据」的串
+  就非零退出。逻辑在 `src/lib/secret-scan.ts`（13 条用例），CLI 只是薄封装 `scripts/check-secrets.ts`。
+- 为什么有它：2026-09-20 一条「`wx` 开头 + 16 位十六进制」的**占位值**触发了 GitHub secret scanning
+  的误报（那个值其实只是键盘顺序敲出来的假值）。误报的代价不只是吓一跳 —— 它会训练人忽略这类告警，
+  所以判断挪到本地提交前。
+- **两条口径，别搞混**：
+  - 「GitHub 也会报」的形态（微信 AppID / `sk-` / `ghp_` / `AKIA` / `AIza` / `xox` / JWT / 私有密钥头）
+    **不看假值白名单** —— 否则就是「本地放行、GitHub 照报」。想通过就把假值改成可读串。
+  - 我们自己加的形态（抖音 cookie、`Bearer`）**要看**假值白名单与「值像不像真凭据」——
+    这些 GitHub 不报，误报纯属自找麻烦。
+- **测试假值一律写成一眼可辨的**：`test-app-id` / `fake-secret` / `example-token` / `<APP_ID>` / `{{token}}`。
+  **别用「看起来像真的」的随机串**。顺带一条坑：**注释里也不要写那个字面量** —— 扫描看内容，
+  注释照样命中（第一次改就踩过）；用例里要构造这种串就用 `join`/拼接。
+- 确需保留形态时在该行写 `secret-scan:allow` 并说明原因（**优先改名**）。命中真凭据的正确顺序是
+  **先撤销/轮换，再改代码** —— 只删字符串没用，历史里还在。
+- 上报一律**打码**（`wxa1…0718`）：日志与 CI 输出本身也是泄露面。
 
 ### 侧栏可折叠
 - 桌面端左侧主导航可展开/收起，收起为纯图标、展开显示导航文字；选择存 localStorage（`douyin-ai-video.rail-expanded`）。

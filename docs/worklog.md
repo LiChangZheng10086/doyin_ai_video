@@ -32,6 +32,13 @@
 
 ## 最近操作
 
+- 2026-09-20：**GitHub 报了一条 secret scanning 告警（Tencent WeChat API App ID）→ 查明是误报，并把「假值不许长得像真凭据」固化成提交前门禁**。
+  - **结论：不是真泄露**。告警指向 `src/lib/wechat-mp-client.test.ts` 里的 `APP_ID`，值是「`wx` 开头 + 16 位十六进制」的**占位串**（十六进制部分就是键盘顺序），`APP_SECRET` 一直是 `fake-secret-…` —— 真泄露的前提是两者成对。全仓排查：被跟踪文件里只有这一处，历史里只随这个文件出现，`app_secret`/`api_key`/`access_token` 赋长串零命中。**不需要轮换或撤销**，建议在 GitHub 上把该告警 Dismiss 为「used in tests」。
+  - 但**误报也要修**：它在 Security 里长期挂着，而且会训练人忽略这类告警。假值改成 `test-app-id` / `test-app-secret` / `test-access-token`，并在注释里记下纪律（**注释里也不能写那个字面量** —— 扫描看内容，第一次改就踩了这个坑）。
+  - **新增 `npm run check:secrets`（已挂进 `npm run check`）**：逻辑在 `src/lib/secret-scan.ts`（13 条用例），CLI 薄封装 `scripts/check-secrets.ts`。设计上踩了两次校准：① 第一版赋值规则允许不带引号，在本仓扫出 **104 处**命中，几乎全是 `token: fixtureToken` / `api_key=process.env.DEEPSEEK_API_KEY` / `ApiKey=Environment` 这类标识符与表达式 —— **吵的检查等于没有检查**，于是收紧为「必须带引号 + 含数字 + 非 ENV_VAR 风格 + 不含 `.` + 不像假值」；② 规则分两类口径：**GitHub 也会报的形态**（微信 AppID / `sk-` / `ghp_` / `AKIA` / `AIza` / `xox` / JWT / 私有密钥头）**不看假值白名单**（否则「本地放行、GitHub 照报」），**自加的形态**（抖音 cookie / `Bearer`）**要看**（这些 GitHub 不报，误报纯属自找麻烦）。收紧后全仓 616 个文件 **0 误报**。
+  - 端到端验证：塞一个「像真的」的假值 → 退出码 1、输出**打码**（`wxa1…0718`）并给出可照抄的修法；干净文件 → 通过。`npm run check` 双端类型 0 错 + 扫描通过。
+  - 文档：`AGENTS.md` / `CLAUDE.md`（新增「凭据扫描（提交前门禁）」小节，逐字节一致）、`README.md` 开发规范补一句、`docs/worklog.md` 本条。
+
 - 2026-09-20：**🎉 真机首次成功发布到今日头条（用户确认「已成功发送到今日头条平台」）—— 这条通路端到端跑通了。**
   - 记录里看到的事实：`autoPublish.status = succeeded`；步骤含「进入发布页 → 填标题（28 字） → 粘正文（富文本） → 上传封面 → 关闭「同时发布微头条」 → **点击发布并确认**」；`verification = unconfirmed`（页面没有我们认识的 `successTexts`）；用户到头条后台核实确实已发出，随后点了「标记已发布」（任务状态才变 `published` + `publishedAt`）。**「机器只记已提交、是否真发出由人工核实」这条不变式在真机上完整走了一遍。**
   - 由此确认了两件事：① 确认页的**候选按钮文案命中了**（此前完全未知，属最大的未知项）；② 成功提示文案**不在**我们的候选里 → 「点到了但读不到判据」会成为常态，所以必须让这条路径**自带侦察证据**。

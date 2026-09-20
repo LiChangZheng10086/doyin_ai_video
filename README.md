@@ -604,6 +604,7 @@ Skill 存储位置：`~/.claude/skills/douyin-{id}/SKILL.md`
 欢迎提交 Issue 和 Pull Request！
 
 ### 开发规范
+- 提交前跑 `npm run check`：它现在包含**凭据扫描**（`check:secrets`）—— 测试假值要写成一眼可辨的（`test-app-id` / `fake-secret`），别用看起来像真的随机串；确需保留形态时在该行写 `secret-scan:allow` 并说明。
 - 遵循 TypeScript 严格模式
 - 提交信息遵循 Conventional Commits
 - 代码格式化使用 ESLint + Prettier
