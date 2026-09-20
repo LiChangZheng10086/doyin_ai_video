@@ -1,6 +1,6 @@
 # 抖创工坊
 
-基于 Electron + React 的桌面应用，用于抖音视频采集、转录、AI 洗稿、Skills 蒸馏和本地竖屏视频生成。当前视频生成通过 HyperFrames CLI 本地渲染 HTML/CSS/GSAP 成 MP4。
+基于 Electron + React 的桌面应用，用于抖音视频采集、转录、AI 洗稿、Skills 蒸馏、本地竖屏视频生成与多平台发布（发布中心按渠道分栏：抖音图文与今日头条文章可由本机浏览器自动提交，其余人工交付）。当前视频生成通过 HyperFrames CLI 本地渲染 HTML/CSS/GSAP 成 MP4。
 
 ## 项目架构
 
