@@ -29,9 +29,13 @@ import {
   type WechatMpErrorKind,
 } from "./wechat-mp-client.js";
 
-const APP_ID = "wx1234567890abcdef";
-const APP_SECRET = "fake-secret-0123456789abcdef";
-const ACCESS_TOKEN = "fake-access-token-ABCDEFGHIJKLMNOP";
+// ⚠️ 测试假值**必须一眼看出不是真凭据**：这里原先用的是「`wx` 开头 + 16 位十六进制」的占位串，
+// 形态恰好命中 GitHub 的「腾讯微信 AppID」规则，推送后在 Security → Secret scanning 里报了一条
+// **误报**（它只是个占位符，不是谁的账号）。误报的代价不只是吓一跳 —— 它会训练人忽略这类告警。
+// 所以本条注释也**不写那个字面量**：假值一律用非十六进制的可读串，别用「看起来像真的」的随机串。
+const APP_ID = "test-app-id";
+const APP_SECRET = "test-app-secret";
+const ACCESS_TOKEN = "test-access-token";
 
 const tempDirs: string[] = [];
 after(async () => {
