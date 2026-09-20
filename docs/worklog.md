@@ -27,10 +27,203 @@
   - `GET /api/jobs/:id/video/download`
 - 本地存储目录：`storage/`
 - 当前待办：Whisper 模型体积和速度优化、视频视觉样式优化、端到端样本回归测试
+- 已完成（2026-09-20）：**今日头条文章发布**端到端跑通 —— 只读侦察校准选择器 ✅、真机演练（填完不发布）✅、**真实发布成功一次**（用户核实「已成功发送到今日头条平台」）✅。可见的遗留只有一件：成功提示文案仍未录进 `successTexts`（因此「点到了但读不到判据」仍是常态，会如实记 `unconfirmed` 并提示去后台核实；下一次真机跑的 `autoPublish.message` 里会带上确认后的 URL 与可见文案，据此校准即可）
 - 新增待办（2026-09-15）：合集封面 CDN 403、创作中心紫色滥用（P1）；`Unknown User`、`1970/1/1`、`0:00` 已于 2026-09-16 修复；详见 `docs/handoff-2026-09-15-ui-audit.md`
 
 ## 最近操作
 
+- 2026-09-20：**🎉 真机首次成功发布到今日头条（用户确认「已成功发送到今日头条平台」）—— 这条通路端到端跑通了。**
+  - 记录里看到的事实：`autoPublish.status = succeeded`；步骤含「进入发布页 → 填标题（28 字） → 粘正文（富文本） → 上传封面 → 关闭「同时发布微头条」 → **点击发布并确认**」；`verification = unconfirmed`（页面没有我们认识的 `successTexts`）；用户到头条后台核实确实已发出，随后点了「标记已发布」（任务状态才变 `published` + `publishedAt`）。**「机器只记已提交、是否真发出由人工核实」这条不变式在真机上完整走了一遍。**
+  - 由此确认了两件事：① 确认页的**候选按钮文案命中了**（此前完全未知，属最大的未知项）；② 成功提示文案**不在**我们的候选里 → 「点到了但读不到判据」会成为常态，所以必须让这条路径**自带侦察证据**。
+  - 改动（测试先行，+4 条）：
+    ① `submitAndConfirm()` 现在**每次都带回 `postConfirm` 证据**（确认后的 URL、是否已离开发布页、页面可见文案的**头+尾**摘要——只留开头会把挂在 body 末尾的 toast 正好截掉，fixture 用例当场抓到这一点）；并写进 `autoPublish.message`。
+    ② 新增纯函数 `hasLeftPublishPage(url)` 并明确它只是**旁证**：会话失效也会跳到登录页，**绝不拿它冒充 confirmed**。
+    ③ fixture 新增 `?silent=1`（确认按钮存在、点了不给成功提示）——**精确复刻真机那一次**，让这条路径从此有回归用例。
+    ④ 修掉服务层的双「但」：未确认时不再给 runner 的文案加「已提交，但」前缀（真机记录里是「已提交，但已点击发布，但…」）。
+  - 真机遗留（已知即可）：成功提示文案仍未拿到 → 下次真机跑一次，`autoPublish.message` 里就会带上当时的 URL 与可见文案，照着补 `successTexts` 即可；在那之前 `unconfirmed` + 「先去后台核实」是**正确**行为，不是缺陷。
+
+- 2026-09-20：**用户第二次真机提交又推进了一大步：标题 28 字 ✓、正文富文本 ✓、封面 ✓ 都过了，卡在「头条首发」**。
+  - 报错原文：「「头条首发」在页面上是勾选状态，但本次并不需要勾选（可能是残留草稿）：已停在点「发布」之前」。
+  - **拦住是对的**（绝不能带着用户没选的声明发出去），但**只检查不取消**不够：持久化 profile 会把上次草稿的勾选状态带回来，而取消勾选只是一次普通的、可逆的点击。修法照 `ensureWeitoutiaoUnchecked` 的范式：**已是未勾选就不点任何东西 → 是勾选就点一下取消 → 读回确认 → 取消不掉才 fail closed**（新错误码 `toutiao_page_first_publish_uncheck_failed`）。
+  - 用例（+3，fixture 加了 `?firstPublishChecked=1`（预置勾选＝模拟残留草稿）与 `?lockFirstPublish=1`（点了没反应）两个开关）：预置勾选 → 必须取消并读回；取消不掉 → 报错且**一个按钮都没被点过**；本来就未勾选 → **不点任何东西**。
+  - 顺带把「测试包不在待处理里」的惊魂查清：是我一条命令里 session 变量用错导致的误报，接口本身正常（`status=action` 有、`status=failed` 没有 —— 因为任务状态仍是 `ready`，这正是「机器绝不写 published/failed 到任务上」那条不变式的体现）。
+  - 验证：`npm run check` 双端 0；`toutiao-page` + `toutiao-runner` 共 42 项全通过；`build:backend` + `build:electron` 已重编译并重启应用；登录态 ✅ 已登录（今天不学习明天就完蛋）。
+
+- 2026-09-18：**给头条建了测试文章包 + 抓到第三处真机问题：`checkLogin` 假阴性（首次自检报「未登录」，几秒后再查同一份 profile 就是「已登录」）**。
+  - 测试包：用唯一有已渲染成片的作品（`97db73e8…`「马尾辫」）走**创建向导的真实链路** —— AI 成文（`deepseek-v4-flash`，883 字、无兜底）+ 封面裁成 1280×720 + `article.html`（sha256 入包），包标题「头条发布测试包（可删除）」，文章标题「Ponytail：专治 AI 过度设计的开源 Skill」（28 字 ≤ 30）。包级预览接口 200、文案检查无违规、任务 `ready`、资产 `healthy`。
+  - **假阴性**：应用刚启动时第一次 `POST /publishing/toutiao/verify` 返回 `loggedIn:false`，同一份 profile 几秒后再查就是 `已登录（今天不学习明天就完蛋）`。根因是 `checkLogin` 只读一次 URL 就下结论，而首页那次跳转还没落地。代价：发布会**被自己拦在**「头条号登录态已失效：请重新扫码」上，用户会去重扫一个其实好好的码。修法：`LOGIN_CHECK_ATTEMPTS = 2` —— 停在登录页要**再确认一次**才作数（重试只是给页面落地的机会，不放松判定）。用例先红后绿。
+  - 顺带确认：包与登录态都就绪后，用户可以在发布中心「今日头条文章」渠道里直接提交。
+
+- 2026-09-18：**用户真机首次提交头条，被我们自己拦下：「标题框里读回的内容与要发的标题不一致（读到 27 字、期望 28 字）」→ 查出并修掉两个问题（其中一个是既有 bug）**。
+  - **① 既有 bug：`clearInput()` 的按键序列在 macOS 上根本清不掉输入框**。它同时按 `Meta+A` 与 `Control+A`：macOS 上 `Cmd+A` 是全选，而 **`Ctrl+A` 是 Emacs 的「移到行首」，会把选区塌缩掉**，紧随其后的 Backspace 于是什么也删不掉 —— 也就是说「先清空」一直形同虚设。真机探针三步确证：`Meta+A→Backspace` 读回 `""`；`Meta+A→Ctrl+A→Backspace` 读回原文 `"ABCDEFGHIJ"`；选中后 `insertText` 是**替换**选区。后果：头条恢复上次草稿时标题会变成「旧标题+新标题」的拼接（正是那段注释当初要防的事）；我给标题加「多次尝试」之后更直接变成**越写越长**（一次调用写 3 回 → 读回 112 字 = 28×4）。修法：按 `process.platform` 只按一个全选键 + **读回确认** + 三轮重试 + 原生 setter/`input` 事件兜底。
+  - **② 标题写入会概率性丢一个字符**。真机探针连测 4 轮，旧的「纯逐字 `type`」有时 28/28、有时丢一个空格；换句话说用户那次不是必然失败，而是**竞态/输入法组合**这类偶发。修法：`fillTitle` 改成**尝试阶梯** —— 「整体插入（`keyboard.insertText`，单次事件、不走逐键竞态）→ 再来一次 → 逐字输入兜底」，每次写入后**先等 250ms 再读回**（受控输入可能稍后才把模型值写回 `.value`）。真机复测：`fillTitle` 4/4 通过。
+  - **③ 报错升级为字符级差异**：以后读回不一致时会写「第 N 个字符起不同：读到“…”、期望“…”」或「第 N 个字符起少了/多了内容：…」，不再只报字数（那次只有字数，只能靠猜）。
+  - 用例（+4，共 22 项页面用例全绿）：假页面按**症状**建模（不假装知道机制）——「写入丢一个空格一次」（真机那次）→ 必须重试后成功；「两种写法都丢」→ 必须报字符级差异；「标题框里已有旧草稿」→ 必须真清空、不拼接；「写入全无效」→ 失败且框里不堆叠。
+  - 资料：探针脚本用完即删（`scripts/.tmp-probe-*.ts`），因为它会往真页填标题（会留下草稿）。
+
+- 2026-09-18：**用户反馈「发布这一块不太喜欢，应该区分出抖音发布和今日头条发布」→ 发布中心加一级「渠道」分栏**（按惯例先写 spec/计划再测试先行）。
+  - **渠道 = 内容类型的界面投影**：抖音图文 = `note`、今日头条文章 = `article`、视频人工交付 = `video`（三者本来就互斥，所以后端只加一个 `contentType` 过滤字段，不引入复合查询）。**状态语义仍只有服务端一份**，前端只传 `status`，不复刻「待处理/资产异常」的判定。
+  - **顺手修掉一个既有毛病**：状态页签的数字原本是在**已按状态筛过**的列表上再数一遍 —— 于是「失败」在「待处理」视图里永远显示 0，数字看着像真的其实是局部量。现在计数来自**同一次加载里那次 `status=all`（不带渠道）**的请求：渠道页签得包数、状态页签得当前渠道内的完整计数。
+  - 界面：三个渠道页签（带计数，选中态走 `aria-selected` 而不是只靠颜色）+ 每个渠道一行说明（抖音说 sau 引擎、头条说先去设置扫码登录、**视频明确写「不会自动上传」**）；单平台渠道**不显示平台下拉**（避免「选了头条却把列表筛空」）；空态按渠道给可照抄入口；渠道与状态两个页签都写进 URL（`?channel=`），互不冲掉。
+  - 用例（先红后绿，+11）：store 的 `contentType` 过滤（含「不传时三种都回」的回归保护、垃圾桶在渠道内）；路由 `?contentType=article` 只回文章包、非法值 400；渲染层渠道归属/计数/垃圾桶口径/单平台下拉/空态入口；渠道页签组件的三个静态渲染用例。
+  - 修掉的两处**我自己写错的断言**（如实记录）：`packageDetail` 助手默认没有 `contentType` → 按口径属视频渠道，我一开始按图文断言；被标资产异常的包其任务仍是 `ready`，按任务计数应为 2 而非 1。两处都是断言错、不是实现错。
+  - 验证：`npm run check` 双端 0；真浏览器核对（见计划 Task 4 执行记录）。
+
+- 2026-09-18：**用户截图反馈「设置 → 今日头条」点扫码登录/校验登录只报「发布服务暂时不可用」→ 挖出两处真问题（都是「把原因和指引一起吞掉」这一类）**。
+  - **① 路由层错误边界漏登记头条错误类**：`publishing-routes.ts` 的错误边界只认 `Publishing*Error` / `SauRunnerError` / `VideoOutputError`，**一个头条错误类都没认**。于是「未找到浏览器」这类**带可照抄指引的 422**、以及登录态失效的 422 全部落进兜底 500「发布服务暂时不可用，请稍后重试」——用户手上只剩一句无从下手的话。更糟的是兜底分支当时**什么都不打**，所以真原因连日志都没有。已登记 `ToutiaoRunnerError` / `ToutiaoBrowserError` / `ToutiaoPageError` / `ToutiaoArticleError` / `ToutiaoMediaError`（各自带 `status` + `code`），并给兜底分支加一行 `console.error("[publishing] 未预期的错误:", error)`。
+  - **② Playwright 启动失败没被包装**：`openToutiaoSession()` 只包了「浏览器解析」与「会话目录越界」，真正的 `launch()` 调用没包 → 原始异常（`launchPersistentContext: EPERM: operation not permitted, mkdir '<profileDir>'`）直接冒到路由层。现在任意启动异常都被包成 `ToutiaoRunnerError("toutiao_browser_unavailable", "头条浏览器启动失败：<原始原因>。可照抄的动作：…")`；`defaultLaunch()` 改为**自己 `mkdir(profileDir)`**，失败时报 `toutiao_profile_dir_unsafe` 并写出「是哪个目录、什么原因」。
+  - **③ 顺手补上发布通路的最后一条缝**：`publishArticle()` 的第一行 `openSession()` 在它自己的 `try` 之外，而服务层只把 `ToutiaoRunnerError` 记成失败、其余原样抛出 → 那会变成 **500 + `autoPublish` 停在 `running`**（界面只显示「正在进行中」、按钮灰掉，直到 30 分钟僵死阈值）——正是文档里警告过的形态。现在服务层把**任何**异常都落成 `failed` 记录（非执行器错误带「头条发布过程中出现意外错误：<原因>」）。
+  - **真原因（用户环境无关，是我这边的执行沙箱）**：日志显示 `EPERM: operation not permitted, mkdir '~/Library/Application Support/douyin-ai-video/storage/toutiao'` —— 我启动 Electron 的沙箱只允许写工作区，连我自己的 shell 建那个目录都是 `Operation not permitted`（已实测）。**用户自己跑 `npm run dev` 不受影响**；同一个代码路径在仓库 `storage/`（可写）下是真的通的：真浏览器里点「校验登录」返回 **已登录（今天不学习明天就完蛋）**。
+  - **用例（全部先红后绿，共 +7）**：`toutiao runner errors surface with their own status, code and guidance`（422 + 错误码 + 指引原文）、`toutiao runner errors keep their per-code status (409 …)`、`toutiao publish: a launch failure is recorded as failed, never a 500 and never stuck running`、`toutiao publish: even an unexpected raw error becomes a failed record with its cause`、跑测试内的 3 条（启动异常被包装 / 头条错误不被二次包装 / 会话目录建不出来时报「不可写」并指出路径）。
+  - 验证：`npm run check` 双端 0；`npm test` **738 项 / 736 通过 / 1 跳过 / 1 个既有失败**（`publishing-service.test.ts` 的 startup recovery，与本轮无关）；`build:backend` + `build:electron` 均已重编译（18:34）；应用内实测三个接口现在返回 **422 + 真原因 + 可照抄动作**（不再是「稍后重试」）。
+  - 文档：`AGENTS.md` / `CLAUDE.md`（逐字节一致）新增三条 ⚠️（错误边界必须登记头条错误类 / 启动失败要带原因带动作 / 发布路径任何异常都要落成 failed）与故障排查第 8 条。
+
+- 2026-09-18：**真浏览器里验收界面时抓到一个「界面根本走不通」的 bug：文章包的包级预览 500**。
+  - 症状：发布中心里文章任务的动作按钮都在（提交到头条号 / 下载文章 HTML / 预览），但点「提交到头条号」时预览接口 `GET /api/publishing/packages/:id/preview` 返回 500，界面只显示「发布服务暂时不可用」。因为 `auto-publish` 的 `previewRevision` **只能由这个接口产出**（服务端约束），所以整个头条通路在界面上等于不可达。
+  - 根因：`copyCheck()` 的第 5 个参数是个布尔值（原叫 `noteScope`），文章分支照着图文包传了 `true` → 走 `validateNoteCopy("toutiao")` → 抛「平台 toutiao 尚未接入图文发布」（`PUBLISH_NOTE_POLICIES` 里本来就只有抖音）。而 `PUBLISH_PLATFORMS.toutiao` **本身就是文章口径**（titleMax 30 / 正文 20000）。
+  - 修法：参数改成 `copyPolicy: "platform" | "note"`（名字直说「用哪份政策」，不再像作用域），文章与视频走 `"platform"`、图文走 `"note"`；包级预览的正文改用新增的 `articleHtmlToBodyText()`（**带 `## ` 小标题标记**，与创建向导里看到的形态逐字一致）。
+  - **测试为什么没拦住**：当时的文章用例直接读 store 里的 revision，把这条接口整个绕过去了。已补用例（先红后绿）：`article package preview returns the toutiao article checks instead of failing`，断言 200 + 文案检查用头条文章口径 + `preview.previewRevision` 等于 store 里那个（即 auto-publish 认的那个）。
+  - 另记一条 dev-only 噪声（**不是 bug、也不改**）：打开预览弹窗时 React 19 **development** 构建会报 `Internal React error: Expected static flag was missing.`——同一子槽位在两次渲染里换成另一种节点（图文包的 span→img、文章包的封面 p→img）就会报，**图文包预览同样会报**，与头条改动无关；生产构建没有这段检查。顺手把弹窗早退的 `return ''` 改成 `null`（空串是文本节点，语义不对），并在代码里注明它**不负责**消掉那条告警，免得后人误判。
+  - 验证：`npm run check` 双端 0；`npm test` 731 项 / 729 通过 / 1 跳过 / 1 个既有失败（`publishing-service.test.ts` 的 startup recovery，非本轮引入）；`build:backend` 与 `build:electron` 均已重编译（17:56）。真浏览器逐项核对：文章任务卡四个动作、publish 模式预览弹窗（封面 naturalWidth>0、正文带 `##`、首发否 / 声明 / 微头条否、确认按钮「确认发布到今日头条」**只断言不点击**）、设置页「校验登录」返回真实结果 **已登录（今天不学习明天就完蛋）**。
+  - 已停掉临时隔离实例（3100），并按用户要求把应用重新起来：`npm run dev`（Vite 5173 + Electron）。
+  - **临时联调数据（只在开发后端可见，不进 Electron 应用）**：仓库 `storage/` 里有两条我造的假发布包 ——
+    `ttarticlev1`（头条文章包，目录 `storage/output/publishing/dev-note-demo/v1-ttarticlev1/`）与
+    `devnotev1`（图文包）。它们的用途是「不依赖真实成片也能在界面上看到文章卡片与预览弹窗」
+    （文章包仍要求作品有已渲染成片，所以真机上建第一个包必须挑一个有视频的作品）。不要了直接在发布中心删掉即可。
+  - **Electron 的登录态是独立的**：应用用 `~/Library/Application Support/douyin-ai-video/storage`，
+    而侦察/演练用的扫码会话在仓库 `storage/toutiao/profile`。因此应用里第一次发文章需要重新扫一次码
+    （设置 → 今日头条），这是设计如此（头条登录态就是那份 profile）。
+  - 文档同步：`AGENTS.md` / `CLAUDE.md`（`cmp` 校验逐字节一致）、`README.md`（功能特性、发布中心说明、
+    `TOUTIAO_*` 与浏览器依赖、设置页、故障排查、路线图）、本文件与计划文件的执行记录。
+  - 收尾全量验证（18:11）：`npm run check` 双端 0；`npm test` 731 / 729 通过 / 1 跳过 / 1 个既有失败；
+    `build:backend` 与 `build:electron` 均成功；应用仍健康（Vite 5173、Electron 35824、内嵌后端 64781
+    自动会话返回管理员 `lcz`）、隔离端口 3100/3198 已释放、0 个孤儿浏览器。
+
+- 2026-09-18：**为「最后一下真实发布」做准备（用户选择自己执行那一步）**。
+  - **让失败信息自带侦察能力**：确认页的真实按钮文案无法用只读手段拿到（点进去就等于发布），所以 `submitAndConfirm` 在**找不到确认按钮**时，会把**当时页面上所有可见按钮的文案**（最多 12 个）带进失败信息。于是用户跑一次真实发布的结果是二选一：要么成功；要么把真实文案带回来，我照着补进 `confirmButtons` 与用例 —— **不必再靠猜**。用例断言了这一点（`可见按钮是：` + 页面上的按钮文案）。
+  - **写了人工发布的执行清单**（计划 Task 8 Step 5）：发布前检查、三种结果（`confirmed` / `unconfirmed` / 「没有找到确认按钮」）各自该做什么、发布后必须一起核对的三个字段（`task.status` 仍为 `ready`、`publishedAt` 为空、`autoPublish.status`），以及「任何重试前先确认上一次是否已发出」。
+  - **给暂停中的公众号计划加了「恢复前必读」对照表**（8 条既成事实：`AUTO_PUBLISH_ROUTES` 怎么加、service 的 article 分支目前只接受 toutiao 要怎么抽层、`verifyPackageHealth` 别回退、创建阶段指纹不绑 AI 草稿、渲染层文案不许写死平台…），避免它恢复时与头条这轮撞车或重复造轮子。
+  - 验证：`npm run check` 双端 0；相关用例（真浏览器）逐条通过。
+
+- 2026-09-18：**给暂停中的「微信公众号 AI 文章发布」计划加了一段「恢复前必读」**。原因：那一轮暂停时 `article` 内容类型只有类型与打包层、**没有任何调用方**；而头条这一轮把它做成了真实通路，两边会撞车。已把 8 条既成事实写成对照表（路由表 `AUTO_PUBLISH_ROUTES` 怎么加、service 的 article 分支目前只接受 toutiao 要怎么抽层、`verifyPackageHealth` 别回退、创建阶段指纹不绑 AI 草稿、渲染层文案不许写死平台…），恢复时照表接上即可，不必重新推理。
+
+- 2026-09-18：**真机「填完但不发布」演练（用户授权）→ 又抓到 3 个只有真页才会暴露的 bug**。为此给执行器加了 `dryRun` 模式与脚本 `--dry-run`：真实页面上把每一步都做完、**绝不点「发布」**，唯一副作用是头条自动存一条草稿（已获用户同意）。
+  - **第 1 次演练结果**：进入发布页 ✅、填标题（26 字，含「读回必须等于要发的标题」）✅、粘正文（富文本，含首尾段落落地校验）✅、**上传封面 ❌** —— 安全失败（停在点发布之前，并写清已完成到哪一步），但功能不可用。
+  - **只用只读手段定位到两个真 bug**：① 点封面加号用了 `force: true`，而**加号常在折叠线以下**（实测 rect y=881、视口 900），force 跳过「滚动进视口/确认未被遮挡」→ 点击落在别处、抽屉压根不开；不加 force 就能正常打开（`elementFromPoint` 还返回 null，说明它确实在视口外）。② 点开抽屉后全页有**两个** `input[type=file]`（本地上传 + 扫码上传），裸选择器在严格模式下多匹配直接抛错。顺带拿到抽屉的真实结构：`byte-drawer primary-drawer mp-ic-img-drawer`，页签「上传图片 / 免费正版图片 / 热点图库 / 我的素材 / **本地上传** / 扫码上传」，底部「确定」。
+  - **修法**：加号改用普通 `click`（点不动就明确报错，不许假装点过）；上传走「点『本地上传』→ 接原生 `filechooser` 事件 → 拿不到再退回**抽屉内限定**的文件框（`>> nth=0`）」；传完**关掉抽屉**（否则挡住发布按钮）。fixture 也按真实抽屉结构重建（含两个文件框）。
+  - **第 3 个 bug（由修好后的用例立刻抓到）**：`confirmButtons` 里的泛化「**确定**」命中了**封面抽屉的确定按钮** → 把「点到了别处的确定」误判成「已确认发布」（评审早就预判过这条风险）。已把「确定」从确认候选里删掉，只留「确认发布/发布」。
+  - **第 2 次演练结果**：**全流程通过** —— 进入发布页 → 填标题 → 粘正文（富文本）→ 上传封面 → 设置作品声明（1 条）→ 关闭「同时发布微头条」→ 停在点「发布」之前（未提交）。**至此除了最后那一下「确认发布」，整条真机链路都验证过了。**
+  - 验证：`npm run check` 双端 0；`npm test` **728 项 / 726 通过 / 1 跳过 / 1 既有失败**；真机演练两次（第一次暴露 bug、第二次全绿）。
+
+- 2026-09-18：**独立代码评审（两个子代理，只读）→ 按严重度修掉 4 个 HIGH + 多个 MEDIUM/LOW**。这一轮价值很高：评审抓到了几个**我自己测出来也发现不了**的问题。
+  - **H1 会让发布中心整页崩**：`PublishPreviewDialog` 里我把新 hook `useArticleCover` 放在了 early return **之后**，而该弹窗在发布中心是**常驻挂载**的（先 open=false 渲染、再 open=true）→ React 直接抛「Rendered more hooks than during the previous render」，本项目又没有 ErrorBoundary。已把 hook 提到所有 return 之前（并写明原因）。**静态渲染用例抓不到这类问题**，因为每次都是新 dispatcher。
+  - **H2 「标记已发布」对文章包永远做不了**：`markPublished` 用 `verifyPackageVideo` 体检，文章包没有 `video.mp4` → 一律 `broken_video` → 写坏健康值并抛 422；而坏健康值还会让「提交到头条号」动作一起消失（要重启才自愈）。已改用按内容类型分派的 `verifyPackageHealth`（`verifyPackage` 同样修正）。
+  - **H3 界面允许编辑，但一编辑必然 409**：创建阶段的 `previewRevision` 把**服务端 AI 草稿**绑进了指纹，而创建时正文是**用户编辑过的文本** → 永远对不上，报错还说「源内容自预览后发生变化」（把自己的输入说成源变了）。已把创建指纹收敛成「源 + 封面选择」；真正防「预览后内容被改」的是**包级** `packagePreviewRevision`（覆盖 `articleCopy.title` + `htmlSha256` + 封面 + 三个选项），那道闸门没动。补了「预览 → 编辑 → 创建成功」的回归用例。
+  - **H4 打包后假 ffmpeg 会找不到**：封面裁剪默认走 PATH 里的 `ffmpeg`，而安装包里的 ffmpeg 在 `resources/bin`（不在 PATH）→ 只有开发机能用。已在 `app.ts` 注入 `config.ffmpegBinary`（正是 AGENTS.md 里那类「两套产物/两种环境」事故）。
+  - **M1/M7 缺浏览器时的失败路径是坏体验**：Playwright 缓存层**无条件**报 ok → `assertConfigured()` 通过 → 真失败发生在 launch（原始错误 → 500），且 `autoPublish` 卡在 `running` 到 30 分钟僵死阈值。已改为**真的探测**缓存 + 发布流程里任何异常都收敛成 `ok:false`（记录一定落到 `failed`）。
+  - **安全/诚实性**：① 「确认发布」点击必须读回 —— 只点「预览并发布」而没点到确认，事实上什么都没发，以前的实现照样写「已点击发布」+ `succeeded`（评审用仓库自己的 fixture 就复现了）；现在 `confirmClicked=false` 时返回 `ok:false` 并明说没提交任何内容，两种形态各有一条真浏览器用例。② 勾选框读回只看**拥有 checkbox 的元素**（「同时发布微头条」的说明 div 没有 checkbox，误判成命中会得出「已勾选否」而带着平台默认勾选发出去——评审实测复现）。③ 标题先清空再输入并断言**读回等于要发的标题**（持久化 profile 会恢复草稿，直接 type 会拼成「旧标题+新标题」）。④ 声明/首发/封面模式都补了读回。⑤ 退出清理（`installExitCleanup`）、`startLogin` 的并发竞态、`article.html` 加 `nosniff`、空正文在创建阶段就拒、正文长度守卫改按**文本**计数（以前按 HTML 计，100 段会被误判超限）、`isLoginUrl` 收敛成一份（页面模块以前漏 SSO 分支）、`toutiaoOptions` 补存档形状校验、删掉两份「文档里有、代码里没人读」的死字段。
+  - **如实记录两条限制**（写进 spec §3.4a/§3.4b）：① 创建阶段指纹刻意不绑 AI 草稿（否则「可编辑」=「必然 409」）；② 包级指纹绑定的是封面的**存在性与文件名**，不是字节（换封面文件不会让 revision 失效；彻底收紧要在包记录里加 `coverSha256`）。
+  - **又踩两次同一类坑**（都是我自己的注释/变量名）：页面侧代码是模板字符串下发的，注释里写**反引号**会把字符串截断；`pageExpression` 的参数就叫 `input`，页面代码里再 `const input` 是 SyntaxError。两条都写进了文件头与 helper 的注释。
+  - 验证：`npm run check` 双端 0；`npm test` **723 → 728 项 / 726 通过 / 1 跳过 / 1 既有失败**；`build:backend` + **`build:electron`** 都通过（顺带修掉评审指出的 `dist-electron` 陈旧：现在 `grep -c TOUTIAO dist-electron/server.js` 为 2）。
+
+- 2026-09-18：**补课两处：`publishArticle` 编排用例（计划 Task 4 Step 4 漏项）+ 封面文件框的真机形态**。
+  - 先查覆盖率发现 **`publishArticle` 零用例**（13 条 runner 用例全是登录/窗口登录）。补了 5 条，用**真浏览器 + fixture**（而不是字符串匹配的假页面 —— 页面侧代码是字符串下发的，假页面只能猜字符串，那种测试会掩盖真问题）：正常路径（步骤逐条记录、`bodyMode: "rich"`、拿不到判据 → `unconfirmed` 且文案要求去后台核实）、登录态失效（一步都不做）、关不掉微头条（**一个按钮都没点**）、封面文件缺失（停在发布前）、勾选首发+声明后仍关掉微头条。fixture 补了 `?lockWeitoutiao=1`：runner 流程里会再 `goto` 一次，靠在 DOM 上打标记会被重载清掉（第一次就是这么失败的）。
+  - **本轮最要紧的一处真机形态差异**：新增 `--cover-drawer` 只读探针（只点开加号看一眼，**不选文件、不上传**），实测**点完加号后 `input[type=file]` 计数仍然是 0、也没有任何抽屉节点** —— 真页是「临时造一个 input → 触发原生文件选择框 → 随即移除」。我原来的 `uploadCover()` 只等 DOM 里的文件框，**在真机上必然失败**（报「没等到文件框」并停在发布前：不会发错内容，但功能不可用）。已改为**优先接 Playwright 的 `filechooser` 事件**、拿不到再退回 `setInputFiles`；fixture 增加 `?cover=chooser` 复刻该形态，两条路各有一条真浏览器用例。
+  - 验证：`npm run check` 双端 0；`npm test` **717 → 722 项 / 720 通过 / 1 跳过 / 1 既有失败**；`build:backend` 通过。
+
+- 2026-09-18：**只读侦察完成 + 选择器按真实页面校准 + 页面步骤真浏览器用例全绿（11/11）**。用户扫码登录后我立刻跑了侦察，拿到铁证并据此重写了 `toutiao-page.ts`。
+  - **实测证据**（`storage/toutiao/recon/publish-page.html` 874KB + `selectors.json`）：标题框 `textarea[placeholder*="标题"]`，placeholder 原文就是「**请输入文章标题（2～30个字）**」（平台自己写明 2~30 字）；正文编辑器是 **`.ProseMirror`**；**富文本粘贴实测有效**（探针派发 `ClipboardEvent` 后读回有内容）→ spec 风险表里的 ② 消除；「头条首发」默认**未**勾选；而「**发布得更多收益**」那只 `LABEL.byte-checkbox` 默认**带 `byte-checkbox-checked`** → **平台默认确实会连带发微头条**，fail-closed 设计站得住；作品声明的 7 个文案与页面上**逐字一致**；发布按钮是 `publish-btn publish-btn-last`「预览并发布」，页面上**没有**「发布」按钮（确认在预览页里）。
+  - **封面真相**：真页初始**没有** `input[type=file]`（`type="file"` 全页 0 处），必须点 `.article-cover-add`（那个加号）才现造出来；模式是 `单图(默认 checked)/三图/无封面`；上传成功后出现 `.article-cover-img-wrap img`。`uploadCover()` 已按这个顺序重写。
+  - **离线 fixture 从快照逐段抠出来**（`src/lib/fixtures/toutiao-publish-page.html`），页面步骤用**真浏览器**跑 11 项用例：标题读写回、富文本粘贴→rich、编辑器吃不下粘贴→逐段输入→plain、封面（点加号→文件框出现→文件送达→读回到图）、封面加号缺失→明确报错、微头条默认勾选→关掉并读回、**关不掉→抛错且一个按钮都没被点过**（fail closed）、首发勾选读回、声明逐条点选+文案对不上报错、提交后拿不到判据→`signal` 为空串（**绝不谎报 confirmed**）。
+  - **这轮用例抓到 3 个真问题**：① **点外层 div 不会切换复选框** —— `div.exclusive-checkbox-wraper` 的文本也是「头条首发」且在文档序里排在 LABEL 前面，「按第一个文案命中」会点到它；新增 `clickCheckboxByText()` **优先点拥有 checkbox 的 LABEL**（真页同一结构，这个坑在真机上会表现为「以为勾上了其实没勾」）。② **「头条首发」勾完缺读回确认**，已补（勾不上就停在发布前）。③ tsx 的 `__name` 助手会让 `page.evaluate(内联函数)` 在页面里直接 `ReferenceError`（实测 `collect()` 报错）→ 页面侧代码一律改用**字符串**下发（`dist/` 由 tsc 编译不受影响，所以这个坑只在 tsx 下出现，脚本与测试都跑 tsx）。顺带把 `readQrDataUrl`/`readUsername` 一起字符串化。
+  - 验证：`npm run check` 双端 0；`npm test` **706 → 717 项 / 715 通过 / 1 跳过 / 1 既有失败**；`build:backend` 通过。
+  - **仍未验证的一处（刻意）**：点「预览并发布」之后的确认页与成功提示文案 —— 点进去就等于发布，只读侦察不做。`submitAndConfirm()` 因此给候选文案 + 结果读回，拿不到判据就记 `unconfirmed` 并提示去后台核实。这只剩「第一次真实发布」能验，且那一步按设计由人工执行。
+
+- 2026-09-18：**编译产物真机隔离验证**（计划 Task 8 Step 3）：用 `dist/server.js` 在 3198 起隔离实例（**没碰用户的 3100 与 Electron**），6 个新路由**未认证全部 401（而不是 404，说明真的挂上了）**、`/health` 正常；建真会话后打文章预览接口，发现并如实记录一条限制：**文章预览仍走共用取数入口 `readSourceContext()`，因此要求任务有已渲染的成片**（否则 `publish_video_missing`）。发布中心其余通路本来就要求成片、界面入口也统一把关，所以 v1 先接受这条限制；将来要解耦的正确做法（单独取数 + 独立的 `sourceContextHash` 变体，**别动共用那条**，否则既有精确哈希 baseline 会立刻失败）已写进 spec §3.4。验证完已停掉隔离实例。
+  - 另：`scripts/probe-toutiao-publish-page.ts` 的函数体在这一轮被我手工搬移时搬重了，已整段重写干净（`--login` 分支提前到无头诊断之前，避免打印误导人的解析链）。
+
+- 2026-09-18：**按用户建议补上「打开浏览器窗口扫码登录」**（复用抖音 `/api/douyin/qr-login` 那套交互），并把侦察脚本做成 `--login` 一步到位。
+  - 起因：我原来只做了「无头取二维码 → 让人扫终端里的图」，用户指出不如直接照抖音那样开个浏览器窗口扫码。**照做之后确实更顺**：登录一次，`storage/toutiao/profile` 里就有会话，之后的只读侦察与发布都不用再扫。
+  - 实现：`toutiao-browser.ts` 新增**有头解析链**（显式配置 → env → **系统 Chrome** → Playwright 完整 chromium），**刻意跳过打包的 `chrome-headless-shell`**（无头专用构建，开不了窗口）；`ToutiaoRunner.loginInWindow()` 同步等待扫码（默认 180 秒，poll 2 秒），`finally` 必关窗口；服务/路由 `POST /api/publishing/toutiao/login/window`（先取消应用内会话，避免同时开两个浏览器）；界面加「打开浏览器扫码登录」按钮与「等待扫码中…」状态。
+  - **测试又抓到两个真 bug**：① **资产锁重入死锁** —— 我在 `verifyPackageHealthUnlocked`（已持锁）里调了会再次取同一把进程锁的 `readPackageCover`，表现是**整条请求挂住**（不是报错）；已拆出 `readPackageCoverUnlocked` 并写进注释。② `article` 包的体检此前只能靠 `verifyPackageVideo`（名字是历史遗留）才走到分派分支，公开入口没有分派版；已补 `verifyPackageHealth()`。两个 bug 都是「新增分支」带出来的，各补了用例。
+  - 另一个测试侧的坑：同一个临时 storage 里用固定 `packageId` 建两次包会撞目录（`COPYFILE_EXCL`）→ 拆成独立夹具。
+  - 验证：`npm run check` 双端 0；`npm test` **683 → 706 项 / 704 通过 / 1 跳过 / 1 既有失败**；`build:backend` 通过。
+
+- 2026-09-18：**新业务「今日头条 AI 文章发布」立项并完成主体实现（后端全链路 + 渲染层关键部分）**。先给难度结论，再按惯例写 spec/计划，然后测试先行实现。**唯一卡住的一步需要你配合**：登录后的真实发布页 DOM 侦察（`scripts/probe-toutiao-publish-page.ts`，只读、不发布）—— 我起了两次扫码窗口都过期了，选择器必须靠那次的证据才能定。
+  - **难度结论：中（明显低于抖音图文那套）**。参考项目 `mf-yang/toutiao-ops` 全仓 4089 行，**与文章发布有关的只有约 830 行**；它的三个坑是 ① 封面/声明/合集/微头条全部 `try{}catch{}` 吞异常，**封面上传失败也返回「发布成功」**；② 点「确认发布」是 `.catch(()=>{})`，**不校验作品是否真的存在**；③ `playwright: ^1.50.0` 实测浮到 1.63.0，要自己再下约 500MB 浏览器。证据与实测命令全部记在 `docs/research/toutiao-ops-assessment.md`。
+  - **关键实测（决定架构，全是自己跑出来的）**：我们自己的 `playwright@1.62.1` **本机没有可用浏览器**（要 `chromium_headless_shell-1234`，缓存里只有 patchright 的 1208），但**打包资源里已有 `chrome-headless-shell 152.0.7928.2`**，实测 `launch({ executablePath })` **成功打开真实头条登录页**；未登录时首页与发布页**都 302 到 `/auth/page/login?redirect_url=…`**（登录态有干净契约）；**二维码直接从 DOM 取**（`data:image/png;base64,…` 512×512，已落盘肉眼核对）。→ 结论：**自研 runner + 复用已打包浏览器，零新依赖、零额外下载、不需要有头窗口**（用户确认走这条路线）。
+  - **已完成（测试先行，全绿）**：`npm run check` 双端 0；`npm test` 基线 **608 → 677 项 / 675 通过 / 1 跳过 / 1 既有失败**（+69，无新增失败）。新增模块：`article-draft.ts`（平台中立文章内核）、`toutiao-article.ts`、`toutiao-media.ts`、`toutiao-browser.ts`、`toutiao-page.ts`、`toutiao-runner.ts`、`scripts/probe-toutiao-publish-page.ts`；平台接入：`PublishPlatform` 加 `toutiao`、**7 处清单**（含路由 `contentType()` 此前明确拒绝 `article`）、`packagePreviewRevision` 补 **article 分支**（此前 article 落 else、只哈希 `videoSha256`，**正文/封面/选项改了指纹不变** —— 那是「必经预览」的漏洞）、两处 note 硬闸收敛成 `AUTO_PUBLISH_ROUTES` **(内容类型 × 平台) 路由表**；服务/路由：文章预览与建包、`GET /packages/:id/article` 降级通路、4 个头条登录/自检路由、提交前比对包内 HTML 的 sha256；渲染层：平台表新行、article 预览分支（标题/正文纯文本/选项）、「下载文章 HTML」动作、设置页**应用内扫码登录面板**。
+  - **共用内核的取舍**：`wechat-article.ts` 改成薄封装（委托 `article-draft.ts`），**既有 50 个用例逐字通过**（含提示词里 32/120/20000 的断言）—— 这是本次重构的回归门禁。**但计划里的 `article-html.ts` 没有抽**：头条正文由**结构化草稿**渲染、根本不接收任意 HTML，所以不需要 wechat 那套 sanitizer；共享它只会把一个不需要的锚点/图片白名单策略搬进来。这条偏离与理由已写进计划 Task 2。
+  - **真实 ffmpeg 实测（stub 证明不了滤镜语法）**：真实 1080×1920 静帧 539KB → **mjpeg 1280×720、47.7KB**，源文件 sha256 前后一致。
+  - **写测试时踩到并修掉的一个真坑（值得记）**：夹具把执行器注入到了**错误的配置键**（写成 `toutiao`，`ServerConfig` 里叫 `toutiaoRunner`），于是测试里构造的是**真执行器**：它**真的启动了一个无头浏览器**去开头条登录页，并让那条用例挂到超时；事后 `pgrep` 抓到 5 个残留进程（正是本项目记过的「孤儿浏览器」）。已按 profile 目录特征清理干净，并在测试里补了注释说明注入键必须与 `ServerConfig` 一致。**教训：「测试没联网」这件事要靠注入键正确来保证，光看测试名不算。**
+  - **未完成 / 待办**：① **只读侦察**（需要你扫码一次）→ 拿到真实发布页 DOM 后才校准 `toutiao-page.ts` 的选择器并写 fixture 用例（当前选择器来自参考流程 + 字节系编辑器常见写法，**未经真实页面验证**，猜错会明确报错并停在点发布之前）；② 渲染层已完成（含创建向导与详情页入口）；③ 真实发布一次（人工执行，且重试前必须先核实上一次是否已发出）。
+  - **未提交**：工作区里仍有上一轮（素材库 Task 3 / 公众号）未提交的改动；本次同样**没有做任何 git 提交**。
+
+- 2026-09-18：**⏸ 暂停「微信公众号 AI 文章发布」—— 用户要先去完成公众号认证，认证成功后再继续**。停在 **Task 5b 完成之后**、Task 6（服务编排与路由）**尚未开始**（本轮只做了只读排查，**没有留下半成品改动**）。
+  - **已完成且已验证**：Task 1（客户端 + 账号自检探针）、Task 2（微信兼容 HTML 渲染）、Task 3（AI 成文 + 兜底）、Task 4（图片处理）、Task 5a（平台接入与清单守卫）、Task 5b（`article` 包模型与打包）。最后一次全量验证：`npm run check` 双端 0，`npm test` **608 项 / 606 通过 / 1 跳过 / 1 既有失败**（唯一失败是 `publishing-service.test.ts` 那条既有基线，与本次改动无关）；另有真实 ffmpeg 实测（封面 900×383、竖屏限长边 608×1080）与假微信 API 四模式探针实测（四种失败文案互不相同、无凭据泄露）。
+  - **剩下的**：**Task 6**（服务编排与路由：`POST /api/publishing/wechat/verify`、按 `contentType` 分派既有 `auto-publish`、`GET /api/publishing/packages/:id/article` 降级通路、`wechatMp` 配置注入与 env 透传）、**Task 7**（渲染层：设置页配置 + 校验连接 + 创建文章包向导 + 发布中心动作）、**Task 8**（全量验证、编译、人工复核）。计划文件里 25 个 step 已勾选、19 个待做。
+  - **恢复时的第一步（用户侧，零副作用）**：认证通过后跑一次账号自检探针，确认草稿箱接口真的可用 —— 它只换一次 token 并调 `draft/count`，**不建草稿、不上传任何东西**：
+    ```bash
+    cd <repo> && WECHAT_MP_APP_ID=... WECHAT_MP_APP_SECRET=... \
+      node --import tsx scripts/verify-wechat-mp.ts
+    ```
+    三种结论都已有对应路径：全绿 → 按计划继续；`48001`（无权限）→ §15 降级通路成为主通路，其余照做；`40164`/`61004` → 脚本会回显公网 IP，照抄进「微信开发者平台 → 我的业务 → 公众号 → 开发密钥 → API IP 白名单」。
+  - **认证后的预期**（写在这里免得恢复时重新推理）：认证会让 `freepublish/*`（真发布/群发）**变得可用**，但**本设计刻意不用它** —— spec §2/§11 明确「只建草稿，绝不调用发布接口」，最终发布由人工在公众号后台点。所以认证**不会改变架构**，只是让草稿箱权限更确定。
+  - **没有做过任何 git 提交**：工作区里同时存在**上一个会话（素材库 Task 3）未提交的改动**（`src/app.ts`、`src/app.test.ts`、`renderer/src/components/CreateNotePackageDialog.*` 等）与本次公众号特性的新增文件，两者都还没提交 —— 提交与否仍待用户决定（`docs/superpowers/plans/2026-09-17-asset-library.md` 里记的「Step 4（提交）待用户决定」仍然有效）。
+
+- 2026-09-18：**「微信公众号 AI 文章发布」Task 5b 完成 —— `article` 包模型与打包（`createArticlePackageAssets` / `stageArticleContent`）**。新增 6 个占位符用例 + 7 个打包用例，全绿；`npm run check` 双端 0；全量 `npm test` **595 → 608 项 / 606 通过 / 1 跳过 / 1 既有失败**（+13，无新增失败）。
+  - **存量兼容门禁如期通过**：`publishing-assets.test.ts` 里那条**逐字节固定视频包 manifest**（含精确哈希基线）的用例**本来就存在**，不需要新写 —— 它就是「图文/文章打包不得改动视频包」的现成闸门，本次改动后仍通过。
+  - **🔴 补上计划漏掉的一环：正文图片占位符机制**。计划只在 Task 6 写了「替换 HTML 内 src」，没说替换什么；而**微信正文图只能是 `uploadimg` 返回的 mmbiz URL，该 URL 只有提交时才拿得到**，所以包里的 `article.html` 必须先存占位符。定下的契约：`WechatArticleImage` 变成联合类型 `{url}`（已知最终地址）与 `{slot:n}`（打包阶段，渲染成 `src="{{wechat-image-N}}"`）；`substituteWechatImageSlots(html, urlBySlot)` 在提交时替换，三条硬要求各有用例：**① 占位符一个都不许剩**（漏替换＝全裂图且接口不报错）、**② 只接受 mmbiz 托管地址**、**③ 替换后仍要满足 2 万字符上限**。
+  - **新用例抓到 1 个真 bug**：`stageArticleContent` 把封面的**暂存目录路径**当结果返回，而提升后该路径已不存在 —— 改为「暂存只带 `stagedCoverPath` 标志、对外用 `path.join(staged.packagePath, "cover.jpg")` 换算」，与视频封面同一口径。
+  - **一处消重重构**：`copyNoteImages` 提取成共用的 `copyOrderedImages`，图文包与文章包共用（按序复制 + 逐张 sha256 校验 + 顺序敏感清单哈希完全一致），避免把「复制后必须校验」这条纪律拆成两处。
+  - **计划外加一条守卫**：`assertArticleImageCoverage()` —— 正文有 `{{wechat-image-N}}` 却没对应图片时**在打包阶段拦掉**（`publish_images_missing`），否则该包**永远提交不了**、只会在提交那刻失败。**注意「一张图都没有」本身合法**（文章内容是文字），故文章包 0 图不报错也不标 `missing_images`（与图文包刻意不同：图文包的图片就是内容本身）。
+  - **打包层不转码**：正文图/封面必须是 `wechat-media` 已处理过的产物（jpg、<1MB、2.35:1），打包只做复制+哈希+校验 —— ffmpeg 不该出现在这个安全加固过的复制事务里（打包用例注入的 `runCommand` 会直接抛错，专门守住这点）。
+
+- 2026-09-18：**「微信公众号 AI 文章发布」Task 5a 完成 —— 平台接入（`PublishPlatform` 加 `wechat_mp`）与「静默点」守卫**。新增 5 个后端用例 + 2 个渲染层用例，全绿；`npm run check` 双端 0；全量 `npm test` **588 → 595 项 / 593 通过 / 1 跳过 / 1 既有失败**（+7，无新增失败）。
+  - **原 Task 5 太大，执行时拆成两半**：5a 只碰枚举与清单（编译器 + 守卫用例能兜住），5b 才动 1957 行、安全加固过的 `publishing-assets.ts` 打包事务 —— 两者风险等级完全不同，混在一次改动里出问题不好定位。
+  - **守卫写法比原计划更省更狠**：原计划是「5 个静默点各写一条断言」，实际改成**断言所有清单彼此一致** —— 以 `PUBLISH_PLATFORMS` 的键（`Record<PublishPlatform, …>`，编译器唯一能兜住的真源）为基准，要求 `APPROVED_PLATFORMS`、路由 `PLATFORMS`、`SUPPORTED_PLATFORMS` 与之**集合完全相等**。**将来再加平台时，漏掉任何一份清单都会自动被抓到**，不必再补断言。为此把这几份集合导出（只是数据，成本为零），每处注释都写明「为什么导出」。
+  - `NOTE_PLATFORMS` 单列一条：**严格子集且断言不含 `wechat_mp`** —— 公众号走 article 通路，塞进图文闸门会拿「标题 20 / 正文 1000」的口径去校验公众号文章。`isPlatform`（存档校验）也逐个平台断言：**漏一个的后果是静默的**（该平台任务读回索引时被悄悄丢掉，而不是报错）。
+  - 渲染层是独立 TS 工程（`tsconfig.renderer.json` 只 include `renderer/src`），`src` 测试覆盖不到它的平台表，故在 `renderer/src/utils/publishing.test.ts` 补 2 条（清单一一对应 + 口径与后端一致）。
+  - 既有那条**穷尽式**断言 `assert.deepEqual(PUBLISH_PLATFORMS, {…4 个平台})` 如期被打破 —— 这正是它存在的意义；已补入 `wechat_mp`（标题 32 / 摘要 120 / hashtag 保留但**不提交给微信**，因为 `draft/add` 没有话题字段），其余 4 个平台条目**逐字未改**。
+
+- 2026-09-18：**「微信公众号 AI 文章发布」Task 4 完成 —— 封面/正文图处理（`src/lib/wechat-media.ts`，走既有 ffmpeg，不引图像库）**。14 个用例全绿，`npm run check` 双端 0，全量 `npm test` **574 → 588 项 / 586 通过 / 1 跳过 / 1 既有失败**（+14，无新增失败）。
+  - **计划外加做的一步，价值最大**：**stub 会接受任何 argv，所以假 ffmpeg 根本无法证明我的滤镜语法是对的** —— 于是用**真实 ffmpeg 9.0.1 + ffprobe** 实测：① 真实 `1080×1920` 静帧 → 封面 **`mjpeg 900×383`**（正是官方唯一支持的 `2.35_1`）；② 竖屏静帧正文图 `1080×1920` → **`608×1080`、39KB**，证明「限长边」滤镜对竖图**限的是高**（若写成朴素的 `scale=1080:-2` 只限宽，输出仍高 1920，等于没压）；③ 16.2MB 的 `2400×2400` 噪声 PNG → **`900×900`、557KB**，降质阶梯用到**第 3 档**才进 1MB（纯噪声几乎不可压 → 「两轴都动」是对的）；④ 源文件 sha256 前后一致、产物目录无残留。
+  - 实现口径：产物**直接写目标名**、失败或超限时**删掉再抛错**（不用「临时名 + rename」，因为 stub 的契约是「最后一个参数是输出路径」）；清理断言把 stub 改成**先写出产物再失败**，否则那条「不留半成品」的断言等于没测。
+  - `MAX_SOURCE_IMAGE_BYTES = 20MB` 是本模块**自己的**处理前兜底上限，**没有**去复用 `assets-store.ts` 的上传限额（理由不同，注释里互相点到）；另补一个分支：`ffmpegBinary` 传空白字符串 → `wechat_media_ffmpeg_unavailable` + 安装指引（缺省仍回退 PATH 的 `ffmpeg`，与 `media.ts` 同口径）。
+  - 已记进计划：本任务**没有**去测「PATH 里没有 ffmpeg」，因为那会真的启动进程，违反「全程 stub」的约束。
+
+- 2026-09-18：**「微信公众号 AI 文章发布」Task 3 完成 —— AI 成文与本地兜底（`planWechatArticle`）**。新增 12 个用例（`wechat-article.test.ts` 合计 44 个全绿），`npm run check` 双端 0，全量 `npm test` **562 → 574 项 / 572 通过 / 1 跳过 / 1 既有失败**（+12，无新增失败），并跑 `publishing-copy.test.ts` 作为文案链路回归 PASS。
+  - **不变式（有用例守住）**：**无论 AI 返回什么**（合法 / 超限 / 缺字段 / 空段落 / 坏 JSON / 抛异常 / 无 AI 配置 / 甚至 `null` 与数字），产出的草稿**必定能通过 `validateArticleDraft` 并渲染成功**，且失败一定带 `copySource: "fallback"` + 用户可读的 `warning`。**绝不静默**产出一份看起来正常、其实是原始口播稿的东西（沿用 `publishing-copy.ts` 的既有兜底口径）。
+  - **一处口径定死**：AI 给的标题/摘要/作者**超限时压缩而不是抛错**（保留前 `limit-1` 个码点再补「…」，按码点计数）—— 让用户看得出被截断过，配合界面的「已压缩，可编辑」闭环；抛错只会给用户一句「标题超长」而没有任何动作。
+  - **兜底三决定**：① 标题优先任务标题 → 第一个要点 → 大纲首项；② 正文优先 `keyPoints` 逐条成段，无要点时退回 `cleanScript`/`summary` 按句切分；③ **一条素材都没有时给一句可执行占位说明**（提示先去完成 AI 洗稿或手动补写），绝不产出空文章让用户以为成功了。
+  - **限额只有一个真源**：提示词里的 32/120/20000 全部由 `WECHAT_ARTICLE_LIMITS` 生成，有用例断言提示词里出现这些数字（防止提示词里另写一份而悄悄漂移）；`response_format: { type: "json_object" }` 与既有文案服务同一形状，AI 输出过一道 `toSimplifiedChinese`。
+  - **如实记录一个不复现的抖动**：5 次全量运行中有 **1 次**报 `fail 2`，其余 4 次均 `fail 1`（+ 3 次连续稳定运行复核）。单独把 `publishing-service.test.ts` 连跑 4 次都是稳定 `29 项 / 1 失败`（既有基线那条），且本次新增的测试文件不共享状态、只写自己的临时目录 —— 判断是该既有失败所在文件的跨文件并行抖动，**与本次改动无关**；若再出现应单独排查那条基线用例。
+
+- 2026-09-18：**「微信公众号 AI 文章发布」Task 2 完成 —— 微信兼容 HTML 渲染与文章结构校验（`src/lib/wechat-article.ts`，纯函数）**。32 个用例全绿，`npm run check` 双端 0，全量 `npm test` **530 → 562 项 / 560 通过 / 1 跳过 / 1 既有失败**（+32，无新增失败）。
+  - **抓到 1 个真 bug（用例抓的）**：`ensureStyle` 早期写成「标签没有 style 就整个重建标签」，于是 `<img src="…">` 被重建成 `<img style="…">` —— **图片 src 被静默抹掉**，表现是草稿里一张图都没有而接口不报任何错（同类风险还波及 `<a href>`）。已改为「保留原属性再补 style」。
+  - **抓到 1 个真 bug（肉眼复核渲染样例抓的）**：段内文本里的块级标签被直接解开，`<li>钩子要具体</li><li>别用「大家好」开场</li>` 变成「钩子要具体别用「大家好」开场」—— 两条要点粘成一句。已改为「段内块级边界换成 `<br>`」（同时修掉 `<p>甲</p><p>乙</p>` 变「甲乙」）。**教训：纯函数测试全绿 ≠ 产物读得通，渲染类改动必须把真实样例打出来看一眼。**
+  - **一处比计划更严的偏离**：计划的行内白名单没有 `a`，实现改为锚点**成对**处理 —— `mp.weixin.qq.com` 的文章链接**保留**（官方明说正文支持插入公众号已群发文章链接），**站外链接整对拆掉只留文字**（公众号正文里站外链接本就点不动，留个假的可点样式是误导；它的正规位置是 `content_source_url`「阅读原文」）。
+  - **三处口径定死**：① **正文长度断言放在渲染里**而非 `validateArticleDraft`（正文是渲染产物，只有渲染完才知道长度），超限抛 `wechat_article_too_long` 并**指出是第几段超的**；② **配图位置**：第 k 张图放第 k 个 section 之后，图多于 section 时余下的按顺序附在文末（**宁可多插一张也不静默丢图**）；③ `sanitizeWechatHtml(html, allowBlocks)` 用一个开关覆盖「整篇正文」与「段内文本」两种场景（段内若允许块级会产出 `<p><p>` 非法嵌套）。
+  - `WECHAT_ARTICLE_LIMITS`（title 32 / author 16 / digest 120 / content 20000 字符 / 封面 10MB / 正文图 1MB）是**全项目唯一一份数字**，界面只渲染不复制。外链图与「看起来像但其实不是」的域名（`mmbiz.qpic.cn.evil.com`）都靠**域名后缀**匹配拦掉，不用 `includes`（本项目在 Cookie 域判断上踩过同类坑）。
+
+- 2026-09-18：**新业务「微信公众号 AI 文章发布」立项 —— 难度评估、spec、计划，并完成 Task 1（客户端 + 账号自检探针）**。用户确认走**路线 A**（复用现有交付包体系，`PublishPlatform` 加 `wechat_mp`）且账号是**个人订阅号（未认证）**。
+  - **参考项目 `liyown/ai-trend-publish`（MIT）实测结论**（clone 到 `/tmp/aitp-probe` 逐文件核对，非读 README）：**Deno v2 项目**（有 `deno.json`、无 `package.json`），357 文件 / `*.ts`+`*.tsx` **55,139 行**；**但真正与公众号有关的只有约 520 行**（`weixin-publisher.ts` 355 + `weixin-api-client.ts` 163），只有 **4 个端点**（`token`、`draft/add`、`material/add_material`、`media/uploadimg`），**零浏览器自动化**，且**它从不调用 `freepublish`** —— 它的「发布」就是**建草稿**（`status: "draft"`）。其余 5.5 万行是内容生产流水线（11 个抓取源、选题聚类、审稿、Dashboard、向量去重），**与我们的定位不重合，本次不搬**。两个必须避开的坑：① 它硬编码了**作者自己账号的封面 media_id** 并在封面失败时静默回退（照抄必然 `40007`）；② 它只匹配 `40164` 一个白名单错误码。
+  - **官方文档纠正了我自己的两处认知**（都写进 spec §1.2/§1.3）：① **白名单错误码官方两处不一致** —— 接口错误码表写 `40164`，开发指南写 `61004`，**两个都得认**；我先前以为 61004 只是「网上的说法」，核对后确认它同样是官方页面。② 风险调用确认是**三个码**：`89503`（待管理员确认）、`89506`（拒绝，24 小时）、`89507`（拒绝，1 小时）。另外 `45009` 是**日额度**、`45011` 才是**分钟限流**；稳定版凭据**普通模式下平台提前 5 分钟更新**，故返回的 `expires_in` 可能远小于 7200，**缓存必须用返回值**。
+  - **可行性判据（唯一硬未知数）**：官方只在**发布能力**页写了「2025 年 7 月起个人主体/未认证账号回收权限」，**草稿箱页没有**，且配额表把「草稿箱-新建草稿 1000/日」与「发布接口 100/日」**分开列** —— 据此**推断**个人订阅号仍可建草稿，但**未经实测**。故 spec §1.4 把它列为一号风险，并设计了 **Task 1 的零副作用探针**（只换 token + `draft/count`）+ **§15 降级通路**（无论 API 通不通都产出可下载的 `article.html`，可粘贴进公众号编辑器）。
+  - **产物**：`docs/superpowers/specs/2026-09-18-wechat-mp-article-publish-design.md`（15 节）、`docs/superpowers/plans/2026-09-18-wechat-mp-article-publish.md`（8 个 Task）、调研证据 `docs/research/ai-trend-publish-wechat-assessment.md`；代码 `src/lib/wechat-mp-client.ts` + `src/lib/wechat-mp-client.test.ts` + `scripts/verify-wechat-mp.ts`。
+  - **Task 1 完成（Step 1–5，Step 6 待用户用真实凭据执行）**：21 个用例全绿，`npm run check` 双端 0，全量 `npm test` **509 → 530 项 / 528 通过 / 1 跳过 / 1 既有失败**（+21，**无新增失败**）。探针脚本用**进程内假微信 API 实测四种模式**（绝不联网）：`ok` 退出 0；`no-permission`(48001) 与 `ip`(40164) 与 `badsecret`(40125) 退出 1 且**文案互不相同、IP 被回显、四种模式均未打印任何凭据**。落盘缓存**按 AppID 隔离**（换账号绝不复用他人 token）。
+  - **两个自己踩的坑（都有回归用例/注释）**：① 假 fetch 按 URL 分派最初写成 `url.includes("token")`，而 `draft/count` 的查询串带着 `access_token=...` → 它被误判成换取凭据的请求并拿到 token 响应，断言以**假成功**方式失败；已收敛为精确匹配并写进注释。② `npm run check` 抓到 `getDraftCount` 失败分支的**真类型错误**（泛型参数与返回类型不一致），改走 `withoutData()`。另修掉白名单失败时长指引在探针里**重复打印两遍**的观感问题。
+  - **未提交**：工作区里仍有上一个会话（素材库 Task 3）未提交的改动，`docs/worklog.md` 已记「Step 4（提交）待用户决定」，故本次**未做任何 git 提交**。
+
+- 2026-09-18：**③ 素材库 Task 3「素材库图片接入图文发布」完成**（测试先行，视频发布链路一行未改）。**关键发现**：图文包此前**根本没有创建界面** —— ② 只做了服务端 `previewNotePackage`/`createNotePackage`，详情页向导是纯视频的，真实发布那次是走 API 联调造的包；只做后端的话素材库图片在应用里依然选不到，故按用户确认一并补了最小界面。
+  - **后端**：新增 `imageSource: "frames" | "library"` + `imageAssetIds[]`（预览与创建两处），服务层 `planNoteImages()` 统一产出「有序指纹键 + 预览清单」，素材库来源经 `AssetStore.resolveFile` 解析成**已校验归属**的绝对路径后再作为 `sourceImagePaths` 交给 `createNotePackageAssets`；`preview` 新增 `imageSource`/`imageLimit`/`copyLimits` 下发；`app.ts` 把 `AssetStore` 收成**单实例**供素材路由与发布中心共用。
+  - **打包层未动**（`publishing-assets.ts` 只把 `MAX_NOTE_IMAGES` 改成导出）：② 已在该文件落好「按来源分派」的那一半（`sourceImagePaths` 显式传入按顺序、省略按场景序），再塞一份素材库分支等于把 id→路径的安全校验开出第二份真源。**与计划的偏差已写进计划正文**。
+  - **前端**：新增独立组件 `CreateNotePackageDialog.tsx` + 纯逻辑 `utils/notePackage.ts`（按序多选、阻塞原因、请求体组装），详情页成果画布加「创建图文包」入口；视频向导 `CreatePublishPackageDialog` **一行未改**（两条链路的口径/必填项不同，混在一个向导里只会互相纠缠）。
+  - **三处口径决定**：① 来源与顺序都进 `previewRevision`（换来源/调顺序 → 409）；② `library` 选 0 张报 400、超 35 张复用打包层的 `publish_too_many_images`（同一条件两个来源同码），而 `frames` 一张静帧都没有**不**报错（沿用 ②「缺图也把包建出来、只标 `missing_images`」）；③ 文案字数上限（20/1000/10）与图片上限（35）**由预览接口下发**，表单只渲染不复刻数字（服务端创建时仍重新校验）。
+  - **验证**：`npm run check` 双端 0；`npm test` **509 项 / 507 通过 / 1 跳过 / 1 既有失败**（基线 490 → +19，无新增失败）。用 `dist/` 产物 + **临时 storage** 起隔离实例走真机 HTTP **36 项全绿**（含「包内 01 与先点的素材逐字节一致」「删素材后既有包仍在、重建才 422」「不传 contentType 的视频包行为不变」）；无头 Chrome 走**真界面 24 项全绿**（含缩略图 `naturalWidth > 0`、序号 1/2 按点选顺序、创建后到发布中心；并回归「加入发布中心」视频向导仍能打开）。隔离实例跑在 3199 + 临时 Vite 5199，**没碰用户的 3100 后端与 Vite(5173)**。
+  - **两个坑记一下**：① 页面上现在有**两个同名「创建图文包」按钮**（视频区的入口 + 弹窗底部的提交），我的浏览器断言第一次就选了前者、把「未选图时按钮禁用」误判成失败 —— 界面断言必须限定作用域（`[role="dialog"]`），沿用上次「必须断言 `naturalWidth > 0`」的同一条教训；② 静态渲染又踩了一次**缺 `import React` 的 `ReferenceError`**（根 `tsconfig.json` 没有 `jsx` 设置），新组件已按惯例显式 import。
+  - **收尾（同日，按用户要求重启项目）**：重启前先用**本项目自己的安全探针**（`POST /api/publishing/tasks/<不存在的 id>/auto-publish/code` —— 该路由第一件事就是 `requireSauRunner()`）测了两个进程的 sau 配置：**3100 返回 422（未配置）、Electron 内嵌后端返回 404（已配置）**。这条差异决定了怎么重启：3100 原本就没有 `SAU_*`（**保持原样，没有擅自加**），Electron 有（**原样带回去**）。重启后 3100 与 Electron（内嵌端口 51615）`/health` 均 200、新路由未认证返回 401（不是 404）、探针结果与重启前**完全一致**；用真实 App 数据做只读复核：素材库来源预览 200（真实素材 + `imageLimit 35` + `copyLimits 20/1000/10`）、静帧回归 10 张、两种来源 revision 不同、空选 400，**发布包数量与磁盘零新增**；真实作品页界面只读实测 8/8（含真实缩略图 `naturalWidth > 0`、序号、创建按钮变可用），最后点「取消」未建包。**Electron 必须放宽权限/在沙箱外启动**：它要写 `~/Library/Application Support/douyin-ai-video/storage`，且 `safeStorage` 解密 API Key 依赖 keychain（沙箱内 `security list-keychains` 实测报 `Module Directory Service error`，放宽后正常且启动日志无 keychain 报错）。计划 Task 5 Step 2 已勾选；Step 4（提交）仍待用户决定。
+  - **注意**：本会话启动的 3100 与 Electron 是**托管后台作业，会话结束后可能被回收**；要长期使用请在自己的终端启动（Electron 命令见 `docs/worklog.md` 2026-09-17 条目：`NODE_ENV=development SAU_BINARY=... SAU_BASE_DIR=... node_modules/.bin/electron . --no-sandbox`）。
 - 2026-09-17：**② 抖音图文自动发布 —— 端到端真实发布成功，Task 7 全部完成**。补上选择器补丁后由用户人工执行：`autoPublish.status = succeeded`，整轮 **34 秒**（21:14:36 → 21:15:09），日志逐行为「进入图文发布页面 → 填标题/描述/话题（标题 20 字、描述+话题 277 字、9 个话题）→ 图文发布成功 → cookie 更新完毕」；**任务仍为 `ready`、`publishedAt` 为空** —— 最关键的不变式在真实成功场景下确认（退出码 0 只记「已提交」，绝不自动写 `published`，仍由人工点「标记已发布」）。副作用：`~/.douyin-ai-video/douyin-cookie.txt` 被 sau 回写刷新（5900 → 6102 字节，设计如此）。计划 Task 7 Step 1–6 全部勾选并附实测记录。
 
 - 2026-09-17：**图文自动发布首次真实尝试失败 —— 根因定位到上游一行选择器，已打补丁**。失败表现：`sau douyin upload-note` 走到「开始填标题」后正好 **120 秒**退出，`autoPublish.status = failed`（**死在点「发布」之前，未发出任何内容**）。用上游浏览器栈做**只读 DOM 排查**（进发布页、塞图、**不填表不点发布**）拿到铁证：图文发布页标题框真实 placeholder 是「**添加作品标题**」，而上游匹配的是「填写作品标题」→ 实测 `count = 0` vs `input[placeholder*="作品标题"]` `count = 1`；描述框 `div.zone-container[contenteditable="true"]` 与发布按钮 `get_by_role("button", name="发布", exact=True)` 均 `count = 1`（**无需改**）。按用户决定打了一行补丁（`填写作品标题` → `作品标题`，两种文案都成立），patch 存进 `docs/patches/sau-note-title-selector.patch` 并写进 `docs/patches/README.md` 与 AGENTS.md（**上游 `git pull` 会覆盖，升级后必须重新 `git apply`**）。附带发现：`sau` 用的是**系统安装的 Google Chrome**（`channel="chromium"`），不是下载的 headless shell。
