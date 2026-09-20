@@ -9,6 +9,8 @@ import {
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { CreatePublishPackageDialog } from '../components/CreatePublishPackageDialog';
+import { CreateNotePackageDialog } from '../components/CreateNotePackageDialog';
+import { CreateToutiaoArticleDialog } from '../components/CreateToutiaoArticleDialog';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { SupplementCleanDialog } from '../components/SupplementCleanDialog';
 import { InlineNotice } from '../components/ui/InlineNotice';
@@ -71,6 +73,9 @@ export function JobDetailPage() {
   const [rawStreamError, setRawStreamError] = useState(false);
   const [videoSide, setVideoSide] = useState<'raw' | 'final' | null>(null);
   const [showPublishDialog, setShowPublishDialog] = useState(false);
+  // 图文包（抖音图文）与视频包是两条并列的入口：素材来源、文案口径、必填项都不同
+  const [showNoteDialog, setShowNoteDialog] = useState(false);
+  const [showToutiaoDialog, setShowToutiaoDialog] = useState(false);
   const [publishError, setPublishError] = useState('');
   const currentUser = useOperatorStore((state) => state.currentUser);
 
@@ -434,6 +439,24 @@ export function JobDetailPage() {
     setShowPublishDialog(true);
   };
 
+  const openNotePublishingDialog = () => {
+    if (!currentUser) {
+      setPublishError('本机操作者未就绪，请重试');
+      return;
+    }
+    setPublishError('');
+    setShowNoteDialog(true);
+  };
+
+  const openToutiaoPublishingDialog = () => {
+    if (!currentUser) {
+      setPublishError('本机操作者未就绪，请重试');
+      return;
+    }
+    setPublishError('');
+    setShowToutiaoDialog(true);
+  };
+
   return (
     <Layout>
       {/* Title bar */}
@@ -593,6 +616,8 @@ export function JobDetailPage() {
                     streamError={streamError}
                     publishError={publishError}
                     onOpenPublishing={openPublishingDialog}
+                    onOpenNotePublishing={openNotePublishingDialog}
+                    onOpenToutiaoPublishing={openToutiaoPublishingDialog}
                     onVideoError={() => setStreamError(true)}
                   />
                 ) : videoError ? (
@@ -620,6 +645,22 @@ export function JobDetailPage() {
           title={cleaned?.output?.title || job.topic || '未命名作品'}
           output={videoOutput}
           onClose={() => setShowPublishDialog(false)}
+        />
+      )}
+
+      {showNoteDialog && videoOutput && isPublishingEligibleVideo(videoOutput) && (
+        <CreateNotePackageDialog
+          jobId={job.id}
+          title={cleaned?.output?.title || job.topic || '未命名作品'}
+          onClose={() => setShowNoteDialog(false)}
+        />
+      )}
+
+      {showToutiaoDialog && videoOutput && isPublishingEligibleVideo(videoOutput) && (
+        <CreateToutiaoArticleDialog
+          jobId={job.id}
+          title={cleaned?.output?.title || job.topic || '未命名作品'}
+          onClose={() => setShowToutiaoDialog(false)}
         />
       )}
 

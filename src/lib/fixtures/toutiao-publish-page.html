@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>头条发布页 fixture（真实 DOM 片段复刻）</title></head>
+<body>
+<!--
+  这个 fixture 由 2026-09-18 只读侦察的产物（storage/toutiao/recon/publish-page.html）**逐段抠出来**，
+  不是凭想象写的：标题框、正文编辑器、封面区块、首发/声明/微头条的 label、发布按钮都与真页同形。
+  动态行为（文件框按需生成、粘贴、点击顺序）用最小脚本模拟，用于验证「步骤 + 读回校验」逻辑。
+-->
+<div class="pgc-edit-cell edit-cell required"><div class="edit-label">标题</div><div class="edit-input"><textarea placeholder="请输入文章标题（2～30个字）" autocomplete="off"></textarea></div></div>
+
+<div class="pgc-edit-cell"><div class="edit-input"><div class="ProseMirror" contenteditable="true" id="editor"></div></div></div>
+
+<div class="pgc-edit-cell edit-cell required"><div class="edit-label">展示封面</div><div class="edit-input"><div class="article-cover"><div class="byte-radio-group byte-radio-size-default byte-radio-mode-outline pgc-radio article-cover-radio-group">
+  <label class="byte-radio"><input type="radio" name="cover-mode" value="2"><span style="display: inline-block;"><div class="byte-radio-inner checked"></div><span class="byte-radio-inner-text">单图</span></span></label>
+  <label class="byte-radio"><input type="radio" name="cover-mode" value="3"><span style="display: inline-block;"><div class="byte-radio-inner "></div><span class="byte-radio-inner-text">三图</span></span></label>
+  <label class="byte-radio"><input type="radio" name="cover-mode" value="1"><span style="display: inline-block;"><div class="byte-radio-inner "></div><span class="byte-radio-inner-text">无封面</span></span></label>
+</div><div class="article-cover-images-wrap" style="padding-left: 0px;"><div class="article-cover-images"><div class="byte-spin"><div class="byte-spin-container"><div class="byte-spin-content"><div class="article-cover-add" id="cover-add" style="border: 1px dashed var(--black06);"><svg viewBox="0 0 48 48" width="1em" height="1em" fill="currentColor" class="add-icon byte-icon byte-icon-plus"><path fill="none" d="M0 0h48v48H0z"></path></svg></div></div></div></div></div><div class="article-cover-preview"><div class="pgc-figure-cover-preview"><div class="show-dialog-btn">预览</div></div></div></div></div></div><div class="article-cover-tip">优质的封面有利于推荐，格式支持JPEG、PNG</div></div>
+
+<div class="pgc-edit-cell"><div class="edit-label">首发与声明</div><div class="edit-input">
+  <div class="exclusive-checkbox-wraper"><label class="byte-checkbox checkbot-item checkbox-with-tip"><input type="checkbox" value=""><span class="byte-checkbox-wrapper"><div class="byte-checkbox-mask"></div><span class="byte-checkbox-inner-text">头条首发</span></span></label></div>
+  <div class="edit-input"><div class="edit-label">同时发布微头条</div><label tabindex="0" class="byte-checkbox item-checkbox byte-checkbox-checked"><input type="checkbox" value="" checked=""><span class="byte-checkbox-wrapper"><div class="byte-checkbox-mask"></div><span class="byte-checkbox-inner-text">发布得更多收益</span></span></label></div>
+  <div class="edit-label">作品声明</div><span class="byte-checkbox-group group"><label class="byte-checkbox checkbot-item"><input type="checkbox" value=""><span class="byte-checkbox-wrapper"><div class="byte-checkbox-mask"></div><span class="byte-checkbox-inner-text">取材网络</span></span></label><label class="byte-checkbox checkbot-item"><input type="checkbox" value=""><span class="byte-checkbox-wrapper"><div class="byte-checkbox-mask"></div><span class="byte-checkbox-inner-text">引用站内</span></span></label><label class="byte-checkbox checkbot-item"><input type="checkbox" value=""><span class="byte-checkbox-wrapper"><div class="byte-checkbox-mask"></div><span class="byte-checkbox-inner-text">个人观点，仅供参考</span></span></label><label class="byte-checkbox checkbot-item"><input type="checkbox" value=""><span class="byte-checkbox-wrapper"><div class="byte-checkbox-mask"></div><span class="byte-checkbox-inner-text">引用AI</span></span></label><label class="byte-checkbox checkbot-item"><input type="checkbox" value=""><span class="byte-checkbox-wrapper"><div class="byte-checkbox-mask"></div><span class="byte-checkbox-inner-text">虚构演绎，故事经历</span></span></label><label class="byte-checkbox checkbot-item"><input type="checkbox" value=""><span class="byte-checkbox-wrapper"><div class="byte-checkbox-mask"></div><span class="byte-checkbox-inner-text">投资观点，仅供参考</span></span></label><label class="byte-checkbox checkbot-item"><input type="checkbox" value=""><span class="byte-checkbox-wrapper"><div class="byte-checkbox-mask"></div><span class="byte-checkbox-inner-text">健康医疗分享，仅供参考</span></span></label></span>
+</div></div>
+
+<div class="footer">
+  <button type="button" class="byte-btn collection-btn">添加至合集</button>
+  <button type="button" class="byte-btn publish-btn" id="preview-btn">预览</button>
+  <button type="button" class="byte-btn publish-btn" id="schedule-btn">定时发布</button>
+  <button type="button" class="byte-btn byte-btn-primary publish-btn publish-btn-last" id="publish-btn">预览并发布</button>
+</div>
+
+<script>
+  // ① 正文：真页是 ProseMirror，粘 HTML 会被解析并写入；这里做同样的事。
+  var editor = document.getElementById('editor');
+  editor.addEventListener('paste', function (event) {
+    var html = event.clipboardData ? event.clipboardData.getData('text/html') : '';
+    if (!html) return;
+    event.preventDefault();
+    editor.innerHTML += html;
+  });
+
+  // ② 封面：真页初始没有 input[type=file]，点加号（.article-cover-add）才现造一个。
+  function showUploadedCover() {
+    var wrap = document.createElement('div');
+    wrap.className = 'article-cover-img-wrap';
+    wrap.innerHTML = '<img alt="cover" src="data:image/png;base64,iVBORw0KGgo=">';
+    document.querySelector('.article-cover-images').appendChild(wrap);
+  }
+
+  // ②b 封面抽屉：结构与真页一致（2026-09-18 演练实测拿到）——
+  //   .byte-drawer.mp-ic-img-drawer 内含页签「上传图片 / 本地上传 / 扫码上传」，
+  //   **两个** input[type=file]（本地上传 + 扫码上传），底部有「确定」。
+  //   点「本地上传」才弹原生文件选择框；裸 input[type=file] 选择器会因多匹配在严格模式下报错。
+  var coverAddClicked = false;
+  document.getElementById('cover-add').addEventListener('click', function () {
+    if (coverAddClicked) return;
+    coverAddClicked = true;
+
+    var drawer = document.createElement('div');
+    drawer.className = 'byte-drawer primary-drawer mp-ic-img-drawer';
+    drawer.innerHTML =
+      '<div class="byte-drawer-header"><span class="byte-drawer-header-title">上传图片</span></div>' +
+      '<div class="byte-drawer-scroll">' +
+      '<span class="drawer-tab">上传图片</span><span class="drawer-tab" id="local-upload-tab">本地上传</span><span class="drawer-tab">扫码上传</span>' +
+      '</div>' +
+      '<div class="byte-drawer-footer"><button type="button" id="drawer-confirm">确定</button></div>';
+    document.body.appendChild(drawer);
+
+    // 常驻形态：两个文件框（本地上传 / 扫码上传）——与真页的数量一致。
+    ['local', 'qr'].forEach(function (kind) {
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.className = 'drawer-file-' + kind;
+      input.style.display = 'none';
+      input.addEventListener('change', function () {
+        showUploadedCover();
+      });
+      drawer.appendChild(input);
+    });
+
+    document.getElementById('local-upload-tab').addEventListener('click', function () {
+      // ?cover=chooser 模拟真页：点「本地上传」时**临时**造一个 input 并触发原生选择框、随即移除。
+      if (location.search.indexOf('cover=chooser') >= 0) {
+        var onTheFly = document.createElement('input');
+        onTheFly.type = 'file';
+        onTheFly.style.display = 'none';
+        onTheFly.addEventListener('change', function () {
+          showUploadedCover();
+          if (onTheFly.parentNode) onTheFly.parentNode.removeChild(onTheFly);
+        });
+        document.body.appendChild(onTheFly);
+        onTheFly.click();
+        return;
+      }
+      // 常驻形态：点页签只是「揭示」文件框 —— 真正的封面要等**文件被选中**（change 事件）才出现，
+      // 否则「点页签」与「真的传了图」会被混为一谈（实测踩到过：这样会多出一张封面）。
+      var local = drawer.querySelector('.drawer-file-local');
+      local.style.display = 'block';
+      local.style.visibility = 'hidden';
+    });
+  });
+
+  // ③ 复选框：真页是 label + 隐藏 input 的组合，类名带 byte-checkbox-checked。
+  var labels = document.querySelectorAll('label.byte-checkbox');
+  for (var i = 0; i < labels.length; i += 1) {
+    (function (label) {
+      label.addEventListener('click', function (event) {
+        event.preventDefault();
+        var input = label.querySelector("input[type='checkbox']");
+        if (!input) return;
+        if (label.dataset.locked === 'true') return;   // 「关不掉」的负例场景用得到
+        input.checked = !input.checked;
+        if (input.checked) label.classList.add('byte-checkbox-checked');
+        else label.classList.remove('byte-checkbox-checked');
+      });
+    })(labels[i]);
+  }
+
+  // ③b-0 「头条首发」的两个场景开关（2026-09-20 真机实测后补）：
+  //   ?firstPublishChecked=1 预置为勾选 —— 模拟**持久化 profile 把上次草稿的勾选状态带回来**
+  //     （用户真机那次就是这样：我们不需要勾，但页面已经是勾的）；
+  //   ?lockFirstPublish=1 点了没反应 —— 验证「取消不掉就绝不发布」这条 fail closed。
+  if (location.search.indexOf('firstPublishChecked=1') >= 0 || location.search.indexOf('lockFirstPublish=1') >= 0) {
+    var first = Array.from(document.querySelectorAll('label.byte-checkbox')).find(function (item) {
+      return (item.textContent || '').trim() === '头条首发';
+    });
+    if (first) {
+      first.classList.add('byte-checkbox-checked');
+      var firstInput = first.querySelector("input[type='checkbox']");
+      if (firstInput) firstInput.checked = true;
+    }
+  }
+  if (location.search.indexOf('lockFirstPublish=1') >= 0) {
+    var lockedFirst = Array.from(document.querySelectorAll('label.byte-checkbox')).find(function (item) {
+      return (item.textContent || '').trim() === '头条首发';
+    });
+    if (lockedFirst) lockedFirst.dataset.locked = 'true';
+  }
+
+  // ③b 负例场景：?lockWeitoutiao=1 让那个勾选框「点了没反应」（用于验证 fail closed）。
+  //     用 URL 参数而不是测试里点完再改 DOM —— 因为 runner 的流程里会重新 goto 一次页面。
+  if (location.search.indexOf('lockWeitoutiao=1') >= 0) {
+    var locked = Array.from(document.querySelectorAll('label.byte-checkbox')).find(function (item) {
+      return (item.textContent || '').trim() === '发布得更多收益';
+    });
+    if (locked) locked.dataset.locked = 'true';
+  }
+
+  // ④ 发布：真页点「预览并发布」会进预览页；这里只记录点击顺序，
+  //    用于验证「点完要独立校验结果」这条纪律（fixture 里没有成功文案 → 应判 unconfirmed）。
+  window.__clicked = [];
+  document.getElementById('publish-btn').addEventListener('click', function () {
+    window.__clicked.push('预览并发布');
+    // ?confirm=1 模拟真页点完「预览并发布」后进入的**预览/确认页**：
+    // 出现「确认发布」按钮，点它之后页面出现成功提示。
+    // 默认（不带参数）**不出现**确认按钮 —— 用来守住「没找到确认按钮就不许声称已点击发布」。
+    if (location.search.indexOf('confirm=1') < 0) return;
+    if (document.getElementById('confirm-btn')) return;
+    var confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.id = 'confirm-btn';
+    confirm.textContent = '确认发布';
+    confirm.addEventListener('click', function () {
+      window.__clicked.push('确认发布');
+      // ?silent=1：**点了确认但页面不给任何成功提示** —— 精确复刻 2026-09-20 真机那一次
+      // （确认按钮命中了、文章也真的发出去了，但页面文案不在我们的候选里 → 必须如实记 unconfirmed，
+      //   同时把「当时页面长什么样」带回去，供下次校准）。
+      if (location.search.indexOf('silent=1') >= 0) return;
+      var tip = document.createElement('div');
+      tip.id = 'publish-result';
+      tip.textContent = '发布成功';
+      document.body.appendChild(tip);
+    });
+    document.querySelector('.footer').appendChild(confirm);
+  });
+</script>
+</body>
+</html>

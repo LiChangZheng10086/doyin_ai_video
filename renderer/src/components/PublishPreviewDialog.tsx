@@ -74,7 +74,7 @@ function SubmitProgress() {
   }, []);
   return (
     <p className="text-xs text-tech-muted" role="status">
-      正在提交到抖音…已用 {seconds} 秒。校验登录态与上传通常需要 1–3 分钟，
+      正在提交…已用 {seconds} 秒。校验登录态与上传通常需要 1–3 分钟，
       请<strong className="font-medium text-tech-text">不要关闭窗口</strong>，也别重复点击。
     </p>
   );
@@ -85,7 +85,14 @@ function copyForCheck(
   preview: PublishPreviewDialogPreview,
   check: PublishPreviewCopyCheck,
 ): PlatformCopy | undefined {
-  if (check.scope === 'package') return preview.noteCopy;
+  if (check.scope === 'package') {
+    // 文章包的包级文案在 `articleCopy` 里：此前只取 noteCopy，于是卡片旁边字数是对的（12/30、300/20000）
+    // 而标题/正文显示为空，看起来像内容丢了。
+    if (preview.articleCopy) {
+      return { title: preview.articleCopy.title, description: preview.articleCopy.body, hashtags: [] };
+    }
+    return preview.noteCopy;
+  }
   return preview.tasks.find((task) => task.id === check.taskId)?.copy;
 }
 
@@ -162,13 +169,24 @@ export function PublishPreviewDialog({
   busy = false,
   videoUrl,
 }: PublishPreviewDialogProps) {
-  if (!open || !preview) return '';
+  // 关着的时候返回 `null`（而不是 `''`）：空串在 React 里是一个**文本子节点**，与打开后的
+  // `div` 是两种节点类型，同一个子槽位换类型属于「替换」，没必要为此走一次替换。
+  //
+  // 注意：改了这里**并不会**消掉 dev 下那条
+  // 「Internal React error: Expected static flag was missing.」——
+  // 那是 React 19 **development 构建才有**的内部校验（生产构建没有这段代码），
+  // 对任何「同一个子槽位在两次渲染里换成另一种节点」的写法都会报。
+  // 实测：图文包预览（`PreviewImage` 的 span → img）与文章包预览（封面 p → img）**都会报**，
+  // 与本次头条改动无关、也不影响功能（弹窗内容全部正确渲染，2026-09-18 真浏览器核对）。
+  if (!open || !preview) return null;
 
   const { package: pkg } = preview;
   const blocking = isBlocking(pkg.assetHealth);
   const hasViolations = preview.copyChecks.some((check) => check.violations.length > 0);
   const images = preview.imagePaths ?? [];
   const imageCount = images.length;
+  const isArticle = pkg.contentType === 'article';
+  const articleCover = useArticleCover(pkg.id, isArticle && Boolean(preview.articleCopy));
 
   return (
     <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
@@ -178,7 +196,7 @@ export function PublishPreviewDialog({
             <h2 className="truncate text-base font-medium text-tech-text">发布前预览 · {pkg.title}</h2>
             <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-tech-muted">
               <span>v{pkg.version}</span>
-              <span>{pkg.contentType === 'note' ? '图文' : '视频'}</span>
+              <span>{pkg.contentType === 'note' ? '图文' : pkg.contentType === 'article' ? '文章' : '视频'}</span>
               <span>{pkg.createdBy.displayName}</span>
               <span>{new Date(pkg.createdAt).toLocaleString('zh-CN')}</span>
               <span className="truncate">{pkg.packagePath}</span>
@@ -196,7 +214,62 @@ export function PublishPreviewDialog({
             </p>
           )}
 
-          {pkg.contentType === 'note' ? (
+          {isArticle ? (
+            <section className="space-y-3">
+              {articleCover.url ? (
+                <img
+                  src={articleCover.url}
+                  alt="文章封面"
+                  className="w-full max-w-md rounded-lg border border-tech-border"
+                  data-testid="article-cover"
+                />
+              ) : (
+                <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  这个文章包没有可显示的封面。今日头条要求文章必须有封面，请重新创建文章包并选择封面。
+                </p>
+              )}
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-tech-text">标题</p>
+                <p className="text-sm text-tech-text" data-testid="article-title">
+                  {preview.articleCopy?.title ?? pkg.title}
+                </p>
+                {preview.articleLimits ? (
+                  <CountedField
+                    name="标题"
+                    value={{
+                      actual: [...(preview.articleCopy?.title ?? '')].length,
+                      limit: preview.articleLimits.titleMax,
+                      over: [...(preview.articleCopy?.title ?? '')].length > preview.articleLimits.titleMax
+                        || [...(preview.articleCopy?.title ?? '')].length < preview.articleLimits.titleMin,
+                    }}
+                  />
+                ) : null}
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-tech-text">正文</p>
+                <pre
+                  className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-tech-bg p-3 text-sm leading-relaxed text-tech-text"
+                  data-testid="article-body"
+                >
+                  {preview.articleCopy?.body ?? ''}
+                </pre>
+              </div>
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-tech-text">发布选项</p>
+                <ul className="list-disc space-y-1 pl-5 text-sm text-tech-muted">
+                  <li>头条首发：{preview.toutiaoOptions?.firstPublish ? '是' : '否'}</li>
+                  <li>
+                    作品声明：
+                    {preview.toutiaoOptions?.declarations?.length
+                      ? preview.toutiaoOptions.declarations.join('、')
+                      : '（无）'}
+                  </li>
+                  {/* 平台默认会勾上这一项：把真实取值摊出来，避免「多发了一条微头条」才知道 */}
+                  <li>同时发布微头条：{preview.toutiaoOptions?.crossPostWeitoutiao ? '是' : '否'}</li>
+                </ul>
+              </div>
+            </section>
+          ) : pkg.contentType === 'note' ? (
             <section>
               {imageCount === 0 ? (
                 <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">包内没有图片</p>
@@ -274,4 +347,34 @@ export function PublishPreviewDialog({
       </div>
     </div>
   );
+}
+
+/**
+ * 文章封面：走 `apiClient` 取 blob（`<img src>` 不会带 `X-Local-Session` 头 → 401 破图）。
+ * 与 `PreviewImage` 同一套做法，只是封面的接口是包级 `/cover`。
+ */
+function useArticleCover(packageId: string, enabled: boolean): { url: string } {
+  const [url, setUrl] = React.useState('');
+
+  React.useEffect(() => {
+    if (!enabled) {
+      setUrl('');
+      return undefined;
+    }
+    let revoked = '';
+    let cancelled = false;
+    void apiClient.getPublishingCover(packageId).then((blob) => {
+      if (cancelled) return;
+      revoked = URL.createObjectURL(blob);
+      setUrl(revoked);
+    }).catch(() => {
+      if (!cancelled) setUrl('');
+    });
+    return () => {
+      cancelled = true;
+      if (revoked) URL.revokeObjectURL(revoked);
+    };
+  }, [packageId, enabled]);
+
+  return { url };
 }

@@ -67,6 +67,9 @@ export async function startServer(): Promise<number> {
         // 与独立后端同一套 env 契约（见 src/server.ts 与 AGENTS.md 的 SAU_* 说明）
         sauBinary: process.env.SAU_BINARY,
         sauBaseDir: process.env.SAU_BASE_DIR,
+        // 今日头条同样走 env（与 SAU_* 一套契约）；浏览器缺省复用打包进来的 headless shell。
+        toutiaoBrowserBinary: process.env.TOUTIAO_BROWSER_BINARY,
+        toutiaoProfileDir: process.env.TOUTIAO_PROFILE_DIR,
       });
 
       const PORT = 0; // 使用随机端口

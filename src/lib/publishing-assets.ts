@@ -29,14 +29,30 @@ import type {
   PublishingIndex,
   PublishingPackageDetail,
   PublishTask,
+  WechatArticleCopy,
 } from "../types.js";
 import { buildPublishText } from "./publishing-platforms.js";
 
-const APPROVED_PLATFORMS = new Set(["douyin", "xiaohongshu", "wechat_channels", "bilibili"]);
+/**
+ * 允许进入交付包的平台清单。
+ *
+ * **导出**是为了让「平台清单一致性守卫」用例（`publishing-platforms.test.ts`）能直接断言它 ——
+ * 这个 `new Set([...])` 字面量是编译器兜不住的静默点之一。
+ */
+export const APPROVED_PLATFORMS = new Set([
+  "douyin",
+  "xiaohongshu",
+  "wechat_channels",
+  "bilibili",
+  "wechat_mp",
+  "toutiao",
+]);
 const TEMP_STALE_MS = 60 * 60 * 1000;
 const MAX_COVER_BYTES = 20 * 1024 * 1024;
-/** 抖音图文单次图片上限（spec §4：images 非空且 ≤35 张）。 */
-const MAX_NOTE_IMAGES = 35;
+/** 抖音图文单次图片上限（spec §4：images 非空且 ≤35 张）。导出给服务层与预览共用同一份数字。 */
+export const MAX_NOTE_IMAGES = 35;
+/** 文章 HTML 的大小上限（我们自己的渲染产物，正常只有几十 KB；超过必然是异常文件）。 */
+const MAX_ARTICLE_HTML_BYTES = 2 * 1024 * 1024;
 /** 单张图文素材上限，与素材库图片口径一致。 */
 const MAX_NOTE_IMAGE_BYTES = 20 * 1024 * 1024;
 const NOTE_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
@@ -119,6 +135,51 @@ export interface NotePackageAssetResult {
   rollback(): Promise<void>;
 }
 
+/**
+ * 文章包（微信公众号）打包输入。
+ *
+ * 与 note 包的关键差别：
+ * - **正文是一整份渲染好的 HTML**（含图片占位符 `{{wechat-image-N}}`），落进包内 `article.html`；
+ * - **配图是正文插图而不是内容主体**，所以「一张图都没有」是合法状态；
+ * - 图片必须是**已经被 `wechat-media` 处理过**的产物（jpg、<1MB）：`uploadimg` 只收 jpg/png 且 <1MB，
+ *   打包层只负责复制与哈希，**不负责转码**（转码不该出现在这个安全加固过的复制事务里）。
+ */
+export interface ArticlePackageAssetInput {
+  packageId: string;
+  sourceJobId: string;
+  version: number;
+  /** 已渲染的微信兼容 HTML；图片用 `{{wechat-image-N}}` 占位，提交时替换成 mmbiz URL。 */
+  articleHtml: string;
+  /** 正文配图源文件绝对路径，**按传入顺序**（下标 + 1 = 占位符序号）。 */
+  sourceImagePaths?: string[];
+  /** 封面源文件绝对路径（2.35:1 由 `wechat-media` 裁好）。缺省 → `missing_cover`。 */
+  sourceCoverPath?: string;
+  /** 文章文案（不含 `htmlSha256`，那个由打包算出）。 */
+  articleCopy: Omit<WechatArticleCopy, "htmlSha256">;
+  title: string;
+  tasks: PublishTask[];
+  actor: ActorSnapshot;
+}
+
+export interface ArticlePackageAssetResult {
+  packagePath: string;
+  contentType: "article";
+  /** 包内相对路径，按传入顺序，如 `images/01.jpg`。 */
+  imagePaths: string[];
+  imageManifestSha256: string;
+  imageCount: number;
+  imageSize: number;
+  /** 包内 `article.html` 的绝对路径。 */
+  articlePath: string;
+  /** `article.html` 的 sha256。 */
+  htmlSha256: string;
+  /** 已复制进包的封面绝对路径（`cover.jpg`）；未提供封面时为 undefined。 */
+  coverPath?: string;
+  assetHealth: PublishAssetHealth;
+  warnings: PackageAssetWarning[];
+  rollback(): Promise<void>;
+}
+
 type StagingTarget = {
   tempPath: string;
   tempIdentity: FileIdentity;
@@ -143,6 +204,18 @@ type StagedNoteContent = {
   imageManifestSha256: string;
   imageCount: number;
   imageSize: number;
+  assetHealth: PublishAssetHealth;
+};
+
+type StagedArticleContent = {
+  imagePaths: string[];
+  imageManifestSha256: string;
+  imageCount: number;
+  imageSize: number;
+  articlePath: string;
+  htmlSha256: string;
+  /** 暂存目录里的封面路径；对外要换成**提升后的**包路径（与视频封面同一口径）。 */
+  stagedCoverPath?: string;
   assetHealth: PublishAssetHealth;
 };
 
@@ -331,6 +404,59 @@ export class PublishingAssetService {
   }
 
   /**
+   * 微信公众号文章包打包入口。
+   *
+   * 与视频/图文入口并列，理由同 `createNotePackageAssets`：三条通路的资产校验与必需字段
+   * 各不相同，混进一个函数会让规则互相纠缠；而共同的部分（锁、临时目录、目录身份校验、
+   * 原子提升、回滚）仍然只有 `withStagedPackage` 一份实现。
+   */
+  async createArticlePackageAssets(
+    input: ArticlePackageAssetInput,
+  ): Promise<ArticlePackageAssetResult> {
+    validateSegment(input.packageId);
+    validateSegment(input.sourceJobId);
+    validateVersion(input.version);
+    validateProjectionTasks(input.packageId, input.tasks);
+
+    const sourceImagePaths = input.sourceImagePaths ?? [];
+    // 正文里要 N 张图却只给了 M<N 张，这个包**永远提交不了** —— 在写盘前就拦掉。
+    assertArticleImageCoverage(input.articleHtml, sourceImagePaths.length);
+
+    return this.withAssetLock(async (context) => {
+      const staged = await this.withStagedPackage(
+        context,
+        { sourceJobId: input.sourceJobId, packageId: input.packageId, version: input.version },
+        ({ tempPath, tempIdentity }) => this.stageArticleContent(
+          input,
+          sourceImagePaths,
+          tempPath,
+          tempIdentity,
+          context,
+        ),
+      );
+
+      return {
+        packagePath: staged.packagePath,
+        contentType: "article",
+        imagePaths: staged.payload.imagePaths,
+        imageManifestSha256: staged.payload.imageManifestSha256,
+        imageCount: staged.payload.imageCount,
+        imageSize: staged.payload.imageSize,
+        articlePath: path.join(staged.packagePath, "article.html"),
+        htmlSha256: staged.payload.htmlSha256,
+        // 暂存目录里的路径不能对外暴露：提升之后它已经不存在了（与视频封面同一处理）。
+        coverPath: staged.payload.stagedCoverPath
+          ? path.join(staged.packagePath, "cover.jpg")
+          : undefined,
+        assetHealth: staged.payload.assetHealth,
+        // 文章包没有需要「明确告知」的降级：缺正文图是合法选择，缺封面已体现在 assetHealth 里。
+        warnings: [],
+        rollback: staged.rollback,
+      };
+    });
+  }
+
+  /**
    * 包裹「暂存目录事务」：临时目录 → 写内容 → 原子提升 → 回滚闭包。
    *
    * 视频与图文两条入口共用这一份实现：安全校验（根目录/目录身份/直接子项断言）
@@ -486,7 +612,7 @@ export class PublishingAssetService {
     tempIdentity: FileIdentity,
     context: RootContext,
   ): Promise<StagedNoteContent> {
-    const images = await this.copyNoteImages(sourceImagePaths, tempPath, tempIdentity, context);
+    const images = await this.copyOrderedImages(sourceImagePaths, tempPath, tempIdentity, context);
     const assetHealth: PublishAssetHealth = images.paths.length > 0 ? "healthy" : "missing_images";
 
     await this.assertRootAndDirectory(context, tempPath, tempIdentity);
@@ -543,12 +669,121 @@ export class PublishingAssetService {
   }
 
   /**
-   * 按传入顺序把图文素材复制进 `images/NN.ext`，并算出图片清单哈希。
+   * 微信公众号文章包的暂存内容。
    *
-   * 每张图都做「源可读 → 复制 → 目标 sha256 与源一致」的校验，因此清单哈希
-   * 同时也是落盘内容的凭据；顺序参与哈希，调换顺序必然改变哈希。
+   * 与 `stageNoteContent` 的差别只有三处：多了 `article.html`、多了封面复制、
+   * `assetHealth` 的判定不同（缺封面 → `missing_cover`；**缺正文图不算问题**，
+   * 因为文章的内容是文字，配图是可选的）。
    */
-  private async copyNoteImages(
+  private async stageArticleContent(
+    input: ArticlePackageAssetInput,
+    sourceImagePaths: string[],
+    tempPath: string,
+    tempIdentity: FileIdentity,
+    context: RootContext,
+  ): Promise<StagedArticleContent> {
+    const images = await this.copyOrderedImages(sourceImagePaths, tempPath, tempIdentity, context);
+    const stagedCoverPath = input.sourceCoverPath
+      ? await this.copyArticleCover(input.sourceCoverPath, tempPath, tempIdentity, context)
+      : undefined;
+    const assetHealth: PublishAssetHealth = stagedCoverPath ? "healthy" : "missing_cover";
+
+    await this.assertRootAndDirectory(context, tempPath, tempIdentity);
+    const articlePath = path.join(tempPath, "article.html");
+    const htmlBytes = Buffer.from(input.articleHtml ?? "", "utf8");
+    await writeFile(articlePath, htmlBytes);
+    const htmlSha256 = createHash("sha256").update(htmlBytes).digest("hex");
+
+    await this.assertRootAndDirectory(context, tempPath, tempIdentity);
+    await writePlatformProjection(path.join(tempPath, "platforms"), input.tasks);
+    await this.assertRootAndDirectory(context, tempPath, tempIdentity);
+    await writeFile(path.join(tempPath, "manifest.json"), JSON.stringify({
+      schemaVersion: 1,
+      package: {
+        id: input.packageId,
+        sourceJobId: input.sourceJobId,
+        version: input.version,
+        title: input.title,
+        createdBy: {
+          userId: input.actor.userId,
+          displayName: input.actor.displayName,
+          role: input.actor.role,
+        },
+        createdAt: this.now().toISOString(),
+      },
+      contentType: "article",
+      images: {
+        paths: [...images.paths],
+        count: images.paths.length,
+        size: images.size,
+        manifestSha256: images.manifestSha256,
+      },
+      article: {
+        path: "article.html",
+        title: input.articleCopy.title,
+        digest: input.articleCopy.digest ?? null,
+        author: input.articleCopy.author ?? null,
+        htmlSha256,
+      },
+      cover: stagedCoverPath ? "cover.jpg" : null,
+      assetHealth,
+      tasks: input.tasks.map((task) => ({
+        id: task.id,
+        platform: task.platform,
+        imagePaths: [...images.paths],
+        title: task.title,
+        description: task.description,
+        hashtags: [...task.hashtags],
+        copySource: task.copySource,
+        status: task.status,
+        scheduledAt: task.scheduledAt,
+        contentRevision: task.contentRevision,
+      })),
+    }, null, 2), "utf8");
+
+    return {
+      imagePaths: images.paths,
+      imageManifestSha256: images.manifestSha256,
+      imageCount: images.paths.length,
+      imageSize: images.size,
+      articlePath,
+      htmlSha256,
+      stagedCoverPath,
+      assetHealth,
+    };
+  }
+
+  /** 把封面复制进包根 `cover.jpg`（内容与源逐字节一致，复制后立即校验）。 */
+  private async copyArticleCover(
+    sourceCoverPath: string,
+    tempPath: string,
+    tempIdentity: FileIdentity,
+    context: RootContext,
+  ): Promise<string | undefined> {
+    const source = await resolveReadableFile(context.storageRoot, sourceCoverPath, {
+      extensions: NOTE_IMAGE_EXTENSIONS,
+      maxBytes: MAX_COVER_BYTES,
+      code: "publish_image_unreadable",
+    });
+    const destination = path.join(tempPath, "cover.jpg");
+    assertDirectChild(tempPath, destination);
+    const sourceSha256 = await hashImageFile(source);
+    await this.assertRootAndDirectory(context, tempPath, tempIdentity);
+    await this.copyFile(source, destination, constants.COPYFILE_EXCL);
+    await this.assertRootAndDirectory(context, tempPath, tempIdentity);
+    if (await hashImageFile(destination) !== sourceSha256) {
+      throw new PublishingAssetError("publish_image_unreadable");
+    }
+    return destination;
+  }
+
+  /**
+   * 按传入顺序把图片复制进 `images/NN.ext`，并算出图片清单哈希。
+   *
+   * **图文包与文章包共用这一份实现**：两者的复制、逐张 sha256 校验与顺序敏感哈希
+   * 完全一致，各写一份等于把「复制后必须校验」这条纪律拆成两处。
+   */
+  private async copyOrderedImages(
     sourceImagePaths: string[],
     tempPath: string,
     tempIdentity: FileIdentity,
@@ -812,6 +1047,16 @@ export class PublishingAssetService {
     });
   }
 
+  /**
+   * **按内容类型分派**的资产体检（article 包没有 `video.mp4`，走视频分支会一律判成 `broken_video`）。
+   *
+   * 服务层与启动恢复都该用这个入口；`verifyPackageVideo` / `verifyPackageImages` 是
+   * 「只按那一种口径查」的专用入口（名字是历史遗留，图文通路仍在用 `verifyPackageImages`）。
+   */
+  async verifyPackageHealth(pkg: DeliveryPackage): Promise<PublishAssetHealth> {
+    return this.withAssetLock((context) => this.verifyPackageHealthUnlocked(context, pkg));
+  }
+
   async verifyPackageVideo(pkg: DeliveryPackage): Promise<PublishAssetHealth> {
     return this.withAssetLock((context) => this.verifyPackageVideoUnlocked(context, pkg));
   }
@@ -864,25 +1109,28 @@ export class PublishingAssetService {
     });
   }
 
-  /** 按包内容类型分派资产体检（图文包没有 `video.mp4`，不能走视频分支）。 */
-  private verifyPackageHealthUnlocked(context: RootContext, pkg: DeliveryPackage): Promise<PublishAssetHealth> {
-    return pkg.contentType === "note"
-      ? this.verifyPackageImagesUnlocked(context, pkg)
-      : this.verifyPackageVideoUnlocked(context, pkg);
-  }
-
-  async readPackageCover(pkg: DeliveryPackage): Promise<Buffer | null> {
-    if (!pkg.coverPath) return null;
+  /**
+   * 读取文章包的 `article.html`（降级通路：把 HTML 交给用户，粘贴进头条编辑器）。
+   *
+   * 与封面同一套纪律：包路径必须与记录一致、用 `O_NOFOLLOW` 打开、打开后校验 inode 一致，
+   * 并限制大小 —— 包目录是磁盘上的普通目录，任何「按记录里的路径直接读」的写法都等于开放
+   * 任意文件读取。
+   */
+  async readPackageArticle(pkg: DeliveryPackage): Promise<Buffer | null> {
     return this.withAssetLock(async (context) => {
       const binding = await requireExpectedPackage(context, pkg, true);
-      const coverPath = path.join(binding.path, "cover.jpg");
-      if (path.resolve(pkg.coverPath!) !== coverPath) return null;
+      const articlePath = path.join(binding.path, "article.html");
       let handle: FileHandle | undefined;
       try {
-        handle = await open(coverPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+        handle = await open(articlePath, constants.O_RDONLY | constants.O_NOFOLLOW);
         const opened = await handle.stat();
-        const current = await lstat(coverPath);
-        if (!opened.isFile() || opened.size === 0 || opened.size > MAX_COVER_BYTES || !sameIdentity(opened, current)) {
+        const current = await lstat(articlePath);
+        if (
+          !opened.isFile()
+          || opened.size === 0
+          || opened.size > MAX_ARTICLE_HTML_BYTES
+          || !sameIdentity(opened, current)
+        ) {
           return null;
         }
         const bytes = await handle.readFile();
@@ -893,6 +1141,61 @@ export class PublishingAssetService {
         await handle?.close().catch(() => undefined);
       }
     });
+  }
+
+  /**
+   * 按包内容类型分派资产体检（图文包没有 `video.mp4`，不能走视频分支；文章包同理）。
+   *
+   * 文章包（article）的体检口径：正文图清单（有图才查）→ 封面（**头条必填**）→ healthy。
+   * 正文 HTML 的完整性不在这里查：它是「提交那一刻」的事，由服务层比对
+   * `articleCopy.htmlSha256`（那里失败还能给出可执行的原因，这里只会变成一个健康值）。
+   */
+  private async verifyPackageHealthUnlocked(
+    context: RootContext,
+    pkg: DeliveryPackage,
+  ): Promise<PublishAssetHealth> {
+    if (pkg.contentType === "note") return this.verifyPackageImagesUnlocked(context, pkg);
+    if (pkg.contentType === "article") {
+      if ((pkg.imagePaths?.length ?? 0) > 0) {
+        const images = await this.verifyPackageImagesUnlocked(context, pkg);
+        if (images !== "healthy") return images;
+      }
+      return (await this.readPackageCoverUnlocked(context, pkg)) ? "healthy" : "missing_cover";
+    }
+    return this.verifyPackageVideoUnlocked(context, pkg);
+  }
+
+  async readPackageCover(pkg: DeliveryPackage): Promise<Buffer | null> {
+    return this.withAssetLock((context) => this.readPackageCoverUnlocked(context, pkg));
+  }
+
+  /**
+   * 已持有资产锁时的封面读取。
+   *
+   * **必须与公开入口分开**：`withAssetLock` 用的是进程锁，**不可重入** ——
+   * 在 `verifyPackageHealthUnlocked` 里直接调 `readPackageCover` 会自己等自己，
+   * 表现是整个请求/用例**挂住**（不是报错），本项目已实测踩到过一次。
+   */
+  private async readPackageCoverUnlocked(context: RootContext, pkg: DeliveryPackage): Promise<Buffer | null> {
+    if (!pkg.coverPath) return null;
+    const binding = await requireExpectedPackage(context, pkg, true);
+    const coverPath = path.join(binding.path, "cover.jpg");
+    if (path.resolve(pkg.coverPath!) !== coverPath) return null;
+    let handle: FileHandle | undefined;
+    try {
+      handle = await open(coverPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const opened = await handle.stat();
+      const current = await lstat(coverPath);
+      if (!opened.isFile() || opened.size === 0 || opened.size > MAX_COVER_BYTES || !sameIdentity(opened, current)) {
+        return null;
+      }
+      const bytes = await handle.readFile();
+      return bytes.length === opened.size ? bytes : null;
+    } catch {
+      return null;
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
   }
 
   async purgeAssets(pkg: DeliveryPackage): Promise<void> {
@@ -1541,6 +1844,27 @@ function resolveDeclaredImage(packagePath: string, relativePath: string): string
 /** 各图 sha256 有序拼接后再哈希。顺序参与哈希，因此调换顺序必然改变结果。 */
 function imageManifestHash(hashes: string[]): string {
   return createHash("sha256").update(hashes.join("\n")).digest("hex");
+}
+
+/** 正文里的图片占位符（与 `wechat-article.ts` 的 `WECHAT_IMAGE_SLOT_PREFIX` 同一约定）。 */
+const ARTICLE_IMAGE_SLOT_PATTERN = /\{\{wechat-image-(\d+)\}\}/gu;
+
+/**
+ * 正文里每一张占位图都必须有对应的图片，否则这个包**永远提交不了**。
+ *
+ * 提交时要把每个占位符换成 mmbiz URL，缺一张就会在提交那一刻才报错 —— 与其那时才失败，
+ * 不如不让这种包产生。**注意「一张图都没有」本身是合法的**（文章的内容是文字），
+ * 这里拦的是「正文要图但图不够」这种自相矛盾的状态。
+ */
+function assertArticleImageCoverage(articleHtml: string, imageCount: number): void {
+  let maxSlot = 0;
+  for (const match of (articleHtml ?? "").matchAll(ARTICLE_IMAGE_SLOT_PATTERN)) {
+    const slot = Number(match[1]);
+    if (Number.isFinite(slot) && slot > maxSlot) maxSlot = slot;
+  }
+  if (maxSlot > imageCount) {
+    throw new PublishingAssetError("publish_images_missing");
+  }
 }
 
 /**

@@ -22,7 +22,8 @@ import type {
   PublishPlatform,
   PublishingPackageDetail,
 } from "../types.js";
-import { PublishingAssetService } from "./publishing-assets.js";
+import { AssetStore } from "./assets-store.js";
+import { PublishingAssetError, PublishingAssetService } from "./publishing-assets.js";
 import { PublishingService, PublishingServiceError, summarizeCliOutput } from "./publishing-service.js";
 import { PublishingStore } from "./publishing-store.js";
 import { LocalStorage } from "./storage.js";
@@ -111,16 +112,20 @@ async function fixture() {
     },
   };
   const jobReader = { get: async (jobId: string) => jobs.get(jobId) ?? null };
+  // 图文选图走真实 AssetStore（同一个 storage）：id → 路径的归属校验必须是真的，
+  // 用假实现会让「选中的素材落在 assets/ 之外」这类问题测不出来。
+  const assetStore = new AssetStore(storage);
   const service = new PublishingService({
     storageRoot,
     jobs: jobReader,
     store,
     assets,
     copy,
+    library: assetStore,
     now: () => new Date(clock.now),
   });
 
-  return { storageRoot, storage, store, assets, copy, jobReader, service, clock, jobs, addJob, ...primary };
+  return { storageRoot, storage, store, assets, copy, jobReader, service, clock, jobs, addJob, assetStore, ...primary };
 }
 
 async function createPackage(
@@ -206,6 +211,7 @@ test("preview and create close resolver resources after use", async () => {
     store: f.store,
     assets: f.assets,
     copy: f.copy,
+    library: f.assetStore,
     now: () => new Date(f.clock.now),
     resolveVideo: async (storageRoot, job) => {
       const resolved = await resolveJobVideo(storageRoot, job);
@@ -241,6 +247,7 @@ test("preview revision uses the opened video inode when its path is replaced", a
     store: f.store,
     assets: f.assets,
     copy: f.copy,
+    library: f.assetStore,
     now: () => new Date(f.clock.now),
     resolveVideo: async (storageRoot, job) => {
       const resolved = await resolveJobVideo(storageRoot, job);
@@ -748,4 +755,254 @@ test('CLI output summary strips ANSI colour and keeps the end where failures are
   // 短输出原样保留（压平后）
   assert.equal(summarizeCliOutput("valid"), "valid");
   assert.equal(summarizeCliOutput("  多行\n输出  "), "多行 输出");
+});
+
+// ─── ③ Task 3：素材库图片接入图文发布 ──────────────────────────────
+
+/** 合法最小 1×1 PNG，尾部加一个区分字节 —— 用来在素材库里造「看得出不同」的图片。 */
+const LIBRARY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+  "base64",
+);
+
+function libraryImageBytes(seed: number): Buffer {
+  return Buffer.concat([LIBRARY_PNG, Buffer.from([seed])]);
+}
+
+function addLibraryImage(f: Fixture, originalName: string, seed: number) {
+  return f.assetStore.add("image", { originalName, data: libraryImageBytes(seed) });
+}
+
+const NOTE_COPY = { title: "图文标题", description: "图文正文", hashtags: ["内容创作"] };
+
+/** 图文创建输入：`imageAssetIds` 就是「用户在多选里点过的顺序」。 */
+function noteCreateInput(
+  imageAssetIds: string[],
+  previewRevision = "stale-revision",
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    sourceJobId: "job-1",
+    previewRevision,
+    title: "图文交付包",
+    contentType: "note" as const,
+    noteCopy: { ...NOTE_COPY, hashtags: [...NOTE_COPY.hashtags] },
+    imageSource: "library" as const,
+    imageAssetIds,
+    platforms: [{ platform: "douyin" as const, copy: { ...NOTE_COPY, hashtags: [...NOTE_COPY.hashtags] } }],
+    ...extra,
+  };
+}
+
+async function publishingRoots(storageRoot: string): Promise<string[]> {
+  return (await readdir(path.join(storageRoot, "output", "publishing")).catch(() => [])).sort();
+}
+
+test("note preview lists library images in selection order and fingerprints the source", async () => {
+  const f = await fixture();
+  const first = await addLibraryImage(f, "素材 A.png", 1);
+  const second = await addLibraryImage(f, "素材 B.png", 2);
+
+  const preview = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [second.id, first.id],
+  });
+
+  assert.equal(preview.contentType, "note");
+  assert.equal(preview.imageSource, "library");
+  // 上限由服务端下发，界面不复刻 35 这个数字
+  assert.equal(preview.imageLimit, 35);
+  // 顺序 = 选择顺序（既不是上传顺序，也不是 id 顺序）
+  assert.deepEqual(preview.images?.map((image) => image.name), ["素材 B.png", "素材 A.png"]);
+  assert.deepEqual(preview.images?.map((image) => image.assetId), [second.id, first.id]);
+  assert.deepEqual(
+    preview.images?.map((image) => image.size),
+    [libraryImageBytes(2).length, libraryImageBytes(1).length],
+  );
+
+  const reversed = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [first.id, second.id],
+  });
+  const frames = await f.service.preview("job-1", ["douyin"], "note");
+
+  // 来源与顺序都参与指纹：换了来源或调了顺序，旧 revision 必须失效
+  assert.notEqual(reversed.previewRevision, preview.previewRevision);
+  assert.notEqual(frames.previewRevision, preview.previewRevision);
+  assert.equal(frames.imageSource, "frames");
+  assert.equal(frames.imageLimit, 35);
+  // 静帧目录不存在时与既有口径一致：不是错误，就是「没有图」
+  assert.deepEqual(frames.images, []);
+
+  // 预览不产包
+  assert.deepEqual(await publishingRoots(f.storageRoot), []);
+});
+
+test("creating a note package from the library copies the selected images in order", async () => {
+  const f = await fixture();
+  const first = await addLibraryImage(f, "素材 A.png", 1);
+  const second = await addLibraryImage(f, "素材 B.png", 2);
+
+  const preview = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [second.id, first.id],
+  });
+  const detail = await f.service.create(
+    noteCreateInput([second.id, first.id], preview.previewRevision),
+    ACTOR,
+  );
+
+  assert.equal(detail.package.contentType, "note");
+  assert.deepEqual(detail.package.imagePaths, ["images/01.png", "images/02.png"]);
+  assert.equal(detail.package.assetHealth, "healthy");
+  // 包内 01 是「素材 B」—— 证明按选择顺序，而不是上传顺序/字典序
+  assert.deepEqual(
+    await readFile(path.join(detail.package.packagePath, "images", "01.png")),
+    libraryImageBytes(2),
+  );
+  assert.deepEqual(
+    await readFile(path.join(detail.package.packagePath, "images", "02.png")),
+    libraryImageBytes(1),
+  );
+  // 包仍然自包含：没有成片
+  await assert.rejects(stat(path.join(detail.package.packagePath, "video.mp4")), { code: "ENOENT" });
+  // 平台任务文案与服务端从 noteCopy 同步的一致
+  assert.equal(detail.tasks[0]!.title, NOTE_COPY.title);
+  assert.equal(detail.tasks[0]!.description, NOTE_COPY.description);
+  // 完整性凭据通过（图片清单哈希）
+  assert.equal(await f.assets.verifyPackageImages(detail.package), "healthy");
+});
+
+test("a note package from the library survives asset deletion and only fails when rebuilt", async () => {
+  const f = await fixture();
+  const image = await addLibraryImage(f, "素材 A.png", 1);
+  const preview = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [image.id],
+  });
+  const detail = await f.service.create(
+    noteCreateInput([image.id], preview.previewRevision),
+    ACTOR,
+  );
+  const imagesDirectory = path.join(detail.package.packagePath, "images");
+  assert.deepEqual(await readdir(imagesDirectory), ["01.png"]);
+
+  assert.equal(await f.assetStore.remove(image.id), true);
+
+  // 素材删了，已建好的包不受影响（图片已复制进包，凭据仍成立）
+  assert.deepEqual(await readdir(imagesDirectory), ["01.png"]);
+  assert.equal(await f.assets.verifyPackageImages(detail.package), "healthy");
+
+  // 重建才失败：指纹只认 id（id 与顺序都没变），所以是「素材不存在」而不是「revision 过期」
+  await assert.rejects(
+    f.service.create(noteCreateInput([image.id], preview.previewRevision), ACTOR),
+    (error: unknown) => error instanceof PublishingServiceError
+      && error.status === 422
+      && /素材/u.test(error.message),
+  );
+});
+
+test("library selection rejects empty, oversized, unknown and non-image choices before writing anything", async () => {
+  const f = await fixture();
+  const image = await addLibraryImage(f, "素材 A.png", 1);
+  const audio = await f.assetStore.add("audio", {
+    originalName: "背景音乐.mp3",
+    data: Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x00]),
+  });
+  const before = await indexBytes(f);
+
+  // 选了「素材库」却一张都没选：客户端请求不自洽（静帧来源缺图才是「没有图」，见上）
+  await assert.rejects(
+    f.service.create(noteCreateInput([]), ACTOR),
+    (error: unknown) => error instanceof PublishingServiceError
+      && error.status === 400
+      && /至少选择一张/u.test(error.message),
+  );
+
+  // 36 张：必须在上限处就拦下来（否则会先去逐个解析，报成「素材不存在」）。
+  // 复用打包层的错误码，静帧与素材库两个来源的「超上限」是同一个 code。
+  const tooManyIds = Array.from({ length: 36 }, (_, index) => `missing-asset-${index}`);
+  await assert.rejects(
+    f.service.create(noteCreateInput(tooManyIds), ACTOR),
+    (error: unknown) => error instanceof PublishingAssetError
+      && error.code === "publish_too_many_images"
+      && error.status === 422
+      && /35/u.test(error.message),
+  );
+
+  // 选中的素材已经被删（或 id 根本不存在）
+  await assert.rejects(
+    f.service.create(noteCreateInput(["00000000-0000-4000-8000-000000000000"]), ACTOR),
+    (error: unknown) => error instanceof PublishingServiceError
+      && error.status === 422
+      && /素材/u.test(error.message),
+  );
+
+  // 音频不能当图文素材
+  await assert.rejects(
+    f.service.create(noteCreateInput([audio.id]), ACTOR),
+    (error: unknown) => error instanceof PublishingServiceError
+      && error.status === 400
+      && /图片/u.test(error.message),
+  );
+
+  // 全部失败路径都不写索引、不产包、不动素材
+  assert.deepEqual(await indexBytes(f), before);
+  assert.deepEqual(await publishingRoots(f.storageRoot), []);
+  assert.equal(await f.assetStore.get(image.id) !== null, true);
+});
+
+test("a frames source rejects library ids and a library revision rejects a different selection", async () => {
+  const f = await fixture();
+  const first = await addLibraryImage(f, "素材 A.png", 1);
+  const second = await addLibraryImage(f, "素材 B.png", 2);
+  const before = await indexBytes(f);
+
+  // 来源是静帧却带着素材 id：请求自相矛盾，明确报错而不是默默忽略
+  await assert.rejects(
+    f.service.create(noteCreateInput([first.id], "stale-revision", { imageSource: "frames" }), ACTOR),
+    (error: unknown) => error instanceof PublishingServiceError
+      && error.status === 400
+      && /静帧/u.test(error.message),
+  );
+
+  // 来源取值非法
+  await assert.rejects(
+    f.service.create(noteCreateInput([first.id], "stale-revision", { imageSource: "camera" }), ACTOR),
+    (error: unknown) => error instanceof PublishingServiceError && error.status === 400,
+  );
+
+  const preview = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [first.id, second.id],
+  });
+  // 预览的是 [A, B]，创建时却提交 [B, A]：内容与预览不符 → 409，且不产包
+  await assert.rejects(
+    f.service.create(noteCreateInput([second.id, first.id], preview.previewRevision), ACTOR),
+    (error: unknown) => error instanceof PublishingServiceError
+      && error.status === 409
+      && error.code === "publish_revision_conflict",
+  );
+
+  assert.deepEqual(await indexBytes(f), before);
+  assert.deepEqual(await publishingRoots(f.storageRoot), []);
+});
+
+test("a frames note keeps the shipped behaviour when no snapshot exists", async () => {
+  const f = await fixture();
+
+  const preview = await f.service.preview("job-1", ["douyin"], "note");
+  assert.equal(preview.imageSource, "frames");
+  const detail = await f.service.create({
+    sourceJobId: "job-1",
+    previewRevision: preview.previewRevision,
+    title: "图文交付包",
+    contentType: "note",
+    noteCopy: { ...NOTE_COPY, hashtags: [...NOTE_COPY.hashtags] },
+    platforms: [{ platform: "douyin", copy: { ...NOTE_COPY, hashtags: [...NOTE_COPY.hashtags] } }],
+  }, ACTOR);
+
+  // ② 的口径：静帧一张都没有时包仍自包含地建出来，只是资产不健康（与素材库「一张没选」报错不同）
+  assert.equal(detail.package.assetHealth, "missing_images");
+  assert.deepEqual(detail.package.imagePaths, []);
 });

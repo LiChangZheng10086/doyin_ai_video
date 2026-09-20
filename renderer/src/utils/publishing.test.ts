@@ -11,6 +11,7 @@ import type {
 import {
   AUTO_PUBLISH_STALE_MS,
   getPublishingActionIds,
+  getAutoPublishConfirmLabel,
   getPublishingAutoPublishBlocker,
   getPublishingAutoPublishHint,
   buildCreatePublishingInput,
@@ -21,6 +22,14 @@ import {
   publishingNextStep,
   groupPublishingPackages,
   isPublishingEligibleVideo,
+  PUBLISHING_PLATFORMS,
+  PUBLISH_CHANNELS,
+  channelEmptyHint,
+  channelPlatformOptions,
+  countChannelPackages,
+  countStatusesInChannel,
+  publishChannelOf,
+  selectChannelPackages,
   publishingWizardReducer,
 } from './publishing.js';
 import { desktop } from '../electron-bridge.js';
@@ -599,4 +608,248 @@ test('a session invalidated by a backend restart is recognised and healed once',
   assert.equal(isStaleLocalSession({ response: { status: 409, data: { code: 'publish_revision_conflict' } }, config: { url: '/api/x' } }), false);
   assert.equal(isStaleLocalSession(new Error('Network Error')), false);
   assert.equal(isStaleLocalSession(undefined), false);
+});
+
+// ─── 平台清单守卫（渲染层）────────────────────────────────────────────────────
+//
+// 渲染层是**独立的 TS 工程**（`tsconfig.renderer.json` 只 include `renderer/src`），
+// 引用不到 `src/lib` 的平台表，所以这份清单是**第二份真源**、编译器也兜不住它。
+// 后端加了平台而这里忘了加的表现是：包建得出来，但界面上看不见、选不到。
+
+test('渲染层平台表与后端平台集合一一对应（新增平台不许漏点）', () => {
+  assert.deepEqual(
+    PUBLISHING_PLATFORMS.map((item) => item.id).sort(),
+    ['bilibili', 'douyin', 'toutiao', 'wechat_channels', 'wechat_mp', 'xiaohongshu'],
+  );
+});
+
+test('渲染层平台表的微信公众号口径与后端一致（标题 32 / 摘要 120）', () => {
+  const policy = PUBLISHING_PLATFORMS.find((item) => item.id === 'wechat_mp');
+  assert.ok(policy, '渲染层缺少微信公众号');
+  assert.equal(policy.label, '微信公众号');
+  assert.equal(policy.titleMax, 32);
+  assert.equal(policy.descriptionMax, 120);
+  assert.equal(policy.creatorUrl, 'https://mp.weixin.qq.com/');
+});
+
+// ─── 今日头条（文章通路）在渲染层的口径 ──────────────────────────────────────
+
+test('渲染层今日头条口径与后端一致（标题 30 / 正文 20000）', () => {
+  const policy = PUBLISHING_PLATFORMS.find((item) => item.id === 'toutiao');
+  assert.ok(policy, '渲染层缺少今日头条');
+  assert.equal(policy.label, '今日头条');
+  assert.equal(policy.titleMax, 30);
+  assert.equal(policy.descriptionMax, 20000);
+  assert.equal(policy.creatorUrl, 'https://mp.toutiao.com/profile_v4/graphic/publish');
+});
+
+test('文章包：缺封面时明确禁用并说明原因（头条封面必填）', () => {
+  const detail = articlePackageDetail({ assetHealth: 'missing_cover' });
+  const task = detail.tasks[0]!;
+
+  const blocker = getPublishingAutoPublishBlocker(detail, task);
+  assert.match(blocker ?? '', /封面/u);
+  assert.equal(getPublishingActionIds(detail, task, 'publisher').includes('auto-publish'), false);
+});
+
+test('文章包：健康时给「提交到头条号」与「下载文章 HTML」，但不给「编辑文案」', () => {
+  const detail = articlePackageDetail();
+  const task = detail.tasks[0]!;
+  const actions = getPublishingActionIds(detail, task, 'publisher');
+
+  assert.equal(getPublishingAutoPublishBlocker(detail, task), null);
+  assert.ok(actions.includes('auto-publish'));
+  assert.ok(actions.includes('download-article'));
+  // 正文是包级 article.html 的渲染结果：改任务文案会让预览与实际发出去的内容漂移
+  assert.equal(actions.includes('edit-content'), false);
+  // 视频包的行为一字未改（回归）
+  assert.ok(getPublishingActionIds(packageDetail('job-1', 1), packageDetail('job-1', 1).tasks[0]!, 'publisher')
+    .includes('edit-content'));
+});
+
+test('文章包 + 非头条任务：明确报「只支持今日头条」而不是静默走错通路', () => {
+  const detail = articlePackageDetail();
+  const task = { ...detail.tasks[0]!, platform: 'douyin' as const };
+  assert.match(getPublishingAutoPublishBlocker(detail, task) ?? '', /只支持今日头条/u);
+});
+
+/** 文章包夹具（内容类型 article + 头条任务）。 */
+function articlePackageDetail(options: {
+  assetHealth?: DeliveryPackage['assetHealth'];
+  status?: PublishTask['status'];
+  autoPublish?: PublishTask['autoPublish'];
+} = {}): PublishingPackageDetail {
+  const base = packageDetail('job-1', 1, options.status ?? 'ready');
+  const tasks = base.tasks.map((task) => ({
+    ...task,
+    platform: 'toutiao' as const,
+    title: '头条文章标题',
+    description: '## 小标题\n\n第一段正文。',
+    hashtags: [],
+    ...(options.autoPublish ? { autoPublish: options.autoPublish } : {}),
+  }));
+  return {
+    ...base,
+    package: {
+      ...base.package,
+      contentType: 'article',
+      coverPath: '/tmp/pkg/cover.jpg',
+      assetHealth: options.assetHealth ?? 'healthy',
+      articleCopy: { title: '头条文章标题', htmlSha256: 'd'.repeat(64) },
+      toutiaoOptions: { firstPublish: false, declarations: [], crossPostWeitoutiao: false },
+    },
+    tasks,
+  };
+}
+
+// ─── 文案不许写死平台（头条任务曾被显示成「抖音」）─────────────────────────────
+
+test('自动发布的提示与确认文案按平台取，不再写死「抖音」', () => {
+  // 抖音：与改造前的文案逐字一致（回归）。
+  const douyinTask = { ...articlePackageDetail().tasks[0]!, platform: 'douyin' as const };
+  assert.equal(getAutoPublishConfirmLabel('douyin'), '确认发布到抖音');
+  assert.equal(
+    getPublishingAutoPublishHint({
+      ...douyinTask,
+      autoPublish: { status: 'succeeded', startedAt: new Date().toISOString(), attemptId: 'a' },
+    }),
+    '已提交，请在抖音后台确认后点「标记已发布」',
+  );
+
+  // 今日头条：文案必须跟着平台走（以前会显示成「抖音」，属于误导操作者的错平台文案）。
+  assert.equal(getAutoPublishConfirmLabel('toutiao'), '确认发布到今日头条');
+  assert.equal(
+    getPublishingAutoPublishHint({
+      ...articlePackageDetail().tasks[0]!,
+      autoPublish: { status: 'running', startedAt: new Date().toISOString(), attemptId: 'a' },
+    }),
+    '正在提交到今日头条…',
+  );
+  assert.equal(
+    getPublishingAutoPublishHint({
+      ...articlePackageDetail().tasks[0]!,
+      autoPublish: { status: 'succeeded', startedAt: new Date().toISOString(), attemptId: 'a' },
+    }),
+    '已提交，请在今日头条后台确认后点「标记已发布」',
+  );
+});
+
+test('每个平台都有中文名（漏掉的表现是界面显示英文枚举值）', () => {
+  for (const policy of PUBLISHING_PLATFORMS) {
+    assert.ok(policy.label.trim().length > 0, `${policy.id} 缺 label`);
+    assert.match(getAutoPublishConfirmLabel(policy.id), new RegExp(policy.label, 'u'));
+  }
+});
+
+// ─── 发布中心「渠道」分栏（抖音图文 / 今日头条文章 / 视频人工交付）───────────────
+//
+// 渠道是**内容类型的界面投影**：note = 抖音图文、article = 今日头条文章、video = 视频人工交付。
+// 这一组用例守住三件事：渠道归属、计数（含垃圾桶口径）、以及单平台渠道不该显示平台下拉。
+
+test('渠道归属：note → 抖音图文、article → 今日头条文章、缺省 → 视频人工交付', () => {
+  // 存量包没有 `contentType` 字段 —— 按后端口径视为视频，不能猜成图文。
+  assert.equal(publishChannelOf(packageDetail('job-a', 1)).id, 'video-manual');
+  assert.equal(
+    publishChannelOf(packageDetail('job-a', 1, 'ready', { contentType: 'note' })).id,
+    'douyin-note',
+  );
+  assert.equal(
+    publishChannelOf(packageDetail('job-b', 1, 'ready', { contentType: 'article' })).id,
+    'toutiao-article',
+  );
+  // 老包没有 contentType 字段：与后端同一口径，缺省即视频。
+  assert.equal(packageDetail('job-c', 1).package.contentType, undefined);
+  assert.equal(publishChannelOf(packageDetail('job-c', 1)).id, 'video-manual');
+});
+
+test('渠道清单固定三个，且每个渠道都有可照抄的空态入口', () => {
+  assert.deepEqual(PUBLISH_CHANNELS.map((channel) => channel.id), [
+    'douyin-note',
+    'toutiao-article',
+    'video-manual',
+  ]);
+  assert.deepEqual(PUBLISH_CHANNELS.map((channel) => channel.contentType), ['note', 'article', 'video']);
+  for (const channel of PUBLISH_CHANNELS) {
+    assert.ok(channel.label.length > 0);
+    assert.ok(channel.hint.length > 0, `${channel.id} 缺少说明文案`);
+    assert.ok(channel.emptyHint.length > 0, `${channel.id} 缺少空态入口文案`);
+  }
+  // 空态要指向**具体入口**，不能只说「暂无数据」。
+  assert.match(channelEmptyHint('douyin-note'), /创建图文包/u);
+  assert.match(channelEmptyHint('toutiao-article'), /创建头条文章包/u);
+  assert.match(channelEmptyHint('video-manual'), /加入发布中心/u);
+});
+
+test('按渠道筛选：三种包互不串台，垃圾桶也在渠道内', () => {
+  const video = packageDetail('job-v', 1);
+  const note = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
+  const article = packageDetail('job-t', 1, 'ready', { contentType: 'article' });
+  const all = [video, note, article];
+
+  assert.deepEqual(selectChannelPackages(all, 'douyin-note').map((d) => d.package.id), [note.package.id]);
+  assert.deepEqual(selectChannelPackages(all, 'toutiao-article').map((d) => d.package.id), [article.package.id]);
+  assert.deepEqual(selectChannelPackages(all, 'video-manual').map((d) => d.package.id), [video.package.id]);
+});
+
+test('渠道计数：各渠道包数，且垃圾桶包不计入（与 status=all 口径一致）', () => {
+  const counts = countChannelPackages([
+    packageDetail('job-v', 1),
+    packageDetail('job-v2', 1, 'ready', { contentType: 'note' }),
+    packageDetail('job-n2', 2, 'ready', { contentType: 'note' }),
+    packageDetail('job-t', 1, 'ready', { contentType: 'article' }),
+    packageDetail('job-trash', 1, 'ready', {
+      contentType: 'note',
+      state: 'trashed',
+      deletedAt: '2026-08-20T00:00:00.000Z',
+      purgeAt: '2026-09-20T00:00:00.000Z',
+    }),
+  ]);
+
+  assert.deepEqual(counts, { 'douyin-note': 2, 'toutiao-article': 1, 'video-manual': 1 });
+});
+
+test('状态计数：只数当前渠道，且是按任务计（一个包多任务会各算一次）', () => {
+  const noteReady = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
+  const noteFailed = packageDetail('job-n2', 1, 'failed', { contentType: 'note' });
+  const article = packageDetail('job-t', 1, 'ready', { contentType: 'article' });
+  // 一个图文包两个任务（抖音 + 小红书）：两个状态各记一次。
+  const multi = packageDetail('job-multi', 1, 'ready', { contentType: 'note' });
+  multi.tasks.push({ ...multi.tasks[0]!, id: 'multi-xiaohongshu', platform: 'xiaohongshu', status: 'scheduled' });
+
+  const counts = countStatusesInChannel([noteReady, noteFailed, article, multi], 'douyin-note');
+  assert.equal(counts.ready, 2);
+  assert.equal(counts.failed, 1);
+  assert.equal(counts.scheduled, 1);
+  assert.equal(counts.all, 3);
+  // 头条那篇不该被算进抖音图文。
+  assert.equal(countStatusesInChannel([noteReady, article], 'douyin-note').ready, 1);
+  assert.equal(countStatusesInChannel([noteReady, article], 'toutiao-article').ready, 1);
+});
+
+test('状态计数：垃圾桶只数桶里的包，资产异常只数不健康的包', () => {
+  const healthy = packageDetail('job-h', 1, 'ready', { contentType: 'note' });
+  const broken = packageDetail('job-b', 1, 'ready', { contentType: 'note', assetHealth: 'missing_images' });
+  const trashed = packageDetail('job-t', 1, 'ready', {
+    contentType: 'note',
+    state: 'trashed',
+    deletedAt: '2026-08-20T00:00:00.000Z',
+    purgeAt: '2026-09-20T00:00:00.000Z',
+  });
+
+  const counts = countStatusesInChannel([healthy, broken, trashed], 'douyin-note');
+  assert.equal(counts.broken, 1);
+  assert.equal(counts.trash, 1);
+  // 状态计数按**任务**计：被标资产异常的包其任务仍是 ready，所以 ready = 2。
+  assert.equal(counts.ready, 2);
+  // 垃圾桶里的包不再计入常规状态（与后端 `status=all` 只回 active 一致）。
+  assert.equal(counts.all, 2);
+});
+
+test('平台下拉：单平台渠道不给下拉，视频人工交付给四个平台', () => {
+  assert.deepEqual(channelPlatformOptions('douyin-note'), []);
+  assert.deepEqual(channelPlatformOptions('toutiao-article'), []);
+  assert.deepEqual(
+    channelPlatformOptions('video-manual').map((item) => item.id),
+    ['douyin', 'xiaohongshu', 'wechat_channels', 'bilibili'],
+  );
 });

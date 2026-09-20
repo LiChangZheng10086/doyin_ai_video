@@ -22,6 +22,10 @@ import { extractAiMessageText } from "./lib/ai-response.js";
 import { resolveJobVideo, resolveSourceVideo, VideoOutputError, type ResolvedVideoFile } from "./lib/video-output.js";
 import { PublishingStore } from "./lib/publishing-store.js";
 import { SauRunner } from "./lib/sau-runner.js";
+import { ToutiaoRunner } from "./lib/toutiao-runner.js";
+import { ToutiaoMediaService } from "./lib/toutiao-media.js";
+import { planToutiaoArticle } from "./lib/toutiao-article.js";
+import type { ArticlePlanner, ToutiaoCoverPreparer } from "./lib/publishing-service.js";
 import { PublishingCopyService } from "./lib/publishing-copy.js";
 import { PublishingAssetService } from "./lib/publishing-assets.js";
 import { PublishingService } from "./lib/publishing-service.js";
@@ -50,6 +54,17 @@ export interface ServerConfig {
   sauBaseDir?: string;
   /** 直接注入自动发布引擎（测试用）；省略时按 sauBinary/sauBaseDir 构造。 */
   sauRunner?: SauRunner;
+  /** 今日头条浏览器的显式路径（env: `TOUTIAO_BROWSER_BINARY`）；省略时按解析链找。 */
+  toutiaoBrowserBinary?: string;
+  /** 头条浏览器会话目录覆盖（env: `TOUTIAO_PROFILE_DIR`）；必须落在 storage 内。 */
+  toutiaoProfileDir?: string;
+  /** 是否允许退回系统 Chrome（默认不允许，见 `toutiao-browser.ts`）。 */
+  toutiaoAllowSystemChrome?: boolean;
+  /** 直接注入头条执行器与封面处理（测试用）。 */
+  toutiaoRunner?: ToutiaoRunner;
+  toutiaoMedia?: ToutiaoCoverPreparer;
+  /** 直接注入文章成文（测试用）；省略时用真实 AI 配置 + 本地兜底。 */
+  planArticle?: ArticlePlanner;
   runtimeBinDir?: string;
   hyperframesCliPath?: string;
   hyperframesNodeBinary?: string;
@@ -144,32 +159,59 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   const resolveSource = config.resolveSourceVideo ?? resolveSourceVideo;
 
   const publishingStore = new PublishingStore(storage);
-  const publishingCopy = new PublishingCopyService({
-    resolveAiConfig: async () => {
-      if (config.resolveAiConfig) return config.resolveAiConfig();
-      if (!aiApiKey) return null;
-      return {
-        provider: aiProvider,
-        model: aiModel,
-        apiKey: aiApiKey,
-        baseURL: aiBaseURL,
-      };
-    },
-  });
+  // AI 配置解析只有一份：文案服务与文章成文都从这里取（两处各写一份必然漂移，
+  // 表现是「文案用了新 Key、文章还在用旧的」）。
+  const resolvePublishingAiConfig = async () => {
+    if (config.resolveAiConfig) return config.resolveAiConfig();
+    if (!aiApiKey) return null;
+    return {
+      provider: aiProvider,
+      model: aiModel,
+      apiKey: aiApiKey,
+      baseURL: aiBaseURL,
+    };
+  };
+  const publishingCopy = new PublishingCopyService({ resolveAiConfig: resolvePublishingAiConfig });
   const publishingAssets = new PublishingAssetService({ storageRoot: config.storagePath });
+  // 素材库实例只建一份：素材路由与发布中心的「从素材库选图」必须看同一个索引，
+  // 各建一份虽然等价（实例无内存态），但会让「素材库在哪里」出现两个答案。
+  const assetStore = new AssetStore(storage);
   // 未配置 sauBinary 时仍构造实例：缺配置的报错发生在每条自动发布通路上，
   // 而不是让「发布中心整体不可用」（人工交付通路不受影响）。
   const sauRunner = config.sauRunner ?? new SauRunner({
     ...(config.sauBinary ? { sauBinary: config.sauBinary } : {}),
     ...(config.sauBaseDir ? { sauBaseDir: config.sauBaseDir } : {}),
   });
+  // 头条执行器同样「未配置也构造」：缺浏览器/缺登录态的报错发生在头条自动发布通路上，
+  // 不影响其余平台的交付与抖音图文自动发布。
+  const toutiaoRunner = config.toutiaoRunner ?? new ToutiaoRunner({
+    storageRoot: config.storagePath,
+    ...(config.toutiaoBrowserBinary ? { browserBinary: config.toutiaoBrowserBinary } : {}),
+    ...(config.toutiaoProfileDir ? { profileDir: config.toutiaoProfileDir } : {}),
+    ...(config.toutiaoAllowSystemChrome === undefined
+      ? {}
+      : { allowSystemChrome: config.toutiaoAllowSystemChrome }),
+  });
+  // 退出时尽力关掉头条登录会话用的浏览器（spec §4.3；避免留下持有 profile 的孤儿进程）。
+  toutiaoRunner.installExitCleanup();
   const publishingService = new PublishingService({
     storageRoot: config.storagePath,
     jobs,
     store: publishingStore,
     assets: publishingAssets,
     copy: publishingCopy,
+    library: assetStore,
     sau: sauRunner,
+    toutiao: toutiaoRunner,
+    // 封面裁剪用的 ffmpeg 必须走**配置里的那个**：打包后它是 `resources/bin/ffmpeg`
+    // （不在 PATH 上），直接用默认的 `"ffmpeg"` 会在安装包里失败、而开发机上是好的
+    // —— 正是 AGENTS.md 里那类「两套产物/两种环境」的事故。
+    toutiaoMedia: config.toutiaoMedia ?? new ToutiaoMediaService(
+      config.ffmpegBinary ? { ffmpegBinary: config.ffmpegBinary } : {},
+    ),
+    // 文章成文：与文案服务共用同一份 AI 配置解析；失败时 `planToutiaoArticle` 内部走本地兜底。
+    planArticle: config.planArticle
+      ?? ((context) => planToutiaoArticle(context, { resolveAiConfig: resolvePublishingAiConfig })),
     resolveVideo,
   });
   const checkPublishingDue = publishingService.checkDue.bind(publishingService);
@@ -216,7 +258,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   app.use(express.json({ limit: "2mb" }));
   registerLocalUserRoutes(app, { users: localUsers, sessions: localSessions });
-  registerAssetRoutes(app, { assets: new AssetStore(storage), limits: config.assetUploadLimits });
+  registerAssetRoutes(app, { assets: assetStore, limits: config.assetUploadLimits });
   registerLocalUserErrorBoundary(app);
   registerPublishingRoutes(app, { publishing, sessions: localSessions });
 

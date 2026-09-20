@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { ToutiaoLoginPanel } from '../components/ToutiaoLoginPanel';
 import { apiClient } from '../services/api';
 import { parseOutputLimit, toOutputLimitForm, type OutputLimitMode } from '../utils/ai-output-limit';
 import { settingsSections } from '../utils/settingsSections';
@@ -75,6 +76,7 @@ type SettingsSection = (typeof settingsSections)[number]['id'];
 const settingsSectionIcons: Record<SettingsSection, typeof KeyRound> = {
   models: KeyRound,
   douyin: QrCode,
+  toutiao: QrCode,
   asr: Mic,
   storage: HardDrive,
   advanced: SlidersHorizontal,
@@ -354,6 +356,7 @@ export function SettingsPage() {
             />
           )}
           {activeSection === 'douyin' && <DouyinSection />}
+          {activeSection === 'toutiao' && <ToutiaoSection />}
           {activeSection === 'asr' && <AsrSection />}
           {activeSection === 'storage' && <StorageSection />}
           {activeSection === 'advanced' && <AdvancedSection />}
@@ -931,6 +934,27 @@ function ManualCookieInput({ onSaved, disabled }: { onSaved: () => void; disable
 }
 
 // ─── 抖音扫码登录 ──────────────────────────────────────────────
+
+/**
+ * 今日头条（头条号）登录区。
+ *
+ * 头条号**没有可手工粘贴的凭据**（登录态是浏览器 profile），所以这里只有一条路：应用内扫码。
+ * 与抖音那套「打开浏览器窗口扫码」不同 —— 后端用内置无头浏览器取二维码，界面直接显示。
+ */
+function ToutiaoSection() {
+  return (
+    <div className="space-y-4">
+      <SectionHeader
+        icon={QrCode}
+        title="今日头条"
+        description="头条号登录态保存在本机，用今日头条 App 扫码一次即可（不需要重启应用）。"
+      />
+      <div className="rounded-xl border border-tech-border bg-white p-4">
+        <ToutiaoLoginPanel />
+      </div>
+    </div>
+  );
+}
 
 function DouyinSection() {
   const [status, setStatus] = useState<{ hasCookie: boolean; hasAuth: boolean; path: string; status: string } | null>(null);

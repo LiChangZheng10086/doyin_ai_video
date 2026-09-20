@@ -30,6 +30,7 @@ import {
   PublishingAssetError,
   PublishingAssetService,
   collectSceneSnapshots,
+  type ArticlePackageAssetInput,
   type NotePackageAssetInput,
   type PackageAssetInput,
 } from "./publishing-assets.js";
@@ -1252,7 +1253,7 @@ test("packages note snapshots in order with an ordered image manifest hash", asy
 
   assert.doesNotMatch(JSON.stringify(manifest), /api.?key|cookie|password|pin(hash|salt)?|secret|token/iu);
   assert.doesNotMatch(files.join("\n"), /api.?key|cookie|password|pin|secret|token/iu);
-  assert.deepEqual(await readdir(path.join(storageRoot, "output", "publishing", "job-1")), ["v1-package-1"]);
+  assert.deepEqual(await publishingEntries(storageRoot), ["v1-package-1"]);
 });
 
 test("changing any image or reordering the list changes the image manifest hash", async () => {
@@ -1312,7 +1313,7 @@ test("keeps a note package usable with missing_images and an explicit warning wh
     assert.equal(await service.verifyPackageImages(notePackageRecord(result)), "missing_images");
   }
 
-  assert.deepEqual(await readdir(path.join(storageRoot, "output", "publishing", "job-1")), [
+  assert.deepEqual(await publishingEntries(storageRoot), [
     "v1-package-1",
     "v2-package-b",
   ]);
@@ -1372,7 +1373,7 @@ test("rejects note packing above the 35 image limit before writing anything", as
     return true;
   });
 
-  assert.deepEqual(await readdir(path.join(storageRoot, "output", "publishing", "job-1")).catch(() => []), []);
+  assert.deepEqual(await publishingEntries(storageRoot).catch(() => []), []);
 });
 
 test("keeps the video package manifest byte-identical and reports contentType video without note parameters", async () => {
@@ -1462,3 +1463,332 @@ test("keeps the video package manifest byte-identical and reports contentType vi
   assert.equal(sha256Of(manifestBytes), "469ba17f14e73a7a3cac710572ebdf6eb44adccca7e100b2e00750f431bb8722");
   assert.deepEqual(await readFile(result.videoPath), await readFile(input.sourceVideoPath));
 });
+
+// ─── 微信公众号文章包（article）──────────────────────────────────────────────
+//
+// 与 note 包的关键差别：文章包的**正文是渲染好的 HTML**（走 `article.html`），
+// 配图是**正文插图**而不是内容主体，所以「一张图都没有」是合法状态，
+// 但「正文里有占位符却没有对应图片」是**必然发不出去**的包，必须在打包阶段拦掉。
+
+const ARTICLE_HTML = [
+  '<section style="margin:0;">',
+  '<h2 style="font-size:19px;">一、前三秒</h2>',
+  '<p style="margin:0;">观众划走只需要 0.8 秒。</p>',
+  '<img src="{{wechat-image-1}}" style="max-width:100%;">',
+  "</section>",
+].join("\n");
+
+function articleInput(overrides: Partial<ArticlePackageAssetInput> = {}): ArticlePackageAssetInput {
+  return {
+    packageId: "package-1",
+    sourceJobId: "job-1",
+    version: 1,
+    articleHtml: ARTICLE_HTML,
+    articleCopy: { title: "为什么没人看完", digest: "前三秒决定生死。", author: "抖创工坊" },
+    title: "发布包标题",
+    tasks: [task("task-wechat", "wechat_mp")],
+    actor: ACTOR,
+    ...overrides,
+  };
+}
+
+async function articleFixture() {
+  const storageRoot = await realpath(await mkdtemp(path.join(tmpdir(), "publishing-articles-")));
+  const sourceDirectory = path.join(storageRoot, "output", "videos", "job-1");
+  await mkdir(sourceDirectory, { recursive: true });
+  // 正文图这里用「已经被 wechat-media 压过」的产物形态（jpg、有序）：
+  // 打包层只负责复制与哈希，不负责转码（转码在 wechat-media.ts，Task 4）。
+  const body01 = path.join(sourceDirectory, "body-01.jpg");
+  const body02 = path.join(sourceDirectory, "body-02.jpg");
+  const cover = path.join(sourceDirectory, "wechat-cover.jpg");
+  await writeFile(body01, frameBytes(1));
+  await writeFile(body02, frameBytes(2));
+  await writeFile(cover, frameBytes(3));
+  return { storageRoot, body01, body02, cover, input: articleInput() };
+}
+
+function articleService(storageRoot: string): PublishingAssetService {
+  return new PublishingAssetService({
+    storageRoot,
+    now: () => NOW,
+    runCommand: async () => {
+      throw new Error("文章打包不应调用任何外部命令（转码发生在 wechat-media）");
+    },
+  });
+}
+
+/** 发布目录内容；目录不存在时返回空数组（创建中途失败时它可能压根没被建出来）。 */
+async function publishingEntries(storageRoot: string): Promise<string[]> {
+  try {
+    return (await readdir(path.join(storageRoot, "output", "publishing", "job-1"))).sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+test("packages an article package with html, ordered images and cover", async () => {
+  const { storageRoot, body01, body02, cover } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  const result = await service.createArticlePackageAssets({
+    ...articleInput(),
+    sourceImagePaths: [body01, body02],
+    sourceCoverPath: cover,
+  });
+  const files = await listFiles(result.packagePath);
+  const manifest = JSON.parse(await readFile(path.join(result.packagePath, "manifest.json"), "utf8")) as {
+    contentType: string;
+    article: { title: string; digest?: string; author?: string; htmlSha256: string; path: string };
+    images: { paths: string[]; count: number; size: number; manifestSha256: string };
+  };
+
+  assert.equal(result.contentType, "article");
+  assert.equal(result.assetHealth, "healthy");
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(result.imagePaths, ["images/01.jpg", "images/02.jpg"]);
+  assert.equal(result.coverPath, path.join(result.packagePath, "cover.jpg"));
+  assert.equal(result.articlePath, path.join(result.packagePath, "article.html"));
+
+  // 正文 HTML 逐字节落盘，且哈希是包内真实字节的哈希（可在包外独立重算）。
+  const htmlBytes = await readFile(result.articlePath);
+  assert.deepEqual(htmlBytes, Buffer.from(ARTICLE_HTML));
+  assert.equal(result.htmlSha256, sha256Of(htmlBytes));
+  assert.match(result.htmlSha256, /^[0-9a-f]{64}$/u);
+
+  // 顺序即传入顺序，图片内容可逐字节核对。
+  assert.deepEqual(await readFile(path.join(result.packagePath, "images", "01.jpg")), frameBytes(1));
+  assert.deepEqual(await readFile(path.join(result.packagePath, "images", "02.jpg")), frameBytes(2));
+  assert.deepEqual(await readFile(path.join(result.packagePath, "cover.jpg")), frameBytes(3));
+
+  const packageHashes = await Promise.all(
+    result.imagePaths.map(async (relativePath) => sha256Of(await readFile(path.join(result.packagePath, relativePath)))),
+  );
+  assert.equal(result.imageManifestSha256, manifestHashOf(packageHashes));
+
+  assert.equal(manifest.contentType, "article");
+  assert.equal(manifest.article.title, "为什么没人看完");
+  assert.equal(manifest.article.digest, "前三秒决定生死。");
+  assert.equal(manifest.article.author, "抖创工坊");
+  assert.equal(manifest.article.htmlSha256, result.htmlSha256);
+  assert.deepEqual(manifest.images.paths, result.imagePaths);
+
+  // 文章包不含成片；封面与正文图都在。
+  assert.equal(files.includes("video.mp4"), false);
+  assert.equal(files.includes("article.html"), true);
+  assert.equal(files.includes("cover.jpg"), true);
+  assert.doesNotMatch(JSON.stringify(manifest), /api.?key|cookie|password|pin(hash|salt)?|secret|token/iu);
+  assert.deepEqual(await publishingEntries(storageRoot), ["v1-package-1"]);
+});
+
+test("keeps the article package usable with missing_cover when no cover is given", async () => {
+  const { storageRoot, body01 } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  // 封面必填是**提交**阶段的约束：打包仍然把包自包含地建出来（与视频缺封面同一口径）。
+  const result = await service.createArticlePackageAssets({
+    ...articleInput(),
+    sourceImagePaths: [body01],
+  });
+
+  assert.equal(result.assetHealth, "missing_cover");
+  assert.equal(result.coverPath, undefined);
+  assert.equal((await listFiles(result.packagePath)).includes("cover.jpg"), false);
+  assert.deepEqual(result.imagePaths, ["images/01.jpg"]);
+});
+
+test("allows an article with no images when the html has no placeholders", async () => {
+  const { storageRoot } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  // 正文插图是可选的（文章的内容是文字），所以既不该报错也不该标 missing_images ——
+  // 与 note 包不同：图文包的图片就是内容本身。
+  const result = await service.createArticlePackageAssets({
+    ...articleInput({ articleHtml: "<section><p>纯文字正文。</p></section>" }),
+  });
+
+  assert.equal(result.assetHealth, "missing_cover");
+  assert.deepEqual(result.imagePaths, []);
+  assert.deepEqual(result.warnings, []);
+});
+
+test("rejects an article whose html expects images that were not provided", async () => {
+  const { storageRoot } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  // ARTICLE_HTML 里有 {{wechat-image-1}}：没有图就**永远提交不了**，
+  // 与其在提交时报错，不如在这里就不让这种包产生。
+  await assert.rejects(
+    () => service.createArticlePackageAssets(articleInput()),
+    (error: unknown) => {
+      assert.ok(error instanceof PublishingAssetError);
+      assert.equal(error.code, "publish_images_missing");
+      return true;
+    },
+  );
+  // 失败不得留下包目录或临时目录。
+  assert.deepEqual(await publishingEntries(storageRoot), []);
+});
+
+test("rejects an article when images do not cover every placeholder slot", async () => {
+  const { storageRoot, body01 } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  // 正文要两张（slot 1 与 2），只给一张 → 同样提交不了。
+  const html = `${ARTICLE_HTML}\n<img src="{{wechat-image-2}}" style="max-width:100%;">`;
+  await assert.rejects(
+    () => service.createArticlePackageAssets({
+      ...articleInput({ articleHtml: html }),
+      sourceImagePaths: [body01],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof PublishingAssetError);
+      assert.equal(error.code, "publish_images_missing");
+      return true;
+    },
+  );
+});
+
+test("reordering article images changes the manifest hash and the packaged order", async () => {
+  const { storageRoot, body01, body02 } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  const original = await service.createArticlePackageAssets({
+    ...articleInput(),
+    sourceImagePaths: [body01, body02],
+  });
+  // 换包号/版本时必须同时换 tasks 的 packageId（`validateProjectionTasks` 校验任务归属）。
+  const reordered = await service.createArticlePackageAssets({
+    ...articleInput({
+      packageId: "package-b",
+      version: 2,
+      tasks: [task("task-package-b", "wechat_mp", "package-b")],
+    }),
+    sourceImagePaths: [body02, body01],
+  });
+
+  assert.notEqual(original.imageManifestSha256, reordered.imageManifestSha256);
+  // 同样两张图，仅调换顺序：包内 01 换成原来的第二张。
+  assert.deepEqual(await readFile(path.join(reordered.packagePath, "images", "01.jpg")), frameBytes(2));
+  assert.deepEqual(await readFile(path.join(reordered.packagePath, "images", "02.jpg")), frameBytes(1));
+});
+
+test("rejects an unreadable article image without leaving a temp directory", async () => {
+  const { storageRoot, body01 } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  await assert.rejects(
+    () => service.createArticlePackageAssets({
+      ...articleInput(),
+      sourceImagePaths: [body01, path.join(storageRoot, "output", "videos", "job-1", "not-there.jpg")],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof PublishingAssetError);
+      assert.equal(error.code, "publish_image_unreadable");
+      return true;
+    },
+  );
+  assert.deepEqual(await publishingEntries(storageRoot), []);
+});
+
+// ─── 文章包的资产体检与 article.html 读取（本轮新增的分支）────────────────────
+
+/**
+ * article 包**不能走视频分支**：它没有 `video.mp4`，走视频分支会一律判成 `broken_video`。
+ * 本模块新增的 article 分支口径：正文图清单（有图才查）→ 封面（头条必填）→ healthy。
+ *
+ * 正文 HTML 的完整性**刻意不在这里查**：那是「提交那一刻」的事，由服务层比对
+ * `articleCopy.htmlSha256`（那里失败还能说出人话，这里只会变成一个健康值）。
+ */
+test("article 包的体检走 article 分支：有封面 healthy", async () => {
+  const { storageRoot, cover } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  // 用**按内容类型分派**的入口；`verifyPackageVideo` / `verifyPackageImages` 是「只按那一种口径查」
+  // 的专用入口（`verifyPackageImages` 对 0 张图直接判 missing_images，那是图文包的口径，
+  // 而文章包 0 张正文图是合法的）。
+  const withCover = await service.createArticlePackageAssets({
+    ...articleInput({ articleHtml: "<section><p>纯文字正文。</p></section>" }),
+    sourceCoverPath: cover,
+  });
+  assert.equal(await service.verifyPackageHealth(articlePackageRecord(withCover)), "healthy");
+});
+
+test("article 包缺封面时报 missing_cover（不是 broken_video）", async () => {
+  // 单独一个夹具：包目录名带 packageId + version，同一个 storage 里不能建两次同一个包。
+  const { storageRoot } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  const withoutCover = await service.createArticlePackageAssets({
+    ...articleInput({ articleHtml: "<section><p>纯文字正文。</p></section>" }),
+  });
+  // 走视频分支的话这里会是 broken_video —— 那正是本次新增分支要避免的误判。
+  assert.equal(await service.verifyPackageHealth(articlePackageRecord(withoutCover)), "missing_cover");
+});
+
+test("article 包声明了正文图时仍会校验图片清单；图片被改动 → missing_images", async () => {
+  const { storageRoot, body01, cover } = await articleFixture();
+  const service = articleService(storageRoot);
+
+  // ARTICLE_HTML 里有 {{wechat-image-1}}，所以这里必须给一张图。
+  const result = await service.createArticlePackageAssets({
+    ...articleInput(),
+    sourceImagePaths: [body01],
+    sourceCoverPath: cover,
+  });
+  const record = articlePackageRecord(result);
+  assert.equal(await service.verifyPackageHealth(record), "healthy");
+
+  // 改一个字节：清单哈希对不上 → 必须报 missing_images（article 包也不能豁免完整性校验）。
+  await writeFile(path.join(result.packagePath, "images", "01.jpg"), frameBytes(9));
+  assert.equal(await service.verifyPackageHealth(record), "missing_images");
+});
+
+test("readPackageArticle 读回包内 article.html 的字节；文件被删掉时返回 null", async () => {
+  const { storageRoot, cover } = await articleFixture();
+  const service = articleService(storageRoot);
+  const html = "<section><p>纯文字正文。</p></section>";
+
+  const result = await service.createArticlePackageAssets({
+    ...articleInput({ articleHtml: html }),
+    sourceCoverPath: cover,
+  });
+  const record = articlePackageRecord(result);
+
+  const bytes = await service.readPackageArticle(record);
+  assert.equal(bytes?.toString("utf8"), html);
+  // 与封面同一套纪律：包路径必须与记录一致，不一致直接抛错（路由层映射成 422），
+  // **不是**静默返回 null —— 「按记录里的路径直接读」正是要防的那件事。
+  await assert.rejects(
+    () => service.readPackageArticle({ ...record, packagePath: `${record.packagePath}-evil` }),
+    (error: unknown) => error instanceof PublishingAssetError,
+  );
+
+  await rm(path.join(result.packagePath, "article.html"), { force: true });
+  assert.equal(await service.readPackageArticle(record), null);
+});
+
+/** article 包记录（`video*` 字段按 note 包口径承载图片清单哈希）。 */
+function articlePackageRecord(
+  result: Awaited<ReturnType<PublishingAssetService["createArticlePackageAssets"]>>,
+): DeliveryPackage {
+  return {
+    id: "package-1",
+    sourceJobId: "job-1",
+    version: 1,
+    state: "active",
+    title: "发布包标题",
+    packagePath: result.packagePath,
+    ...(result.coverPath ? { coverPath: result.coverPath } : {}),
+    videoSha256: result.imageManifestSha256,
+    videoSize: result.imageSize,
+    videoMethod: "copy",
+    assetHealth: result.assetHealth,
+    contentType: "article",
+    imagePaths: [...result.imagePaths],
+    articleCopy: { title: "为什么没人看完", htmlSha256: result.htmlSha256 },
+    createdBy: ACTOR,
+    createdAt: NOW.toISOString(),
+    updatedAt: NOW.toISOString(),
+  };
+}

@@ -25,6 +25,8 @@ import type { PublishPlatform, PublishTask, PublishingListFilters, PublishingLis
 import {
   formatPublishingCopy,
   formatDueNotification,
+  getAutoPublishConfirmLabel,
+  publishingPlatformLabel,
   getPublishingActionIds,
   getPublishingAutoPublishBlocker,
   getPublishingAutoPublishHint,
@@ -33,8 +35,16 @@ import {
   PUBLISH_FILTERS,
   PUBLISH_STATUS_LABELS,
   PUBLISHING_PLATFORMS,
+  PUBLISH_CHANNELS,
+  channelEmptyHint,
+  channelPlatformOptions,
+  countChannelPackages,
+  countStatusesInChannel,
+  findPublishChannel,
+  type PublishChannelId,
 } from '../utils/publishing';
 import { PublishingActionDialog } from '../features/publishing/PublishingActionDialog';
+import { PublishingChannelTabs } from '../components/PublishingChannelTabs';
 
 interface ActionDialogConfig {
   type: 'confirm' | 'prompt' | 'edit-content' | 'withdraw';
@@ -53,6 +63,13 @@ export function PublishingPage() {
   const [params, setParams] = useSearchParams();
   const requestedStatus = params.get('status') as PublishingListStatus | null;
   const status = PUBLISH_FILTERS.some((item) => item.id === requestedStatus) ? requestedStatus! : 'action';
+  // 一级「渠道」：与状态页签一样持久化在 URL 里（刷新/返回/分享链接都能还原同一视图）。
+  // 非法值回落到缺省渠道，而不是抛错 —— 旧书签不该把页面打不开。
+  const requestedChannel = params.get('channel');
+  const channelId: PublishChannelId = PUBLISH_CHANNELS.some((item) => item.id === requestedChannel)
+    ? (requestedChannel as PublishChannelId)
+    : 'douyin-note';
+  const channel = findPublishChannel(channelId);
   const [platform, setPlatform] = useState<PublishPlatform | ''>('');
   const [sourceJobId, setSourceJobId] = useState('');
   const [version, setVersion] = useState('');
@@ -60,6 +77,14 @@ export function PublishingPage() {
   const [search, setSearch] = useState('');
   const [showMoreFilters, setShowMoreFilters] = useState(false);
   const [packages, setPackages] = useState<PublishingPackageDetail[]>([]);
+  /** 渠道页签的数字（来自不带状态筛选的那次请求）。 */
+  const [channelCounts, setChannelCounts] = useState<Record<PublishChannelId, number>>({
+    'douyin-note': 0,
+    'toutiao-article': 0,
+    'video-manual': 0,
+  });
+  /** 同一份「不带状态筛选」的结果，用来算当前渠道的状态页签计数。 */
+  const [allForCounts, setAllForCounts] = useState<PublishingPackageDetail[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState(false);
@@ -93,14 +118,41 @@ export function PublishingPage() {
     });
   }, []);
 
+  /**
+   * 改视图只动该动的参数：此前状态页签用 `setParams({status})` 整体替换 query，
+   * 加了渠道之后那会把 `?channel=` 一起冲掉（点一下状态就跳回抖音图文）。
+   * 缺省值不写进 URL，链接保持干净。
+   */
+  const setView = useCallback((next: { channel?: PublishChannelId; status?: PublishingListStatus }) => {
+    const merged = new URLSearchParams(params);
+    if (next.channel !== undefined) merged.set('channel', next.channel);
+    if (next.status !== undefined) merged.set('status', next.status);
+    if (merged.get('channel') === 'douyin-note') merged.delete('channel');
+    if (merged.get('status') === 'action') merged.delete('status');
+    setParams(merged);
+  }, [params, setParams]);
+
   const filters = useMemo<PublishingListFilters>(() => ({
     status,
+    // 渠道就是内容类型（见 spec）：服务端按它过滤，状态语义仍由服务端定义。
+    contentType: channel.contentType,
     ...(platform ? { platform } : {}),
     ...(sourceJobId.trim() ? { sourceJobId: sourceJobId.trim() } : {}),
     ...(Number(version) > 0 ? { version: Number(version) } : {}),
     ...(createdBy.trim() ? { createdBy: createdBy.trim() } : {}),
     ...(search.trim() ? { search: search.trim() } : {}),
-  }), [createdBy, platform, search, sourceJobId, status, version]);
+  }), [channel.contentType, createdBy, platform, search, sourceJobId, status, version]);
+
+  // 计数用的那一次请求**不带 status、不带渠道**：否则「失败」在「待处理」视图里永远显示 0
+  // （这就是改动前那版「局部计数」的毛病）。
+  const countFilters = useMemo<PublishingListFilters>(() => ({
+    status: 'all',
+    ...(platform ? { platform } : {}),
+    ...(sourceJobId.trim() ? { sourceJobId: sourceJobId.trim() } : {}),
+    ...(Number(version) > 0 ? { version: Number(version) } : {}),
+    ...(createdBy.trim() ? { createdBy: createdBy.trim() } : {}),
+    ...(search.trim() ? { search: search.trim() } : {}),
+  }), [createdBy, platform, search, sourceJobId, version]);
 
   const load = useCallback(async () => {
     const sequence = ++loadSequence.current;
@@ -111,14 +163,21 @@ export function PublishingPage() {
     setLoading(true);
     setError('');
     try {
-      const result = await apiClient.listPublishingPackages(filters);
-      if (sequence === loadSequence.current) setPackages(result);
+      const [result, all] = await Promise.all([
+        apiClient.listPublishingPackages(filters),
+        apiClient.listPublishingPackages(countFilters),
+      ]);
+      if (sequence === loadSequence.current) {
+        setPackages(result);
+        setChannelCounts(countChannelPackages(all));
+        setAllForCounts(all);
+      }
     } catch (requestError) {
       if (sequence === loadSequence.current) setError(parseApiError(requestError).message);
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
-  }, [currentUser, filters]);
+  }, [countFilters, currentUser, filters]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -217,6 +276,21 @@ export function PublishingPage() {
       await openPackagePreview(detail.package.id, 'preview', '');
       return;
     }
+    if (action === 'download-article') {
+      // 降级通路：把包内 article.html 存成本地文件（用户可粘进头条编辑器）。
+      // 走带会话的 blob 请求 —— `<a href>` 不会带 `X-Local-Session` 头。
+      const blob = await run(() => apiClient.getPublishingArticleHtml(detail.package.id), '');
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `article-v${detail.package.version}.html`;
+        anchor.click();
+        URL.revokeObjectURL(url);
+      }
+      return;
+    }
+
     if (action === 'auto-publish') {
       const blocker = getPublishingAutoPublishBlocker(detail, task);
       if (blocker) {
@@ -312,9 +386,13 @@ export function PublishingPage() {
     const { preview, taskId } = publishPreview;
     if (!preview) return;
     setPublishPreview((current) => ({ ...current, busy: true }));
+    // 成功提示也要按平台取文案（头条任务说「抖音后台」是误导）。
+    const platform = preview.tasks.find((item) => item.id === taskId)?.platform
+      ?? preview.tasks[0]?.platform
+      ?? 'douyin';
     const task = await run(
       () => apiClient.autoPublishPublishingTask(taskId, preview.previewRevision),
-      '已提交，请在抖音后台确认后点「标记已发布」',
+      `已提交，请在${publishingPlatformLabel(platform)}后台确认后点「标记已发布」`,
     );
     setPublishPreview({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '' });
     // 提交后落在 awaiting_code 时，直接把验证码入口摆出来（图文通路当前不触发，见 spec §7）
@@ -332,6 +410,11 @@ export function PublishingPage() {
   };
 
   const groups = groupPublishingPackages(packages);
+  const statusCounts = useMemo(() => countStatusesInChannel(allForCounts, channelId), [allForCounts, channelId]);
+  const platformOptions = useMemo(() => channelPlatformOptions(channelId), [channelId]);
+  const hasExtraFilters = Boolean(
+    platform || sourceJobId.trim() || version.trim() || createdBy.trim() || search.trim(),
+  );
 
   // ── Mobile bottom bar: primary actions for expanded packages ──
   const mobileBarActions = useMemo(() => {
@@ -371,14 +454,22 @@ export function PublishingPage() {
         <div className="border-y border-tech-border py-16 text-center"><p className="text-lg font-semibold text-tech-text">本机操作者未就绪</p><p className="mt-2 text-sm text-tech-muted">请重试后再查看发布任务。</p></div>
       ) : (
         <>
-          {/* Status filter chips with counts */}
+          {/* 一级「渠道」：抖音图文 / 今日头条文章 / 视频人工交付（三者的提交方式完全不同） */}
+          <PublishingChannelTabs
+            active={channelId}
+            counts={channelCounts}
+            onSelect={(next) => {
+              // 换渠道时清掉平台筛选：单平台渠道没有下拉，留着别的平台的筛选会把列表筛空。
+              setPlatform('');
+              setView({ channel: next });
+            }}
+          />
+          {/* Status filter chips with counts（计数取自不带状态筛选的那次请求，不再只数当前视图） */}
           <div className="mb-3 flex gap-2 overflow-x-auto border-b border-tech-border pb-3">
             {PUBLISH_FILTERS.map((item) => {
-              const count = item.id === 'all'
-                ? packages.length
-                : packages.reduce((n, pkg) => n + pkg.tasks.filter((t) => t.status === item.id).length, 0);
+              const count = statusCounts[item.id];
               return (
-                <button key={item.id} type="button" onClick={() => setParams(item.id === 'action' ? {} : { status: item.id })} className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${status === item.id ? 'bg-blue-50 text-tech-blue' : 'text-tech-muted hover:bg-tech-surface'}`}>
+                <button key={item.id} type="button" onClick={() => setView({ status: item.id })} className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${status === item.id ? 'bg-blue-50 text-tech-blue' : 'text-tech-muted hover:bg-tech-surface'}`}>
                   {item.label}
                   {count > 0 && <span className="ml-1.5 text-xs opacity-70">{count}</span>}
                 </button>
@@ -388,7 +479,10 @@ export function PublishingPage() {
           {/* Primary filters: always visible */}
           <div className="mb-3 grid gap-3 md:grid-cols-2">
             <FilterInput icon={<Search size={15} />} value={search} onChange={setSearch} placeholder="搜索标题/文案" />
-            <select value={platform} onChange={(event) => setPlatform(event.target.value as PublishPlatform | '')} className="rounded-lg border border-tech-border bg-tech-surface px-3 py-2 text-sm text-tech-text"><option value="">全部平台</option>{PUBLISHING_PLATFORMS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
+            {/* 单平台渠道（抖音图文 / 今日头条文章）不给平台下拉：只有一条通路，给了只会制造矛盾操作 */}
+            {platformOptions.length > 0 && (
+              <select value={platform} onChange={(event) => setPlatform(event.target.value as PublishPlatform | '')} className="rounded-lg border border-tech-border bg-tech-surface px-3 py-2 text-sm text-tech-text"><option value="">全部平台</option>{platformOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
+            )}
           </div>
           {/* More filters toggle */}
           <div className="mb-3">
@@ -413,7 +507,7 @@ export function PublishingPage() {
 
           {error && <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</p>}
           {feedback && <p className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700"><Check size={16} />{feedback}</p>}
-          {loading ? <div className="flex justify-center py-20"><Loader2 className="animate-spin text-tech-blue" size={32} /></div> : groups.length === 0 ? <div className="border-y border-tech-border py-16 text-center"><p className="font-semibold text-tech-text">没有符合条件的发布包</p><p className="mt-2 text-sm text-tech-muted">可从已生成成片的作品详情加入发布中心。</p></div> : (
+          {loading ? <div className="flex justify-center py-20"><Loader2 className="animate-spin text-tech-blue" size={32} /></div> : groups.length === 0 ? <div className="border-y border-tech-border py-16 text-center"><p className="font-semibold text-tech-text">{hasExtraFilters ? '没有符合条件的发布包' : `${channel.label}里还没有发布包`}</p><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-tech-muted">{hasExtraFilters ? '换个筛选条件，或点「清空筛选」重来。' : channelEmptyHint(channelId)}</p></div> : (
             <div className="space-y-6 pb-20 md:pb-0">
               {groups.map((group) => <section key={group.sourceJobId} className="overflow-hidden rounded-lg border border-tech-border bg-tech-surface"><header className="flex flex-col gap-1 border-b border-tech-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-tech-text">{group.title}</h2></div><span className="text-sm text-tech-muted">{group.versions.length} 个版本</span></header><div className="divide-y divide-tech-border">{group.versions.map((detail) => <PackageRow key={detail.package.id} detail={detail} sourceJobId={group.sourceJobId} role={currentUser.role} expanded={expanded.has(detail.package.id)} busy={busyAction} onToggle={() => setExpanded((value) => { const next = new Set(value); next.has(detail.package.id) ? next.delete(detail.package.id) : next.add(detail.package.id); return next; })} onAction={handleTaskAction} />)}</div></section>)}
             </div>
@@ -471,7 +565,12 @@ export function PublishingPage() {
         preview={publishPreview.preview}
         busy={publishPreview.busy}
         videoUrl={publishPreview.videoUrl}
-        confirmLabel="确认发布到抖音"
+        confirmLabel={getAutoPublishConfirmLabel(
+          // 按**这次要提交的那个任务**的平台取文案：头条文章任务不该显示「确认发布到抖音」。
+          publishPreview.preview?.tasks.find((task) => task.id === publishPreview.taskId)?.platform
+            ?? publishPreview.preview?.tasks[0]?.platform
+            ?? 'douyin',
+        )}
         onClose={() => setPublishPreview({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '' })}
         onConfirm={publishPreview.mode === 'publish' ? () => void confirmPublish() : undefined}
       />
@@ -507,7 +606,7 @@ function CoverThumbnail({ packageId, title, hasCover }: { packageId: string; tit
 function TaskRow({ detail, task, role, busy, onAction }: { detail: PublishingPackageDetail; task: PublishTask; role: 'admin' | 'publisher'; busy: boolean; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const policy = PUBLISHING_PLATFORMS.find((item) => item.id === task.platform)!;
   const actions = getPublishingActionIds(detail, task, role);
-  const labels: Record<string, string> = { 'copy-title': '复制标题', 'copy-description': '复制正文', 'copy-hashtags': '复制标签', 'copy-full': '复制全部', 'show-in-finder': 'Finder', 'open-platform': '打开平台', 'edit-content': '编辑文案', schedule: '修改排期', 'mark-published': '标记已发布', 'record-failure': '记录失败', cancel: '取消任务', restore: '恢复任务', 'create-version': '创建新版本', withdraw: '撤回本地状态', 'trash-package': '删除发布包', 'restore-package': '恢复发布包', 'auto-publish': '发布图文到抖音', 'submit-code': '提交验证码', preview: '预览' };
+  const labels: Record<string, string> = { 'copy-title': '复制标题', 'copy-description': '复制正文', 'copy-hashtags': '复制标签', 'copy-full': '复制全部', 'show-in-finder': 'Finder', 'open-platform': '打开平台', 'edit-content': '编辑文案', schedule: '修改排期', 'mark-published': '标记已发布', 'record-failure': '记录失败', cancel: '取消任务', restore: '恢复任务', 'create-version': '创建新版本', withdraw: '撤回本地状态', 'trash-package': '删除发布包', 'restore-package': '恢复发布包', 'auto-publish': task.platform === 'toutiao' ? '提交到头条号' : '发布图文到抖音', 'submit-code': '提交验证码', preview: '预览', 'download-article': '下载文章 HTML' };
   return <div className="rounded-lg border border-tech-border bg-tech-surface p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-tech-text">{policy.label}</span><StatusBadge task={task} /><span className="text-xs text-tech-muted">版本 {task.contentRevision} · {task.copySource === 'user_edited' ? '已编辑' : task.copySource === 'ai' ? 'AI' : '洗稿回退'}</span></div><p className="mt-2 font-medium text-tech-text">{task.title}</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-tech-muted">{task.description}</p><p className="mt-2 text-sm text-tech-purple">{formatPublishingCopy(task).hashtags}</p>{task.scheduledAt && <p className="mt-2 text-xs text-tech-muted">计划 {new Date(task.scheduledAt).toLocaleString('zh-CN')}</p>}{task.publishedAt && <p className="mt-1 text-xs text-emerald-600">发布于 {new Date(task.publishedAt).toLocaleString('zh-CN')}</p>}{task.lastError && <p className="mt-2 text-sm text-red-600">{task.lastError}</p>}<AutoPublishHint task={task} /></div><div className="flex max-w-md flex-wrap gap-2 lg:justify-end">{actions.map((action) => <button key={action} type="button" title={labels[action]} disabled={busy} onClick={() => void onAction(detail, task, action)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${action === 'mark-published' || action === 'open-platform' || action === 'auto-publish' ? 'border-tech-blue bg-blue-50 text-tech-blue' : action === 'trash-package' || action === 'withdraw' ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-tech-border text-tech-muted hover:bg-tech-bg hover:text-tech-text'}`}>{action.startsWith('copy-') ? <Clipboard size={14} aria-label={labels[action]} /> : action === 'show-in-finder' ? <FolderOpen size={14} aria-label={labels[action]} /> : action === 'open-platform' ? <ExternalLink size={14} aria-label={labels[action]} /> : action === 'trash-package' ? <Trash2 size={14} aria-label={labels[action]} /> : labels[action]}</button>)}</div></div></div>;
 }
 

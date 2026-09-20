@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, Send } from 'lucide-react';
+import { Download, FileText, Images, Send } from 'lucide-react';
 import type { HyperframesVideoOutput } from '../../../types/index';
 
 export interface VideoArtifactProps {
@@ -12,6 +12,10 @@ export interface VideoArtifactProps {
   streamError: boolean;
   publishError: string;
   onOpenPublishing: () => void;
+  /** 图文包入口：与「加入发布中心」（视频包）并列，图片可来自自动静帧或素材库。 */
+  onOpenNotePublishing: () => void;
+  /** 头条文章包入口：与图文包并列，封面必填（会自动裁成 16:9）。 */
+  onOpenToutiaoPublishing: () => void;
   onVideoError: () => void;
 }
 
@@ -23,6 +27,8 @@ export function VideoArtifact({
   streamError,
   publishError,
   onOpenPublishing,
+  onOpenNotePublishing,
+  onOpenToutiaoPublishing,
   onVideoError,
 }: VideoArtifactProps) {
   return (
@@ -40,6 +46,22 @@ export function VideoArtifact({
           >
             <Send size={17} />
             加入发布中心
+          </button>
+          <button
+            type="button"
+            onClick={onOpenNotePublishing}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-tech-border bg-white px-4 py-2.5 font-medium text-tech-text transition-colors hover:bg-tech-bg"
+          >
+            <Images size={17} />
+            创建图文包
+          </button>
+          <button
+            type="button"
+            onClick={onOpenToutiaoPublishing}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-tech-border bg-white px-4 py-2.5 font-medium text-tech-text transition-colors hover:bg-tech-bg"
+          >
+            <FileText size={17} />
+            创建头条文章包
           </button>
           {videoUrl && (
             <a

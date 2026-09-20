@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PublishPreviewDialog, type PublishPreviewDialogPreview } from './PublishPreviewDialog.js';
+import type { PublishingPackagePreview } from '../types/index.js';
 
 const noop = () => {};
 
@@ -222,7 +223,7 @@ test('preview dialog tells the operator what is happening while a submission run
   );
 
   // 同步请求要跑 1–3 分钟；没有提示的话界面就是个不动的转圈（用户实测反馈过）
-  assert.match(html, /正在提交到抖音/);
+  assert.match(html, /正在提交/);
   assert.match(html, /不要关闭窗口/);
   assert.match(html, /已用 0 秒/);
   assert.match(html, /role="status"/);
@@ -233,5 +234,35 @@ test('preview dialog shows no progress note when it is not submitting', () => {
     <PublishPreviewDialog open preview={notePreview()} onClose={noop} onConfirm={noop} />,
   );
 
-  assert.doesNotMatch(html, /正在提交到抖音/);
+  assert.doesNotMatch(html, /正在提交/);
+});
+
+// ─── 文章包（今日头条）预览分支 ──────────────────────────────────────────────
+
+function articlePreview(): PublishingPackagePreview {
+  return {
+    ...notePreview(),
+    package: {
+      ...notePreview().package,
+      contentType: 'article',
+      assetHealth: 'healthy',
+    },
+    articleCopy: { title: '头条文章标题', body: '## 小标题\n\n第一段正文。' },
+    articleLimits: { titleMin: 2, titleMax: 30, bodyChars: 20_000 },
+    toutiaoOptions: { firstPublish: false, declarations: [], crossPostWeitoutiao: false },
+    noteCopy: undefined,
+  };
+}
+
+test('文章包预览摊出标题、正文纯文本与发布选项（正文不是只给字数）', () => {
+  const html = renderToStaticMarkup(
+    <PublishPreviewDialog open preview={articlePreview()} onClose={noop} />,
+  );
+
+  assert.match(html, /头条文章标题/u);
+  assert.match(html, /第一段正文/u);
+  assert.match(html, /头条首发/u);
+  // 「同时发布微头条」默认关闭必须摊出来：平台默认是勾选的，用户要知道真实取值。
+  assert.match(html, /同时发布微头条：否/u);
+  assert.match(html, /发布前预览/u);
 });

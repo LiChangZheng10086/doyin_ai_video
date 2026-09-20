@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   ActorSnapshot,
@@ -8,6 +8,7 @@ import type {
   DeliveryPackage,
   DueNotification,
   JobRecord,
+  NoteImageSource,
   PackageContentType,
   PlatformCopy,
   PublishCopySource,
@@ -19,11 +20,14 @@ import type {
   PublishingPreviewCopyCheck,
   PublishTask,
   ScriptAsset,
+  ToutiaoPublishOptions,
 } from "../types.js";
+import type { AssetStore, ResolvedAssetFile } from "./assets-store.js";
 import type { PublishingCopyService } from "./publishing-copy.js";
 import {
   type BoundSourceVideo,
   type PublishingRecoveryReport,
+  MAX_NOTE_IMAGES,
   PublishingAssetError,
   PublishingAssetService,
   collectSceneSnapshots,
@@ -32,6 +36,7 @@ import {
   normalizePlatformCopy,
   PUBLISH_NOTE_POLICIES,
   PUBLISH_PLATFORMS,
+  resolveAutoPublishEngine,
   type PlatformPolicy,
   validateNoteCopy,
   validatePlatformCopy,
@@ -43,12 +48,40 @@ import {
   type RestorePackageResult,
 } from "./publishing-store.js";
 import { SAU_INSTALL_GUIDANCE, SAU_NOTE_MAX_TITLE, SauRunner, SauRunnerError } from "./sau-runner.js";
+import {
+  TOUTIAO_ARTICLE_LIMITS,
+  articleBodyToDraft,
+  articleDraftToBodyText,
+  articleDraftToPlainParagraphs,
+  articleHtmlToBodyText,
+  fallbackToutiaoArticle,
+  htmlToPlainText,
+  renderToutiaoArticleHtml,
+  validateToutiaoArticle,
+  type ToutiaoArticleDraft,
+} from "./toutiao-article.js";
+import { ToutiaoRunner, ToutiaoRunnerError } from "./toutiao-runner.js";
+import { ToutiaoMediaService } from "./toutiao-media.js";
+import type { ArticlePlan, ArticleSourceContext } from "./article-draft.js";
 import { SYSTEM_ACTOR } from "./local-users.js";
 import { resolveJobVideo, VideoOutputError } from "./video-output.js";
 
+/** 未注入头条执行器时的提示：与 `toutiao-browser.ts` 的解析失败指引同一份文案。 */
+const TOUTIAO_BROWSER_GUIDANCE_FOR_SERVICE = [
+  "未配置头条号发布执行器（服务端没有注入 ToutiaoRunner）。",
+  "若这是测试环境，请注入假执行器；否则请检查 src/app.ts 的装配。",
+].join("");
+
 const CLEANED_DIRECTORY = path.join("processed", "cleaned");
 const SCRIPT_DIRECTORY = path.join("processed", "scripts");
-const SUPPORTED_PLATFORMS = new Set<PublishPlatform>(
+/**
+ * 服务层支持的全部平台。
+ *
+ * **刻意从 `PUBLISH_PLATFORMS` 派生而不是写字面量**：`Record<PublishPlatform, …>` 是编译器
+ * 唯一能兜住的那个真源，派生出来就永远不会漏点。**不要改成 `new Set([...])`** —— 那会把它
+ * 变成又一个静默点（有用例断言它与 `PUBLISH_PLATFORMS` 的键集合完全一致）。
+ */
+export const SUPPORTED_PLATFORMS = new Set<PublishPlatform>(
   Object.keys(PUBLISH_PLATFORMS) as PublishPlatform[],
 );
 
@@ -98,14 +131,17 @@ type Store = Pick<PublishingStore,
   | "withdraw"
 >;
 type Assets = Pick<PublishingAssetService,
+  | "createArticlePackageAssets"
   | "createNotePackageAssets"
   | "createPackageAssets"
   | "purgeAssets"
+  | "readPackageArticle"
   | "readPackageImage"
   | "readPackageCover"
   | "resolvePackageImages"
   | "scanAndRepair"
   | "stageTextProjection"
+  | "verifyPackageHealth"
   | "verifyPackageImages"
   | "verifyPackageVideo"
 >;
@@ -123,14 +159,55 @@ export type AutoPublishRunner = Pick<SauRunner,
   | "verifyCodeFilePath"
 >;
 
+/**
+ * 图文包选图只从素材库**读取**，所以只依赖这一个方法。
+ *
+ * 收窄依赖面有两个好处：测试注入的假素材库无法顺手改动真实素材；而
+ * id → 路径的归属校验仍然只有 `AssetStore.resolveFile` 一个真源
+ * （发布中心不自己拼 `assets/` 路径，免得开出第二份安全校验）。
+ */
+export type AssetLibrary = Pick<AssetStore, "resolveFile">;
+
+/**
+ * 头条自动发布用到的那部分 `ToutiaoRunner`（与 sau 同样的 Pick 写法）：
+ * 测试注入只实现这几个方法的假引擎，既不启浏览器也不联网。
+ */
+export type ToutiaoAutoPublishRunner = Pick<
+  ToutiaoRunner,
+  | "assertConfigured"
+  | "checkLogin"
+  | "startLogin"
+  | "pollLogin"
+  | "cancelLogin"
+  | "loginInWindow"
+  | "publishArticle"
+>;
+
+/** 封面处理（测试注入假 ffmpeg）。 */
+export type ToutiaoCoverPreparer = Pick<ToutiaoMediaService, "prepareCoverImage">;
+
+/**
+ * AI 成文。**注入而不是在服务里建 OpenAI 客户端**：AI 配置的解析归 `app.ts`（与
+ * `PublishingCopyService` 同一处），服务层只关心「给我一篇草稿」；测试传假规划器即可。
+ */
+export type ArticlePlanner = (context: ArticleSourceContext) => Promise<ArticlePlan>;
+
 export interface PublishingServiceDependencies {
   storageRoot: string;
   jobs: JobReader;
   store: Store;
   assets: Assets;
   copy: CopyService;
+  /** 素材库：只用于图文包的「从素材库选图」（id → 已校验归属的绝对路径）。 */
+  library: AssetLibrary;
   /** 抖音图文自动发布的外部引擎；未注入时按「未配置」明确报错。 */
   sau?: AutoPublishRunner;
+  /** 今日头条发布的自研执行器；未注入时按「未配置」明确报错。 */
+  toutiao?: ToutiaoAutoPublishRunner;
+  /** 头条封面处理（16:9 裁剪）。缺省用真 ffmpeg；测试注入假实现。 */
+  toutiaoMedia?: ToutiaoCoverPreparer;
+  /** AI 成文（头条文章）。缺省不可用 → 走本地兜底（不阻塞建包）。 */
+  planArticle?: ArticlePlanner;
   now?: () => Date;
   createId?: () => string;
   resolveVideo?: typeof resolveJobVideo;
@@ -140,6 +217,11 @@ type ServiceErrorCode =
   | "publish_asset_broken"
   | "publish_auto_publish_code_unexpected"
   | "publish_auto_publish_in_progress"
+  | "publish_auto_publish_unsupported"
+  | "publish_article_platform_unsupported"
+  | "publish_toutiao_not_configured"
+  | "publish_article_unreadable"
+  | "publish_toutiao_cover_required"
   | "publish_images_unusable"
   | "publish_note_platform_unsupported"
   | "publish_not_a_note_package"
@@ -162,6 +244,11 @@ const SERVICE_ERROR_MESSAGES: Record<ServiceErrorCode, string> = {
   publish_asset_broken: "发布包视频资产异常，无法执行此操作",
   publish_auto_publish_code_unexpected: "该任务当前没有在等待短信验证码",
   publish_auto_publish_in_progress: "该任务的图文自动发布正在进行中，请等本次结束后再试",
+  publish_auto_publish_unsupported: "该内容类型与平台的组合不支持自动发布，请走人工交付",
+  publish_article_platform_unsupported: "文章发布目前只接入了今日头条",
+  publish_toutiao_not_configured: TOUTIAO_BROWSER_GUIDANCE_FOR_SERVICE,
+  publish_article_unreadable: "文章包内的 article.html 缺失或已被改动，请重新创建文章包",
+  publish_toutiao_cover_required: "今日头条要求文章必须有封面，请重新创建文章包并选择封面（会自动裁成 16:9）",
   publish_images_unusable: "图文包的图片素材不完整，请重新生成或选择图片后再发布",
   publish_note_platform_unsupported: "该平台尚未接入图文发布，目前只支持抖音图文",
   publish_not_a_note_package: "该发布包不是图文包，无法执行抖音图文自动发布",
@@ -208,6 +295,43 @@ type ValidatedDraft = {
   scheduledAt?: string;
 };
 
+/** 图文素材选择：来源 + 素材库选择（有序）。两个字段都可省略，省略即「自动静帧」。 */
+export interface NoteImageSelection {
+  imageSource?: NoteImageSource;
+  imageAssetIds?: string[];
+}
+
+type NoteImagePlan = {
+  source: NoteImageSource;
+  /** 参与 `previewRevision` 的指纹键：静帧用文件名、素材库用 asset id，顺序参与哈希。 */
+  keys: string[];
+  /** 预览要摊给操作者看的图片清单，顺序即入包顺序。 */
+  images: Array<{ name: string; size: number; assetId?: string }>;
+  /** 仅素材库来源：按选择顺序解析好的绝对路径（静帧由打包层自行收集）。 */
+  sourceImagePaths?: string[];
+};
+
+/** 缺省与存量请求一律 `frames`；取值非法直接拒绝而不是静默回退。 */
+function noteImageSourceOf(selection: NoteImageSelection): NoteImageSource {
+  const source = selection.imageSource ?? "frames";
+  if (source !== "frames" && source !== "library") {
+    throw new PublishingServiceError(400, "publish_validation_failed", "图文素材来源无效，只支持自动静帧或素材库");
+  }
+  return source;
+}
+
+/**
+ * 图文文案的字段上限随预览一起下发。
+ *
+ * 表单要边打字边显示「12/20」，所以字数是**界面自己数**的；但上限必须来自服务端，
+ * 否则渲染层会再写一份 20/1000/10 并与后端慢慢漂移（服务端在创建时仍会重新校验）。
+ */
+function noteCopyLimits(): { titleMax: number; descriptionMax: number; hashtagMax: number } {
+  const policy = PUBLISH_NOTE_POLICIES.douyin;
+  if (!policy) throw new PublishingServiceError(422, "publish_note_platform_unsupported");
+  return { titleMax: policy.titleMax, descriptionMax: policy.descriptionMax, hashtagMax: policy.hashtagMax };
+}
+
 export class PublishingService {
   private readonly now: () => Date;
   private readonly createId: () => string;
@@ -247,9 +371,13 @@ export class PublishingService {
     jobId: string,
     platforms: PublishPlatform[],
     contentType: PackageContentType = "video",
+    images: NoteImageSelection = {},
   ): Promise<PublishingPreview> {
     const selected = validatePlatformSelection(platforms);
-    if (contentType === "note") return this.previewNotePackage(jobId, selected);
+    if (contentType === "note") return this.previewNotePackage(jobId, selected, images);
+    // 文章通路：**必须显式分派**。少了这一支，`contentType: "article"` 会静默按视频处理，
+    // 调用方拿到的是一份视频预览（既有行为就是如此，spec §6.5 记了这个坑）。
+    if (contentType === "article") return this.previewArticlePackage(jobId, selected, images);
     const context = await this.readSourceContext(jobId);
     try {
       const index = await this.deps.store.snapshot();
@@ -299,6 +427,9 @@ export class PublishingService {
       if ((input.contentType ?? "video") === "note") {
         return await this.createNote(input, context, selected, actor);
       }
+      if ((input.contentType ?? "video") === "article") {
+        return await this.createArticle(input, context, selected, actor);
+      }
 
       const currentRevision = sourceRevision(input.sourceJobId, context, selected);
       if (currentRevision !== input.previewRevision) {
@@ -343,7 +474,9 @@ export class PublishingService {
     }
     const sourceVideo = await this.bindPackageVideo(previous.package);
     try {
-      const health = await this.deps.assets.verifyPackageVideo(previous.package);
+      // 这与 createVersion 的输入一致性检查配套：能走到这里的包必然有可用成片
+      //（文章/图文包在 `bindPackageVideo` 就已经报错），所以这里用「按类型分派」的入口是安全的。
+      const health = await this.deps.assets.verifyPackageHealth(previous.package);
       const currentStats = await stat(sourceVideo.path).catch(() => undefined);
       if (
         health === "broken_video"
@@ -449,7 +582,10 @@ export class PublishingService {
   async markPublished(taskId: string, actor: ActorSnapshot): Promise<PublishTask> {
     const task = await this.requireTask(taskId);
     const detail = await this.requirePackage(task.packageId);
-    if (await this.deps.assets.verifyPackageVideo(detail.package) === "broken_video") {
+    // **按内容类型分派**：文章包没有 `video.mp4`，用视频分支会一律判 `broken_video`
+    // → 人工「标记已发布」永远失败，而且写进去的健康值还会把「提交到头条号」动作一起藏起来
+    //（本项目交付包健康值有单一真源：`verifyPackageHealth`）。
+    if (await this.deps.assets.verifyPackageHealth(detail.package) === "broken_video") {
       await this.storeCall(() => this.deps.store.setAssetHealth(detail.package.id, "broken_video", actor));
       throw new PublishingServiceError(422, "publish_asset_broken");
     }
@@ -534,12 +670,443 @@ export class PublishingService {
   }
 
   /**
+   * 文章包（今日头条）的创建前预览。
+   *
+   * 三步：AI 成文（失败走本地兜底并带提示）→ 渲染一次（正文长度守卫在这里）→ 解析封面候选。
+   * **头条封面必填**，所以封面在预览阶段就要选好；静帧一张都没有时明确报错而不是让用户走到提交才失败。
+   */
+  private async previewArticlePackage(
+    jobId: string,
+    selected: PublishPlatform[],
+    selection: NoteImageSelection,
+  ): Promise<PublishingPreview> {
+    assertArticlePlatforms(selected);
+    const context = await this.readSourceContext(jobId);
+    try {
+      const index = await this.deps.store.snapshot();
+      const nextVersion = index.nextVersionBySource[jobId] ?? 1;
+
+      const plan = await this.planArticleFor(context);
+      const html = renderArticleHtmlOrThrow(plan.draft);
+      const body = articleDraftToBodyText(plan.draft);
+      const cover = await this.planArticleCover(jobId, selection);
+      const copy: PlatformCopy = { title: plan.draft.title, description: body, hashtags: [] };
+
+      return {
+        sourceJobId: jobId,
+        nextVersion,
+        previewRevision: articleSourceRevision(jobId, context, selected, cover.key),
+        video: {
+          filename: path.basename(context.video.path),
+          size: context.video.size,
+          width: context.width,
+          height: context.height,
+          duration: context.duration,
+          coverAvailable: Boolean(context.sourceCoverPath),
+        },
+        copies: {
+          toutiao: { ...copy, copySource: plan.copySource === "ai" ? "ai" : "cleaned_fallback" },
+        },
+        ...(plan.warning ? { warning: { code: plan.warning.code, message: plan.warning.message } } : {}),
+        expectedPackagePath: path.join(
+          this.storageRoot,
+          "output",
+          "publishing",
+          jobId,
+          `v${nextVersion}-preview`,
+        ),
+        contentType: "article",
+        articleCopy: { title: plan.draft.title, body },
+        articleLimits: {
+          titleMin: TOUTIAO_ARTICLE_LIMITS.titleMin,
+          titleMax: TOUTIAO_ARTICLE_LIMITS.titleMax,
+          bodyChars: TOUTIAO_ARTICLE_LIMITS.bodyChars,
+        },
+        // **绝不静默**：AI 成文失败必须让操作者看见（否则会以为这就是 AI 写的）。
+        ...(plan.warning ? { articleFallback: { code: plan.warning.code, message: plan.warning.message } } : {}),
+        articleCover: cover.preview,
+        imageSource: cover.source,
+        toutiaoOptions: defaultToutiaoOptions(),
+      };
+    } finally {
+      await context.video.close().catch(() => undefined);
+    }
+  }
+
+  /** AI 成文；未注入规划器（无 AI 配置）时走本地兜底，不阻塞建包。 */
+  private async planArticleFor(context: SourceContext): Promise<ArticlePlan> {
+    const planner = this.deps.planArticle;
+    if (!planner) return buildArticleFallbackPlan(articleSourceContextOf(context));
+    return planner(articleSourceContextOf(context));
+  }
+
+  /**
+   * 封面候选：**恰好一张**。
+   *
+   * 与图文包的两点不同：① 头条封面必填，所以「一张都没有」是**错误**（不像 `frames` 图文包那样
+   * 允许缺图）；② 只取一张 —— 头条单图封面，多选会让「发出去的是哪张」变得不可预测。
+   */
+  private async planArticleCover(jobId: string, selection: NoteImageSelection): Promise<ArticleCoverPlan> {
+    const source = noteImageSourceOf(selection);
+    if (source === "frames") {
+      if ((selection.imageAssetIds?.length ?? 0) > 0) {
+        throw new PublishingServiceError(
+          400,
+          "publish_validation_failed",
+          "自动静帧来源不接受素材 id，请清空 imageAssetIds 或改用素材库",
+        );
+      }
+      const snapshots = await this.listSceneSnapshots(jobId);
+      if (snapshots.length === 0) {
+        throw new PublishingServiceError(
+          400,
+          "publish_validation_failed",
+          "这个作品还没有场景静帧，无法作为头条封面（头条要求必须有封面）：请先生成视频，或改用素材库图片作为封面。",
+        );
+      }
+      const first = snapshots[0]!;
+      return {
+        source,
+        key: first.name,
+        preview: { name: first.name, size: first.size },
+        // 静帧由打包层按同一套场景序自行收集，这里只给出「第一张」的指纹键。
+        absolutePath: await this.firstSnapshotPath(jobId),
+      };
+    }
+
+    const assetIds = selection.imageAssetIds ?? [];
+    if (assetIds.length === 0) {
+      throw new PublishingServiceError(
+        400,
+        "publish_validation_failed",
+        "请选择一张素材库图片作为封面，或改用自动静帧",
+      );
+    }
+    if (assetIds.length > 1) {
+      throw new PublishingServiceError(
+        400,
+        "publish_validation_failed",
+        "头条封面只支持单图，请只选择一张图片",
+      );
+    }
+    const resolved = await this.resolveLibraryImage(assetIds[0]!);
+    return {
+      source,
+      key: `asset:${resolved.record.id}`,
+      preview: { name: resolved.record.originalName, size: resolved.size, assetId: resolved.record.id },
+      absolutePath: resolved.path,
+    };
+  }
+
+  private async firstSnapshotPath(jobId: string): Promise<string> {
+    const absolutePaths = await collectSceneSnapshots(this.storageRoot, jobId);
+    const first = absolutePaths[0];
+    if (!first) {
+      throw new PublishingServiceError(
+        400,
+        "publish_validation_failed",
+        "这个作品还没有场景静帧，无法作为头条封面（头条要求必须有封面）：请先生成视频，或改用素材库图片作为封面。",
+      );
+    }
+    return first;
+  }
+
+  /**
+   * 文章创建：校验标题/正文 → 渲染 HTML → 核对（含封面与正文哈希的）previewRevision →
+   * 裁 16:9 封面 → 打包。平台任务文案由服务端从文章文案同步生成（客户端不许传两份）。
+   */
+  private async createArticle(
+    input: CreatePublishingPackageInput,
+    context: SourceContext,
+    selected: PublishPlatform[],
+    actor: ActorSnapshot,
+  ): Promise<PublishingPackageDetail> {
+    assertArticlePlatforms(selected);
+    if (!input.articleCopy) {
+      throw new PublishingServiceError(
+        400,
+        "publish_validation_failed",
+        "文章包必须提供 articleCopy（标题与正文）",
+      );
+    }
+
+    const draft = articleBodyToDraft(input.articleCopy.title, input.articleCopy.body);
+    // 空正文必须在**创建**阶段拦掉：否则包建得出来，但发布时会在页面上报
+    // 「正文没有填进头条编辑器」——那是错误的诊断（真正原因是文章本身没正文）。
+    if (draft.sections.every((section) => section.paragraphs.length === 0)) {
+      throw new PublishingServiceError(422, "publish_validation_failed", "文章正文不能为空");
+    }
+    const violations = validateToutiaoArticle(draft);
+    if (violations.length > 0) {
+      throw new PublishingServiceError(422, "publish_validation_failed", violations[0]!.message, {
+        violations,
+      });
+    }
+    const html = renderArticleHtmlOrThrow(draft);
+    const cover = await this.planArticleCover(input.sourceJobId, input);
+
+    const currentRevision = articleSourceRevision(input.sourceJobId, context, selected, cover.key);
+    if (currentRevision !== input.previewRevision) {
+      throw new PublishingServiceError(409, "publish_revision_conflict", undefined, {
+        expectedRevision: input.previewRevision,
+        currentRevision,
+      });
+    }
+
+    const copy: PlatformCopy = {
+      title: draft.title,
+      description: articleDraftToBodyText(draft),
+      hashtags: [],
+    };
+    const drafts = validateDrafts(
+      selected.map((platform) => ({ platform, copy })),
+      this.now(),
+      () => "user_edited",
+    );
+
+    return this.createArticlePackage({
+      sourceJobId: input.sourceJobId,
+      title: requireTitle(input.title),
+      draft,
+      html,
+      cover,
+      options: normalizeToutiaoOptions(input.toutiaoOptions),
+      drafts,
+      actor,
+    });
+  }
+
+  /**
+   * 打包文章包：封面先由 `toutiao-media` 裁成 16:9 落到**临时目录**，再交给打包层复制进包。
+   *
+   * 临时目录必须清理（`finally`）：封面源是用户的静帧或素材库图片，中间产物不该留在磁盘上。
+   * article 包的 `video*` 字段与 note 包同口径，承载**图片清单哈希**（v1 没有正文图，即空清单哈希），
+   * 正文的完整性凭据在 `articleCopy.htmlSha256`。
+   */
+  private async createArticlePackage(input: {
+    sourceJobId: string;
+    title: string;
+    draft: ToutiaoArticleDraft;
+    html: string;
+    cover: ArticleCoverPlan;
+    options: ToutiaoPublishOptions;
+    drafts: ValidatedDraft[];
+    actor: ActorSnapshot;
+  }): Promise<PublishingPackageDetail> {
+    return this.commitNewPackage({
+      sourceJobId: input.sourceJobId,
+      title: input.title,
+      drafts: input.drafts,
+      actor: input.actor,
+      build: async ({ packageId, version, tasks, timestamp }) => {
+        const workDir = path.join(this.storageRoot, "cache", "tmp", `toutiao-cover-${packageId}`);
+        try {
+          const prepared = await this.requireToutiaoMedia().prepareCoverImage(input.cover.absolutePath, workDir);
+          const assets = await this.deps.assets.createArticlePackageAssets({
+            packageId,
+            sourceJobId: input.sourceJobId,
+            version,
+            articleHtml: input.html,
+            sourceCoverPath: prepared.path,
+            articleCopy: { title: input.draft.title },
+            title: input.title,
+            tasks,
+            actor: input.actor,
+          });
+          return {
+            record: {
+              id: packageId,
+              sourceJobId: input.sourceJobId,
+              version,
+              state: "active",
+              title: input.title,
+              packagePath: assets.packagePath,
+              ...(assets.coverPath ? { coverPath: assets.coverPath } : {}),
+              videoSha256: assets.imageManifestSha256,
+              videoSize: assets.imageSize,
+              videoMethod: "copy",
+              assetHealth: assets.assetHealth,
+              contentType: "article",
+              imagePaths: [...assets.imagePaths],
+              articleCopy: { title: input.draft.title, htmlSha256: assets.htmlSha256 },
+              toutiaoOptions: { ...input.options, declarations: [...input.options.declarations] },
+              createdBy: structuredClone(input.actor),
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            },
+            rollback: assets.rollback,
+          };
+        } finally {
+          await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+        }
+      },
+    });
+  }
+
+  /** 读取文章包的 HTML（降级通路与提交前的完整性校验共用）。 */
+  async readPackageArticleHtml(packageId: string): Promise<{ bytes: Buffer; htmlSha256: string } | null> {
+    const detail = await this.requirePackage(packageId);
+    if ((detail.package.contentType ?? "video") !== "article") return null;
+    const bytes = await this.deps.assets.readPackageArticle(detail.package);
+    return bytes ? { bytes, htmlSha256: sha256Hex(bytes) } : null;
+  }
+
+  /** 零副作用登录态自检（设置页「校验登录」）。 */
+  async verifyToutiaoLogin(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
+    const runner = this.requireToutiaoRunner();
+    const state = await runner.checkLogin();
+    return state.loggedIn
+      ? { loggedIn: true, ...(state.username ? { username: state.username } : {}), message: "头条号登录态有效" }
+      : {
+          loggedIn: false,
+          message:
+            "头条号登录态已失效：请到「设置 → 今日头条」点「扫码登录」，用今日头条 App 扫码后重试。"
+            + "（重新扫码不需要重启应用。）",
+        };
+  }
+
+  async startToutiaoLogin(): Promise<{ qrDataUrl: string; startedAt: string; expiresAt: string }> {
+    return this.requireToutiaoRunner().startLogin();
+  }
+
+  async pollToutiaoLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; username?: string }> {
+    return this.requireToutiaoRunner().pollLogin();
+  }
+
+  async cancelToutiaoLogin(): Promise<void> {
+    await this.requireToutiaoRunner().cancelLogin();
+  }
+
+  /**
+   * 打开浏览器窗口扫码登录（与抖音那套同一交互）。
+   *
+   * 同步请求：挂着直到扫码成功或超时。要注意它与「应用内扫码」互斥 ——
+   * 窗口登录期间如果用户又去点应用内扫码，会去开第二个浏览器；所以这里先取消掉内存里的会话。
+   */
+  async loginToutiaoInWindow(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
+    const runner = this.requireToutiaoRunner();
+    await runner.cancelLogin().catch(() => undefined);
+    return runner.loginInWindow();
+  }
+
+  /**
+   * 把一篇文章提交到头条号（自研执行器），记录结果。
+   *
+   * 关键不变式与抖音通路一致：**点了「发布」也只记 `succeeded`（已提交），绝不写 `published`**；
+   * 是否真的发出去了由人工点「标记已发布」确认。差异在于头条没有短信验证码通路，
+   * 所以补偿手段是**独立的结果校验**（`verification`）：拿不到判据时如实写进消息，
+   * 提醒操作者先去后台核实再重试（重复发布是本功能最大的风险）。
+   *
+   * 校验顺序与抖音通路一致：所有「不该产生记录」的检查都在 `beginAutoPublish` 之前或之内完成。
+   */
+  private async autoPublishToutiaoArticle(
+    taskId: string,
+    input: { previewRevision: string },
+    actor: ActorSnapshot,
+  ): Promise<PublishTask> {
+    const task = await this.requireTask(taskId);
+    const detail = await this.requirePackage(task.packageId);
+    const packageRecord = detail.package;
+
+    // 头条封面必填：缺封面在这里就拦住，而不是等平台报错。
+    if (!packageRecord.coverPath || packageRecord.assetHealth === "missing_cover") {
+      throw new PublishingServiceError(422, "publish_toutiao_cover_required");
+    }
+    const runner = this.requireToutiaoRunner();
+
+    const article = await this.readPackageArticleHtml(packageRecord.id);
+    if (!article || article.htmlSha256 !== packageRecord.articleCopy?.htmlSha256) {
+      throw new PublishingServiceError(422, "publish_article_unreadable");
+    }
+    const coverBytes = await this.deps.assets.readPackageCover(packageRecord);
+    if (!coverBytes) {
+      throw new PublishingServiceError(422, "publish_toutiao_cover_required");
+    }
+
+    const attemptId = this.createId();
+    // 包级 revision 的比对与并发互斥都在这一次 mutate 里完成（失败不写盘）。
+    await this.storeCall(() => this.deps.store.beginAutoPublish(
+      taskId,
+      { previewRevision: input.previewRevision, attemptId },
+      actor,
+    ));
+
+    const workDir = path.join(this.storageRoot, "cache", "tmp", `toutiao-publish-${attemptId}`);
+    try {
+      await mkdir(workDir, { recursive: true });
+      const coverPath = path.join(workDir, "cover.jpg");
+      await writeFile(coverPath, coverBytes);
+
+      const state = await runner.checkLogin();
+      if (!state.loggedIn) {
+        return await this.finishAutoPublish(taskId, {
+          status: "failed",
+          message: "头条号登录态已失效：请到「设置 → 今日头条」重新扫码登录后再试。",
+        }, actor);
+      }
+
+      const options = normalizeToutiaoOptions(packageRecord.toutiaoOptions);
+      const result = await runner.publishArticle({
+        title: packageRecord.articleCopy?.title ?? task.title,
+        articleHtml: article.bytes.toString("utf8"),
+        articleText: htmlToPlainText(article.bytes.toString("utf8")),
+        coverPath,
+        firstPublish: options.firstPublish,
+        declarations: options.declarations,
+        crossPostWeitoutiao: options.crossPostWeitoutiao,
+      });
+
+      if (!result.ok) {
+        return await this.finishAutoPublish(taskId, { status: "failed", message: result.message }, actor);
+      }
+      return await this.finishAutoPublish(taskId, {
+        status: "succeeded",
+        // 未确认时**不再加前缀**：runner 的文案本身就以「已点击发布，但未能从页面确认结果…」开头，
+        // 再加「已提交，但」会变成「已提交，但已点击发布，但…」（真机记录里就是这个双「但」）。
+        message: result.verification === "confirmed" ? `已提交：${result.message}` : result.message,
+      }, actor);
+    } catch (error) {
+      // **任何**异常都必须落成 `failed` 记录，不能抛出去。`publishArticle` 自己已经把页面步骤与
+      // Playwright 异常收敛成 `ok:false`，但它的第一行 `openSession()` 在它的 try **之外**：
+      // 「浏览器起不来 / 会话目录不可写」这类错误会直接落到这里。此前这里只认
+      // `ToutiaoRunnerError`、其余原样抛出 → 路由层兜底 **500**，而 `autoPublish` 会停在
+      // `running`（界面只显示「正在进行中」、按钮灰掉）直到 30 分钟僵死阈值才能重试 ——
+      // 2026-09-18 应用内那个 EPERM 就是这条路径。
+      return await this.finishAutoPublish(taskId, {
+        status: "failed",
+        message: error instanceof ToutiaoRunnerError
+          ? error.message
+          : `头条发布过程中出现意外错误：${error instanceof Error ? error.message : String(error)}`,
+      }, actor);
+    } finally {
+      await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  private requireToutiaoRunner(): ToutiaoAutoPublishRunner {
+    const runner = this.deps.toutiao;
+    if (!runner) throw new PublishingServiceError(422, "publish_toutiao_not_configured");
+    // 解析不到浏览器时同样在写入任何记录之前失败。
+    runner.assertConfigured();
+    return runner;
+  }
+
+  private requireToutiaoMedia(): ToutiaoCoverPreparer {
+    if (!this.deps.toutiaoMedia) return new ToutiaoMediaService();
+    return this.deps.toutiaoMedia;
+  }
+
+  /**
    * 图文包的创建前预览：列出将被打包的场景静帧，并给出压缩到图文口径的默认文案。
    *
    * 抖音图文标题上限 20 字（视频是 55），所以默认文案由视频口径的文案**压缩**而来；
    * 「是否被压缩过」要回给界面（spec §5 要求标注「已压缩，可编辑」）。
    */
-  private async previewNotePackage(jobId: string, selected: PublishPlatform[]): Promise<PublishingPreview> {
+  private async previewNotePackage(
+    jobId: string,
+    selected: PublishPlatform[],
+    images: NoteImageSelection,
+  ): Promise<PublishingPreview> {
     assertNotePlatforms(selected);
     const context = await this.readSourceContext(jobId);
     try {
@@ -552,7 +1119,7 @@ export class PublishingService {
         if (copy) this.rememberCopy(sourceKey, platform, copy, copy.copySource);
       }
 
-      const snapshots = await this.listSceneSnapshots(jobId);
+      const plan = await this.planNoteImages(jobId, images);
       const videoCopy = copyPreview.copies.douyin ?? { title: "", description: "", hashtags: [] };
       const compressed = compressNoteTitle(videoCopy.title || context.cleaned.title || "", SAU_NOTE_MAX_TITLE);
       const noteCopy: PlatformCopy = {
@@ -564,7 +1131,7 @@ export class PublishingService {
       return {
         sourceJobId: jobId,
         nextVersion,
-        previewRevision: sourceRevision(jobId, context, selected, snapshots.map((snapshot) => snapshot.name)),
+        previewRevision: sourceRevision(jobId, context, selected, plan.keys),
         video: {
           filename: path.basename(context.video.path),
           size: context.video.size,
@@ -577,13 +1144,83 @@ export class PublishingService {
         ...(copyPreview.warning ? { warning: copyPreview.warning } : {}),
         expectedPackagePath: path.join(this.storageRoot, "output", "publishing", jobId, `v${nextVersion}-preview`),
         contentType: "note",
-        images: snapshots.map((snapshot) => ({ name: snapshot.name, size: snapshot.size })),
+        imageSource: plan.source,
+        images: plan.images,
+        imageLimit: MAX_NOTE_IMAGES,
+        copyLimits: noteCopyLimits(),
         noteCopy,
         noteCopyTitleCompressed: compressed.compressed,
       };
     } finally {
       await context.video.close().catch(() => undefined);
     }
+  }
+
+  /**
+   * 图文素材：把「来源 + 选择」解析成**指纹键**与**预览清单**（素材库还解析出真实路径）。
+   *
+   * 三条不变式：
+   * - 顺序即入包顺序（静帧按场景号、素材库按用户点选顺序），并**参与 `previewRevision`** ——
+   *   调换顺序或换来源会让旧 revision 失效，与「预览过的内容才允许发布」同一条约束。
+   * - 静帧路径不在这里解析：打包层按同一套场景序自行收集，避免出现两份顺序真源。
+   * - 素材库的「一张没选」报错，而静帧的「一张都没有」不报错 —— 后者沿用 ② 已定的口径
+   *   （包仍自包含地建出来，只标 `missing_images`），前者是客户端请求不自洽。
+   */
+  private async planNoteImages(jobId: string, selection: NoteImageSelection): Promise<NoteImagePlan> {
+    const source = noteImageSourceOf(selection);
+    if (source === "frames") {
+      if ((selection.imageAssetIds?.length ?? 0) > 0) {
+        throw new PublishingServiceError(
+          400,
+          "publish_validation_failed",
+          "自动静帧来源不接受素材 id，请清空 imageAssetIds 或改用素材库",
+        );
+      }
+      const snapshots = await this.listSceneSnapshots(jobId);
+      return { source, keys: snapshots.map((snapshot) => snapshot.name), images: snapshots };
+    }
+
+    const assetIds = selection.imageAssetIds ?? [];
+    if (assetIds.length === 0) {
+      throw new PublishingServiceError(
+        400,
+        "publish_validation_failed",
+        "请至少选择一张素材库图片，或改用自动静帧",
+      );
+    }
+    // 上限检查必须早于逐个解析：否则 40 个不存在的 id 会先报成「素材不存在」
+    if (assetIds.length > MAX_NOTE_IMAGES) {
+      throw new PublishingAssetError("publish_too_many_images");
+    }
+
+    const images: NoteImagePlan["images"] = [];
+    const sourceImagePaths: string[] = [];
+    for (const assetId of assetIds) {
+      const resolved = await this.resolveLibraryImage(assetId);
+      images.push({ name: resolved.record.originalName, size: resolved.size, assetId: resolved.record.id });
+      sourceImagePaths.push(resolved.path);
+    }
+    return { source, keys: assetIds.map((assetId) => `asset:${assetId}`), images, sourceImagePaths };
+  }
+
+  /** 单个素材：必须存在、必须是图片，并且由 `AssetStore` 保证路径落在 `assets/` 内。 */
+  private async resolveLibraryImage(assetId: string): Promise<ResolvedAssetFile> {
+    const resolved = await this.deps.library.resolveFile(assetId);
+    if (!resolved) {
+      throw new PublishingServiceError(
+        422,
+        "publish_images_unusable",
+        "选中的素材已不存在，请重新选择图片",
+      );
+    }
+    if (resolved.record.kind !== "image") {
+      throw new PublishingServiceError(
+        400,
+        "publish_validation_failed",
+        "图文素材只能选择图片，音频暂不能用于图文发布",
+      );
+    }
+    return resolved;
   }
 
   /** 场景静帧的规范化清单（场景序），供图文预览与打包共用同一份顺序。 */
@@ -644,7 +1281,28 @@ export class PublishingService {
       };
       preview.noteCopy = { ...noteCopy, hashtags: [...noteCopy.hashtags] };
       const platform = detail.tasks[0]?.platform ?? "douyin";
-      preview.copyChecks.push(copyCheck(platform, "package", preview.noteCopy, undefined, true));
+      preview.copyChecks.push(copyCheck(platform, "package", preview.noteCopy, undefined, "note"));
+    } else if (contentType === "article") {
+      // 文章包：正文在包内 `article.html`，这里摊成纯文本给操作者看（spec §14.1：
+      // 预览的意义就是「看得见将要发出去的内容」）。封面走既有 `/cover` 路由。
+      const articleCopy = packageRecord.articleCopy ?? { title: packageRecord.title, htmlSha256: "" };
+      const html = await this.deps.assets.readPackageArticle(packageRecord);
+      // 展示**正文文本**（带 `## ` 小标题标记），与创建向导里看到的形态一致：
+      // 包记录只存 title + htmlSha256，正文只能从 `article.html` 还原。
+      const body = html ? articleHtmlToBodyText(html.toString("utf8")) : "";
+      preview.articleCopy = { title: articleCopy.title, body };
+      preview.articleLimits = {
+        titleMin: TOUTIAO_ARTICLE_LIMITS.titleMin,
+        titleMax: TOUTIAO_ARTICLE_LIMITS.titleMax,
+        bodyChars: TOUTIAO_ARTICLE_LIMITS.bodyChars,
+      };
+      preview.toutiaoOptions = normalizeToutiaoOptions(packageRecord.toutiaoOptions);
+      const platform = detail.tasks[0]?.platform ?? "toutiao";
+      // 用**平台政策**（`PUBLISH_PLATFORMS.toutiao` 就是文章口径：titleMax 30 / 正文 20000），
+      // 不是图文政策 —— `PUBLISH_NOTE_POLICIES` 里没有 toutiao，走图文口径会直接抛错。
+      preview.copyChecks.push(
+        copyCheck(platform, "package", { title: articleCopy.title, description: body, hashtags: [] }, undefined, "platform"),
+      );
     } else {
       preview.video = {
         path: packageRecord.videoPath ?? "",
@@ -659,7 +1317,7 @@ export class PublishingService {
           "task",
           { title: task.title, description: task.description, hashtags: [...task.hashtags] },
           task.id,
-          false,
+          "platform",
         ));
       }
     }
@@ -678,7 +1336,8 @@ export class PublishingService {
 
   async verifyPackage(packageId: string): Promise<DeliveryPackage["assetHealth"]> {
     const detail = await this.requirePackage(packageId);
-    return this.deps.assets.verifyPackageVideo(detail.package);
+    // 按内容类型分派：文章/图文包走各自的口径，否则一查就是「视频资产异常」。
+    return this.deps.assets.verifyPackageHealth(detail.package);
   }
 
   /**
@@ -699,10 +1358,38 @@ export class PublishingService {
     const task = await this.requireTask(taskId);
     const detail = await this.requirePackage(task.packageId);
 
-    // 先判输入类别、再判配置：视频包不是「配置问题」，无论 sau 配没配都该报同一个明确错误。
-    if ((detail.package.contentType ?? "video") !== "note") {
-      throw new PublishingServiceError(422, "publish_not_a_note_package");
+    // **先判输入类别、再判配置**：视频包不是「配置问题」，无论 sau/浏览器配没配都该报同一个明确错误。
+    // 分派只问那张唯一真源的路由表（`AUTO_PUBLISH_ROUTES`），两个通路各走各的。
+    const contentType = detail.package.contentType ?? "video";
+    const engine = resolveAutoPublishEngine(contentType, task.platform);
+    if (engine === null) {
+      throw new PublishingServiceError(
+        422,
+        // 视频包保留**既有的错误码**（既有用例逐字断言它），其余未登记组合给更准确的新码。
+        contentType === "video" ? "publish_not_a_note_package" : "publish_auto_publish_unsupported",
+        undefined,
+        { contentType, platform: task.platform },
+      );
     }
+    if (engine === "toutiao") {
+      return this.autoPublishToutiaoArticle(taskId, input, actor);
+    }
+    return this.autoPublishNoteTask(taskId, input, actor, detail);
+  }
+
+  /**
+   * 抖音图文通路：外部 `sau` CLI。
+   *
+   * 与头条通路分开成两个方法（而不是一个方法里 if/else）：两条通路的**凭据、校验、结果形状**
+   * 完全不同，混在一起会让「先判类别再判配置」这条纪律更容易被写错。
+   */
+  private async autoPublishNoteTask(
+    taskId: string,
+    input: { previewRevision: string },
+    actor: ActorSnapshot,
+    detail: PublishingPackageDetail,
+  ): Promise<PublishTask> {
+    const task = await this.requireTask(taskId);
     const runner = this.requireSauRunner();
 
     // 图片必须在提交前是完好的：界面会禁用缺图的包，但接口仍可被直接调用。
@@ -887,13 +1574,8 @@ export class PublishingService {
       );
     }
 
-    const snapshots = await this.listSceneSnapshots(input.sourceJobId);
-    const currentRevision = sourceRevision(
-      input.sourceJobId,
-      context,
-      selected,
-      snapshots.map((snapshot) => snapshot.name),
-    );
+    const snapshots = await this.planNoteImages(input.sourceJobId, input);
+    const currentRevision = sourceRevision(input.sourceJobId, context, selected, snapshots.keys);
     if (currentRevision !== input.previewRevision) {
       throw new PublishingServiceError(409, "publish_revision_conflict", undefined, {
         expectedRevision: input.previewRevision,
@@ -913,6 +1595,7 @@ export class PublishingService {
       noteCopy,
       drafts,
       actor,
+      ...(snapshots.sourceImagePaths ? { sourceImagePaths: snapshots.sourceImagePaths } : {}),
     });
   }
 
@@ -967,7 +1650,7 @@ export class PublishingService {
   }
 
   /**
-   * 创建图文包：走 `createNotePackageAssets`（按场景序复制静帧进包）。
+   * 创建图文包：走 `createNotePackageAssets`（静帧来源按场景序自动收集，素材库来源用已解析的路径）。
    *
    * note 包的 `video*` 字段「不适用」（spec §5），因此用**图片清单哈希**充当等价完整性凭据，
    * `videoMethod` 记 `copy`、`videoSize` 记图片总字节 —— 诚实反映「不是成片」而不是留空。
@@ -978,6 +1661,8 @@ export class PublishingService {
     noteCopy: PlatformCopy;
     drafts: ValidatedDraft[];
     actor: ActorSnapshot;
+    /** 仅素材库来源：按选择顺序的绝对路径；省略即按场景序自动收集静帧。 */
+    sourceImagePaths?: string[];
   }): Promise<PublishingPackageDetail> {
     return this.commitNewPackage({
       sourceJobId: input.sourceJobId,
@@ -989,6 +1674,7 @@ export class PublishingService {
           packageId,
           sourceJobId: input.sourceJobId,
           version,
+          ...(input.sourceImagePaths ? { sourceImagePaths: input.sourceImagePaths } : {}),
           noteCopy: input.noteCopy,
           title: input.title,
           tasks,
@@ -1157,8 +1843,121 @@ function sourceRevision(
   return hash.digest("hex");
 }
 
-/** 图文发布目前只接通抖音（上游只有 `sau douyin upload-note`）。 */
-const NOTE_PLATFORMS = new Set<PublishPlatform>(["douyin"]);
+/**
+ * 图文发布目前只接通抖音（上游只有 `sau douyin upload-note`）。
+ *
+ * **这是一道「图文口径」的闸门，不含微信公众号，也不该含**：公众号走的是 article 通路
+ * （标题 32 / 摘要 120 / 正文是渲染出来的 HTML），把它塞进这里会拿图文口径去校验文章。
+ * **导出**供守卫用例断言它是严格子集。
+ */
+export const NOTE_PLATFORMS = new Set<PublishPlatform>(["douyin"]);
+
+/** 文章通路的封面计划：指纹键 + 预览清单 + 真实源路径。 */
+interface ArticleCoverPlan {
+  source: NoteImageSource;
+  /** 参与 `previewRevision` 的指纹键（静帧名或 `asset:<id>`）。 */
+  key: string;
+  preview: { name: string; size: number; assetId?: string };
+  /** 封面源文件绝对路径（打包前会被裁成 16:9）。 */
+  absolutePath: string;
+}
+
+/**
+ * 文章通路目前**只接入今日头条**（公众号那条通路的服务层编排尚未实现）。
+ * 与 `assertNotePlatforms` 同一形状：说清「哪个平台不支持」，而不是让请求静默走错分支。
+ */
+function assertArticlePlatforms(platforms: PublishPlatform[]): void {
+  for (const platform of platforms) {
+    if (platform !== "toutiao") {
+      throw new PublishingServiceError(
+        422,
+        "publish_article_platform_unsupported",
+        `平台 ${platform} 尚未接入文章发布，目前只支持今日头条`,
+      );
+    }
+  }
+}
+
+/** 头条发布选项的默认值：**微头条同步默认关闭**（平台默认勾选，不关就会多发一条内容）。 */
+function defaultToutiaoOptions(): ToutiaoPublishOptions {
+  return { firstPublish: false, declarations: [], crossPostWeitoutiao: false };
+}
+
+/** 归一发布选项：声明去重保序（指纹里按集合语义排序）。 */
+function normalizeToutiaoOptions(value: ToutiaoPublishOptions | undefined): ToutiaoPublishOptions {
+  if (!value) return defaultToutiaoOptions();
+  const declarations: string[] = [];
+  for (const item of value.declarations ?? []) {
+    const text = typeof item === "string" ? item.trim() : "";
+    if (text.length > 0 && !declarations.includes(text)) declarations.push(text);
+  }
+  return {
+    firstPublish: Boolean(value.firstPublish),
+    declarations,
+    crossPostWeitoutiao: Boolean(value.crossPostWeitoutiao),
+  };
+}
+
+/**
+ * 文章包**创建阶段**的 `previewRevision`：只覆盖「源 + 封面选择」。
+ *
+ * ⚠️ **刻意不把 AI 草稿算进来**（2026-09-18 实测踩到）：草稿是**服务端**在预览时用 AI 生成的，
+ * 而创建时正文由**用户编辑过的文本**决定 —— 一旦把草稿正文算进指纹，
+ * 「界面允许编辑」就必然变成「一编辑就 409」，而且报错还会说「源内容自预览后发生变化」，
+ * 把用户自己的输入说成源变了（评审实测确认过这条路径走不通）。
+ *
+ * 真正要防的「预览之后内容被改」由**包级**指纹把关：`packagePreviewRevision` 覆盖
+ * `articleCopy.title` + `articleCopy.htmlSha256`（渲染产物哈希）+ 封面 + 头条选项，
+ * 提交时缺/不一致一律 400/409（spec §6.3）。所以这里少绑一层并不削弱那道闸门。
+ */
+function articleSourceRevision(
+  jobId: string,
+  context: SourceContext,
+  platforms: PublishPlatform[],
+  coverKey: string,
+): string {
+  return sourceRevision(jobId, context, platforms, [`cover:${coverKey}`]);
+}
+
+/** 渲染并把「正文过长」翻译成服务层错误（`ToutiaoArticleError` 只在渲染模块里定义）。 */
+function renderArticleHtmlOrThrow(draft: ToutiaoArticleDraft): string {
+  try {
+    return renderToutiaoArticleHtml(draft);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error as { code?: unknown }).code === "toutiao_article_too_long") {
+      throw new PublishingServiceError(422, "publish_validation_failed", error.message);
+    }
+    throw error;
+  }
+}
+
+/** 洗稿产物 → 成文取材上下文（与 `wechat-article.ts` 的取材口径一致，字段更全）。 */
+function articleSourceContextOf(context: SourceContext): ArticleSourceContext {
+  const cleaned = context.cleaned;
+  const source: ArticleSourceContext = { title: cleaned.title ?? cleaned.coverTitle ?? "" };
+  const summary = cleaned.summary;
+  if (summary) source.summary = summary;
+  if (cleaned.keyPoints && cleaned.keyPoints.length > 0) source.keyPoints = [...cleaned.keyPoints];
+  if (cleaned.cleanScript) source.cleanScript = cleaned.cleanScript;
+  if (cleaned.voiceoverScript) source.voiceoverScript = cleaned.voiceoverScript;
+  if (cleaned.videoOutline && cleaned.videoOutline.length > 0) {
+    source.videoOutline = cleaned.videoOutline.map((item) => ({
+      title: item.title,
+      bullets: [...item.bullets],
+    }));
+  }
+  if (cleaned.qualityNotes && cleaned.qualityNotes.length > 0) source.qualityNotes = [...cleaned.qualityNotes];
+  if (cleaned.tags && cleaned.tags.length > 0) source.tags = [...cleaned.tags];
+  return source;
+}
+
+function buildArticleFallbackPlan(context: ArticleSourceContext): ArticlePlan {
+  return fallbackToutiaoArticle(context);
+}
+
+function sha256Hex(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 function assertNotePlatforms(platforms: PublishPlatform[]): void {
   for (const platform of platforms) {
@@ -1378,20 +2177,30 @@ function normalizeOperationError(error: unknown, operation: "index" | "projectio
 /**
  * 按口径生成一份文案检查结果。
  *
- * `noteScope` 为真时用图文口径（抖音 title ≤20），否则用视频口径（title ≤55）——
- * 校验本身仍走 Task 1 收敛后的 `validateNoteCopy` / `validatePlatformCopy`，这里不重写规则。
+ * `copyPolicy` 选的是**用哪份政策文档**，不是「包级还是任务级」：
+ * `"note"` = 图文政策（抖音 title ≤20），`"platform"` = 平台政策
+ * （抖音视频 title ≤55；**头条那份就是文章口径** —— titleMax 30 / 正文 20000，
+ * 见 `PUBLISH_PLATFORMS.toutiao` 的注释）。
+ *
+ * 这里刻意不写成布尔值：这个参数原先叫 `noteScope`，读起来像「包级作用域」，
+ * 于是文章包也照着图文包传了 `true` → `validateNoteCopy("toutiao")` 抛
+ * 「平台 toutiao 尚未接入图文发布」→ 包级预览 500 → 界面上的「提交到头条号」
+ * 因为拿不到 `previewRevision` 而完全不可达（2026-09-18 真机验证实测）。
  */
 function copyCheck(
   platform: PublishPlatform,
   scope: "package" | "task",
   copy: PlatformCopy,
   taskId: string | undefined,
-  noteScope: boolean,
+  copyPolicy: "platform" | "note",
 ): PublishingPreviewCopyCheck {
-  const policy: PlatformPolicy = (noteScope ? PUBLISH_NOTE_POLICIES[platform] : undefined)
-    ?? PUBLISH_PLATFORMS[platform];
+  const policy: PlatformPolicy = copyPolicy === "note"
+    ? PUBLISH_NOTE_POLICIES[platform] ?? PUBLISH_PLATFORMS[platform]
+    : PUBLISH_PLATFORMS[platform];
   const normalized = normalizePlatformCopy(copy);
-  const violations = noteScope ? validateNoteCopy(platform, copy) : validatePlatformCopy(platform, copy);
+  const violations = copyPolicy === "note"
+    ? validateNoteCopy(platform, copy)
+    : validatePlatformCopy(platform, copy);
   const field = (name: keyof PlatformCopy, actual: number, limit: number) => ({
     actual,
     limit,
@@ -1439,6 +2248,7 @@ function normalizeStoreError(error: PublishingError): PublishingServiceError {
       return new PublishingServiceError(400, error.code, error.message, error.details);
     case "publish_asset_broken":
     case "publish_not_a_note_package":
+    case "publish_auto_publish_unsupported":
       return new PublishingServiceError(422, error.code, error.message, error.details);
     case "publish_auto_publish_code_unexpected":
     case "publish_auto_publish_in_progress":

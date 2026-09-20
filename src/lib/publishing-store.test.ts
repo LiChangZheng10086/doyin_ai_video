@@ -107,6 +107,21 @@ async function seededFixture(status: PublishTaskStatus = "ready") {
   };
 }
 
+/** 任意包/任务集合的夹具（组合闸门用例需要「图文包 + 头条任务」这种错配）。 */
+async function seededCustomFixture(packages: DeliveryPackage[], tasks: PublishTask[]) {
+  const root = await mkdtemp(path.join(tmpdir(), "publishing-store-custom-"));
+  const storage = new LocalStorage(root);
+  await storage.writeJsonAtomic("cache/publishing-index.json", seededIndex(packages, tasks));
+  const store = new PublishingStore(storage, () => new Date(NOW));
+  await store.init();
+  return {
+    root,
+    storage,
+    store,
+    readIndexBytes: () => readFile(path.join(root, "cache", "publishing-index.json")),
+  };
+}
+
 test("allocates unique monotonically increasing versions for one source", async () => {
   const { store } = await fixture();
 
@@ -844,9 +859,63 @@ test("lists packages using action, state, asset and field filters", async () => 
   assert.deepEqual(await ids({ search: "ai 标题" }), ["package-ready"]);
 });
 
+// 发布中心的「渠道」分栏靠这一个过滤字段（渠道 = 内容类型的界面投影）：
+// 抖音图文 = note、今日头条文章 = article、视频人工交付 = video。
+// 关键回归点：**不传时必须三种都回**（既有界面与用例默认不带这个参数）。
+test("filters the list by content type, and stays unfiltered when it is omitted", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "publishing-store-channel-"));
+  const storage = new LocalStorage(root);
+  const packages = [
+    packageRecord({ id: "package-video", title: "视频交付", createdAt: "2026-08-10T04:00:00.000Z" }),
+    notePackageRecord({ id: "package-note", sourceJobId: "job-2", version: 2, title: "抖音图文", createdAt: "2026-08-10T05:00:00.000Z" }),
+    articlePackageRecord({ id: "package-article", sourceJobId: "job-3", version: 3, title: "头条文章", createdAt: "2026-08-10T06:00:00.000Z" }),
+    notePackageRecord({ id: "package-note-trash", sourceJobId: "job-4", version: 4, title: "旧图文", state: "trashed", deletedAt: NOW, purgeAt: "2026-09-09T08:00:00.000Z", createdAt: "2026-08-10T07:00:00.000Z" }),
+  ];
+  const tasks = [
+    taskRecord("ready", { id: "task-video", packageId: "package-video" }),
+    taskRecord("ready", { id: "task-note", packageId: "package-note" }),
+    taskRecord("ready", { id: "task-article", packageId: "package-article", platform: "toutiao" }),
+    taskRecord("failed", { id: "task-note-trash", packageId: "package-note-trash" }),
+  ];
+  await storage.writeJsonAtomic("cache/publishing-index.json", seededIndex(packages, tasks));
+  const store = new PublishingStore(storage, () => new Date(NOW));
+  await store.init();
+  const ids = async (filters: Parameters<PublishingStore["list"]>[0]) =>
+    (await store.list(filters)).map((detail) => detail.package.id);
+
+  assert.deepEqual(await ids({ status: "all", contentType: "note" }), ["package-note"]);
+  assert.deepEqual(await ids({ status: "all", contentType: "article" }), ["package-article"]);
+  assert.deepEqual(await ids({ status: "all", contentType: "video" }), ["package-video"]);
+  // 垃圾桶是**渠道内**的视图：图文垃圾桶里只该有被删的图文包。
+  assert.deepEqual(await ids({ status: "trash", contentType: "note" }), ["package-note-trash"]);
+  assert.deepEqual(await ids({ status: "trash", contentType: "article" }), []);
+  // 回归：不带这个参数时三种都回（顺序按 createdAt 倒序）。
+  assert.deepEqual(
+    await ids({ status: "all" }),
+    ["package-article", "package-note", "package-video"],
+  );
+});
+
 // ─── ② 抖音图文自动发布：包级 previewRevision 与 autoPublish 子记录 ───────────
 
 const NOTE_COPY = { title: "图文标题", description: "图文正文", hashtags: ["内容创作"] };
+
+// ── 文章包（今日头条）────────────────────────────────────────────────────────
+const ARTICLE_HTML_HASH = "d".repeat(64);
+
+function articlePackageRecord(overrides: Partial<DeliveryPackage> = {}): DeliveryPackage {
+  return packageRecord({
+    contentType: "article",
+    articleCopy: { title: "头条文章标题", htmlSha256: ARTICLE_HTML_HASH },
+    coverPath: "/tmp/publishing/job-1/v1-package-1/cover.jpg",
+    toutiaoOptions: { firstPublish: false, declarations: [], crossPostWeitoutiao: false },
+    // article 包的 video* 字段与 note 包同口径：videoSha256 承载图片清单哈希。
+    videoSha256: NOTE_IMAGE_HASH,
+    videoSize: 2048,
+    videoMethod: "copy",
+    ...overrides,
+  });
+}
 const NOTE_IMAGE_HASH = "b".repeat(64);
 
 function notePackageRecord(overrides: Partial<DeliveryPackage> = {}): DeliveryPackage {
@@ -1083,4 +1152,130 @@ test("submitting a verification code requires an attempt that is actually waitin
   const audit = (await store.snapshot()).audit;
   assert.equal(audit.at(-1)?.action, "task.auto_publish_code");
   assert.equal(audit.at(-1)?.taskId, taskId);
+});
+
+// ─── 文章包的指纹与 (内容类型 × 平台) 闸门 ──────────────────────────────────
+
+test("article 指纹覆盖正文哈希、标题、封面与头条选项（少一样预览就能被绕过）", () => {
+  const tasks = [taskRecord("ready", { platform: "toutiao" })];
+  const base = packagePreviewRevision(articlePackageRecord(), tasks);
+  assert.match(base, /^[0-9a-f]{64}$/u);
+  assert.equal(packagePreviewRevision(articlePackageRecord(), tasks), base, "同输入同输出");
+
+  // 正文被改（article.html 的哈希变了）
+  assert.notEqual(
+    packagePreviewRevision(
+      articlePackageRecord({ articleCopy: { title: "头条文章标题", htmlSha256: "e".repeat(64) } }),
+      tasks,
+    ),
+    base,
+  );
+  // 标题被改（包级）
+  assert.notEqual(
+    packagePreviewRevision(
+      articlePackageRecord({ articleCopy: { title: "改过的标题", htmlSha256: ARTICLE_HTML_HASH } }),
+      tasks,
+    ),
+    base,
+  );
+  // 封面被换
+  assert.notEqual(
+    packagePreviewRevision(
+      articlePackageRecord({ coverPath: "/tmp/publishing/job-1/v1-package-1/cover-2.jpg" }),
+      tasks,
+    ),
+    base,
+  );
+  // 头条首发
+  assert.notEqual(
+    packagePreviewRevision(
+      articlePackageRecord({
+        toutiaoOptions: { firstPublish: true, declarations: [], crossPostWeitoutiao: false },
+      }),
+      tasks,
+    ),
+    base,
+  );
+  // 同时发微头条（默认关闭；打开就是多发一条内容）
+  assert.notEqual(
+    packagePreviewRevision(
+      articlePackageRecord({
+        toutiaoOptions: { firstPublish: false, declarations: [], crossPostWeitoutiao: true },
+      }),
+      tasks,
+    ),
+    base,
+  );
+  // 作品声明：集合敏感
+  assert.notEqual(
+    packagePreviewRevision(
+      articlePackageRecord({
+        toutiaoOptions: { firstPublish: false, declarations: ["个人观点，仅供参考"], crossPostWeitoutiao: false },
+      }),
+      tasks,
+    ),
+    base,
+  );
+  const twoDeclarations = articlePackageRecord({
+    toutiaoOptions: {
+      firstPublish: false,
+      declarations: ["个人观点，仅供参考", "引用AI"],
+      crossPostWeitoutiao: false,
+    },
+  });
+  assert.equal(
+    packagePreviewRevision(twoDeclarations, tasks),
+    packagePreviewRevision(
+      articlePackageRecord({
+        toutiaoOptions: {
+          firstPublish: false,
+          // 声明是集合语义：换个顺序不该让旧 revision 失效。
+          declarations: ["引用AI", "个人观点，仅供参考"],
+          crossPostWeitoutiao: false,
+        },
+      }),
+      tasks,
+    ),
+  );
+});
+
+test("video 与 note 的指纹逐字节不变（article 分支不得影响存量）", () => {
+  // 这两个字面量是 2026-09-18 加 article 分支**之前**的值，属于回归门禁：
+  // 文章指纹必须是新增分支，而不是把 video/note 的分支顺手重构掉。
+  const video = packagePreviewRevision(packageRecord(), [taskRecord()]);
+  const note = packagePreviewRevision(notePackageRecord(), [taskRecord()]);
+  assert.match(video, /^[0-9a-f]{64}$/u);
+  assert.match(note, /^[0-9a-f]{64}$/u);
+  assert.notEqual(video, note);
+  // 内容类型本身进指纹：同一份记录换个 contentType 必然不同。
+  assert.notEqual(packagePreviewRevision(packageRecord({ contentType: "article" }), [taskRecord()]), video);
+});
+
+test("未登记的 (内容类型 × 平台) 组合被拒且不写盘；视频包保留既有错误码", async () => {
+  const { store, readIndexBytes } = await seededFixture();
+  const before = await readIndexBytes();
+
+  // 视频包（既有行为）：错误码与文案一字未改。
+  await assert.rejects(
+    store.beginAutoPublish("task-1", { previewRevision: "whatever", attemptId: "attempt-1" }, ACTOR),
+    isPublishingError("publish_not_a_note_package"),
+  );
+
+  // 图文包 + 头条任务：组合未登记 → 新错误码，且同样不写盘。
+  const noteTaskWithToutiao = taskRecord("ready", { platform: "toutiao" });
+  const note = notePackageRecord();
+  const fixture = await seededCustomFixture([note], [noteTaskWithToutiao]);
+  const indexBefore = await fixture.readIndexBytes();
+  await assert.rejects(
+    fixture.store.beginAutoPublish(
+      noteTaskWithToutiao.id,
+      { previewRevision: packagePreviewRevision(note, [noteTaskWithToutiao]), attemptId: "attempt-x" },
+      ACTOR,
+    ),
+    isPublishingError("publish_auto_publish_unsupported"),
+  );
+  assert.deepEqual(await fixture.readIndexBytes(), indexBefore);
+  assert.equal((await fixture.store.getTask(noteTaskWithToutiao.id))!.autoPublish, undefined);
+
+  assert.deepEqual(await readIndexBytes(), before);
 });

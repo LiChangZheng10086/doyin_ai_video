@@ -18,6 +18,7 @@ import type {
   JobOverview,
   JobStepStreamEvent,
   LocalUserSessionResponse,
+  NoteImageSource,
   ParsedApiError,
   PipelineStep,
   StreamablePipelineStep,
@@ -226,11 +227,17 @@ export class ApiClient {
     id: string,
     platforms: PublishPlatform[],
     contentType?: PackageContentType,
+    images?: { imageSource?: NoteImageSource; imageAssetIds?: string[] },
   ): Promise<PublishingPreview> {
     const response = await this.publishingRequest<{ preview: PublishingPreview }>({
       method: 'POST',
       url: `/api/jobs/${id}/publishing/preview`,
-      data: { platforms, ...(contentType ? { contentType } : {}) },
+      data: {
+        platforms,
+        ...(contentType ? { contentType } : {}),
+        ...(images?.imageSource ? { imageSource: images.imageSource } : {}),
+        ...(images?.imageAssetIds ? { imageAssetIds: images.imageAssetIds } : {}),
+      },
     });
     return response.preview;
   }
@@ -242,6 +249,69 @@ export class ApiClient {
       url: `/api/publishing/packages/${packageId}/preview`,
     });
     return response.preview;
+  }
+
+  /**
+   * 文章包的 `article.html`（降级通路：不能自动发布时，用户把它粘进头条编辑器）。
+   *
+   * 与封面/图片一样走带会话的请求取 blob —— `<a href>` 不会带 `X-Local-Session` 头。
+   */
+  async getPublishingArticleHtml(packageId: string): Promise<Blob> {
+    const response = await this.publishingRequest<Blob>({
+      method: 'GET',
+      url: `/api/publishing/packages/${packageId}/article`,
+      responseType: 'blob',
+    });
+    return response;
+  }
+
+  // ── 今日头条：登录态就是浏览器会话，只能扫码 ──────────────────────────────
+
+  /** 开始扫码登录，返回二维码 data URL（可直接放进 <img src>）。 */
+  async startToutiaoLogin(): Promise<{ qrDataUrl: string; startedAt: string; expiresAt: string }> {
+    return this.publishingRequest<{ qrDataUrl: string; startedAt: string; expiresAt: string }>({
+      method: 'POST',
+      url: '/api/publishing/toutiao/login',
+      data: {},
+    });
+  }
+
+  async pollToutiaoLogin(): Promise<{
+    status: 'idle' | 'waiting' | 'logged_in' | 'expired';
+    username?: string;
+  }> {
+    return this.publishingRequest<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; username?: string }>({
+      method: 'GET',
+      url: '/api/publishing/toutiao/login',
+    });
+  }
+
+  /**
+   * 打开浏览器窗口扫码登录（与抖音二维码登录同一交互）。
+   * 同步请求：会一直等到扫码成功或超时（后端默认 180 秒），前端需要显示等待态。
+   */
+  async loginToutiaoInWindow(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
+    return this.publishingRequest<{ loggedIn: boolean; username?: string; message: string }>({
+      method: 'POST',
+      url: '/api/publishing/toutiao/login/window',
+      data: {},
+    });
+  }
+
+  async cancelToutiaoLogin(): Promise<void> {
+    await this.publishingRequest<{ ok: boolean }>({
+      method: 'DELETE',
+      url: '/api/publishing/toutiao/login',
+    });
+  }
+
+  /** 零副作用自检：只开首页判登录态 + 读昵称，不填任何表单。 */
+  async verifyToutiaoLogin(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
+    return this.publishingRequest<{ loggedIn: boolean; username?: string; message: string }>({
+      method: 'POST',
+      url: '/api/publishing/toutiao/verify',
+      data: {},
+    });
   }
 
   /** 提交抖音图文。必须带上预览拿到的 `previewRevision`，缺/过期都会被服务端拒绝。 */

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>登录页 fixture</title></head>
+<body>
+<!--
+  这个 fixture 的**唯一用途**是让 URL 里出现 `/auth/page/login`：
+  `gotoPublishPage()` 判「被重定向回登录页」用的就是 URL 子串（实测未登录时头条就是 302 到
+  `/auth/page/login?redirect_url=…`）。放在这个目录层级里，file:// 的 URL 自然带上该子串，
+  于是「未登录 → 停在发布之前」这条路径可以用真浏览器验证，而不必去点真实站点。
+-->
+<p>请扫码登录（fixture）</p>
+</body>
+</html>

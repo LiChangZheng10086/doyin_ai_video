@@ -2,6 +2,7 @@ import { Router, type Express, type NextFunction, type Request, type RequestHand
 import type {
   ActorSnapshot,
   CreatePublishingPackageInput,
+  NoteImageSource,
   PackageContentType,
   PublishingPreview,
   PublishPlatform,
@@ -9,28 +10,57 @@ import type {
   PublishingPackageDetail,
   PublishingPackagePreview,
   PublishTask,
+  ToutiaoPublishOptions,
 } from "../types.js";
 import { getActor, LocalAuthError, LocalSessionStore, requireActor } from "./local-auth.js";
 import { PublishingAssetError } from "./publishing-assets.js";
 import { PublishingCopyError } from "./publishing-copy.js";
 import {
   type CreateVersionInput,
+  type NoteImageSelection,
   PublishingService,
   PublishingServiceError,
   type UpdatePublishContentInput,
 } from "./publishing-service.js";
 import { PublishingError } from "./publishing-store.js";
 import { SauRunnerError } from "./sau-runner.js";
+import { ToutiaoArticleError } from "./toutiao-article.js";
+import { ToutiaoBrowserError } from "./toutiao-browser.js";
+import { ToutiaoMediaError } from "./toutiao-media.js";
+import { ToutiaoPageError } from "./toutiao-page.js";
+import { ToutiaoRunnerError } from "./toutiao-runner.js";
 import { VideoOutputError } from "./video-output.js";
 
-const PLATFORMS = new Set<PublishPlatform>(["douyin", "xiaohongshu", "wechat_channels", "bilibili"]);
+/** 路由层接受的平台清单。**导出**供平台清单一致性守卫用例断言（静默点之一）。 */
+export const PLATFORMS = new Set<PublishPlatform>([
+  "douyin",
+  "xiaohongshu",
+  "wechat_channels",
+  "bilibili",
+  "wechat_mp",
+  "toutiao",
+]);
 const LIST_STATUSES = new Set(["action", "all", "scheduled", "ready", "published", "failed", "cancelled", "broken", "trash"]);
 const SERVER_FIELDS = new Set(["actor", "role", "createdBy", "status", "publishedAt", "videoPath", "packagePath"]);
 
 export type PublishingRouteService = PublishingService & {
-  preview(jobId: string, platforms: PublishPlatform[], contentType?: PackageContentType): Promise<PublishingPreview>;
+  preview(
+    jobId: string,
+    platforms: PublishPlatform[],
+    contentType?: PackageContentType,
+    images?: NoteImageSelection,
+  ): Promise<PublishingPreview>;
   packagePreview(packageId: string): Promise<PublishingPackagePreview>;
   readPackageImage(packageId: string, index: number): Promise<{ bytes: Buffer; extension: string } | null>;
+  /** 文章包的 `article.html`（降级通路：交给用户粘贴进编辑器）。 */
+  readPackageArticleHtml(packageId: string): Promise<{ bytes: Buffer; htmlSha256: string } | null>;
+  /** 今日头条：扫码登录会话与零副作用自检。 */
+  startToutiaoLogin(): Promise<{ qrDataUrl: string; startedAt: string; expiresAt: string }>;
+  pollToutiaoLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; username?: string }>;
+  cancelToutiaoLogin(): Promise<void>;
+  /** 打开浏览器窗口扫码登录（同步等待扫码结果）。 */
+  loginToutiaoInWindow(): Promise<{ loggedIn: boolean; username?: string; message: string }>;
+  verifyToutiaoLogin(): Promise<{ loggedIn: boolean; username?: string; message: string }>;
   autoPublish(taskId: string, input: { previewRevision: string }, actor: ActorSnapshot): Promise<PublishTask>;
   submitAutoPublishCode(taskId: string, code: string, actor: ActorSnapshot): Promise<PublishTask>;
   list(filters: PublishingListFilters): Promise<PublishingPackageDetail[]>;
@@ -77,6 +107,7 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
       requiredId(req.params.id),
       platforms(input.platforms),
       contentType(input.contentType),
+      noteImageSelection(input),
     );
     res.json({ preview });
   }));
@@ -122,6 +153,45 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
     if (!image) throw new PublishingRouteError(404, "publish_image_missing", "发布包没有这张图片");
     res.setHeader("Cache-Control", "private, no-store");
     res.type(image.extension === ".png" ? "png" : image.extension.replace(".", "")).send(image.bytes);
+  }));
+
+  // 文章包的 `article.html`（降级通路）：不能自动发布时，用户可把它粘进头条编辑器。
+  // 与封面同一套包路径纪律（`readPackageArticle` 走 assets 层的归属校验）。
+  router.get("/publishing/packages/:id/article", authenticated, route(async (req, res) => {
+    const article = await deps.publishing.readPackageArticleHtml(requiredId(req.params.id));
+    if (!article) throw new PublishingRouteError(404, "publish_article_missing", "该发布包没有 article.html");
+    res.setHeader("Cache-Control", "private, no-store");
+    // 内容目前是**全转义**渲染的（toutiao-article.ts），但这是包目录里的普通文件：
+    // 加 nosniff 的成本为零，却能挡掉「将来渲染器漏转义 / 包内文件被改写」这类存储型 XSS。
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.type("html").send(article.bytes);
+  }));
+
+  // ── 今日头条：登录态就是浏览器会话，所以**只能扫码**（没有可手工粘贴的凭据）──
+  //
+  // 三个接口对应界面上的「扫码登录 / 轮询状态 / 取消」；`verify` 是零副作用自检
+  // （只开首页判登录态 + 读昵称，不填任何表单），与公众号通路的账号自检探针同一地位。
+  router.post("/publishing/toutiao/login", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.startToutiaoLogin());
+  }));
+
+  router.get("/publishing/toutiao/login", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.pollToutiaoLogin());
+  }));
+
+  router.delete("/publishing/toutiao/login", authenticated, route(async (_req, res) => {
+    await deps.publishing.cancelToutiaoLogin();
+    res.json({ ok: true });
+  }));
+
+  // 打开**有头浏览器窗口**扫码（与抖音 `/api/douyin/qr-login` 同一交互）：
+  // 请求挂着直到扫码成功或超时，前端显示等待态。窗口用持久化 profile，登录一次后长期有效。
+  router.post("/publishing/toutiao/login/window", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.loginToutiaoInWindow());
+  }));
+
+  router.post("/publishing/toutiao/verify", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.verifyToutiaoLogin());
   }));
 
   router.post("/publishing/due/check", writable, route(async (req, res) => {
@@ -289,9 +359,33 @@ function createPackageInput(input: Record<string, unknown>): CreatePublishingPac
       ...base,
       contentType: "note",
       noteCopy,
+      ...noteImageSelection(input),
       platforms: input.platforms.map((item) => ({
         platform: platform(object(item).platform),
         copy: noteCopy,
+      })),
+    };
+  }
+
+  if (resolvedContentType === "article") {
+    // 文章包：文案只认包级 `articleCopy`（与图文包同一理由 —— 避免两处各写一份后漂移）；
+    // 封面复用 `imageSource`/`imageAssetIds`（文章语境下 `imageAssetIds` 恰好一张）。
+    const article = object(input.articleCopy);
+    const articleCopy = {
+      title: requiredNonEmptyString(article.title),
+      body: requiredString(article.body),
+    };
+    return {
+      ...base,
+      contentType: "article",
+      articleCopy,
+      ...noteImageSelection(input),
+      ...(input.toutiaoOptions === undefined
+        ? {}
+        : { toutiaoOptions: toutiaoPublishOptions(input.toutiaoOptions) }),
+      platforms: input.platforms.map((item) => ({
+        platform: platform(object(item).platform),
+        copy: { title: articleCopy.title, description: articleCopy.body, hashtags: [] },
       })),
     };
   }
@@ -310,11 +404,52 @@ function createPackageInput(input: Record<string, unknown>): CreatePublishingPac
   };
 }
 
-/** `contentType` 缺省视为 `video`（存量请求不变）。 */
+/** 今日头条发布选项：三个字段都可省略（省略即默认：不首发、无声明、不同步微头条）。 */
+function toutiaoPublishOptions(value: unknown): ToutiaoPublishOptions {
+  const input = object(value);
+  const declarations = Array.isArray(input.declarations)
+    ? input.declarations.map((item) => requiredString(item).trim()).filter((item) => item.length > 0)
+    : [];
+  return {
+    firstPublish: input.firstPublish === true,
+    declarations,
+    crossPostWeitoutiao: input.crossPostWeitoutiao === true,
+  };
+}
+
+/**
+ * `contentType` 缺省视为 `video`（存量请求不变）。
+ *
+ * `article` 必须在白名单里：类型联合早就有了 `article`、打包层也早就实现了它，
+ * 但路由层当初只放行 video/note —— 漏这一处的表现是**文章包根本创建不出来**（400）。
+ */
 function contentType(value: unknown): PackageContentType {
   if (value === undefined) return "video";
-  if (value === "video" || value === "note") return value;
+  if (value === "video" || value === "note" || value === "article") return value;
   invalid("发布内容类型无效");
+}
+
+/**
+ * 图文素材来源与选择：两个字段都可省略（= 自动静帧），因此缺省时返回空对象，
+ * 让「没传」与「显式传 frames」在服务端是同一条路径。
+ */
+function noteImageSelection(input: Record<string, unknown>): NoteImageSelection {
+  return {
+    ...(input.imageSource === undefined ? {} : { imageSource: noteImageSource(input.imageSource) }),
+    ...(input.imageAssetIds === undefined
+      ? {}
+      : { imageAssetIds: nonEmptyStringArray(input.imageAssetIds, "imageAssetIds") }),
+  };
+}
+
+function noteImageSource(value: unknown): NoteImageSource {
+  if (value === "frames" || value === "library") return value;
+  invalid("图文素材来源无效");
+}
+
+function nonEmptyStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) invalid(`${field} 必须是数组`);
+  return value.map((item) => requiredNonEmptyString(item));
 }
 
 function createVersionInput(input: Record<string, unknown>): CreateVersionInput {
@@ -365,8 +500,19 @@ function platformCopy(input: Record<string, unknown>) {
 function listFilters(req: Request): PublishingListFilters {
   const status = queryString(req.query.status);
   const selectedPlatform = queryString(req.query.platform);
+  const selectedContentType = queryString(req.query.contentType);
   const versionText = queryString(req.query.version);
   if (status && !LIST_STATUSES.has(status)) invalid("发布状态筛选无效");
+  // 渠道分栏的过滤字段（见 spec `2026-09-18-publishing-channel-tabs-design.md`）：
+  // 允许值只有 video/note/article，非法值一律 400，不做静默回落。
+  if (
+    selectedContentType !== undefined
+    && selectedContentType !== "video"
+    && selectedContentType !== "note"
+    && selectedContentType !== "article"
+  ) {
+    invalid("发布内容类型筛选无效");
+  }
   if (selectedPlatform && !PLATFORMS.has(selectedPlatform as PublishPlatform)) invalid("发布平台筛选无效");
   let version: number | undefined;
   if (versionText !== undefined) {
@@ -376,6 +522,7 @@ function listFilters(req: Request): PublishingListFilters {
   return {
     ...(status ? { status: status as PublishingListFilters["status"] } : {}),
     ...(selectedPlatform ? { platform: selectedPlatform as PublishPlatform } : {}),
+    ...(selectedContentType ? { contentType: selectedContentType as PackageContentType } : {}),
     ...(queryString(req.query.sourceJobId) ? { sourceJobId: queryString(req.query.sourceJobId) } : {}),
     ...(version === undefined ? {} : { version }),
     ...(queryString(req.query.createdBy) ? { createdBy: queryString(req.query.createdBy) } : {}),
@@ -480,6 +627,21 @@ function publishingErrorMapper(error: unknown, req: Request, res: Response, next
     res.status(error.status).json({ code: error.code, message: error.message });
     return;
   }
+  // 头条这一族错误各自带 `status` + `code` + **可照抄的指引文案**（例如「未找到可用于头条号发布的
+  // 浏览器 → npm run prepare:package:mac 或 npx playwright install chromium」）。漏登记它们的后果
+  // 不是「状态码不准」，而是**指引整条丢掉**：全部落进下面的兜底 500「发布服务暂时不可用」，
+  // 用户手上只剩一句无从下手的话（2026-09-18 应用内点「扫码登录 / 校验登录」实测）。
+  // 新增头条侧的错误类时，**必须**加进这一支（用例：`toutiao runner errors surface with…`）。
+  if (
+    error instanceof ToutiaoRunnerError
+    || error instanceof ToutiaoBrowserError
+    || error instanceof ToutiaoPageError
+    || error instanceof ToutiaoArticleError
+    || error instanceof ToutiaoMediaError
+  ) {
+    res.status(error.status).json({ code: error.code, message: error.message });
+    return;
+  }
   if (error instanceof PublishingError) {
     res.status(publishingErrorStatus(error.code)).json({
       code: error.code,
@@ -488,13 +650,22 @@ function publishingErrorMapper(error: unknown, req: Request, res: Response, next
     });
     return;
   }
+  // 真正意外的异常：至少留一条痕迹。此前这里**什么都不打**，于是「500 + 一句无从下手的话」
+  // 在应用日志里查不到任何原因（头条那一族错误就是这样被藏了一整轮的）。
+  console.error("[publishing] 未预期的错误:", error);
   res.status(500).json({ code: "publish_service_unavailable", message: "发布服务暂时不可用，请稍后重试" });
 }
 
 function publishingErrorStatus(code: PublishingError["code"]): number {
   if (code === "publish_package_not_found" || code === "publish_task_not_found") return 404;
   if (code === "publish_permission_denied") return 403;
-  if (code === "publish_asset_broken" || code === "publish_not_a_note_package") return 422;
+  if (
+    code === "publish_asset_broken"
+    || code === "publish_not_a_note_package"
+    || code === "publish_auto_publish_unsupported"
+  ) {
+    return 422;
+  }
   if (code === "publish_auto_publish_in_progress" || code === "publish_auto_publish_code_unexpected") return 409;
   if (code === "publish_invalid_transition" || code === "publish_revision_conflict") return 409;
   if (code === "publish_index_corrupt") return 500;

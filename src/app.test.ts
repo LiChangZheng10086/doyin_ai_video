@@ -9,6 +9,7 @@ import { PublishingAssetService } from "./lib/publishing-assets.js";
 import { PublishingStore } from "./lib/publishing-store.js";
 import { SauRunner } from "./lib/sau-runner.js";
 import { LocalStorage } from "./lib/storage.js";
+import { ToutiaoRunnerError } from "./lib/toutiao-runner.js";
 import type { DeliveryPackage, PublishTask } from "./types.js";
 
 type JsonResponse = {
@@ -453,6 +454,24 @@ test("publisher can create, edit, schedule, cancel, restore and record action er
     });
     assert.equal(listed.response.status, 200);
     assert.equal(listed.body.packages.length, 1);
+
+    // 渠道分栏（见 spec `2026-09-18-publishing-channel-tabs-design.md`）：
+    // 视频包属 `video` 渠道，不属于图文/文章渠道；非法值一律 400（不静默回落成不过滤）。
+    const videoChannel = await jsonFetch(fixture.baseUrl, "/api/publishing/packages?status=all&contentType=video", {
+      token: fixture.publisherToken,
+    });
+    assert.equal(videoChannel.response.status, 200);
+    assert.equal(videoChannel.body.packages.length, 1);
+    const noteChannel = await jsonFetch(fixture.baseUrl, "/api/publishing/packages?status=all&contentType=note", {
+      token: fixture.publisherToken,
+    });
+    assert.equal(noteChannel.response.status, 200);
+    assert.equal(noteChannel.body.packages.length, 0);
+    const badContentType = await jsonFetch(fixture.baseUrl, "/api/publishing/packages?contentType=video2", {
+      token: fixture.publisherToken,
+    });
+    assert.equal(badContentType.response.status, 400);
+    assert.equal(badContentType.body.code, "publish_validation_failed");
   } finally {
     await fixture.close();
   }
@@ -2371,6 +2390,847 @@ test("a note package created through the API can be previewed and then auto-publ
     assert.equal(published.body.task.autoPublish.status, "succeeded");
     // 仍然绝不写 published
     assert.equal(published.body.task.status, "ready");
+  } finally {
+    await fixture.close();
+  }
+});
+
+// ─── ③ Task 3：素材库图片接入图文发布（路由层） ──────────────────────
+
+/** 上传两张素材库图片：返回的记录顺序 = 上传顺序（与「选择顺序」刻意不同）。 */
+async function uploadNoteLibraryImages(fixture: { baseUrl: string }) {
+  const response = await uploadAssets(fixture.baseUrl, "images", [
+    { name: "素材 A.png", data: Buffer.concat([assetPngBytes(1080, 1920), Buffer.from([1])]), type: "image/png" },
+    { name: "素材 B.png", data: Buffer.concat([assetPngBytes(1080, 1920), Buffer.from([2])]), type: "image/png" },
+  ]);
+  assert.equal(response.status, 201);
+  const body = await response.json() as {
+    assets: Array<{ id: string; filename: string; originalName: string; bytes: number }>;
+  };
+  assert.equal(body.assets.length, 2);
+  return body.assets;
+}
+
+function noteLibraryPreviewBody(imageAssetIds: string[]) {
+  return { ...notePreviewBody(), imageSource: "library", imageAssetIds };
+}
+
+function noteLibraryCreateBody(previewRevision: string, imageAssetIds: string[]) {
+  return {
+    ...noteCreateBody(previewRevision, { title: "图文标题", description: "图文正文", hashtags: ["内容创作"] }),
+    imageSource: "library",
+    imageAssetIds,
+  };
+}
+
+test("note preview and creation can use library images in the order they were selected", async () => {
+  const fixture = await publishingApiFixture();
+  try {
+    const [imageA, imageB] = await uploadNoteLibraryImages(fixture);
+
+    // 选择顺序是 B → A（与上传顺序相反）
+    const preview = await jsonFetch(
+      fixture.baseUrl,
+      `/api/jobs/${fixture.jobId}/publishing/preview`,
+      { method: "POST", token: fixture.publisherToken, body: noteLibraryPreviewBody([imageB.id, imageA.id]) },
+    );
+    assert.equal(preview.response.status, 200);
+    const previewBody = preview.body.preview as Record<string, any>;
+    assert.equal(previewBody.imageSource, "library");
+    assert.equal(previewBody.imageLimit, 35);
+    assert.deepEqual(previewBody.images.map((image: any) => image.name), ["素材 B.png", "素材 A.png"]);
+    assert.deepEqual(previewBody.images.map((image: any) => image.size), [imageB.bytes, imageA.bytes]);
+    assert.deepEqual(previewBody.images.map((image: any) => image.assetId), [imageB.id, imageA.id]);
+
+    // 来源参与指纹：静帧来源的 revision 与素材库来源不同
+    const frames = await jsonFetch(
+      fixture.baseUrl,
+      `/api/jobs/${fixture.jobId}/publishing/preview`,
+      { method: "POST", token: fixture.publisherToken, body: notePreviewBody() },
+    );
+    assert.notEqual(
+      (frames.body.preview as Record<string, any>).previewRevision,
+      previewBody.previewRevision,
+    );
+
+    const created = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: noteLibraryCreateBody(previewBody.previewRevision, [imageB.id, imageA.id]),
+    });
+    assert.equal(created.response.status, 201);
+    const pkg = created.body.package.package as Record<string, any>;
+    assert.equal(pkg.contentType, "note");
+    assert.deepEqual(pkg.imagePaths, ["images/01.png", "images/02.png"]);
+    assert.equal(pkg.assetHealth, "healthy");
+
+    // 包内 01 是选择顺序里的第一张（素材 B），并且与上传的原文件逐字节一致
+    const packagePath = path.join(fixture.storageRoot, "output", "publishing", fixture.jobId, `v1-${pkg.id}`);
+    assert.deepEqual(
+      await readFile(path.join(packagePath, "images", "01.png")),
+      await readFile(path.join(fixture.storageRoot, "assets", "images", imageB.filename)),
+    );
+    assert.deepEqual(
+      await readFile(path.join(packagePath, "images", "02.png")),
+      await readFile(path.join(fixture.storageRoot, "assets", "images", imageA.filename)),
+    );
+    // 图文包依旧没有成片
+    await assert.rejects(stat(path.join(packagePath, "video.mp4")), { code: "ENOENT" });
+
+    // 包级预览与自动发布的链路不受影响：包能取到 revision 与图片
+    const packagePreview = await jsonFetch(
+      fixture.baseUrl,
+      `/api/publishing/packages/${pkg.id}/preview`,
+      { token: fixture.publisherToken },
+    );
+    assert.equal(packagePreview.response.status, 200);
+    const packagePreviewBody = packagePreview.body.preview as Record<string, any>;
+    assert.deepEqual(packagePreviewBody.imagePaths, ["images/01.png", "images/02.png"]);
+    const image = await fetch(`${fixture.baseUrl}/api/publishing/packages/${pkg.id}/images/0`, {
+      headers: { "X-Local-Session": fixture.publisherToken },
+    });
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get("content-type")?.includes("png"), true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("note creation rejects bad library selections without writing anything", async () => {
+  const fixture = await publishingApiFixture();
+  try {
+    const [imageA] = await uploadNoteLibraryImages(fixture);
+    const previewResponse = await jsonFetch(
+      fixture.baseUrl,
+      `/api/jobs/${fixture.jobId}/publishing/preview`,
+      { method: "POST", token: fixture.publisherToken, body: noteLibraryPreviewBody([imageA.id]) },
+    );
+    assert.equal(previewResponse.response.status, 200);
+    const revision = (previewResponse.body.preview as Record<string, any>).previewRevision as string;
+    const before = await fixture.readPublishingBytes();
+
+    // 「素材库」来源却一张都没选
+    const empty = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: noteLibraryCreateBody(revision, []),
+    });
+    assert.equal(empty.response.status, 400);
+    assert.match(empty.body.message, /至少选择一张/u);
+
+    // 来源取值非法
+    const badSource = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { ...noteLibraryCreateBody(revision, [imageA.id]), imageSource: "camera" },
+    });
+    assert.equal(badSource.response.status, 400);
+
+    // 选中的素材不存在（被删或 id 是编的）
+    const unknown = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: noteLibraryCreateBody(revision, ["00000000-0000-4000-8000-000000000000"]),
+    });
+    assert.equal(unknown.response.status, 422);
+    assert.match(unknown.body.message, /素材/u);
+
+    // 静帧来源不接受素材 id
+    const framesWithIds = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { ...noteLibraryCreateBody(revision, [imageA.id]), imageSource: "frames" },
+    });
+    assert.equal(framesWithIds.response.status, 400);
+    assert.match(framesWithIds.body.message, /静帧/u);
+
+    // 全部失败路径都不写索引、不产包
+    assert.deepEqual(await fixture.readPublishingBytes(), before);
+    assert.deepEqual(
+      await readdir(path.join(fixture.storageRoot, "output", "publishing")).catch(() => []),
+      [],
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("note preview falls back to scene snapshots when no image source is given", async () => {
+  const fixture = await publishingApiFixture();
+  try {
+    await uploadNoteLibraryImages(fixture);
+    const response = await jsonFetch(
+      fixture.baseUrl,
+      `/api/jobs/${fixture.jobId}/publishing/preview`,
+      { method: "POST", token: fixture.publisherToken, body: notePreviewBody() },
+    );
+
+    assert.equal(response.response.status, 200);
+    const preview = response.body.preview as Record<string, any>;
+    // 存量请求（不带 imageSource）逐字保持静帧口径：素材库里就算有图也不参与
+    assert.equal(preview.imageSource, "frames");
+    assert.deepEqual(preview.images.map((image: any) => image.name), ["frame-00-at-3s.png", "frame-01-at-9s.png"]);
+    assert.equal(preview.images.every((image: any) => image.assetId === undefined), true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+// ─── 今日头条文章发布（article × toutiao）────────────────────────────────────
+//
+// 全程注入**假执行器 / 假封面处理 / 假成文**：不启浏览器、不联网、不调 ffmpeg。
+// 这里守住的是「(内容类型 × 平台) 分派」与四条不变式（不写 published、缺 revision 不留记录、
+// 失败不自动重试、未登记组合明确报错）。
+
+interface FakeToutiaoCall {
+  title: string;
+  coverPath: string;
+  firstPublish: boolean;
+  declarations: string[];
+  crossPostWeitoutiao: boolean;
+  articleHtmlLength: number;
+}
+
+function fakeToutiaoRunner(options: {
+  loggedIn?: boolean;
+  result?: Partial<Record<string, unknown>>;
+  /** 让指定步骤抛真实的执行器错误（用于验证「错误必须原样透出」）。 */
+  failWith?: { method: "checkLogin" | "startLogin" | "loginInWindow" | "publishArticle"; error: ToutiaoRunnerError };
+} = {}) {
+  const calls: FakeToutiaoCall[] = [];
+  const loginCalls: string[] = [];
+  const maybeFail = (method: string) => {
+    if (options.failWith?.method === method) throw options.failWith.error;
+  };
+  return {
+    calls,
+    loginCalls,
+    assertCalls: 0,
+    runner: {
+      assertConfigured() {
+        this.assertCalls += 1;
+      },
+      // 装配时会调用它安装退出清理；假执行器不必真的挂进程钩子。
+      installExitCleanup() {}, 
+      async checkLogin() {
+        loginCalls.push("checkLogin");
+        maybeFail("checkLogin");
+        return options.loggedIn === false
+          ? { loggedIn: false, url: "https://mp.toutiao.com/auth/page/login" }
+          : { loggedIn: true, url: "https://mp.toutiao.com/profile_v4/", username: "头条作者" };
+      },
+      async startLogin() {
+        loginCalls.push("startLogin");
+        maybeFail("startLogin");
+        return {
+          qrDataUrl: "data:image/png;base64,AAAA",
+          startedAt: NOTE_NOW,
+          expiresAt: "2026-08-10T00:10:00.000Z",
+        };
+      },
+      async pollLogin() {
+        loginCalls.push("pollLogin");
+        return { status: "waiting" as const };
+      },
+      async cancelLogin() {
+        loginCalls.push("cancelLogin");
+      },
+      async loginInWindow() {
+        loginCalls.push("loginInWindow");
+        return { loggedIn: true, username: "头条作者", message: "登录成功：头条作者" };
+      },
+      async publishArticle(input: FakeToutiaoCall & { articleHtml: string; articleText: string }) {
+        maybeFail("publishArticle");
+        calls.push({
+          title: input.title,
+          coverPath: input.coverPath,
+          firstPublish: input.firstPublish,
+          declarations: input.declarations,
+          crossPostWeitoutiao: input.crossPostWeitoutiao,
+          articleHtmlLength: input.articleHtml.length,
+        });
+        return {
+          ok: true,
+          message: options.result?.message as string ?? "页面提示「发布成功」",
+          verification: (options.result?.verification as "confirmed" | "unconfirmed") ?? "confirmed",
+          bodyMode: "rich" as const,
+          steps: ["进入发布页"],
+        };
+      },
+    },
+  };
+}
+
+const ARTICLE_TITLE = "头条文章标题";
+const ARTICLE_BODY = "## 小标题\n\n第一段正文。\n\n第二段正文。";
+
+/** 头条文章夹具：真建包（走 API），只把成文/封面/执行器换成假实现。 */
+async function toutiaoArticleFixture(options: { runner?: ReturnType<typeof fakeToutiaoRunner> } = {}) {
+  const fake = options.runner ?? fakeToutiaoRunner();
+  const fixture = await publishingApiFixture({
+    planArticle: async () => ({
+      draft: {
+        title: ARTICLE_TITLE,
+        sections: [
+          { heading: "小标题", paragraphs: ["第一段正文。", "第二段正文。"] },
+        ],
+      },
+      copySource: "ai",
+    }),
+    toutiaoRunner: fake.runner as never,
+    toutiaoMedia: {
+      async prepareCoverImage(_src: string, outDir: string) {
+        await mkdir(outDir, { recursive: true });
+        const target = path.join(outDir, "cover.jpg");
+        await writeFile(target, Buffer.from("fake-16x9-cover"));
+        return { path: target, bytes: 15 };
+      },
+    } as never,
+  });
+
+  // 头条封面必填：走 `frames` 来源时必须真的有场景静帧。
+  const snapshots = path.join(fixture.storageRoot, "output", "videos", fixture.jobId, "hyperframes", "snapshots");
+  await mkdir(snapshots, { recursive: true });
+  await writeFile(path.join(snapshots, "frame-00-at-3s.png"), Buffer.from("fake-png"));
+
+  return { ...fixture, fake };
+}
+
+async function previewAndCreateArticle(fixture: Awaited<ReturnType<typeof toutiaoArticleFixture>>) {
+  const preview = await jsonFetch(
+    fixture.baseUrl,
+    `/api/jobs/${fixture.jobId}/publishing/preview`,
+    {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { platforms: ["toutiao"], contentType: "article" },
+    },
+  );
+  assert.equal(preview.response.status, 200, JSON.stringify(preview.body));
+  const articleCopy = preview.body.preview.articleCopy as { title: string; body: string };
+
+  const created = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+    method: "POST",
+    token: fixture.publisherToken,
+    body: {
+      sourceJobId: fixture.jobId,
+      previewRevision: preview.body.preview.previewRevision,
+      title: "发布测试作品",
+      contentType: "article",
+      articleCopy,
+      platforms: [{ platform: "toutiao" }],
+    },
+  });
+  assert.equal(created.response.status, 201, JSON.stringify(created.body));
+  const detail = created.body.package as Record<string, any>;
+  return { preview: preview.body.preview as Record<string, any>, detail, pkg: detail.package as Record<string, any>, tasks: detail.tasks as Array<Record<string, any>> };
+}
+
+test("article preview writes the AI draft into the payload and defaults the toutiao options to off", async () => {
+  const fixture = await toutiaoArticleFixture();
+  try {
+    const response = await jsonFetch(
+      fixture.baseUrl,
+      `/api/jobs/${fixture.jobId}/publishing/preview`,
+      { method: "POST", token: fixture.publisherToken, body: { platforms: ["toutiao"], contentType: "article" } },
+    );
+
+    assert.equal(response.response.status, 200, JSON.stringify(response.body));
+    const preview = response.body.preview as Record<string, any>;
+
+    assert.equal(preview.contentType, "article");
+    assert.equal(preview.articleCopy.title, ARTICLE_TITLE);
+    // 正文往返用 `## ` 标记小标题（无损还原成 h2）。
+    assert.match(preview.articleCopy.body, /^## 小标题/u);
+    assert.deepEqual(preview.articleLimits, { titleMin: 2, titleMax: 30, bodyChars: 20_000 });
+    // 平台默认会勾上「同时发布微头条」——我们的默认必须是关闭。
+    assert.deepEqual(preview.toutiaoOptions, {
+      firstPublish: false,
+      declarations: [],
+      crossPostWeitoutiao: false,
+    });
+    assert.equal(preview.imageSource, "frames");
+    assert.equal(preview.articleCover.name, "frame-00-at-3s.png");
+    // 头条封面必填，所以在预览阶段就要能看见它。
+    assert.equal(preview.imageLimit, undefined);
+    assert.equal(preview.copies.toutiao.title, ARTICLE_TITLE);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("creating an article package stores the html hash, cover, options and syncs the task copy", async () => {
+  const fixture = await toutiaoArticleFixture();
+  try {
+    const { pkg, tasks } = await previewAndCreateArticle(fixture);
+
+    assert.equal(pkg.contentType, "article");
+    assert.equal(pkg.articleCopy.title, ARTICLE_TITLE);
+    assert.match(pkg.articleCopy.htmlSha256, /^[0-9a-f]{64}$/u);
+    assert.ok(pkg.coverPath, "头条封面必填，包记录必须有 coverPath");
+    assert.equal(path.basename(pkg.coverPath), "cover.jpg");
+    assert.deepEqual(pkg.toutiaoOptions, { firstPublish: false, declarations: [], crossPostWeitoutiao: false });
+
+    // 任务文案由服务端从包级文章同步生成（客户端不许传两份）。
+    const task = tasks[0]!;
+    assert.equal(task.platform, "toutiao");
+    assert.equal(task.title, ARTICLE_TITLE);
+    assert.match(task.description, /第一段正文/u);
+
+    // 包内 article.html 真的存在，且哈希与记录一致。
+    // 注意：这里是 HTML 不是 JSON，必须用原生 fetch 读字节（`jsonFetch` 会把 body 读掉）。
+    const htmlResponse = await fetch(`${fixture.baseUrl}/api/publishing/packages/${pkg.id}/article`, {
+      headers: { "X-Local-Session": fixture.publisherToken },
+    });
+    assert.equal(htmlResponse.status, 200);
+    assert.match(htmlResponse.headers.get("content-type") ?? "", /html/u);
+    const bytes = Buffer.from(await htmlResponse.arrayBuffer());
+    const { createHash } = await import("node:crypto");
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), pkg.articleCopy.htmlSha256);
+    assert.match(bytes.toString("utf8"), /<h2[^>]*>小标题<\/h2>/u);
+  } finally {
+    await fixture.close();
+  }
+});
+
+// 界面上的「提交到头条号」必须**先经过包级预览**（服务端约束：auto-publish 要带 previewRevision），
+// 而 revision 只能由这个接口产出 —— 所以这条接口 500 等于整个头条通路在界面上不可达。
+// 当时的用例直接读 store 里的 revision，把接口整个绕了过去，于是「文章包走图文口径校验、
+// `validateNoteCopy('toutiao')` 直接抛错」这个 bug 一路漏到真机验证（2026-09-18 实测）。
+test("article package preview returns the toutiao article checks instead of failing", async () => {
+  const fixture = await toutiaoArticleFixture();
+  try {
+    const { pkg } = await previewAndCreateArticle(fixture);
+
+    const response = await jsonFetch(
+      fixture.baseUrl,
+      `/api/publishing/packages/${pkg.id}/preview`,
+      { token: fixture.publisherToken },
+    );
+    assert.equal(response.response.status, 200, JSON.stringify(response.body));
+    const preview = response.body.preview as Record<string, any>;
+
+    assert.equal(preview.package.contentType, "article");
+    assert.equal(preview.articleCopy.title, ARTICLE_TITLE);
+    assert.match(preview.articleCopy.body, /## 小标题/u);
+    assert.deepEqual(preview.articleLimits, { titleMin: 2, titleMax: 30, bodyChars: 20_000 });
+    // 微头条默认必须是「否」：预览要摊出来，不能让操作者以为只发了一篇文章。
+    assert.equal(preview.toutiaoOptions.crossPostWeitoutiao, false);
+
+    // 文案检查用**头条文章口径**（titleMax 30 / 正文 20000），且不报违规。
+    assert.equal(preview.copyChecks.length, 1);
+    const check = preview.copyChecks[0] as Record<string, any>;
+    assert.equal(check.platform, "toutiao");
+    assert.equal(check.scope, "package");
+    assert.equal(check.label, "今日头条");
+    assert.equal(check.title.limit, 30);
+    assert.equal(check.description.limit, 20_000);
+    assert.equal(check.description.over, false);
+    assert.deepEqual(check.violations, []);
+
+    // 这份预览产出的 revision 必须**就是** auto-publish 认的那个（否则点了也只会 409）。
+    const reader = new PublishingStore(new LocalStorage(fixture.storageRoot));
+    await reader.init();
+    assert.equal(preview.previewRevision, await reader.previewRevision(pkg.id));
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("article auto-publish goes to the toutiao engine and keeps the task status untouched", async () => {
+  const fixture = await toutiaoArticleFixture();
+  try {
+    const { pkg, tasks } = await previewAndCreateArticle(fixture);
+    const reader = new PublishingStore(new LocalStorage(fixture.storageRoot));
+    await reader.init();
+    const revision = (await reader.previewRevision(pkg.id))!;
+    const taskId = tasks[0]!.id as string;
+
+    const response = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/auto-publish`, {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { previewRevision: revision },
+    });
+
+    assert.equal(response.response.status, 200, JSON.stringify(response.body));
+    const task = response.body.task as Record<string, any>;
+    assert.equal(task.autoPublish.status, "succeeded");
+    // **最关键的一条不变式**：机器只记「已提交」，绝不写 published。
+    assert.equal(task.status, "ready");
+    assert.equal(task.publishedAt, undefined);
+
+    // 执行器拿到了真正要发的内容。
+    assert.equal(fixture.fake.calls.length, 1);
+    const call = fixture.fake.calls[0]!;
+    assert.equal(call.title, ARTICLE_TITLE);
+    assert.equal(call.crossPostWeitoutiao, false);
+    assert.equal(call.firstPublish, false);
+    assert.ok(call.articleHtmlLength > 0);
+    assert.equal(path.basename(call.coverPath), "cover.jpg");
+    assert.equal(await stat(call.coverPath).then(() => true).catch(() => false), false, "临时封面必须被清理");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("an unconfirmed publish result is reported honestly instead of claiming success", async () => {
+  const runner = fakeToutiaoRunner({
+    result: { verification: "unconfirmed", message: "未能从页面确认结果" },
+  });
+  const fixture = await toutiaoArticleFixture({ runner });
+  try {
+    const { pkg, tasks } = await previewAndCreateArticle(fixture);
+    const reader = new PublishingStore(new LocalStorage(fixture.storageRoot));
+    await reader.init();
+    const revision = (await reader.previewRevision(pkg.id))!;
+
+    const response = await jsonFetch(
+      fixture.baseUrl,
+      `/api/publishing/tasks/${tasks[0]!.id}/auto-publish`,
+      { method: "POST", token: fixture.publisherToken, body: { previewRevision: revision } },
+    );
+
+    const task = response.body.task as Record<string, any>;
+    assert.equal(task.autoPublish.status, "succeeded");
+    // **不加前缀**：runner 的文案自己就说清了状态，服务层再拼「已提交，但」会变成
+    // 「已提交，但已点击发布，但未能…」（2026-09-20 真机记录里就是这个双「但」）。
+    assert.equal(task.autoPublish.message.startsWith("已提交"), false);
+    assert.match(task.autoPublish.message, /未能/u);
+    assert.equal(task.status, "ready");
+  } finally {
+    await fixture.close();
+  }
+});
+
+// 头条执行器的错误**必须原样透出**：错误边界当初漏登记 `ToutiaoRunnerError`，于是
+// 「未找到可用于头条号发布的浏览器」这类**带可照抄指引的 422** 被统一吞成
+// 500「发布服务暂时不可用，请稍后重试」——界面上只剩一句无从下手的话（2026-09-18 用户在
+// 应用内点「扫码登录 / 校验登录」实测就是这个症状）。这里守住状态码、错误码与指引文案三者。
+test("toutiao runner errors surface with their own status, code and guidance", async () => {
+  const guidance = "未找到可用于头条号发布的浏览器。请二选一：npm run prepare:package:mac 或 npx playwright install chromium";
+  const fixture = await toutiaoArticleFixture({
+    runner: fakeToutiaoRunner({
+      failWith: {
+        method: "startLogin",
+        error: new ToutiaoRunnerError("toutiao_browser_unavailable", guidance),
+      },
+    }),
+  });
+  try {
+    const response = await jsonFetch(fixture.baseUrl, "/api/publishing/toutiao/login", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {},
+    });
+
+    assert.equal(response.response.status, 422, JSON.stringify(response.body));
+    assert.equal(response.body.code, "toutiao_browser_unavailable");
+    // 指引必须原样到达界面，否则用户没有任何可照抄的动作。
+    assert.match(String(response.body.message), /npm run prepare:package:mac/u);
+    assert.equal(String(response.body.message).includes("发布服务暂时不可用"), false);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("toutiao runner errors keep their per-code status (409 for a login already in progress)", async () => {
+  const fixture = await toutiaoArticleFixture({
+    runner: fakeToutiaoRunner({
+      failWith: {
+        method: "checkLogin",
+        error: new ToutiaoRunnerError("toutiao_login_in_progress", "已有一次头条登录在进行中，请先取消或等它超时"),
+      },
+    }),
+  });
+  try {
+    const response = await jsonFetch(fixture.baseUrl, "/api/publishing/toutiao/verify", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {},
+    });
+
+    assert.equal(response.response.status, 409, JSON.stringify(response.body));
+    assert.equal(response.body.code, "toutiao_login_in_progress");
+    assert.match(String(response.body.message), /已有一次头条登录在进行中/u);
+  } finally {
+    await fixture.close();
+  }
+});
+
+// 发布通路的「任何异常都必须落成 failed 记录」：`publishArticle` 里 `openSession()` 在 try **之外**，
+// 所以「浏览器起不来」这类错误会直接抛到服务层。服务层此前只认 `ToutiaoRunnerError`、其余原样抛出，
+// 结果是 **500 + `autoPublish` 停在 `running`**（界面只显示「正在进行中」、按钮灰掉，直到 30 分钟僵死
+// 阈值才能重试）—— 正是 AGENTS.md 警告过的形态。这两条用例把「跑不动也要如实记失败」钉住。
+test("toutiao publish: a launch failure is recorded as failed, never a 500 and never stuck running", async () => {
+  const fixture = await toutiaoArticleFixture({
+    runner: fakeToutiaoRunner({
+      failWith: {
+        method: "publishArticle",
+        error: new ToutiaoRunnerError(
+          "toutiao_browser_unavailable",
+          "头条会话目录不可写，无法创建：/x/storage/toutiao/profile（EPERM: operation not permitted）",
+        ),
+      },
+    }),
+  });
+  try {
+    const { pkg, tasks } = await previewAndCreateArticle(fixture);
+    const taskId = tasks[0]!.id as string;
+    const reader = new PublishingStore(new LocalStorage(fixture.storageRoot));
+    await reader.init();
+
+    const response = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/auto-publish`, {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { previewRevision: (await reader.previewRevision(pkg.id))! },
+    });
+
+    assert.equal(response.response.status, 200, JSON.stringify(response.body));
+    const task = response.body.task as Record<string, any>;
+    assert.equal(task.autoPublish.status, "failed");
+    // 原因必须留在记录里（否则用户只知道「失败」）。
+    assert.match(String(task.autoPublish.message), /不可写/u);
+    assert.match(String(task.autoPublish.message), /EPERM/u);
+    // 不变式照旧：机器绝不写 published。
+    assert.equal(task.status, "ready");
+    assert.equal(task.publishedAt, undefined);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("toutiao publish: even an unexpected raw error becomes a failed record with its cause", async () => {
+  const fixture = await toutiaoArticleFixture({
+    runner: fakeToutiaoRunner({
+      failWith: { method: "publishArticle", error: new Error("EPERM: operation not permitted, mkdir '/x'") },
+    }),
+  });
+  try {
+    const { pkg, tasks } = await previewAndCreateArticle(fixture);
+    const taskId = tasks[0]!.id as string;
+    const reader = new PublishingStore(new LocalStorage(fixture.storageRoot));
+    await reader.init();
+
+    const response = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/auto-publish`, {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { previewRevision: (await reader.previewRevision(pkg.id))! },
+    });
+
+    assert.equal(response.response.status, 200, JSON.stringify(response.body));
+    const task = response.body.task as Record<string, any>;
+    assert.equal(task.autoPublish.status, "failed");
+    assert.match(String(task.autoPublish.message), /EPERM/u);
+    assert.equal(task.status, "ready");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("article auto-publish without a preview revision writes nothing", async () => {
+  const fixture = await toutiaoArticleFixture();
+  try {
+    const { tasks } = await previewAndCreateArticle(fixture);
+    const taskId = tasks[0]!.id as string;
+    const before = await fixture.readPublishingBytes();
+
+    const response = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/auto-publish`, {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {},
+    });
+
+    assert.equal(response.response.status, 400);
+    assert.deepEqual(await fixture.readPublishingBytes(), before);
+    assert.equal(fixture.fake.calls.length, 0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("article auto-publish with a stale revision is refused and leaves no record", async () => {
+  const fixture = await toutiaoArticleFixture();
+  try {
+    const { tasks } = await previewAndCreateArticle(fixture);
+    const taskId = tasks[0]!.id as string;
+    const before = await fixture.readPublishingBytes();
+
+    const response = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/auto-publish`, {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { previewRevision: "stale-revision" },
+    });
+
+    assert.equal(response.response.status, 409);
+    assert.equal(response.body.code, "publish_revision_conflict");
+    assert.deepEqual(await fixture.readPublishingBytes(), before);
+    assert.equal(fixture.fake.calls.length, 0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+// 注：「文章包 + 抖音任务」这种未登记组合**没有** API 级用例，原因记在这里：
+// 发布索引在 `PublishingStore` 初始化时读进内存，**直接改磁盘上的 index 文件不会被观察**，
+// 因此没法在应用启动后把一个图文/文章包跟一个错平台的任务凑到一起。
+// 该组合由两条单元用例覆盖，合起来等价：
+//   ① `publishing-platforms.test.ts` → 「通路表：图文只走抖音（sau），文章只走头条（自研 runner）」
+//   ② `publishing-store.test.ts` → 「未登记的 (内容类型 × 平台) 组合被拒且不写盘」
+// 服务层那一处分派（`resolveAutoPublishEngine`）与 store 的闸门读的是**同一张表**，因此不会漂移。
+
+test("toutiao login routes drive the runner and the verify route is side-effect free", async () => {
+  const fixture = await toutiaoArticleFixture();
+  try {
+    const started = await jsonFetch(fixture.baseUrl, "/api/publishing/toutiao/login", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {},
+    });
+    assert.equal(started.response.status, 200);
+    assert.match(started.body.qrDataUrl, /^data:image\/png;base64,/u);
+
+    const polled = await jsonFetch(fixture.baseUrl, "/api/publishing/toutiao/login", {
+      token: fixture.publisherToken,
+    });
+    assert.equal(polled.body.status, "waiting");
+
+    const verified = await jsonFetch(fixture.baseUrl, "/api/publishing/toutiao/verify", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {},
+    });
+    assert.equal(verified.response.status, 200);
+    assert.equal(verified.body.loggedIn, true);
+    assert.equal(verified.body.username, "头条作者");
+
+    const cancelled = await jsonFetch(fixture.baseUrl, "/api/publishing/toutiao/login", {
+      method: "DELETE",
+      token: fixture.publisherToken,
+    });
+    assert.equal(cancelled.response.status, 200);
+
+    assert.deepEqual(fixture.fake.loginCalls, ["startLogin", "pollLogin", "checkLogin", "cancelLogin"]);
+
+    // 未认证一律 401（不是 404：路由必须真的挂上了）。
+    const anonymous = await jsonFetch(fixture.baseUrl, "/api/publishing/toutiao/login", { method: "POST", body: {} });
+    assert.equal(anonymous.response.status, 401);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("toutiao window login opens the browser flow and cancels any in-app session first", async () => {
+  const fixture = await toutiaoArticleFixture();
+  try {
+    const response = await jsonFetch(fixture.baseUrl, "/api/publishing/toutiao/login/window", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {},
+    });
+
+    assert.equal(response.response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.loggedIn, true);
+    assert.equal(response.body.username, "头条作者");
+    // 先取消内存里的应用内会话，避免同时开两个浏览器（一个扫码窗口 + 一个无头取码）。
+    assert.deepEqual(fixture.fake.loginCalls, ["cancelLogin", "loginInWindow"]);
+
+    // 未认证同样 401（不是 404）。
+    const anonymous = await jsonFetch(fixture.baseUrl, "/api/publishing/toutiao/login/window", {
+      method: "POST",
+      body: {},
+    });
+    assert.equal(anonymous.response.status, 401);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("edited article copy can still be created (the AI draft is a suggestion, not a binding)", async () => {
+  const fixture = await toutiaoArticleFixture();
+  try {
+    const preview = await jsonFetch(
+      fixture.baseUrl,
+      `/api/jobs/${fixture.jobId}/publishing/preview`,
+      { method: "POST", token: fixture.publisherToken, body: { platforms: ["toutiao"], contentType: "article" } },
+    );
+    assert.equal(preview.response.status, 200);
+    const serverDraft = preview.body.preview.articleCopy as { title: string; body: string };
+
+    // 用户按界面允许的方式改标题与正文（spec §8：标题可编辑、正文可编辑）。
+    const edited = {
+      title: `${serverDraft.title}（改过）`,
+      body: '## 我自己的小标题\n\n完全重写的一段正文。',
+    };
+    assert.notEqual(edited.title, serverDraft.title);
+
+    const created = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {
+        sourceJobId: fixture.jobId,
+        // 仍然回传**预览时拿到的** revision：文章通路刻意不把 AI 草稿绑进创建阶段的指纹。
+        previewRevision: preview.body.preview.previewRevision,
+        title: "发布测试作品",
+        contentType: "article",
+        articleCopy: edited,
+        platforms: [{ platform: "toutiao" }],
+      },
+    });
+
+    assert.equal(created.response.status, 201, JSON.stringify(created.body));
+    const pkg = (created.body.package as Record<string, any>).package as Record<string, any>;
+    // 存进去的必须是**用户编辑后的**标题，而不是 AI 草稿。
+    assert.equal(pkg.articleCopy.title, edited.title);
+    const html = await fetch(`${fixture.baseUrl}/api/publishing/packages/${pkg.id}/article`, {
+      headers: { "X-Local-Session": fixture.publisherToken },
+    });
+    const text = await html.text();
+    assert.match(text, /我自己的小标题/u);
+    assert.match(text, /完全重写的一段正文/u);
+  } finally {
+    await fixture.close();
+  }
+});
+
+// 2026-09-20 真机第一次成功那次的记录里出现了双「但」：
+//   「已提交，但已点击发布，但未能从页面确认结果…」
+// 服务层不该给 runner 的文案再加一层前缀（runner 自己已经说清状态了），并且必须把
+// 「确认后页面」的证据留下来 —— 那正是校准成功提示的唯一线索。
+test("unconfirmed article publish records the runner message verbatim, with post-confirm evidence", async () => {
+  const evidence = "（确认后页面：https://mp.toutiao.com/profile_v4/graphic/articles，已离开发布页；可见文案：「发布成功」）";
+  const fixture = await toutiaoArticleFixture({
+    runner: fakeToutiaoRunner({
+      result: {
+        verification: "unconfirmed",
+        message: `已点击发布，但未能从页面确认结果（进入发布页 → 点击发布并确认）：请先到头条后台「内容管理」核实是否已发出，再决定是否重试。${evidence}`,
+      },
+    }),
+  });
+  try {
+    const { pkg, tasks } = await previewAndCreateArticle(fixture);
+    const taskId = tasks[0]!.id as string;
+    const reader = new PublishingStore(new LocalStorage(fixture.storageRoot));
+    await reader.init();
+
+    const response = await jsonFetch(fixture.baseUrl, `/api/publishing/tasks/${taskId}/auto-publish`, {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: { previewRevision: (await reader.previewRevision(pkg.id))! },
+    });
+
+    assert.equal(response.response.status, 200, JSON.stringify(response.body));
+    const task = response.body.task as Record<string, any>;
+    assert.equal(task.autoPublish.status, "succeeded");
+    const message = String(task.autoPublish.message);
+    // 不许出现双「但」（服务层加的前缀）。
+    assert.equal(message.includes("已提交，但"), false, message);
+    assert.match(message, /未能从页面确认结果/u);
+    // 证据必须原样留在记录里。
+    assert.match(message, /确认后页面/u);
+    assert.match(message, /可见文案/u);
+    // 不变式照旧：机器只记「已提交」，任务状态与 publishedAt 不动。
+    assert.equal(task.status, "ready");
+    assert.equal(task.publishedAt, undefined);
   } finally {
     await fixture.close();
   }

@@ -19,7 +19,7 @@ import type {
 } from "../types.js";
 import { LocalStorage } from "./storage.js";
 import { SYSTEM_ACTOR } from "./local-users.js";
-import { PUBLISH_PLATFORMS } from "./publishing-platforms.js";
+import { PUBLISH_PLATFORMS, resolveAutoPublishEngine } from "./publishing-platforms.js";
 
 const PUBLISHING_INDEX = "cache/publishing-index.json";
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -49,6 +49,7 @@ type PublishingErrorCode =
   | "publish_asset_broken"
   | "publish_auto_publish_code_unexpected"
   | "publish_auto_publish_in_progress"
+  | "publish_auto_publish_unsupported"
   | "publish_not_a_note_package"
   | "publish_index_corrupt"
   | "publish_invalid_transition"
@@ -62,6 +63,7 @@ const ERROR_MESSAGES: Record<PublishingErrorCode, string> = {
   publish_asset_broken: "发布包视频资产异常，无法执行发布操作",
   publish_auto_publish_code_unexpected: "该任务当前没有在等待短信验证码",
   publish_auto_publish_in_progress: "该任务的图文自动发布正在进行中，请等本次结束后再试",
+  publish_auto_publish_unsupported: "该内容类型与平台的组合不支持自动发布，请走人工交付",
   publish_not_a_note_package: "该发布包不是图文包，无法执行抖音图文自动发布",
   publish_index_corrupt: "发布索引已损坏，当前处于只读保护状态",
   publish_invalid_transition: "当前发布状态不允许执行此操作",
@@ -395,10 +397,16 @@ export class PublishingStore {
       const task = this.requireMutableTask(draft, taskId);
       const packageRecord = this.requirePackage(draft, task.packageId);
 
-      // 只做图文：视频包仍是人工交付通路
-      if ((packageRecord.contentType ?? "video") !== "note") {
-        throw new PublishingError("publish_not_a_note_package", {
-          contentType: packageRecord.contentType ?? "video",
+      // 只有登记过的 (内容类型 × 平台) 组合允许自动发布；视频包仍是人工交付通路。
+      // 视频包保留**既有的错误码**（既有用例逐字断言它），其余未登记组合给更准确的新码。
+      const contentType = packageRecord.contentType ?? "video";
+      if (resolveAutoPublishEngine(contentType, task.platform) === null) {
+        if (contentType === "video") {
+          throw new PublishingError("publish_not_a_note_package", { contentType });
+        }
+        throw new PublishingError("publish_auto_publish_unsupported", {
+          contentType,
+          platform: task.platform,
         });
       }
 
@@ -689,6 +697,8 @@ export class PublishingStore {
             return false;
           }
         }
+        // 渠道过滤：与 `verifyPackageHealth` 等处同一口径 —— 缺省即视频包。
+        if (filters.contentType && (packageRecord.contentType ?? "video") !== filters.contentType) return false;
         if (filters.platform && !tasks.some((task) => task.platform === filters.platform)) return false;
         if (filters.sourceJobId && packageRecord.sourceJobId !== filters.sourceJobId) return false;
         if (filters.version !== undefined && packageRecord.version !== filters.version) return false;
@@ -1036,6 +1046,23 @@ export function packagePreviewRevision(
     hash.update(`noteTitle:${packageRecord.noteCopy?.title ?? ""}\0`);
     hash.update(`noteBody:${packageRecord.noteCopy?.description ?? ""}\0`);
     hash.update(`noteTags:${(packageRecord.noteCopy?.hashtags ?? []).join(",")}\0`);
+  } else if (contentType === "article") {
+    // 文章包的内容凭据是**正文 HTML 的哈希**，不是成片哈希；封面与头条选项同样决定
+    // 「发出去的是什么」，所以一并进指纹（spec §6.3：这三样少一个，预览就能被绕过）。
+    hash.update(`articleTitle:${packageRecord.articleCopy?.title ?? ""}\0`);
+    hash.update(`articleHtml:${packageRecord.articleCopy?.htmlSha256 ?? ""}\0`);
+    for (const imagePath of packageRecord.imagePaths ?? []) hash.update(`image:${imagePath}\0`);
+    // ⚠️ **已知限制（如实记录）**：这里绑定的是封面的**存在性与声明文件名**，不是它的字节。
+    // 文章包的封面固定叫 `cover.jpg`，所以「换掉包内封面文件」**不会**让 revision 失效。
+    // 之所以先接受：包目录由打包层在文件锁内写入，威胁模型与「改写 article.html」同级，
+    // 而后者已经由 `articleCopy.htmlSha256` 覆盖。要彻底收紧的话需要在记录里加
+    // `coverSha256`（打包时算、指纹里比），那会牵动存档校验与既有哈希 baseline。
+    hash.update(`cover:${packageRecord.coverPath ? path.basename(packageRecord.coverPath) : ""}\0`);
+    const options = packageRecord.toutiaoOptions;
+    hash.update(`firstPublish:${options?.firstPublish ? 1 : 0}\0`);
+    // 集合语义：声明的顺序不该影响指纹。
+    hash.update(`declarations:${[...(options?.declarations ?? [])].sort().join(",")}\0`);
+    hash.update(`weitoutiao:${options?.crossPostWeitoutiao ? 1 : 0}\0`);
   } else {
     hash.update(`videoSha256:${packageRecord.videoSha256}\0`);
     hash.update(`videoSize:${packageRecord.videoSize}\0`);
@@ -1124,10 +1151,13 @@ function isDeliveryPackage(value: unknown, key: string): value is DeliveryPackag
     isOptionalString(value.deletedAt) &&
     isOptionalString(value.purgeAt) &&
     isOptionalString(value.purgedAt) &&
-    (value.contentType === undefined || value.contentType === "video" || value.contentType === "note") &&
+    (value.contentType === undefined || value.contentType === "video" || value.contentType === "note"
+      || value.contentType === "article") &&
     (value.imagePaths === undefined
       || (Array.isArray(value.imagePaths) && value.imagePaths.every(isString))) &&
-    (value.noteCopy === undefined || isPlatformCopyShape(value.noteCopy))
+    (value.noteCopy === undefined || isPlatformCopyShape(value.noteCopy)) &&
+    (value.articleCopy === undefined || isWechatArticleCopyShape(value.articleCopy))
+    && (value.toutiaoOptions === undefined || isToutiaoOptionsShape(value.toutiaoOptions))
   );
 }
 
@@ -1135,6 +1165,35 @@ function isPlatformCopyShape(value: unknown): boolean {
   if (!isRecord(value)) return false;
   return isString(value.title) && isString(value.description)
     && Array.isArray(value.hashtags) && value.hashtags.every(isString);
+}
+
+/**
+ * 文章包文案的形状校验。
+ *
+ * `digest`/`author` 是**可选**的（摘要缺省合法：微信会抓正文前 54 字），
+ * 但 `htmlSha256` 必须在 —— 它是包内容完整性的唯一凭据。
+ */
+/**
+ * 头条发布选项的存档形状。
+ *
+ * 漏了这一步的后果很具体：畸形值（比如 `declarations` 是字符串）会让
+ * `packagePreviewRevision` 里的 `[...options.declarations]` 抛 TypeError → 500，
+ * 而正确的行为是「索引损坏」——本项目对索引的既定口径。
+ */
+function isToutiaoOptionsShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.firstPublish === "boolean"
+    && typeof value.crossPostWeitoutiao === "boolean"
+    && Array.isArray(value.declarations)
+    && value.declarations.every(isString);
+}
+
+function isWechatArticleCopyShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return isString(value.title)
+    && isOptionalString(value.digest)
+    && isOptionalString(value.author)
+    && isString(value.htmlSha256);
 }
 
 function isPublishTask(value: unknown, key: string): value is PublishTask {
@@ -1220,11 +1279,19 @@ function isTaskStatus(value: unknown): value is PublishTaskStatus {
   );
 }
 
-function isPlatform(value: unknown): value is PublishTask["platform"] {
+/**
+ * 存档校验：读回索引时判定平台是否在册。
+ *
+ * 漏一个平台的后果是**静默的**：该平台的任务在读取时被丢掉，而不是报错。
+ * 因此导出它，让守卫用例对每一个在册平台都断言一次（见 `publishing-platforms.test.ts`）。
+ */
+export function isPlatform(value: unknown): value is PublishTask["platform"] {
   return (
     value === "douyin" ||
     value === "xiaohongshu" ||
     value === "wechat_channels" ||
-    value === "bilibili"
+    value === "bilibili" ||
+    value === "wechat_mp" ||
+    value === "toutiao"
   );
 }

@@ -3,6 +3,7 @@ import type {
   DueNotification,
   HyperframesVideoOutput,
   LocalUserRole,
+  PackageContentType,
   PlatformCopy,
   PublishCopySource,
   PublishPlatform,
@@ -26,6 +27,10 @@ export const PUBLISHING_PLATFORMS: Array<{
   { id: 'xiaohongshu', label: '小红书', titleMax: 20, descriptionMax: 1000, hashtagMax: 10, hashtagLengthMax: 20, creatorUrl: 'https://creator.xiaohongshu.com/publish/publish' },
   { id: 'wechat_channels', label: '微信视频号', titleMax: 30, descriptionMax: 1000, hashtagMax: 10, hashtagLengthMax: 20, creatorUrl: 'https://channels.weixin.qq.com/platform/post/create' },
   { id: 'bilibili', label: '哔哩哔哩', titleMax: 80, descriptionMax: 2000, hashtagMax: 10, hashtagLengthMax: 20, creatorUrl: 'https://member.bilibili.com/platform/upload/video/frame' },
+  { id: 'wechat_mp', label: '微信公众号', titleMax: 32, descriptionMax: 120, hashtagMax: 10, hashtagLengthMax: 20, creatorUrl: 'https://mp.weixin.qq.com/' },
+  // 今日头条（文章通路）：标题 2~30 字是平台硬限制，这张表只放上限；
+  // `description` 在头条文章语境里是正文文本，上限 = 服务端 `TOUTIAO_ARTICLE_LIMITS.bodyChars`。
+  { id: 'toutiao', label: '今日头条', titleMax: 30, descriptionMax: 20000, hashtagMax: 10, hashtagLengthMax: 20, creatorUrl: 'https://mp.toutiao.com/profile_v4/graphic/publish' },
 ];
 
 export const PUBLISH_FILTERS: Array<{ id: PublishingListStatus; label: string }> = [
@@ -267,7 +272,9 @@ export type PublishingActionId =
   | 'restore-package'
   | 'preview'
   | 'auto-publish'
-  | 'submit-code';
+  | 'submit-code'
+  /** 文章包：下载/打开包内 `article.html`（降级通路，任何时候可用、零依赖）。 */
+  | 'download-article';
 
 export interface PublishingSourceGroup {
   sourceJobId: string;
@@ -303,6 +310,146 @@ export function groupPublishingPackages(
   });
 }
 
+/** 文章包判定：`contentType` 缺省视为 video（存量包不变）。 */
+export function isArticlePackage(detail: PublishingPackageDetail): boolean {
+  return (detail.package.contentType ?? 'video') === 'article';
+}
+
+// ─── 发布中心「渠道」分栏（spec: 2026-09-18-publishing-channel-tabs-design.md）────
+//
+// 渠道是**内容类型的界面投影**，不是新概念：note = 抖音图文、article = 今日头条文章、
+// video = 视频人工交付（后者**不会自动上传**，只准备交付包）。
+// 为什么按内容类型而不是平台：三者本来就互斥（note 只可能配抖音、article 只可能配头条、
+// 其余都是 video），所以服务端只需要一个 `contentType` 过滤字段，不必引入复合查询。
+// 状态语义仍在服务端（前端只传 `status`），这里只做**分组与计数**。
+
+export type PublishChannelId = 'douyin-note' | 'toutiao-article' | 'video-manual';
+
+export interface PublishChannel {
+  id: PublishChannelId;
+  label: string;
+  /** 渠道的唯一真源：包的内容类型。 */
+  contentType: PackageContentType;
+  /** 该渠道会出现的平台（用于决定平台下拉与空态文案）；单平台渠道界面不显示下拉。 */
+  platforms: PublishPlatform[];
+  /** 页签下方一句话：谁在提交、需要什么前置条件。 */
+  hint: string;
+  /** 空态里可照抄的入口。 */
+  emptyHint: string;
+}
+
+export const PUBLISH_CHANNELS: PublishChannel[] = [
+  {
+    id: 'douyin-note',
+    label: '抖音图文',
+    contentType: 'note',
+    platforms: ['douyin'],
+    hint: '由外部 sau 引擎自动提交到抖音；提交前必经预览，提交后需人工核实再「标记已发布」。',
+    emptyHint: '还没有抖音图文包：到作品详情页的成果画布点「创建图文包」（图片可选场景静帧或素材库）。',
+  },
+  {
+    id: 'toutiao-article',
+    label: '今日头条文章',
+    contentType: 'article',
+    platforms: ['toutiao'],
+    hint: '由自研执行器自动提交到头条号；先在「设置 → 今日头条」扫码登录，提交前必经预览。',
+    emptyHint: '还没有头条文章包：到作品详情页的成果画布点「创建头条文章包」（AI 成文 + 16:9 封面）。',
+  },
+  {
+    id: 'video-manual',
+    label: '视频人工交付',
+    contentType: 'video',
+    platforms: ['douyin', 'xiaohongshu', 'wechat_channels', 'bilibili'],
+    hint: '不会自动上传：这里只准备交付包，由人工复制文案后到平台发布，发完点「标记已发布」。',
+    emptyHint: '还没有视频交付包：到作品详情页点「加入发布中心」，按向导选平台并生成文案。',
+  },
+];
+
+export function findPublishChannel(channelId: string): PublishChannel {
+  return PUBLISH_CHANNELS.find((channel) => channel.id === channelId) ?? PUBLISH_CHANNELS[0]!;
+}
+
+/** 包属于哪个渠道（`contentType` 缺省即视频，与后端同一口径）。 */
+export function publishChannelOf(detail: PublishingPackageDetail): PublishChannel {
+  const contentType = detail.package.contentType ?? 'video';
+  return PUBLISH_CHANNELS.find((channel) => channel.contentType === contentType) ?? PUBLISH_CHANNELS[2]!;
+}
+
+export function selectChannelPackages(
+  details: PublishingPackageDetail[],
+  channelId: PublishChannelId,
+): PublishingPackageDetail[] {
+  const channel = findPublishChannel(channelId);
+  return details.filter((detail) => (detail.package.contentType ?? 'video') === channel.contentType);
+}
+
+/**
+ * 渠道页签上的数字：各渠道的包数。
+ *
+ * **垃圾桶里的包不计入**（与后端 `status=all` 只回 active 的口径一致）——
+ * 否则「删掉一个图文包」会让渠道数字忽上忽下。
+ */
+export function countChannelPackages(
+  details: PublishingPackageDetail[],
+): Record<PublishChannelId, number> {
+  const counts = { 'douyin-note': 0, 'toutiao-article': 0, 'video-manual': 0 } as Record<PublishChannelId, number>;
+  for (const detail of details) {
+    if (detail.package.state === 'trashed') continue;
+    counts[publishChannelOf(detail).id] += 1;
+  }
+  return counts;
+}
+
+/**
+ * 状态页签的数字：**当前渠道内**按任务计。
+ *
+ * 与页面既有口径一致（一个包有多个平台任务时各算一次），但修掉了「局部计数」：
+ * 计数必须来自**不带状态筛选**的那一次请求，否则「失败」在「待处理」视图里永远显示 0。
+ */
+export function countStatusesInChannel(
+  details: PublishingPackageDetail[],
+  channelId: PublishChannelId,
+): Record<PublishingListStatus, number> {
+  const counts = {
+    action: 0,
+    all: 0,
+    ready: 0,
+    scheduled: 0,
+    published: 0,
+    failed: 0,
+    cancelled: 0,
+    broken: 0,
+    trash: 0,
+  } as Record<PublishingListStatus, number>;
+
+  for (const detail of selectChannelPackages(details, channelId)) {
+    if (detail.package.state === 'trashed') {
+      // 垃圾桶是独立视图：桶里的包只计入 trash，不再计入常规状态。
+      counts.trash += 1;
+      continue;
+    }
+    counts.all += 1;
+    if (detail.package.assetHealth !== 'healthy') counts.broken += 1;
+    if (detail.package.assetHealth === 'broken_video'
+      || detail.tasks.some((task) => task.status === 'ready' || task.status === 'failed')) {
+      counts.action += 1;
+    }
+    for (const task of detail.tasks) counts[task.status] += 1;
+  }
+  return counts;
+}
+
+/** 单平台渠道返回空数组 → 界面据此隐藏平台下拉（避免「选了头条却把列表筛空」）。 */
+export function channelPlatformOptions(channelId: PublishChannelId): typeof PUBLISHING_PLATFORMS {
+  const channel = findPublishChannel(channelId);
+  if (channel.platforms.length <= 1) return [];
+  return PUBLISHING_PLATFORMS.filter((item) => channel.platforms.includes(item.id));
+}
+
+export function channelEmptyHint(channelId: PublishChannelId): string {
+  return findPublishChannel(channelId).emptyHint;
+}
+
 export function getPublishingActionIds(
   detail: PublishingPackageDetail,
   task: PublishTask,
@@ -329,7 +476,10 @@ export function getPublishingActionIds(
     actions.push('create-version');
     if (role === 'admin') actions.push('withdraw');
   } else {
-    actions.push('edit-content');
+    // 文章包的正文是**包级** `article.html` 的渲染结果：改任务文案只会让「预览看到的」与
+    // 「发出去的」漂移，所以文章任务不提供「编辑文案」（要改就重建文章包）。
+    if (isArticlePackage(detail)) actions.push('download-article');
+    if (!isArticlePackage(detail)) actions.push('edit-content');
     if (task.status === 'scheduled' || task.status === 'ready') {
       actions.push('schedule');
     }
@@ -377,7 +527,23 @@ export function getPublishingAutoPublishBlocker(
 ): string | null {
   if (detail.package.state === 'trashed') return '发布包在垃圾桶中，先恢复后再发布';
   if (detail.package.state !== 'active') return '发布包已清理，无法发布';
-  if ((detail.package.contentType ?? 'video') !== 'note') {
+  const contentType = detail.package.contentType ?? 'video';
+  if (contentType === 'article') {
+    // 文章通路目前只接入今日头条（服务端是同一张 (内容类型 × 平台) 路由表）。
+    if (task.platform !== 'toutiao') return '文章发布目前只支持今日头条';
+    // 头条封面必填：缺封面时在这里就说清楚，而不是等提交时才失败。
+    if (detail.package.assetHealth === 'missing_cover') {
+      return '缺少封面：今日头条要求文章必须有封面，请重新创建文章包并选择封面';
+    }
+    if (detail.package.assetHealth !== 'healthy') return '文章包资产异常，请先修复后再发布';
+    if (autoPublishInFlight(task)) return '自动发布正在进行中，请等本次结束后再试';
+    if (task.status === 'published') return '任务已标记为发布，如需改动请先撤回';
+    if (task.status === 'cancelled') return '任务已取消，先恢复任务再发布';
+    if (task.status === 'scheduled') return '任务已排期，如需立即发布请先取消排期';
+    if (task.status !== 'ready' && task.status !== 'failed') return '当前状态不允许自动发布';
+    return null;
+  }
+  if (contentType !== 'note') {
     return '视频包仍走人工交付，不支持自动发布';
   }
   if (detail.package.assetHealth === 'missing_images') {
@@ -399,15 +565,36 @@ export function getPublishingAutoPublishBlocker(
 }
 
 /** 任务行上的一句话状态提示；没有自动发布记录时返回 `null`。 */
+/**
+ * 平台中文名（用于「提交到 X」这类用户可见文案）。
+ *
+ * 以前这些文案把「抖音」写死在字符串里 —— 头条文章任务会显示「正在提交到**抖音**…」，
+ * 属于会误导操作者的错平台文案（本项目在「文案指错动作」上已经吃过一次亏）。
+ */
+export function publishingPlatformLabel(platform: PublishPlatform): string {
+  return PUBLISHING_PLATFORMS.find((item) => item.id === platform)?.label ?? platform;
+}
+
+/** 自动发布的确认按钮文案（按平台取，不再写死「抖音」）。 */
+export function getAutoPublishConfirmLabel(platform: PublishPlatform): string {
+  return `确认发布到${publishingPlatformLabel(platform)}`;
+}
+
 export function getPublishingAutoPublishHint(task: PublishTask): string | null {
   const record = task.autoPublish;
   if (!record) return null;
-  if (record.status === 'running') return '正在提交到抖音…';
+  const label = publishingPlatformLabel(task.platform);
+  if (record.status === 'running') return `正在提交到${label}…`;
   if (record.status === 'awaiting_code') {
     return '等待短信验证码：请点「提交验证码」填入手机收到的验证码';
   }
   if (record.status === 'succeeded') {
-    return '已提交，请在抖音后台确认后点「标记已发布」';
+    // 「点了发布但没拿到成功判据」必须显示出来：这是「重复发布」这个最大风险的补偿手段
+    //（服务端把原话写进了 message，此前只有展开审计记录才看得到）。
+    if ((record.message ?? '').includes('未能')) {
+      return `已提交，但未能自动确认：请务必先去${label}后台核实是否已发出，再决定要不要重试，最后点「标记已发布」`;
+    }
+    return `已提交，请在${label}后台确认后点「标记已发布」`;
   }
   // 外部 CLI 的原始输出带 ANSI 色码（历史记录里已经存了），展示前统一清掉
   return record.message ? `提交失败：${stripAnsi(record.message)}` : '提交失败，请查看审计记录后重试';
