@@ -103,6 +103,23 @@ Expected: PASS。
 
 ### Task 2: 深检任务、互斥与错误边界（测试先行）
 
+> **执行记录（2026-09-22）**：已完成。落地时三处调整：
+> ① **`writable` 中间件去掉** —— 发布中心那个检查的是发布索引的只读保护，与运行环境无关，套上只会变成永远放行的空壳；
+> ② **补了取消端点** `POST /api/runtime/checks/:checkId/cancel` —— 原计划只有界面出口、没有路由，按钮点不动；
+> ③ **runner/browser 错误登记进边界的想法被证伪**：它们到不了边界，探测内部的异常一律在任务里收敛成
+>    **带指引的 `failed` 记录**（比抛到边界更好），所以边界只需登记 `RuntimeCheckError` / `RuntimeRouteError` / `LocalAuthError`。
+>
+> 另外两处实现选择：互斥闸放在 **`autoPublish()` 这一个分派入口**（不是三个通路各写一遍）；store 的
+> 「该平台在跑」查询**复用既有僵死阈值**（`autoPublishInFlight`），不在服务层重写一遍。
+>
+> 手验（独立后端 :3100，用假 sau 脚本避免任何真实平台访问）：同渠道 409、**跨渠道也 409**（全局单飞）、
+> `elapsedMs` 服务端算、取消落 `cancelled` 并如实提示会话锁。
+>
+> ⚠️ **手验过程中的一次失误，记下来当教训**：我把「应该被 409 挡掉」的第二发请求打给了**头条**，而抖音那次
+> 检测在毫秒内就失败结束了 → 第二发没被挡住，**真的启动了一次头条登录检测**（零副作用自检：打开首页读
+> URL/阻断信号/昵称），并把 `verified.toutiao` 写成了 `valid`。**规则：验证「应该被挡住」的请求时，第二发
+> 也必须选一个不会产生真实副作用的渠道。**
+
 **Files:**
 - Create: `src/lib/runtime-checks.ts`
 - Test: `src/lib/runtime-checks.test.ts`
@@ -113,7 +130,7 @@ Expected: PASS。
 - Consumes: `SauRunner.checkLogin()`（`sau-runner.ts:192`）、`ToutiaoRunner.checkLogin()`（`toutiao-runner.ts:238`）、`XhsRunner.checkLogin()`（`xhs-runner.ts:401`）
 - Produces: `startRuntimeCheck(id, deps)`、`getRuntimeCheck(checkId)`、`RuntimeCheckError`（带 `status` + `code` + `guidance`）、`RUNTIME_CHECK_TIMEOUT_MS = 120_000`、`RUNTIME_CHECK_STALE_MS = 10 * 60_000`；发布侧新错误码 `publish_blocked_by_runtime_check`
 
-- [ ] **Step 1: 写失败用例（状态机与互斥，全用假 runner）**
+- [x] **Step 1: 写失败用例（状态机与互斥，全用假 runner）**
 
 - `running` 期间再触发**任何渠道**的深检 → **409**（INV-4a），且不产生第二个任务。
 - **跨渠道不互斥**：抖音深检 `running` 时，**头条发布**仍可发起（INV-4b；用 fake 发布入口断言未被拦）。
@@ -124,24 +141,24 @@ Expected: PASS。
 - **僵死恢复**：store 里留一条 `running`，启动后该渠道**可重新发起**；断言 `RUNTIME_CHECK_STALE_MS > CHECK_TIMEOUT_MS`（用 `sau-runner.ts` 新导出的常量比对）。
 - **错误边界**：`RuntimeCheckError` 被路由边界识别，响应带**自己的 status/code/guidance**（对标既有用例 `toutiao runner errors surface with their own status, code and guidance`）；未识别的异常走兜底 500 **且调用 `console.error`**。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --import tsx --test src/lib/runtime-checks.test.ts`
 Expected: FAIL。
 
-- [ ] **Step 3: 实现 `runtime-checks.ts`**
+- [x] **Step 3: 实现 `runtime-checks.ts`**
 
 单飞用模块级 `current` 句柄；僵死判定读 `startedAt` 与 `RUNTIME_CHECK_STALE_MS`；结论写 `cache/runtime-checks.json`（`LocalStorage` 形状，照 `publishing-store.ts:24`）。**`elapsedMs` 由服务端算**（前端不自己算时钟差）。
 
-- [ ] **Step 4: 接上路由与错误边界**
+- [x] **Step 4: 接上路由与错误边界**
 
 在 `runtime-routes.ts` 内实现边界：登记 `RuntimeCheckError` 与 `SauRunnerError` / `Toutiao*Error` / `Xhs*Error` 各族（**别漏**——漏登记的表现是**指引整条丢掉**，不是状态码不准）；兜底分支 `console.error`。
 
-- [ ] **Step 5: 发布侧互斥**
+- [x] **Step 5: 发布侧互斥**
 
 发布入口（`autoPublishNoteTask` / `autoPublishToutiaoArticle` / `autoPublishXhsNote` 的公共前置）先查同渠道 check 是否 `running`，是则 409 + 文案「正在检测该渠道登录态，通常 10–30 秒，最坏 5 分钟；可先取消检测」。
 
-- [ ] **Step 6: 运行确认通过 + 全量门禁**
+- [x] **Step 6: 运行确认通过 + 全量门禁**
 
 Run: `node --import tsx --test src/lib/runtime-checks.test.ts`
 Expected: PASS。

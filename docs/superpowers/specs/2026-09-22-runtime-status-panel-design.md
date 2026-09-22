@@ -63,11 +63,17 @@
 
 ```
 GET  /api/runtime/status
-POST /api/runtime/checks            body: { id: "douyin" | "toutiao" | "xiaohongshu" }
+POST /api/runtime/checks                     body: { id: "douyin" | "toutiao" | "xiaohongshu" }
 GET  /api/runtime/checks/:checkId
+POST /api/runtime/checks/:checkId/cancel     ← 实现时补的（见下方 ⚠️）
 ```
 
-**鉴权与审计口径**（与发布中心同源，不另创一套）：`GET` 走 `authenticated`；`POST`（唯一会启动进程的动作）走 `authenticated, writable`。深检**不写审计记录** —— 它是本机诊断，不改变任何业务状态；发布中心的 `requireActor` / `actor` 快照口径**不变**，不被本设计触碰。
+**鉴权与审计口径**（与发布中心同源，不另创一套）：四个端点都走 `authenticated`。深检**不写审计记录** —— 它是本机诊断，不改变任何业务状态；发布中心的 `requireActor` / `actor` 快照口径**不变**，不被本设计触碰。
+
+> ⚠️ **实现时对 spec 的三处修正**（Task 2 落地后回填，都有代码依据）：
+> ① **取消了原写的 `writable` 中间件**：发布中心那个 `writable` 检查的是 `app.locals.publishingHealth.readOnly`，是**发布索引**的只读保护；运行环境不碰发布索引，套上去只会变成一个永远放行的空壳。
+> ② **补了取消端点**：原稿只在 §5.3 写了「界面提供取消出口」，却没给路由 —— 没有端点那个按钮点不动。
+> ③ **`check` 字段由路由合并**：`collectRuntimeStatus()` 保持纯净（只做免费检查、不 import 任务层），当前深检摘要由路由并发取一次再合进响应，于是深检没装上时也只是 `check: null`。
 
 ### 3.2 类型
 
@@ -243,7 +249,9 @@ interface RuntimeCheckSummary {
 - 超时 → `failed` + **必须把 runner 的指引原样带上**
 - ⚠️ **`RuntimeCheckError` 必须登记到新路由自己的错误边界**。AGENTS.md 记着那次事故：头条一族错误类漏登记的表现**不是状态码不准，而是"指引整条丢掉"**，全落进兜底 500 且没有日志（`publishing-routes.ts:727` 的 `console.error` 正是为此补的）。
 
-新路由放在**新文件** `src/lib/runtime-routes.ts`，自带错误边界（登记 `RuntimeCheckError` 与 `SauRunnerError` / `Toutiao*Error` / `Xhs*Error` 三族），兜底分支同样 `console.error`。**不复用** `publishing-routes.ts` 的边界：两个模块的路由装配彼此独立，边界跨模块隐式共享迟早会漏。
+新路由放在**新文件** `src/lib/runtime-routes.ts`，自带错误边界，兜底分支同样 `console.error`。**不复用** `publishing-routes.ts` 的边界：两个模块的路由装配彼此独立，边界跨模块隐式共享迟早会漏。
+
+> ⚠️ **实现时修正（Task 2）**：原稿要求把 `SauRunnerError` / `Toutiao*Error` / `Xhs*Error` 也登记到这个边界，**实现下来它们到不了这里** —— 探测内部的任何异常都在深检任务里被收敛成**带指引的 `failed` 记录**（见 §5.4 的超时/失败规则）。这比抛到边界更好：那次失败本来就该留在记录里给界面看。所以边界只登记真正会逃逸的 `RuntimeCheckError` / `RuntimeRouteError` / `LocalAuthError`，并有用例守「失败必带指引」。
 
 ---
 

@@ -25,6 +25,7 @@ import type {
 } from "../types.js";
 import type { AssetStore, ResolvedAssetFile } from "./assets-store.js";
 import { NoteMediaService } from "./note-media.js";
+import type { RuntimeChannelId } from "./runtime-status.js";
 import { XHS_MAX_IMAGES } from "./xhs-page.js";
 import type { XhsPublishInput, XhsPublishResult, XhsRunner } from "./xhs-runner.js";
 import type { PublishingCopyService } from "./publishing-copy.js";
@@ -116,6 +117,7 @@ type Store = Pick<PublishingStore,
   | "commitPackage"
   | "getPackage"
   | "getTask"
+  | "hasAutoPublishInFlight"
   | "markPublished"
   | "markPurged"
   | "processDue"
@@ -223,11 +225,20 @@ export interface PublishingServiceDependencies {
   planArticle?: ArticlePlanner;
   now?: () => Date;
   createId?: () => string;
+  /**
+   * 运行环境深检的互斥闸（spec §5.2 规则 2 / INV-4b）。
+   *
+   * 深检与发布**共用同一个浏览器 profile 目录**，同时跑会互相破坏 —— 所以该渠道正在
+   * 检测时，发布必须让路。**按渠道**问，跨渠道必须答 `false`（抖音检测不该挡住头条发布）。
+   * 未注入 = 没有深检功能（测试与早期装配），此时不拦。
+   */
+  runtimeChecks?: { isRunning(id: RuntimeChannelId): boolean | Promise<boolean> };
   resolveVideo?: typeof resolveJobVideo;
 }
 
 type ServiceErrorCode =
   | "publish_asset_broken"
+  | "publish_blocked_by_runtime_check"
   | "publish_auto_publish_code_unexpected"
   | "publish_auto_publish_in_progress"
   | "publish_auto_publish_unsupported"
@@ -260,6 +271,7 @@ type ServiceErrorCode =
 const SERVICE_ERROR_MESSAGES: Record<ServiceErrorCode, string> = {
   publish_sau_not_configured: SAU_INSTALL_GUIDANCE,
   publish_asset_broken: "发布包视频资产异常，无法执行此操作",
+  publish_blocked_by_runtime_check: "该渠道正在验证登录态，检测会与发布抢同一个浏览器会话。请等检测结束（通常 10–30 秒，最坏 5 分钟），或先取消检测",
   publish_auto_publish_code_unexpected: "该任务当前没有在等待短信验证码",
   publish_auto_publish_in_progress: "该任务的图文自动发布正在进行中，请等本次结束后再试",
   publish_auto_publish_unsupported: "该内容类型与平台的组合不支持自动发布，请走人工交付",
@@ -291,6 +303,13 @@ const SERVICE_ERROR_MESSAGES: Record<ServiceErrorCode, string> = {
   publish_task_not_found: "未找到发布任务",
   publish_validation_failed: "发布数据校验失败",
 };
+
+/** 有深检通路的三个渠道。其余平台（公众号 / 视频号 / B站）永远没有深检，发布不受影响。 */
+const RUNTIME_CHECK_CHANNELS = ["douyin", "toutiao", "xiaohongshu"] as const;
+
+function isRuntimeCheckChannel(platform: PublishPlatform): platform is RuntimeChannelId {
+  return (RUNTIME_CHECK_CHANNELS as readonly string[]).includes(platform);
+}
 
 export class PublishingServiceError extends Error {
   constructor(
@@ -1441,6 +1460,19 @@ export class PublishingService {
    * 校验顺序刻意如此：所有「不该产生记录」的检查都在 `beginAutoPublish` 之前或之内完成，
    * 因此缺 previewRevision / 过期 revision / 缺配置 / 缺图这四种失败都不会留下 autoPublish 记录。
    */
+  /**
+   * 该渠道正在深检时不许发布（spec §5.2 规则 2）。
+   *
+   * 只对三个有深检通路的渠道生效；未注入 `runtimeChecks` 时直接放行（没有深检功能）。
+   */
+  private async assertNoRuntimeCheckRunning(platform: PublishPlatform): Promise<void> {
+    const gate = this.deps.runtimeChecks;
+    if (!gate || !isRuntimeCheckChannel(platform)) return;
+    if (await gate.isRunning(platform)) {
+      throw new PublishingServiceError(409, "publish_blocked_by_runtime_check");
+    }
+  }
+
   async autoPublish(
     taskId: string,
     input: { previewRevision: string; dryRun?: boolean },
@@ -1467,6 +1499,15 @@ export class PublishingService {
         { contentType, platform: task.platform },
       );
     }
+    /*
+     * 深检与发布**按渠道互斥**（spec §5.2 规则 2 / INV-4b）：两者共用同一个浏览器
+     * profile 目录，同时跑会互相破坏。注意只拦**同一渠道** —— 抖音深检不该挡住头条发布。
+     *
+     * 放在这里一处，而不是三个通路各写一遍：`autoPublish` 是唯一的分派入口，
+     * 三个引擎恰好都在下面的 switch 里。
+     */
+    await this.assertNoRuntimeCheckRunning(task.platform);
+
     // ⚠️ **必须是穷尽 switch，不能留 `else` 兜底**。
     // 原先是「engine 不是 toutiao 就 `return this.autoPublishNoteTask(...)`」—— 那是把兜底
     // 当成「sau 通路」。新增 `"xhs"` 之后那种写法会把小红书**静默路由给外部 CLI**，

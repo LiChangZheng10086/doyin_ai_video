@@ -21,7 +21,10 @@ import { buildSkillContext, getSkillErrorMessage, isRetryableSkillError } from "
 import { extractAiMessageText } from "./lib/ai-response.js";
 import { resolveJobVideo, resolveSourceVideo, VideoOutputError, type ResolvedVideoFile } from "./lib/video-output.js";
 import { PublishingStore } from "./lib/publishing-store.js";
-import { SauRunner } from "./lib/sau-runner.js";
+import { CHECK_TIMEOUT_MS, SAU_INSTALL_GUIDANCE_LINES, SauRunner } from "./lib/sau-runner.js";
+import { TOUTIAO_BROWSER_GUIDANCE_LINES } from "./lib/toutiao-browser.js";
+import { XHS_BROWSER_GUIDANCE_LINES } from "./lib/xhs-browser.js";
+import { RUNTIME_CHECK_TIMEOUT_MS, RuntimeChecks, createFileRuntimeChecksStore } from "./lib/runtime-checks.js";
 import { ToutiaoRunner } from "./lib/toutiao-runner.js";
 import { XhsRunner } from "./lib/xhs-runner.js";
 import { ToutiaoMediaService } from "./lib/toutiao-media.js";
@@ -29,7 +32,7 @@ import { planToutiaoArticle } from "./lib/toutiao-article.js";
 import type { ArticlePlanner, NoteImagePreparer, ToutiaoCoverPreparer } from "./lib/publishing-service.js";
 import { PublishingCopyService } from "./lib/publishing-copy.js";
 import { PublishingAssetService } from "./lib/publishing-assets.js";
-import { PublishingService } from "./lib/publishing-service.js";
+import { PublishingService, summarizeCliOutput } from "./lib/publishing-service.js";
 import { registerPublishingRoutes } from "./lib/publishing-routes.js";
 import { registerRuntimeRoutes } from "./lib/runtime-routes.js";
 import { createDefaultRuntimeStatusDeps } from "./lib/runtime-status.js";
@@ -213,6 +216,55 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     ...(config.xhsAllowSystemChrome === undefined ? {} : { allowSystemChrome: config.xhsAllowSystemChrome }),
   });
   xhsRunner.installExitCleanup();
+
+  /*
+   * 运行环境的**深检**（会开浏览器的那一层）。
+   *
+   * 三个探测器只做一件事：把「runner 自己的登录判定」翻译成 `valid / invalid /
+   * inconclusive`。判定规则**只在这里写一次**（spec §3.3 第③条 + INV-2）。
+   */
+  const runtimeChecks = new RuntimeChecks({
+    store: createFileRuntimeChecksStore(storage),
+    // 深检 ↔ 发布**按渠道**互斥（spec §5.2 规则 1）：复用发布索引里那把僵死阈值，不重写
+    publishBusy: (id) => publishingStore.hasAutoPublishInFlight(id),
+    probes: {
+      douyin: {
+        timeoutMs: CHECK_TIMEOUT_MS,
+        guidance: SAU_INSTALL_GUIDANCE_LINES,
+        async check() {
+          const result = await sauRunner.checkLogin();
+          if (result.ok) return { verdict: "valid", detail: "登录态有效。" };
+          /*
+           * ⚠️ 只有 `exitCode === 0 && ok === false` 才算「失效」。
+           * `exitCode === -1` 是**超时或进程起不来**（`sau-runner.ts` 的 CommandError 分支），
+           * 那是「没验成」而不是「失效」—— 记成 invalid 会把一次超时变成最长 7 天的假红灯。
+           */
+          if (result.exitCode === 0) return { verdict: "invalid", detail: "登录态已失效，需要重新扫码。" };
+          return { verdict: "inconclusive", detail: `自检没能得出结论：${summarizeCliOutput(result.output)}` };
+        },
+      },
+      toutiao: {
+        timeoutMs: RUNTIME_CHECK_TIMEOUT_MS,
+        guidance: TOUTIAO_BROWSER_GUIDANCE_LINES,
+        async check() {
+          const state = await toutiaoRunner.checkLogin();
+          return state.loggedIn
+            ? { verdict: "valid", detail: `登录态有效${state.username ? `（${state.username}）` : ""}。` }
+            : { verdict: "invalid", detail: "登录态已失效，需要重新扫码。" };
+        },
+      },
+      xiaohongshu: {
+        timeoutMs: RUNTIME_CHECK_TIMEOUT_MS,
+        guidance: XHS_BROWSER_GUIDANCE_LINES,
+        async check() {
+          const state = await xhsRunner.checkLogin();
+          return state.loggedIn
+            ? { verdict: "valid", detail: `登录态有效${state.username ? `（${state.username}）` : ""}。` }
+            : { verdict: "invalid", detail: "登录态已失效，需要重新扫码。" };
+        },
+      },
+    },
+  });
   const publishingService = new PublishingService({
     storageRoot: config.storagePath,
     jobs,
@@ -220,6 +272,8 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     assets: publishingAssets,
     copy: publishingCopy,
     library: assetStore,
+    // 发布侧让路：该渠道正在深检时，发布 409（spec §5.2 规则 2 / INV-4b）
+    runtimeChecks,
     sau: sauRunner,
     toutiao: toutiaoRunner,
     xhs: xhsRunner,
@@ -305,6 +359,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       repoRoot: config.rootDir,
     },
     deps: createDefaultRuntimeStatusDeps(),
+    checks: runtimeChecks,
   });
 
   // 静态文件（开发环境可能不需要）

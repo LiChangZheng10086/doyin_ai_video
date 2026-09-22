@@ -10,6 +10,7 @@ import type {
   PackageContentType,
   PublishAutoPublish,
   PublishAutoPublishStatus,
+  PublishPlatform,
   PublishTask,
   PublishTaskStatus,
   PublishingIndex,
@@ -495,6 +496,21 @@ export class PublishingStore {
       }));
       return task;
     });
+  }
+
+  /**
+   * 该平台此刻是否有自动发布在跑。
+   *
+   * 运行环境的深检要据此让路（spec §5.2 规则 1）：深检与发布共用同一个浏览器 profile
+   * 目录，同时跑会互相破坏。**按平台**问、跨平台答 `false` —— 抖音深检不该挡住头条发布。
+   *
+   * 判定复用 `autoPublishInFlight`（同一份僵死阈值），不在调用方重写一遍。
+   */
+  async hasAutoPublishInFlight(platform: PublishPlatform): Promise<boolean> {
+    const index = await this.snapshot();
+    return Object.values(index.tasks).some(
+      (task) => task.platform === platform && this.autoPublishInFlight(task),
+    );
   }
 
   private autoPublishInFlight(task: PublishTask): boolean {

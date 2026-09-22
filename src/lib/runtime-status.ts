@@ -141,7 +141,30 @@ export interface RuntimeStatusConfig {
 /** 已验证结论的有效期：超过它就回落到 `degraded`，绿点才有含金量。 */
 export const RUNTIME_VERIFIED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-const VERIFIED_STORE_PATH = ["cache", "runtime-checks.json"] as const;
+/**
+ * 深检结论与任务状态的存档路径（相对 storage 根）。
+ *
+ * ⚠️ **两个模块都碰这个文件**：`runtime-status.ts` 只读它的 `verified` 段（免费层），
+ * `runtime-checks.ts` 负责写（深检任务）。所以「文件格式」的真源必须只有一处 ——
+ * 就是下面的 `readVerifiedRecordsFrom()`，两边都用它，否则迟早各解析一份、各漂各的。
+ */
+export const RUNTIME_CHECKS_RELATIVE_PATH = path.join("cache", "runtime-checks.json");
+
+/** 从任意已解析的 JSON 里取出 `verified` 段。畸形值一律丢弃（宁可说「不知道」）。 */
+export function readVerifiedRecordsFrom(value: unknown): Record<string, RuntimeVerifiedRecord> {
+  if (typeof value !== "object" || value === null) return {};
+  const verified = (value as { verified?: unknown }).verified;
+  if (typeof verified !== "object" || verified === null) return {};
+  const out: Record<string, RuntimeVerifiedRecord> = {};
+  for (const [id, entry] of Object.entries(verified as Record<string, unknown>)) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { state, at } = entry as { state?: unknown; at?: unknown };
+    if ((state === "valid" || state === "invalid") && typeof at === "string") {
+      out[id] = { state, at };
+    }
+  }
+  return out;
+}
 const W_OK = 2;
 
 /* ──────────────────────────── 生产端口绑定 ──────────────────────────── */
@@ -249,10 +272,15 @@ async function guard(id: RuntimeItemId, run: () => Promise<RuntimeItem>): Promis
   }
 }
 
-const LABELS: Record<RuntimeItemId, string> = {
+/** 三个发布渠道的显示名 —— 与状态行、深检文案共用一份，别在各处再写一遍。 */
+export const RUNTIME_CHANNEL_LABELS: Record<RuntimeChannelId, string> = {
   douyin: "抖音",
   toutiao: "今日头条",
   xiaohongshu: "小红书",
+};
+
+const LABELS: Record<RuntimeItemId, string> = {
+  ...RUNTIME_CHANNEL_LABELS,
   ffmpeg: "ffmpeg",
   storage: "存储目录",
 };
@@ -553,22 +581,9 @@ async function loadVerifiedRecords(
   config: RuntimeStatusConfig,
   deps: RuntimeStatusDeps,
 ): Promise<Record<string, RuntimeVerifiedRecord>> {
-  const file = path.join(config.storageRoot, ...VERIFIED_STORE_PATH);
+  const file = path.join(config.storageRoot, RUNTIME_CHECKS_RELATIVE_PATH);
   try {
-    const raw = await deps.fs.readFile(file, "utf8");
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return {};
-    const verified = (parsed as { verified?: unknown }).verified;
-    if (typeof verified !== "object" || verified === null) return {};
-    const out: Record<string, RuntimeVerifiedRecord> = {};
-    for (const [id, value] of Object.entries(verified as Record<string, unknown>)) {
-      if (typeof value !== "object" || value === null) continue;
-      const { state, at } = value as { state?: unknown; at?: unknown };
-      if ((state === "valid" || state === "invalid") && typeof at === "string") {
-        out[id] = { state, at };
-      }
-    }
-    return out;
+    return readVerifiedRecordsFrom(JSON.parse(await deps.fs.readFile(file, "utf8")));
   } catch {
     return {};
   }

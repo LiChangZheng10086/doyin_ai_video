@@ -1143,3 +1143,70 @@ test("方案甲：裁切失败 → 整个建包失败，且**不留半成品**�
   const entries = await readdir(publishingDir).catch(() => [] as string[]);
   assert.deepEqual(entries, []);
 });
+
+/**
+ * 深检 ↔ 发布的互斥（spec §5.2 规则 2 / INV-4b）。
+ *
+ * 两者**共用同一个浏览器 profile 目录**，同时跑会互相破坏；但**同一渠道**才拦 ——
+ * 抖音在检测不该挡住头条发布。这条方向搞反的话，用户会觉得"验证一下登录态"把发布锁死了。
+ */
+test("⚠️ 该渠道正在深检时发布被拦（409 publish_blocked_by_runtime_check）", async () => {
+  const f = await fixture();
+  const image = await addLibraryImage(f, "素材 A.png", 1);
+  const preview = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [image.id],
+  });
+  const detail = await f.service.create(noteCreateInput([image.id], preview.previewRevision), ACTOR);
+  const task = detail.tasks[0];
+
+  const running = new Set<string>(["douyin"]);
+  const service = new PublishingService({
+    storageRoot: f.storageRoot,
+    jobs: f.jobReader,
+    store: f.store,
+    assets: f.assets,
+    copy: f.copy,
+    library: f.assetStore,
+    now: () => new Date(f.clock.now),
+    runtimeChecks: { isRunning: (id) => running.has(id) },
+  });
+
+  await assert.rejects(
+    () => service.autoPublish(task.id, { previewRevision: preview.previewRevision }, ACTOR),
+    (error: unknown) =>
+      error instanceof PublishingServiceError &&
+      error.status === 409 &&
+      error.code === "publish_blocked_by_runtime_check",
+  );
+});
+
+test("⚠️ 互斥按渠道：别的渠道在检测时，本渠道发布照常进行", async () => {
+  const f = await fixture();
+  const image = await addLibraryImage(f, "素材 B.png", 1);
+  const preview = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [image.id],
+  });
+  const detail = await f.service.create(noteCreateInput([image.id], preview.previewRevision), ACTOR);
+  const task = detail.tasks[0];
+
+  const running = new Set<string>(["toutiao", "xiaohongshu"]);
+  const service = new PublishingService({
+    storageRoot: f.storageRoot,
+    jobs: f.jobReader,
+    store: f.store,
+    assets: f.assets,
+    copy: f.copy,
+    library: f.assetStore,
+    now: () => new Date(f.clock.now),
+    runtimeChecks: { isRunning: (id) => running.has(id) },
+  });
+
+  // 不走互斥闸 ⇒ 落到抖音通路自己的失败（本 fixture 没有 sau），**绝不能**是我们的错误码
+  await assert.rejects(
+    () => service.autoPublish(task.id, { previewRevision: preview.previewRevision }, ACTOR),
+    (error: unknown) =>
+      !(error instanceof PublishingServiceError && error.code === "publish_blocked_by_runtime_check"),
+  );
+});
