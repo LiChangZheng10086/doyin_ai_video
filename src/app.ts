@@ -31,6 +31,8 @@ import { PublishingCopyService } from "./lib/publishing-copy.js";
 import { PublishingAssetService } from "./lib/publishing-assets.js";
 import { PublishingService } from "./lib/publishing-service.js";
 import { registerPublishingRoutes } from "./lib/publishing-routes.js";
+import { registerRuntimeRoutes } from "./lib/runtime-routes.js";
+import { createDefaultRuntimeStatusDeps } from "./lib/runtime-status.js";
 import type { AiProvider, CollectionRecord, DueNotification, PipelineStep, ScriptAsset, StreamablePipelineStep } from "./types.js";
 
 export interface ServerConfig {
@@ -282,6 +284,28 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   registerAssetRoutes(app, { assets: assetStore, limits: config.assetUploadLimits });
   registerLocalUserErrorBoundary(app);
   registerPublishingRoutes(app, { publishing, sessions: localSessions });
+
+  /*
+   * 运行环境状态一览（渠道 / 引擎）。
+   *
+   * 只有**零副作用**的免费检查走这里：不起浏览器、不写文件。会开浏览器的深检是独立的
+   * 后台任务（Task 2），必须手动触发 —— 理由见 spec §5.2（它会与发布抢同一个 profile）。
+   */
+  registerRuntimeRoutes(app, {
+    sessions: localSessions,
+    config: {
+      storageRoot: config.storagePath,
+      ...(config.sauBinary ? { sauBinary: config.sauBinary } : {}),
+      ...(config.sauBaseDir ? { sauBaseDir: config.sauBaseDir } : {}),
+      ...(config.toutiaoBrowserBinary ? { toutiaoBrowserBinary: config.toutiaoBrowserBinary } : {}),
+      ...(config.toutiaoProfileDir ? { toutiaoProfileDir: config.toutiaoProfileDir } : {}),
+      ...(config.xhsBrowserBinary ? { xhsBrowserBinary: config.xhsBrowserBinary } : {}),
+      ...(config.xhsProfileDir ? { xhsProfileDir: config.xhsProfileDir } : {}),
+      ...(config.ffmpegBinary ? { ffmpegBinary: config.ffmpegBinary } : {}),
+      repoRoot: config.rootDir,
+    },
+    deps: createDefaultRuntimeStatusDeps(),
+  });
 
   // 静态文件（开发环境可能不需要）
   const publicDir = path.join(config.rootDir, "public");

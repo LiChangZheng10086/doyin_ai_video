@@ -45,7 +45,7 @@ const DOUYIN_COOKIE_DOMAIN = ".douyin.com";
  * `check` 要启动 patchright chromium 并最多重试 3 次（上游每次 goto 超时 90s），
  * 所以预检也要给足时间，不能按「一条命令」估。
  */
-const CHECK_TIMEOUT_MS = 300_000;
+export const CHECK_TIMEOUT_MS = 300_000;
 /** 上传是分钟级：传图 + 填文案 + 发布循环。 */
 const UPLOAD_TIMEOUT_MS = 900_000;
 
@@ -65,14 +65,20 @@ const VERIFICATION_MARKERS = [
  * Global Constraints 要求这里必须覆盖 spec §1.2 的三个坑 —— 只说「未配置」等于把用户
  * 丢进一个 970MB 的坑里自己踩。三条都来自 2026-09-17 的实测，不是推测。
  */
-export const SAU_INSTALL_GUIDANCE = [
+export const SAU_INSTALL_GUIDANCE_LINES = [
   "未配置抖音自动发布引擎：需要外部 social-auto-upload（github.com/dreammis/social-auto-upload）的 sau CLI。",
   "安装前请注意三个已知坑：",
   "① 按官方步骤装完 CLI 可能起不来 —— pyproject 只声明了 patchright，但仍有 7 个 uploader 与 myUtils 在 import playwright，需手动补装 playwright；",
   "② Python 版本要求 >=3.10,<3.13，本机若是 3.13 需另装 3.12；",
   "③ 仓库 + venv + patchright chromium 约占 970MB。",
   "装好后配置 SAU_BINARY（sau 可执行文件路径）与 SAU_BASE_DIR（含 conf.py 的仓库根目录），然后重启后端。",
-].join("");
+];
+
+/**
+ * 上面那份的字符串形态：既有错误文案一直在插值它，所以**逐字不变**。
+ * 数组形态供界面逐行渲染（运行环境状态一览）。两者由同一份数组派生，**不可能漂**。
+ */
+export const SAU_INSTALL_GUIDANCE = SAU_INSTALL_GUIDANCE_LINES.join("");
 
 /** 上游 `print("valid" if is_valid else "invalid")`：`invalid` 里含 `valid` 子串，必须用词边界。 */
 const VALID_OUTPUT_PATTERN = /\bvalid\b/iu;

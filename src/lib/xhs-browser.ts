@@ -36,14 +36,20 @@ export class XhsBrowserError extends Error {
  * 只说「未找到浏览器」等于把用户丢在原地（本机就出现过「有 playwright 却没有浏览器」的状态），
  * 所以必须给出能直接照抄的命令。措辞与头条那份保持同一口径。
  */
-export const XHS_BROWSER_GUIDANCE = [
+export const XHS_BROWSER_GUIDANCE_LINES = [
   "未找到可用于小红书发布的浏览器。三选一：",
   "① 运行 npm run prepare:package:mac（产出打包用的 chrome-headless-shell，约 196MB）；",
   "② 运行 npx playwright install chromium（下载 Playwright 自己的 chromium，约 330MB）；",
   "③ 用 XHS_BROWSER_BINARY 直接指定一个 Chromium 系可执行文件的路径，然后重启后端。",
   "（只做扫码登录的话还需要一个能显示窗口的浏览器：系统装的 Google Chrome 即可；",
   "  以上 ①② 装的是无头专用构建，开不了窗口，届时可改用界面上的「应用内扫码」。）",
-].join("");
+];
+
+/**
+ * 上面那份的字符串形态：既有错误文案一直在插值它，所以**逐字不变**。
+ * 数组形态供界面逐行渲染（运行环境状态一览）。两者由同一份数组派生，**不可能漂**。
+ */
+export const XHS_BROWSER_GUIDANCE = XHS_BROWSER_GUIDANCE_LINES.join("");
 
 export type XhsBrowserTarget =
   | { kind: "executablePath"; path: string; source: "config" | "env" | "vendored" }

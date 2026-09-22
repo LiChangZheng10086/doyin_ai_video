@@ -35,14 +35,20 @@ export class ToutiaoBrowserError extends Error {
  * 只说「未找到浏览器」等于把用户丢在原地：本机就是「有 playwright 却没有浏览器」的状态，
  * 所以必须给出两条能直接照抄的命令（与 `SAU_INSTALL_GUIDANCE` 同一口径）。
  */
-export const TOUTIAO_BROWSER_GUIDANCE = [
+export const TOUTIAO_BROWSER_GUIDANCE_LINES = [
   "未找到可用于头条号发布的浏览器。三选一：",
   "① 运行 npm run prepare:package:mac（产出打包用的 chrome-headless-shell，约 196MB）；",
   "② 运行 npx playwright install chromium（下载 Playwright 自己的 chromium，约 330MB）；",
   "③ 用 TOUTIAO_BROWSER_BINARY 直接指定一个 Chromium 系可执行文件的路径，然后重启后端。",
   "（只做扫码登录的话还需要一个能显示窗口的浏览器：系统装的 Google Chrome 即可；",
   "  以上 ①② 装的是无头专用构建，开不了窗口，届时可改用界面上的「应用内扫码」。）",
-].join("");
+];
+
+/**
+ * 上面那份的字符串形态：既有错误文案一直在插值它，所以**逐字不变**。
+ * 数组形态供界面逐行渲染（运行环境状态一览）。两者由同一份数组派生，**不可能漂**。
+ */
+export const TOUTIAO_BROWSER_GUIDANCE = TOUTIAO_BROWSER_GUIDANCE_LINES.join("");
 
 export type ToutiaoBrowserTarget =
   | { kind: "executablePath"; path: string; source: "config" | "env" | "vendored" }
@@ -85,7 +91,13 @@ export interface ToutiaoBrowserConfig {
 
 const VENDORED_SHELL_ROOT = ["vendor", "package-assets", "browser", "chrome-headless-shell"] as const;
 
-const defaultProbe: ToutiaoBrowserProbe = {
+/**
+ * 基于真实文件系统的探测点（小红书那条链的形状与本接口一致，共用同一份）。
+ *
+ * 导出是为了让「运行环境状态一览」用**同一个**探测点探同一件事 —— 各写一份的话，
+ * 「状态页说就绪、解析链却找不到浏览器」这种自相矛盾迟早会出现。
+ */
+export const filesystemBrowserProbe: ToutiaoBrowserProbe = {
   isFile(target: string): boolean {
     try {
       return statSync(target).isFile();
@@ -148,7 +160,7 @@ function unavailable(message: string): never {
 export function resolveToutiaoBrowser(config: ToutiaoBrowserConfig = {}): ToutiaoBrowserResolution {
   const platform = config.platform ?? process.platform;
   const env = config.env ?? process.env;
-  const probe = config.probe ?? defaultProbe;
+  const probe = config.probe ?? filesystemBrowserProbe;
   const repoRoot = path.resolve(config.repoRoot ?? process.cwd());
   const attempts: ToutiaoBrowserAttempt[] = [];
 
@@ -222,7 +234,7 @@ export function resolveToutiaoBrowser(config: ToutiaoBrowserConfig = {}): Toutia
 export function resolveToutiaoHeadedBrowser(config: ToutiaoBrowserConfig = {}): ToutiaoBrowserResolution {
   const platform = config.platform ?? process.platform;
   const env = config.env ?? process.env;
-  const probe = config.probe ?? defaultProbe;
+  const probe = config.probe ?? filesystemBrowserProbe;
   const attempts: ToutiaoBrowserAttempt[] = [];
 
   const explicit = config.browserBinary?.trim() ?? env.TOUTIAO_BROWSER_BINARY?.trim();

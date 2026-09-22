@@ -28,6 +28,17 @@ export interface MediaCommandRunner {
   ): Promise<{ stdout: string; stderr: string }>;
 }
 
+/**
+ * ffmpeg 可用性探测要跑的命令。
+ *
+ * 运行环境状态一览用它回答「图文包配图能不能裁 3:4」。**只跑 `-version`**：
+ * 一次短命的只读探测，不改变任何状态（INV-3）。命令形状只在这里定义一处，
+ * 由调用方通过可注入的探测端口执行（用例据此断言调用形状）。
+ */
+export function ffmpegProbeCommand(ffmpegBinary?: string): { command: string; args: string[] } {
+  return { command: ffmpegBinary?.trim() || "ffmpeg", args: ["-version"] };
+}
+
 export interface DownloadResult {
   videoPath: string;
   metadataPath: string;

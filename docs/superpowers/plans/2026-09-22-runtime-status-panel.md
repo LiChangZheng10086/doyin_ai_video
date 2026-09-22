@@ -30,6 +30,16 @@
 
 ### Task 1: 聚合模块与五项免费检查（测试先行）
 
+> **执行记录（2026-09-22）**：已完成。落地时有四处计划外的调整，都写进了代码注释：
+> ① `RuntimeStatusDeps.fs` **只暴露读方法**（access/readFile）—— INV-3 从「用例断言没写」升级成「类型上写不了」；
+> ② 浏览器解析链的两种失败形态必须分开对待：**显式路径不存在时解析链直接抛错**（拿不到逐层诊断，
+>    但错误文案点名了路径），**链条走完才返回 `{target:null, attempts}`**（逐层诊断齐全），两条各有用例；
+> ③ 探测点复用 `filesystemBrowserProbe`（从 `toutiao-browser.ts` 导出），不另写一份 —— 否则迟早
+>    出现「状态页说就绪、解析链找不到浏览器」；
+> ④ `media.ts` 只提供 `ffmpegProbeCommand()`（命令形状一处定义），实际执行走注入的 `probe` 端口，
+>    于是「只跑 `-version`」可被用例断言。
+> 手验：独立后端 :3100 五项状态正确、逐层诊断是真实结果、无会话时 401。
+
 **Files:**
 - Create: `src/lib/runtime-status.ts`
 - Test: `src/lib/runtime-status.test.ts`
@@ -43,7 +53,7 @@
 - Consumes: `SauRunner.assertConfigured()`（`sau-runner.ts:186`）、`douyin-cookie.ts` 的 `hasCookie/hasAuthCookie/getCookiePath`、`resolveToutiaoBrowserTarget` 的 `attempts` 链（`toutiao-browser.ts:153-178`）、`XHS_BROWSER_GUIDANCE`、`MediaServiceConfig.ffmpegBinary`（`media.ts:11`）
 - Produces: `RuntimeItem` / `RuntimeStatusResponse` / `RuntimeState`（spec §3.2）、`RuntimeStatusDeps`（可注入 `fs` 与命令探测端口）、`collectRuntimeStatus(deps): Promise<RuntimeStatusResponse>`、`RUNTIME_VERIFIED_TTL_MS`；路由 `GET /api/runtime/status`
 
-- [ ] **Step 1: 写失败用例（聚合形状与五项判定）**
+- [x] **Step 1: 写失败用例（聚合形状与五项判定）**
 
 - 返回恰好 **5 项**：`channels` 三项顺序固定 `douyin`/`toutiao`/`xiaohongshu`，`dependencies` 两项 `ffmpeg`/`storage`；每项 `state`/`detail` 非空。
 - **INV-1（本设计最重要的一条）**：把五项全部构造为"配置齐、凭据存在、无 verified"，断言所有 `detail` 与状态文案**不含**「已登录」「有效」；且 `verified` 字段**不出现**。
@@ -57,31 +67,31 @@
 - **INV-3 零副作用**：注入 fake `fs`/`probe`，整个 `collectRuntimeStatus()` 期间**没有任何写操作**（断言 fake 未收到 `writeFile`/`mkdir`）；`probe` 只收到 `ffmpeg -version`。
 - `verified.state === "valid"` 且 `age ≤ RUNTIME_VERIFIED_TTL_MS` → `ready`；超过 TTL → `degraded`；`verified.state === "invalid"` 且在 TTL 内 → `blocked`。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --import tsx --test src/lib/runtime-status.test.ts`
 Expected: FAIL —— 模块不存在。
 
-- [ ] **Step 3: 实现 `runtime-status.ts`（判定集中在这一处）**
+- [x] **Step 3: 实现 `runtime-status.ts`（判定集中在这一处）**
 
 状态映射严格照 spec §3.4 表实现；跨渠道/依赖共用一个纯函数 `resolveState(checks, verified)`，**不允许在别处再写一份判定**（INV-7）。`RuntimeStatusDeps` 至少含 `{ fs: { access, readFile, readdir }, probe: { runCommand }, now(): Date }`，`now` 可注入以便测 TTL。
 
-- [ ] **Step 4: 实现 ffmpeg 检查与三份 `*_GUIDANCE_LINES`**
+- [x] **Step 4: 实现 ffmpeg 检查与三份 `*_GUIDANCE_LINES`**
 
 `media.ts` 新增可用性检查（执行 `-version`，**不改 `MediaService` 既有构造签名**——新增独立导出函数由聚合层调用）。三份常量**只新增数组导出**，既有字符串逐字不动。
 
-- [ ] **Step 5: 运行确认通过（含既有用例不回归）**
+- [x] **Step 5: 运行确认通过（含既有用例不回归）**
 
 Run: `node --import tsx --test src/lib/runtime-status.test.ts`
 Expected: PASS。
 Run: `npm test`
 Expected: PASS（既有全量用例不回归）。
 
-- [ ] **Step 6: 接上路由**
+- [x] **Step 6: 接上路由**
 
 `runtime-routes.ts` 导出 `registerRuntimeRoutes(app, deps)`；`GET /api/runtime/status` 走 `authenticated`（沿用本地操作者会话中间件）。在 `app.ts:284` 之后装配。
 
-- [ ] **Step 7: 端到端手验**
+- [x] **Step 7: 端到端手验**
 
 Run: `npm run build:backend && npm start`
 Run: `curl -s localhost:3100/api/runtime/status | python3 -m json.tool | head -40`
