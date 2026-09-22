@@ -1181,6 +1181,311 @@ test("⚠️ 该渠道正在深检时发布被拦（409 publish_blocked_by_runti
   );
 });
 
+/**
+ * 登录判据回写（spec §3.3 第③条 / INV-2 ②③④⑤）。
+ *
+ * 这些路径里**本来就跑过一次登录判定**，顺手记下来就有了「发一次 = 验一次」——
+ * 用户不点任何按钮，状态页也会自己变新。深检（INV-2 ①）不走这里，它自己写。
+ */
+
+type ServiceDeps = ConstructorParameters<typeof PublishingService>[0];
+
+/** 记录回写调用；同时充当端口。 */
+function recordingVerified() {
+  const records: Array<{ id: string; state: string }> = [];
+  return {
+    records,
+    port: {
+      async record(id: string, state: "valid" | "invalid") {
+        records.push({ id, state });
+      },
+    },
+  };
+}
+
+function serviceWith(f: Fixture, extra: Partial<ServiceDeps> = {}): PublishingService {
+  return new PublishingService({
+    storageRoot: f.storageRoot,
+    jobs: f.jobReader,
+    store: f.store,
+    assets: f.assets,
+    copy: f.copy,
+    library: f.assetStore,
+    now: () => new Date(f.clock.now),
+    ...extra,
+  });
+}
+
+function fakeSau(checkLogin: () => Promise<{ ok: boolean; exitCode: number; output: string }>) {
+  return {
+    assertConfigured() {},
+    checkLogin,
+    async prepareAccountFile() {
+      return "/tmp/sau-account.json";
+    },
+    async runUploadNote() {
+      return { ok: true, exitCode: 0, output: "图文发布成功", needsVerificationCode: false };
+    },
+    async syncBackCookies() {},
+    verifyCodeFilePath: "/tmp/verify_code.txt",
+  } as unknown as ServiceDeps["sau"];
+}
+
+function fakeToutiao(options: { loggedIn: boolean; username?: string } = { loggedIn: true }) {
+  return {
+    assertConfigured() {},
+    async checkLogin() {
+      return { loggedIn: options.loggedIn, url: "https://mp.toutiao.com/", ...(options.username ? { username: options.username } : {}) };
+    },
+    async startLogin() {
+      return { qrDataUrl: "data:image/png;base64,AA", startedAt: "2026-09-22T02:00:00.000Z", expiresAt: "2026-09-22T02:10:00.000Z" };
+    },
+    async pollLogin() {
+      return { status: "logged_in" as const, ...(options.username ? { username: options.username } : {}) };
+    },
+    async cancelLogin() {},
+    async loginInWindow() {
+      return { loggedIn: options.loggedIn, message: "扫码成功" };
+    },
+    async publishArticle() {
+      throw new Error("本用例不该走到发布");
+    },
+  } as unknown as ServiceDeps["toutiao"];
+}
+
+function fakeXhs(options: { loggedIn: boolean; username?: string } = { loggedIn: true }) {
+  return {
+    assertConfigured() {},
+    async checkLogin() {
+      return { loggedIn: options.loggedIn, url: "https://creator.xiaohongshu.com/", ...(options.username ? { username: options.username } : {}) };
+    },
+    async startLogin() {
+      return { qrDataUrl: "data:image/png;base64,AA", startedAt: "2026-09-22T02:00:00.000Z", expiresAt: "2026-09-22T02:10:00.000Z" };
+    },
+    async pollLogin() {
+      return { status: "logged_in" as const, ...(options.username ? { username: options.username } : {}) };
+    },
+    async cancelLogin() {},
+    async loginInWindow() {
+      return { loggedIn: options.loggedIn, message: "扫码成功" };
+    },
+    async publishNote() {
+      throw new Error("本用例不该走到发布");
+    },
+  } as unknown as ServiceDeps["xhs"];
+}
+
+async function douyinNoteTask(f: Fixture, fileName = "素材 V.png") {
+  const image = await addLibraryImage(f, fileName, 1);
+  const preview = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [image.id],
+  });
+  const detail = await f.service.create(noteCreateInput([image.id], preview.previewRevision), ACTOR);
+  /*
+   * ⚠️ `previewRevision` 必须来自**包级预览**（`packagePreview`，路由 `GET …/preview` 用的就是它），
+   * 不是建包前那次 `/jobs/:id/publishing/preview` —— 后者是「源内容」的版本，建包后包级指纹另算。
+   */
+  const packagePreview = await f.service.packagePreview(detail.package.id);
+  return { taskId: detail.tasks[0].id, previewRevision: packagePreview.previewRevision };
+}
+
+test("抖音图文发布：预检通过 → 回写 verified=valid（发一次 = 验一次）", async () => {
+  const f = await fixture();
+  const { taskId, previewRevision } = await douyinNoteTask(f);
+  const verified = recordingVerified();
+  const service = serviceWith(f, {
+    sau: fakeSau(async () => ({ ok: true, exitCode: 0, output: "valid" })),
+    runtimeVerified: verified.port,
+  });
+
+  const task = await service.autoPublish(taskId, { previewRevision }, ACTOR);
+  assert.equal(task.autoPublish?.status, "succeeded");
+  assert.deepEqual(verified.records, [{ id: "douyin", state: "valid" }]);
+});
+
+test("⚠️ 抖音预检：只有 `exitCode === 0 && ok === false` 才算失效（写 invalid）", async () => {
+  const f = await fixture();
+  const { taskId, previewRevision } = await douyinNoteTask(f);
+  const verified = recordingVerified();
+  const service = serviceWith(f, {
+    sau: fakeSau(async () => ({ ok: false, exitCode: 0, output: "invalid" })),
+    runtimeVerified: verified.port,
+  });
+
+  const task = await service.autoPublish(taskId, { previewRevision }, ACTOR);
+  assert.equal(task.autoPublish?.status, "failed");
+  assert.deepEqual(verified.records, [{ id: "douyin", state: "invalid" }]);
+});
+
+test("⚠️ 抖音预检超时/起不来（exitCode -1）→ **不写** verified（没验成 ≠ 失效）", async () => {
+  const f = await fixture();
+  const { taskId, previewRevision } = await douyinNoteTask(f);
+  const verified = recordingVerified();
+  const service = serviceWith(f, {
+    sau: fakeSau(async () => ({ ok: false, exitCode: -1, output: "Command timed out" })),
+    runtimeVerified: verified.port,
+  });
+
+  const task = await service.autoPublish(taskId, { previewRevision }, ACTOR);
+  assert.equal(task.autoPublish?.status, "failed");
+  assert.deepEqual(
+    verified.records,
+    [],
+    "把超时记成失效会变成最长 7 天的假红灯（RUNTIME_VERIFIED_TTL_MS）",
+  );
+});
+
+test("设置页「校验登录」顺手回写：头条有效、小红书失效各自落一条", async () => {
+  const f = await fixture();
+  const verified = recordingVerified();
+  const service = serviceWith(f, {
+    toutiao: fakeToutiao({ loggedIn: true, username: "测试号" }),
+    xhs: fakeXhs({ loggedIn: false }),
+    runtimeVerified: verified.port,
+  });
+
+  await service.verifyToutiaoLogin();
+  await service.verifyXhsLogin();
+  assert.deepEqual(verified.records, [
+    { id: "toutiao", state: "valid" },
+    { id: "xiaohongshu", state: "invalid" },
+  ]);
+});
+
+test("扫码登录成功（pollXhsLogin → logged_in）→ 回写 verified=valid（最强的证据）", async () => {
+  const f = await fixture();
+  const verified = recordingVerified();
+  const service = serviceWith(f, {
+    xhs: fakeXhs({ loggedIn: true, username: "昵称" }),
+    runtimeVerified: verified.port,
+  });
+
+  const status = await service.pollXhsLogin();
+  assert.equal(status.status, "logged_in");
+  assert.deepEqual(verified.records, [{ id: "xiaohongshu", state: "valid" }]);
+});
+
+test("扫码登录成功（pollToutiaoLogin / loginXhsInWindow）→ 同样回写", async () => {
+  const f = await fixture();
+  const verified = recordingVerified();
+  const service = serviceWith(f, {
+    toutiao: fakeToutiao({ loggedIn: true }),
+    xhs: fakeXhs({ loggedIn: true }),
+    runtimeVerified: verified.port,
+  });
+
+  await service.pollToutiaoLogin();
+  await service.loginXhsInWindow();
+  assert.deepEqual(verified.records, [
+    { id: "toutiao", state: "valid" },
+    { id: "xiaohongshu", state: "valid" },
+  ]);
+});
+
+async function xhsNoteTask(f: Fixture, fileName = "素材 X.png", xhsOptions = { aiDeclaration: true, submit: false }) {
+  const image = await addLibraryImage(f, fileName, 1);
+  const preview = await f.service.preview("job-1", ["xiaohongshu"], "note", {
+    imageSource: "library",
+    imageAssetIds: [image.id],
+  });
+  const detail = await f.service.create(
+    noteCreateInput([image.id], preview.previewRevision, {
+      platforms: [{ platform: "xiaohongshu" as const, copy: { ...NOTE_COPY, hashtags: [...NOTE_COPY.hashtags] } }],
+      xhsOptions,
+    }),
+    ACTOR,
+  );
+  const packagePreview = await f.service.packagePreview(detail.package.id);
+  return { taskId: detail.tasks[0].id, previewRevision: packagePreview.previewRevision };
+}
+
+function fakeXhsPublishing(publishNote: () => Promise<Record<string, unknown>>) {
+  return {
+    ...(fakeXhs({ loggedIn: true }) as object),
+    publishNote,
+  } as unknown as ServiceDeps["xhs"];
+}
+
+test("⚠️ 小红书归因①：被踢到登录页（code=xhs_not_logged_in）→ 回写 invalid", async () => {
+  const f = await fixture();
+  const { taskId, previewRevision } = await xhsNoteTask(f);
+  const verified = recordingVerified();
+  const service = serviceWith(f, {
+    xhs: fakeXhsPublishing(async () => ({
+      ok: false,
+      code: "xhs_not_logged_in",
+      submitted: false,
+      verification: "unconfirmed",
+      message: "已停在填写之前：页面被重定向到登录页。",
+      steps: [],
+    })),
+    runtimeVerified: verified.port,
+  });
+
+  const task = await service.autoPublish(taskId, { previewRevision, dryRun: true }, ACTOR);
+  assert.equal(task.autoPublish?.status, "failed");
+  assert.deepEqual(verified.records, [{ id: "xiaohongshu", state: "invalid" }]);
+});
+
+test("⚠️ 小红书归因②：走完全程（含「只填到草稿」）→ 回写 valid", async () => {
+  const f = await fixture();
+  const { taskId, previewRevision } = await xhsNoteTask(f);
+  const verified = recordingVerified();
+  const service = serviceWith(f, {
+    xhs: fakeXhsPublishing(async () => ({
+      ok: true,
+      submitted: false,
+      verification: "unconfirmed",
+      message: "已填写到草稿箱（未点发布）。",
+      steps: [],
+    })),
+    runtimeVerified: verified.port,
+  });
+
+  const task = await service.autoPublish(taskId, { previewRevision, dryRun: true }, ACTOR);
+  assert.equal(task.autoPublish?.status, "succeeded");
+  assert.equal(task.autoPublish?.draftOnly, true);
+  assert.deepEqual(verified.records, [{ id: "xiaohongshu", state: "valid" }]);
+});
+
+test("⚠️ 小红书归因③：其他失败（页面改版/超时）→ **不写** verified（不许猜）", async () => {
+  const f = await fixture();
+  const { taskId, previewRevision } = await xhsNoteTask(f, "素材 Y.png");
+  const verified = recordingVerified();
+  const service = serviceWith(f, {
+    xhs: fakeXhsPublishing(async () => ({
+      ok: false,
+      code: "xhs_submit_control_missing",
+      submitted: false,
+      verification: "unconfirmed",
+      message: "找不到提交控件。",
+      steps: [],
+    })),
+    runtimeVerified: verified.port,
+  });
+
+  const task = await service.autoPublish(taskId, { previewRevision, dryRun: true }, ACTOR);
+  assert.equal(task.autoPublish?.status, "failed");
+  assert.deepEqual(verified.records, [], "这次失败与登录态无关，写 verified 就是编结论");
+});
+
+test("回写失败**不影响发布**（它只是辅助动作，但要留下警告而不是静默）", async () => {
+  const f = await fixture();
+  const { taskId, previewRevision } = await douyinNoteTask(f, "素材 W.png");
+  const service = serviceWith(f, {
+    sau: fakeSau(async () => ({ ok: true, exitCode: 0, output: "valid" })),
+    runtimeVerified: {
+      async record() {
+        throw new Error("磁盘满");
+      },
+    },
+  });
+
+  const task = await service.autoPublish(taskId, { previewRevision }, ACTOR);
+  assert.equal(task.autoPublish?.status, "succeeded", "回写失败不能把发布拖失败");
+});
+
 test("⚠️ 互斥按渠道：别的渠道在检测时，本渠道发布照常进行", async () => {
   const f = await fixture();
   const image = await addLibraryImage(f, "素材 B.png", 1);

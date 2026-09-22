@@ -274,6 +274,9 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     library: assetStore,
     // 发布侧让路：该渠道正在深检时，发布 409（spec §5.2 规则 2 / INV-4b）
     runtimeChecks,
+    // 登录判据回写（INV-2 ②③④⑤）：发布/扫码/校验登录产生过的判定顺手记进同一份存档，
+    // 于是「发一次 = 验一次」。与深检共用同一个 RuntimeChecks（同一 store、同一文件格式）。
+    runtimeVerified: { record: (id, state) => runtimeChecks.recordVerified(id, state) },
     sau: sauRunner,
     toutiao: toutiaoRunner,
     xhs: xhsRunner,

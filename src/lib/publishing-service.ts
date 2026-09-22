@@ -233,6 +233,14 @@ export interface PublishingServiceDependencies {
    * 未注入 = 没有深检功能（测试与早期装配），此时不拦。
    */
   runtimeChecks?: { isRunning(id: RuntimeChannelId): boolean | Promise<boolean> };
+  /**
+   * 登录判据回写（spec §3.3 第③条 / INV-2 ②③④⑤）。
+   *
+   * 发布或登录动作里**已经产生**的登录判定，顺手写进状态页那份存档 —— 于是「发一次 =
+   * 验一次」，用户不点任何按钮也会看到状态变新。深检（INV-2 ①）不走这里，它自己写。
+   * 未注入 = 没有状态页（测试与早期装配），此时什么都不做。
+   */
+  runtimeVerified?: { record(id: RuntimeChannelId, state: "valid" | "invalid"): Promise<void> };
   resolveVideo?: typeof resolveJobVideo;
 }
 
@@ -1047,6 +1055,8 @@ export class PublishingService {
   async verifyToutiaoLogin(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
     const runner = this.requireToutiaoRunner();
     const state = await runner.checkLogin();
+    // 本身就是一次零副作用的登录判定 —— 顺手回写，用户不必再点一次「验证登录态」（INV-2 ②）
+    await this.recordVerified("toutiao", state.loggedIn ? "valid" : "invalid");
     return state.loggedIn
       ? { loggedIn: true, ...(state.username ? { username: state.username } : {}), message: "头条号登录态有效" }
       : {
@@ -1062,7 +1072,10 @@ export class PublishingService {
   }
 
   async pollToutiaoLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; username?: string }> {
-    return this.requireToutiaoRunner().pollLogin();
+    const status = await this.requireToutiaoRunner().pollLogin();
+    // 刚刚亲眼确认过的登录态 —— 这是**最强**的证据（INV-2 ③）
+    if (status.status === "logged_in") await this.recordVerified("toutiao", "valid");
+    return status;
   }
 
   async cancelToutiaoLogin(): Promise<void> {
@@ -1078,7 +1091,10 @@ export class PublishingService {
   async loginToutiaoInWindow(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
     const runner = this.requireToutiaoRunner();
     await runner.cancelLogin().catch(() => undefined);
-    return runner.loginInWindow();
+    const result = await runner.loginInWindow();
+    // 窗口扫码成功是最强证据（INV-2 ③）
+    if (result.loggedIn) await this.recordVerified("toutiao", "valid");
+    return result;
   }
 
   /**
@@ -1130,6 +1146,8 @@ export class PublishingService {
       await writeFile(coverPath, coverBytes);
 
       const state = await runner.checkLogin();
+      // 发布前的这次判定顺手回写，于是「发一次 = 验一次」（INV-2 ④）
+      await this.recordVerified("toutiao", state.loggedIn ? "valid" : "invalid");
       if (!state.loggedIn) {
         return await this.finishAutoPublish(taskId, {
           status: "failed",
@@ -1461,6 +1479,25 @@ export class PublishingService {
    * 因此缺 previewRevision / 过期 revision / 缺配置 / 缺图这四种失败都不会留下 autoPublish 记录。
    */
   /**
+   * 把一次**已经产生**的登录判据回写（INV-2 ②③④⑤）。
+   *
+   * ⚠️ 这是**辅助动作**：它的失败绝不能让发布失败 —— 用户要的是把内容发出去，不是让
+   * 状态页好看。所以只记一行警告，不上抛。但也**不静默**：静默失败正是状态页会悄悄
+   * 变旧的原因，而那正是本功能要消灭的东西。
+   */
+  private async recordVerified(id: RuntimeChannelId, state: "valid" | "invalid"): Promise<void> {
+    const port = this.deps.runtimeVerified;
+    if (!port) return;
+    try {
+      await port.record(id, state);
+    } catch (error) {
+      console.warn(
+        `[publishing] 登录判据回写失败（不影响本次操作）：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
    * 该渠道正在深检时不许发布（spec §5.2 规则 2）。
    *
    * 只对三个有深检通路的渠道生效；未注入 `runtimeChecks` 时直接放行（没有深检功能）。
@@ -1608,6 +1645,16 @@ export class PublishingService {
       const message = result.steps.length > 0
         ? `${result.message}\n逐步记录：${result.steps.join(" → ")}`
         : result.message;
+      /*
+       * 小红书**没有发布前预检**（那条通路刻意不做任何多余页面访问），所以归因用它
+       * 自己的结果（spec §3.3 第③条）：
+       * - 被踢到登录页 → 执行器早返回 `code: "xhs_not_logged_in"`，这是**确凿**的失效证据
+       * - 走完全程（含「只填到草稿」）→ 那一刻登录态有效
+       * - 其他失败 → **不写**（我们不知道登录态怎么样，不许猜）
+       */
+      if (result.ok) await this.recordVerified("xiaohongshu", "valid");
+      else if (result.code === "xhs_not_logged_in") await this.recordVerified("xiaohongshu", "invalid");
+
       return await this.finishAutoPublish(taskId, {
         status: result.ok ? "succeeded" : "failed",
         message,
@@ -1635,7 +1682,10 @@ export class PublishingService {
 
   /** 小红书：轮询扫码状态。 */
   async pollXhsLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; username?: string }> {
-    return this.requireXhsRunner().pollLogin();
+    const status = await this.requireXhsRunner().pollLogin();
+    // 刚刚亲眼确认过（INV-2 ③）
+    if (status.status === "logged_in") await this.recordVerified("xiaohongshu", "valid");
+    return status;
   }
 
   async cancelXhsLogin(): Promise<void> {
@@ -1651,6 +1701,8 @@ export class PublishingService {
   async verifyXhsLogin(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
     const runner = this.requireXhsRunner();
     const state = await runner.checkLogin();
+    // 同头条：这本身就是一次零副作用的登录判定，顺手回写（INV-2 ②）
+    await this.recordVerified("xiaohongshu", state.loggedIn ? "valid" : "invalid");
     return state.loggedIn
       ? { loggedIn: true, ...(state.username ? { username: state.username } : {}), message: "小红书登录态有效" }
       : {
@@ -1666,7 +1718,10 @@ export class PublishingService {
     const runner = this.requireXhsRunner();
     // 与「应用内扫码」互斥：窗口登录期间若用户又点应用内扫码，会开出第二个浏览器（同样的 profile 会打架）。
     await runner.cancelLogin().catch(() => undefined);
-    return runner.loginInWindow();
+    const result = await runner.loginInWindow();
+    // 窗口扫码成功同样是最强证据（INV-2 ③）
+    if (result.loggedIn) await this.recordVerified("xiaohongshu", "valid");
+    return result;
   }
 
   /**
@@ -1737,6 +1792,14 @@ export class PublishingService {
 
     try {
       const precheck = await runner.checkLogin();
+      /*
+       * ⚠️ 归因边界（spec §3.3 第③条）：只有 `exitCode === 0 && ok === false` 才算
+       * 「登录态失效」；`exitCode === -1` 是**超时或进程起不来**，那是「没验成」——
+       * 记成 invalid 会把一次超时变成最长 7 天的假红灯（`RUNTIME_VERIFIED_TTL_MS`）。
+       */
+      if (precheck.ok) await this.recordVerified("douyin", "valid");
+      else if (precheck.exitCode === 0) await this.recordVerified("douyin", "invalid");
+
       if (!precheck.ok) {
         return await this.finishAutoPublish(taskId, {
           status: "failed",

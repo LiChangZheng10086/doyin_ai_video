@@ -180,6 +180,21 @@ export class RuntimeChecks {
     return summary;
   }
 
+  /**
+   * 回写一条登录判据。
+   *
+   * 供**发布链路与登录动作**调用（INV-2 ②③④⑤）：那些路径里已经产生了判定，顺手记下来
+   * 就有了「发一次 = 验一次」。与深检**共用同一个 store 与同一份文件格式**，但**不动
+   * `check` 段** —— 那是深检任务的记录，不该被一次发布擦掉。
+   */
+  async recordVerified(id: RuntimeChannelId, state: "valid" | "invalid"): Promise<void> {
+    const { verified, check } = await this.deps.store.read();
+    await this.deps.store.write({
+      verified: { ...verified, [id]: { state, at: this.now().toISOString() } },
+      check,
+    });
+  }
+
   async cancel(checkId: string): Promise<RuntimeCheckSummary> {
     const now = this.now();
     const { check, verified } = await this.deps.store.read();

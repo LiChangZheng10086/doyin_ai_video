@@ -169,6 +169,22 @@ Expected: PASS。
 
 ### Task 3: 发布与登录动作回写 `verified`（测试先行）
 
+> **执行记录（2026-09-22）**：已完成。五处来源全部接上（抖音/头条发布前预检、设置页「校验登录」、
+> 扫码成功、小红书发布内归因），共 10 条用例。落地时三处值得记下：
+> ① 回写走**独立端口** `runtimeVerified.record(id, state)`，与 Task 2 的互斥闸分开（各自一件事）；
+>    实现在 `RuntimeChecks.recordVerified`，**与深检共用同一个 store**，且**不动 `check` 段**
+>    —— 否则一次发布会把深检任务记录擦掉。
+> ② 回写失败**只警告、不上抛**：它是辅助动作，绝不能让发布失败；但也不静默（静默正是状态页
+>    会悄悄变旧的原因，而那正是本功能要消灭的东西）。
+> ③ `previewRevision` 必须取自**包级预览** `packagePreview()`（路由
+>    `GET /publishing/packages/:id/preview` 用的就是它），**不是**建包前的
+>    `/jobs/:id/publishing/preview` —— 用错来源会稳定撞 409 `publish_revision_conflict`
+>    （本 Task 第一版就是这么错的，用例抓出来了）。
+>
+> ⚠️ **已知缺口（有意留着）**：头条**文章发布**路径的回写已实现，但**没有服务层用例** ——
+> 既有测试里没有任何「文章包」的建包辅助（查过 `publishing-service.test.ts`），为本 Task 造一套
+> 不划算。该路径与「校验登录」共用同一个 helper 与同一份 runner 判据；真机走查 AC-7 覆盖抖音那条。
+
 **Files:**
 - Modify: `src/lib/publishing-service.ts`
 - Test: `src/lib/publishing-service.test.ts`（既有文件，追加用例）
@@ -177,7 +193,7 @@ Expected: PASS。
 - Consumes: Task 2 的 store 写入函数
 - Produces: 五处来源的写回（INV-2）
 
-- [ ] **Step 1: 写失败用例**
+- [x] **Step 1: 写失败用例**
 
 - `一次抖音发布尝试（预检通过）后，verified.at 变新且 state === "valid"`。
 - **抖音归因边界**：`checkLogin()` 返回 `exitCode === 0 && ok === false` → `invalid`；返回 `exitCode === -1`（超时/起不来）→ **不写** `verified`（断言 store 无新记录）——这条防的是"一次超时被记成 7 天红灯"。
@@ -188,16 +204,16 @@ Expected: PASS。
 - `扫码登录成功（pollLogin → logged_in）→ valid`。
 - **反向断言**：以上任何一条**都不得新增页面访问**（用 fake runner 断言调用序列里没有额外的 `goto`）。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --import tsx --test src/lib/publishing-service.test.ts`
 Expected: FAIL（新用例失败，既有用例仍通过）。
 
-- [ ] **Step 3: 实现回写（薄封装，别把判定散开）**
+- [x] **Step 3: 实现回写（薄封装，别把判定散开）**
 
 统一走一个 `recordVerified(source, state)` 辅助函数，**五处调用点都只传事实**，判定仍在 `runtime-status`/`runtime-checks` 一侧。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `node --import tsx --test src/lib/publishing-service.test.ts && npm test`
 Expected: PASS。
