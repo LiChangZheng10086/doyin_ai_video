@@ -126,22 +126,45 @@ interface RuntimeCheckSummary {
 **② 深检结论持久化到 `storage/cache/runtime-checks.json`。**
 沿用 `cache/publishing-index.json` 的 `LocalStorage` 形状（`publishing-store.ts:24`）。免费层每次现算、不缓存；**只有深检结论带时间戳落盘** —— 这样「上次验证：2 小时前」跨重启仍然成立。
 
-**③ 发布链路已经跑过的登录判定，顺手写进同一个 store。**
+**③ 发布链路里已经产生的登录判据，顺手写进同一个 store。**
 
-| 渠道 | 既有预检 | 位置 |
-| --- | --- | --- |
-| 抖音 | `runner.checkLogin()`（**每次发布前必跑**，最坏 5 分钟） | `publishing-service.ts:1698` |
-| 今日头条 | `checkLogin()` | `toutiao-runner.ts:238` |
-| 小红书 | `checkLogin()` | `xhs-runner.ts:401` |
+⚠️ 三个渠道的**判据来源不同**，别按"都有 precheck"去实现（本 spec 初稿就是这么写错的，评审指出后更正）：
 
-于是「发过一次」＝「深检过一次」，**用户不点任何按钮状态也会自己变新**。这是本设计里复用既有成本最彻底的一处；实现时需逐条确认各发布路径确实都走到了 `checkLogin`（抖音已确认）。
+| 渠道 | 判据来源 | 位置 | 是否新增访问 |
+| --- | --- | --- | --- |
+| 抖音 | 发布前**显式预检** `runner.checkLogin()`（每次必跑，最坏 5 分钟） | `publishing-service.ts:1698` | 否，本来就在跑 |
+| 今日头条 | 同上 | `publishing-service.ts:1113` → `toutiao-runner.ts:238` | 否 |
+| 小红书 | **没有 precheck**。用发布流程**内部已有**的登录判据：`goto(发布页)` 后命中 `isXhsLoginUrl` 即"**一步都不做**"返回 | `xhs-runner.ts:578` | **否，且禁止为此新增任何页面访问** |
 
-### 3.4 僵死恢复
+回写规则（三渠道统一，**只写确凿证据**）：
+
+- 判据为「登录态失效」→ `verified = invalid`
+- 判据为「登录态有效」——抖音/头条的预检通过；小红书**走完全程且全程未被踢到登录页**（含默认的"只填到草稿"姿态）→ `verified = valid`
+- **其他任何失败 → 不写**（保持未知，不许猜）
+
+于是「发过一次」＝「深检过一次」，**用户不点任何按钮状态也会自己变新**。这是本设计里复用既有成本最彻底的一处。
+
+⚠️ 小红书那条需要一个**很小的接口补充**：发布结果要能区分"因登录失效而失败"（例如暴露 `loginRequired: boolean`），否则服务层无法把 `ok: false` 归因。**明确禁止**为了拿到这个判据去新增页面访问 —— 这条通路我们连"发布后读回"都刻意不做。
+
+### 3.4 状态映射（条件 → 四态）
+
+四个状态是契约核心字段，**判定只有服务端一处**（INV-7）。规则如下：
+
+| 项 | `ready` | `degraded` | `blocked` | `unknown` |
+| --- | --- | --- | --- | --- |
+| **渠道** | 配置齐 + 凭据存在 + `verified.state = "valid"` 且 `age ≤ RUNTIME_VERIFIED_TTL_MS` | 配置齐 + 凭据存在，但**无 `verified`** 或**已超过 TTL** | 配置缺失 / 可执行文件缺失 / 目录不可写 / 凭据为空（`empty`）/ `verified.state = "invalid"` 且在 TTL 内 | 免费检查**自身抛错**（读不到凭据文件、探测异常） |
+| **依赖** | 检查通过 | （渠道项专用；依赖项不产出） | 检查失败（不可执行 / 不可写） | 检查抛错 |
+
+`RUNTIME_VERIFIED_TTL_MS = 7 * 24 * 60 * 60 * 1000`（7 天，可调）。
+
+要点：**渠道只有在"真的验证过且没过期"时才是 `ready`** —— 绿点才有含金量。这与 INV-1（免费层不谈有效性）不冲突：`ready` 依据的是**持久化的 `verified` 记录**，不是免费层的推断。
+
+### 3.5 僵死恢复
 
 深检任务若在 `running` 时进程被杀，会留下一条永远 `running` 的记录，界面里没有入口能清掉它 —— 与 `AUTO_PUBLISH_STALE_MS`（`publishing-store.ts`）面对的是同一个问题，注释里的推理照抄：
 
 - 启动时按 `jobs.ts` 的做法把残留 `running` 置为可重试（`jobs.ts:135-150`）
-- **僵死阈值必须大于抖音自检自己的超时**（`CHECK_TIMEOUT_MS = 300_000`，`sau-runner.ts:48`），否则会误判活着的进程
+- **僵死阈值 `RUNTIME_CHECK_STALE_MS = 10 * 60_000`**：必须大于最大超时（抖音 `CHECK_TIMEOUT_MS = 300_000`，`sau-runner.ts:48`），否则会误判活着的进程。取值与 §5.6 的超时表联动，改一处要改两处
 
 ---
 
@@ -157,17 +180,21 @@ interface RuntimeCheckSummary {
 
 **关于 `storage` 采用 `access(W_OK)` 而不是"写探针文件再删"**：AGENTS.md 记的两次事故（`EPERM: mkdir`）本质是权限/沙箱拒绝，`access` 会把同一个 errno 报出来。这样**五项全部零副作用**，不会在只读盘或受限沙箱下误判，也不需要"写完即删"这种脆弱约定。
 
+**profile 目录可写性要多说一层**：目录由 runner 自己 `mkdir`（`xhs-runner.ts:723` / `toutiao-runner.ts:626`），首次运行时目录**可能还不存在** —— 此时对目录本身 `access(W_OK)` 会得到 `ENOENT`，报成 `blocked` 就是**假阳性**。规则是：目录存在 → 查它本身；不存在 → 查**最近的已存在祖先目录**的 `W_OK`，通过则给 `ready` 并在 `evidence` 注明「目录尚未创建（首次使用时创建）」；祖先不可写 → `blocked` + errno。
+
+**`guidance` 统一为 `string[]`，但既有常量是单串**：三份 GUIDANCE 都是 `[...].join("")` 产出的**一个长串**（`sau-runner.ts:68`、`toutiao-browser.ts:38`、`xhs-browser.ts:39`），元素之间**没有换行符**，直接当数组渲染不出来。做法：**给三份常量各补一个数组形态导出**（`SAU_INSTALL_GUIDANCE_LINES` 等），既有字符串导出**逐字不变**（现有错误文案在插值使用），聚合层用数组形态。用例 #3 因此断言「数组形态 `join("")` 后与既有常量逐字一致」—— 两份形态**不可能漂**。
+
 `douyin` 项的 `detail` 取值只有三种（来自 `cookie-status` 的 `status` 字段）：`authenticated` → 「凭据已存在，有效性未知」；`no_auth` → 「凭据缺少登录态字段」；`empty` → 「尚未登录」。**三种都不出现「已登录」。**
 
 ---
 
 ## 5. 深检任务与互斥规则
 
-### 5.1 全局单飞
+### 5.1 深检之间：全局单飞
 
 同时只允许**一个**深检（任何渠道）。沿用发布中心"一次只允许一个"的纪律：`running` 期间再触发一律 **409**。理由是桌面机上同时开多个浏览器既重又没必要。
 
-### 5.2 互斥粒度：按渠道，不是全局
+### 5.2 深检 ↔ 发布的互斥粒度：按渠道（不是全局）
 
 冲突的根源是**同一个浏览器 profile 目录被两个进程同时使用**，不是"系统里只能有一个自动化"。因此：
 
@@ -190,11 +217,18 @@ interface RuntimeCheckSummary {
 
 ### 5.5 轮询
 
-**直接复用 `QrLoginPanel` 那套，不新发明**（`QrLoginPanel.tsx:57-97`）：`setTimeout` 自续期 + `POLL_INTERVAL_MS` + `stopped` ref + **轮询失败不清状态、下一拍自愈** + 卸载清理。间隔 2s，上限与任务超时一致。
+**直接复用 `QrLoginPanel` 那套，不新发明**（`QrLoginPanel.tsx:57-97`）：`setTimeout` 自续期 + `POLL_INTERVAL_MS` + `stopped` ref + **轮询失败不清状态、下一拍自愈** + 卸载清理。**形状与间隔都复用**：间隔取 `QrLoginPanel.tsx:16` 的 `POLL_INTERVAL_MS = 3_000`，不另定一套。
 
 ### 5.6 超时、失败与错误边界
 
-- 抖音上限用既有 `CHECK_TIMEOUT_MS = 300_000`（不新造常量）；头条/小红书沿用各自 `verify` 的超时
+- **超时常量**（runner 里**没有** verify 专属超时，只有登录/窗口登录的超时，不能借用）：
+
+  | 渠道 | 上限 | 来源 |
+  | --- | --- | --- |
+  | 抖音 | `CHECK_TIMEOUT_MS = 300_000` | 复用既有常量（`sau-runner.ts:48`） |
+  | 今日头条 | `RUNTIME_CHECK_TIMEOUT_MS = 120_000` | **新常量**（`DEFAULT_LOGIN_TIMEOUT_MS = 10min` 是扫码登录的，不是自检的） |
+  | 小红书 | `RUNTIME_CHECK_TIMEOUT_MS = 120_000` | 同上 |
+
 - 超时 → `failed` + **必须把 runner 的指引原样带上**
 - ⚠️ **`RuntimeCheckError` 必须登记到新路由自己的错误边界**。AGENTS.md 记着那次事故：头条一族错误类漏登记的表现**不是状态码不准，而是"指引整条丢掉"**，全落进兜底 500 且没有日志（`publishing-routes.ts:727` 的 `console.error` 正是为此补的）。
 
@@ -239,7 +273,7 @@ interface RuntimeCheckSummary {
 
 **顺带修掉的旧问题**：`DouyinSection` 现有说明只讲采集（「登录后即可使用签名 API 批量采集视频」），但**同一份 cookie 也是 sau 发布的唯一真源**。新界面必须写明「采集与发布共用同一份」。
 
-**build tag 的落点**：默认收起的诊断信息里显示后端 `dist/` 与 Electron `dist-electron/` 的构建时间。呼应 spec §2「**版本与开发端口退出主视觉**」—— 只在排障时被看见。
+**build tag 的落点**：默认收起的诊断信息里显示后端 `dist/` 与 Electron `dist-electron/` 的构建时间。呼应 **UI 重构 spec §2**「**版本与开发端口退出主视觉**」—— 只在排障时被看见。
 
 ### 6.3 组件边界
 
@@ -252,7 +286,7 @@ interface RuntimeCheckSummary {
 
 **状态 → 图标**（统一 lucide，本仓禁止 emoji 当功能图标）：`ready` → `CheckCircle2`、`degraded` → `AlertTriangle`、`blocked` → `XCircle`、`unknown` → `HelpCircle`。
 
-**颜色映射复用既有 token，不新增任何 token**：`ready` → `--color-success`、`degraded` → `--color-warning`、`blocked` → `--color-danger`、`unknown` → `--color-ink-subtle`。徽章**必须同时有图标与文字**（不能只靠颜色，spec §5.1）。`theme.test.ts` 的门禁因此原样通过。
+**颜色映射复用既有 token，不新增任何 token**：`ready` → `--color-success`、`degraded` → `--color-warning`、`blocked` → `--color-danger`、`unknown` → `--color-ink-subtle`。徽章**必须同时有图标与文字**（不能只靠颜色，**UI 重构 spec §5.1**）。`theme.test.ts` 的门禁因此原样通过。
 
 ---
 
@@ -261,9 +295,10 @@ interface RuntimeCheckSummary {
 便于用例逐条引用：
 
 - **INV-1** `GET /api/runtime/status` 的 `detail` 与状态文案**不含**「已登录」「有效」；`verified` 仅在 store 有记录时出现
-- **INV-2** `verified.state = "valid"` 只可能来自：深检成功、或发布链路里跑过的 `checkLogin` 成功
-- **INV-3** 免费层零副作用：不写文件、不启动进程、不开浏览器
-- **INV-4** 全局同时最多一个深检；同渠道的深检与发布互斥；跨渠道不互斥
+- **INV-2** `verified.state = "valid"` 只可能来自三处：① 深检成功；② 抖音/头条发布前的 `checkLogin` 通过；③ **小红书走完全程且全程未被踢到登录页**。**其他任何失败都不写 `verified`**（不许猜）
+- **INV-3** 免费层**不改变任何状态**：不写文件、不开浏览器、不触碰平台。**允许**执行短命的只读探测命令（`ffmpeg -version`）—— 否则只能退化成"PATH 里有没有那个文件"，查不出装坏的 ffmpeg
+- **INV-4a** 深检之间：全局同时最多一个
+- **INV-4b** 深检 ↔ 发布：**按渠道**互斥（同渠道互斥；跨渠道的**发布**不受影响）
 - **INV-5** `running` 的深检**不显示百分比**
 - **INV-6** 深检失败 / 超时**必须**带 `guidance`（不得被兜底 500 吃掉）
 - **INV-7** 前端不做状态判定：红灯规则只存在于服务端的 `state` 字段
@@ -288,7 +323,7 @@ interface RuntimeCheckSummary {
 
 1. `聚合端点返回 5 项，每项 state/detail 非空`
 2. `免费层永远不输出「已登录/有效」语义`（守 INV-1；`verified` 只在有记录时出现）
-3. `未配置 SAU_BINARY → douyin 为 blocked，且 guidance 与 SAU_INSTALL_GUIDANCE 逐字一致`
+3. `未配置 SAU_BINARY → douyin 为 blocked`，且 `guidance` 数组形态 `join("")` 后与 `SAU_INSTALL_GUIDANCE` **逐字一致**（头条/小红书同理，对 `TOUTIAO_BROWSER_GUIDANCE` / `XHS_BROWSER_GUIDANCE`）
 4. `解析链能落地但登录态未知 → degraded 而不是 ready`（头条、小红书各一条）
 5. `ffmpeg 不可用 → blocked + 指引`；`storage 不可写 → blocked + 原样回显路径与 errno`
 6. `同渠道深检重复触发 → 409`；`全局第二个深检（任何渠道）→ 409`
@@ -297,6 +332,9 @@ interface RuntimeCheckSummary {
 9. `深检失败必须带上 runner 的指引`（对标既有用例 `toutiao runner errors surface with their own status, code and guidance`）
 10. `一次抖音发布尝试后，runtime-checks.json 的 verified.at 变新`（守 §3.3 第③条）
 11. `取消检测 → status = cancelled（不是 failed），并提示可能需要重新验证`
+12. `免费层零副作用`（守 INV-3）：整个 `GET /api/runtime/status` 期间**没有** `writeFile` / `mkdir` / 浏览器启动；`ffmpeg` 探测只执行 `-version`（用桩断言调用形状）
+13. `profile 目录不存在但祖先可写 → ready 且 evidence 注明「尚未创建」`（守 §4 的假阳性规则）
+14. `小红书三条归因各一条：被踢到登录页 → verified=invalid；走完全程（含"只填到草稿"）→ verified=valid；其他失败 → **不写** verified`（守 §3.3 第③条与 INV-2）
 
 ### 9.2 前端用例
 
@@ -322,7 +360,7 @@ interface RuntimeCheckSummary {
 | AC-2 | 小红书没装浏览器时概览条显示 blocked，点「查看」→ 运行环境，展开即见三段可照抄命令 |
 | AC-3 | 三渠道的「去登录」都能跳到对应登录分组 |
 | AC-4 | 点「验证登录态」**立刻返回**并显示「检测中 · 已运行 N 秒 · 通常 10–30 秒，最坏 5 分钟」，可切走再回来 |
-| AC-5 | 检测期间**同渠道**发布禁用并说明原因；**跨渠道不受影响** |
+| AC-5 | 检测期间**同渠道**发布禁用并说明原因；**跨渠道的发布不受影响**（深检本身仍全局单飞，见 §5.1） |
 | AC-6 | 检测完成 → 该行显示「登录态有效 · 刚刚」，概览条同步变绿，无需手动刷新 |
 | AC-7 | 发一次抖音图文后，**即便没点过深检**，抖音行的"上次验证"也变新了 |
 | AC-8 | 免费层任何文案都不出现「已登录」；只有深检/发布留下的结论才谈有效性 |
@@ -341,6 +379,7 @@ interface RuntimeCheckSummary {
 | **🟡 新错误类漏登记** | 表现是**指引整条丢掉**，不是状态码不准 | §5.6 自带边界 + 用例 #9 |
 | **🟡 两处呈现漂移** | 概览条与运行环境各写一套判定 | INV-7：判定只在服务端；两处共用同一模型与同一组件（§6.3） |
 | **🟢 迁移动到 `DouyinSection`** | 删掉既有状态卡片属行为变更 | 紧凑状态行（同组件）保证"看不到状态"不成立；既有用例作为门禁 |
+| **🟡 小红书 `verified` 是"当时有效"的推断** | 发布成功 ≠ 登录态永远有效，它只证明"那一刻没被踢到登录页" | 文案一律带时间戳（「2h 前验证 · 登录态有效」）+ `RUNTIME_VERIFIED_TTL_MS` 到期回落 `degraded`；**不写成"当前已登录"** |
 
 ---
 
@@ -351,8 +390,10 @@ interface RuntimeCheckSummary {
 | `src/lib/runtime-status.ts`（新） | 聚合五项免费检查、读写 `cache/runtime-checks.json` |
 | `src/lib/runtime-checks.ts`（新） | 深检任务状态机、单飞与按渠道互斥、僵死恢复 |
 | `src/lib/runtime-routes.ts`（新） | 三个端点 + **自带错误边界** |
-| `src/lib/publishing-service.ts` | 发布/预检处顺手写 `verified`（§3.3 第③条） |
+| `src/lib/publishing-service.ts` | ① 发布/预检处顺手写 `verified`（§3.3 第③条）；② **发布入口读 runtime check 状态 → 同渠道 409**（§5.2 规则 2 / INV-4b），新错误码 `publish_blocked_by_runtime_check` + 中文文案 |
 | `src/lib/media.ts` | 新增 ffmpeg 可用性检查（供 `runtime-status.ts` 调用） |
+| `src/lib/sau-runner.ts` / `toutiao-browser.ts` / `xhs-browser.ts` | 各补一个 `*_GUIDANCE_LINES` 数组导出（既有字符串导出逐字不变，§4） |
+| `src/lib/xhs-runner.ts` | 发布结果暴露 `loginRequired`（或等价判别字段），供 §3.3 第③条归因；**不得新增任何页面访问** |
 | `src/app.ts` | `registerRuntimeRoutes(app, { … })`（装配点见 `app.ts:284` 附近） |
 | `renderer/src/pages/PublishingPage.tsx` | 概览条 |
 | `renderer/src/pages/SettingsPage.tsx` | 新增「运行环境」分组；`DouyinSection` 迁移状态卡片 |
@@ -368,8 +409,8 @@ interface RuntimeCheckSummary {
 ## 13. 实施顺序
 
 1. **Task 1 · 服务端聚合**：`runtime-status.ts` + 端点 + 五项检查（含新写的 ffmpeg / storage）+ 用例 1–5
-2. **Task 2 · 深检任务**：状态机、单飞与按渠道互斥、僵死恢复、错误边界 + 用例 6–9、11
-3. **Task 3 · 发布预检回写**：`publishing-service.ts` 三处接上 + 用例 10
+2. **Task 2 · 深检任务**：`runtime-checks.ts`（状态机、单飞、僵死恢复）+ `runtime-routes.ts`（含自带错误边界）+ **`publishing-service.ts` 发布入口的按渠道互斥 409** + 用例 6–9、11
+3. **Task 3 · 发布判据回写**：抖音 / 头条的 precheck 两处接上；小红书改 `xhs-runner.ts` 暴露 `loginRequired` 并在服务层归因 + 用例 10、14
 4. **Task 4 · 渲染层**：`RuntimeStatusList` / `RuntimeStateBadge` / `utils/runtime.ts` + 前端用例 1–5
 5. **Task 5 · 两个界面**：发布中心概览条 → 设置页「运行环境」→ `DouyinSection` 迁移 → 「去登录」锚点
 6. **Task 6 · build tag 诊断区**：`dist/` 与 `dist-electron/` 构建时间（决策 ⑦）
