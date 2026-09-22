@@ -50,16 +50,14 @@ test('⚠️ 一个组件两种尺寸：compact 与 full 渲染的是同一份�
   const full = render(<RuntimeStatusList items={items} variant="full" now={NOW} />);
   const compact = render(<RuntimeStatusList items={items} variant="compact" now={NOW} />);
 
-  // 两处都必须出现全部 5 项（compact 只是**过滤 ready**，不是换一套数据源）
+  // 两处都必须出现全部 5 项 —— 同一份模型，只是呈现尺寸不同（AC-1：桌面端一眼看到五项）
   for (const label of ['抖音', '今日头条', '小红书', 'ffmpeg', '存储目录']) {
     assert.match(full, new RegExp(label), `full 缺 ${label}`);
+    assert.match(compact, new RegExp(label), `compact 缺 ${label}`);
   }
-  for (const label of ['抖音', '小红书']) {
-    assert.match(compact, new RegExp(label), `compact 缺非 ready 的 ${label}`);
-  }
-  // full 显示 ready 的项，compact 不显示（避免发布现场摆一排绿点）
-  assert.match(full, /ffmpeg/);
-  assert.doesNotMatch(compact, /存储目录/);
+  // compact 的「就绪」项带窄屏隐藏类（桌面端仍显示，窄屏收起）—— 过滤交给 CSS，不是 JS
+  assert.match(compact, /hidden md:block/);
+  assert.doesNotMatch(full, /hidden md:block/, 'full 不该有窄屏收起这一层');
 });
 
 test('blocked 项的每一行可照抄动作都在 **full** 下渲染出来', () => {
@@ -122,14 +120,18 @@ test('动作按钮：compact 不给「验证登录态」，full 给；「去登�
   assert.doesNotMatch(ffmpegRow.slice(0, ffmpegRow.indexOf('</li>')), /去登录/u);
 });
 
-test('全绿时 compact 收成一行「环境正常」', () => {
+test('全绿时 compact 在**窄屏**收成一行「环境正常」（桌面端仍列出各项）', () => {
   const allReady: RuntimeItem[] = [
     { id: 'douyin', label: '抖音', state: 'ready', detail: '凭据已存在，有效性未知。' },
     { id: 'ffmpeg', label: 'ffmpeg', state: 'ready', detail: '就绪。' },
   ];
   const markup = render(<RuntimeStatusList items={allReady} variant="compact" now={NOW} />);
+
   assert.match(markup, /环境正常/);
-  assert.doesNotMatch(markup, /data-runtime-item/u);
+  assert.match(markup, /md:hidden/, '那一行只在窄屏出现');
+  // 桌面端仍然列出各项（否则 AC-1「一眼看到五项」不成立）
+  assert.match(markup, /data-runtime-item="douyin"/);
+  assert.match(markup, /data-runtime-item="ffmpeg"/);
 });
 
 test('full 下逐层诊断默认收起，展开可见 attempt 与 errno', () => {

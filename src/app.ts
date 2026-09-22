@@ -2,6 +2,7 @@ import express, { Express, type Request, type Response } from "express";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { AsrService } from "./lib/asr.js";
 import { OpenAiScriptCleaner, RuntimeScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
@@ -89,6 +90,15 @@ export interface ServerConfig {
   /** 素材上传限额（测试注入更小值以免构造大文件）。 */
   assetUploadLimits?: { maxFileBytes?: number; maxFiles?: number };
 }
+
+/**
+ * 本模块所在目录。
+ *
+ * ⚠️ 用 `import.meta.url`（ESM），**不要用裸 `__dirname`** —— `dist/` 是 ESM，
+ * 写 `__dirname` 会变成自由变量，Node 会报 `ERR_AMBIGUOUS_MODULE_SYNTAX`。
+ * 与 `src/server.ts` 同一惯用法。
+ */
+const appDir = path.dirname(fileURLToPath(import.meta.url));
 
 export interface AiRuntimeConfig {
   provider: AiProvider;
@@ -359,10 +369,22 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       ...(config.xhsBrowserBinary ? { xhsBrowserBinary: config.xhsBrowserBinary } : {}),
       ...(config.xhsProfileDir ? { xhsProfileDir: config.xhsProfileDir } : {}),
       ...(config.ffmpegBinary ? { ffmpegBinary: config.ffmpegBinary } : {}),
-      // 诊断信息：两套产物的构建时间（spec §6.2 / 决策 ⑦）。打包后路径可能不存在 → 不显示。
+      /*
+       * 诊断信息：两套产物的构建时间（spec §6.2 / 决策 ⑦）。打包后路径可能不存在 → 不显示。
+       *
+       * ⚠️ 用**本模块自身的位置**推仓库根，不用 `config.rootDir` —— 后者在两个入口下不一致：
+       * 独立后端 `src/server.ts` 算得对（`<repo>`），而 Electron 内嵌后端 `electron/server.ts:38`
+       * 在 dev 下用 `path.join(__dirname, '../..')` = **仓库的上一级**（`dist-electron` 只需一级 `..`），
+       * 于是按 rootDir 推出来的 `dist/server.js` 不存在 → 诊断信息静默消失（走查 AC-9 时发现）。
+       *
+       * ⚠️ 也**不许用裸 `__dirname`**：`dist/` 是 ESM（`src/server.ts` 用的是
+       * `fileURLToPath(import.meta.url)`），写 `__dirname` 会变成自由变量，让 Node 报
+       * `ERR_AMBIGUOUS_MODULE_SYNTAX`、**独立后端直接起不来**（我第一版就这么写错了，
+       * 幸好立刻被 `npm start` 抓出来）。这里沿用 server.ts 同一惯用法。
+       */
       buildTagPaths: {
-        backend: path.join(config.rootDir, "dist", "server.js"),
-        electron: path.join(config.rootDir, "dist-electron", "server.js"),
+        backend: path.resolve(appDir, "..", "dist", "server.js"),
+        electron: path.resolve(appDir, "..", "dist-electron", "server.js"),
       },
       repoRoot: config.rootDir,
     },

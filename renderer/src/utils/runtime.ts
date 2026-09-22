@@ -46,17 +46,25 @@ export function runtimeStateMeta(state: RuntimeState): RuntimeStateMeta {
 }
 
 /**
- * 该项在当前尺寸下是否显示。
+ * 概览条上「就绪」项在**窄屏**收起、桌面端全显（spec §6.1 的断点口径）。
  *
- * `full`（设置页）全显；`compact`（发布中心概览条）**只显示非 ready 的项** ——
- * 全绿时返回空数组，由调用方渲染一行「环境正常」，避免在发布现场摆一排绿点。
+ * ⚠️ 这里是**纯 CSS 断点**，不是 JS 判定 —— 服务端渲染的用例、以及首屏无闪烁都靠它。
+ * （早先的实现把「只显示非 ready」当成了 compact 的恒定行为，于是桌面端也只显示坏的那几项，
+ * 违反 AC-1「打开发布中心即可看到**五项**」。走查时发现并改正。）
+ *
+ * `full`（设置页）没有这一层：它的每一项都要看。
  */
-export function visibleItems(items: RuntimeItem[], variant: 'compact' | 'full'): RuntimeItem[] {
-  if (variant === 'full') return items;
-  return items.filter((item) => item.state !== 'ready');
+export function compactVisibilityClass(state: RuntimeState, variant: 'compact' | 'full'): string {
+  if (variant === 'full') return '';
+  return state === 'ready' ? 'hidden md:block' : '';
 }
 
-/** 概览条全绿时的那一行（`visibleItems` 返回空数组时用）。 */
+/** 五项全就绪 —— 只有此时才在窄屏收成一行「环境正常」。 */
+export function allReady(items: RuntimeItem[]): boolean {
+  return items.length > 0 && items.every((item) => item.state === 'ready');
+}
+
+/** 概览条全绿时窄屏显示的那一行。 */
 export function compactAllReadyLabel(): string {
   return '环境正常';
 }

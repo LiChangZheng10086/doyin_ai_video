@@ -1,6 +1,7 @@
 import React from 'react';
 import { RefreshCw } from 'lucide-react';
 import { useRuntimeStatus } from '../hooks/useRuntimeStatus';
+import { formatAge } from '../utils/runtime';
 import { RuntimeStatusList } from './RuntimeStatusList';
 
 /**
@@ -34,6 +35,8 @@ export function RuntimeOverviewStrip({ onOpenSettings }: { onOpenSettings?: () =
     <section className="mb-4 rounded-lg border border-line bg-panel px-3 py-2" aria-label="运行环境状态">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs text-ink-subtle">运行环境</span>
+        {/* spec §6.1：概览条也要说明结论的**时效**（用户据此决定要不要重新检查） */}
+        <span className="text-xs text-ink-subtle">本次检查：{formatAge(status.checkedAt, now)}</span>
         <div className="min-w-0 flex-1">
           <RuntimeStatusList items={items} variant="compact" check={check} now={now} />
         </div>

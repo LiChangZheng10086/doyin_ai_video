@@ -1,12 +1,13 @@
 import React from 'react';
 import type { RuntimeChannelId, RuntimeCheckSummary, RuntimeItem } from '../types/index.js';
 import {
+  allReady,
   checkStatusLabel,
   compactAllReadyLabel,
+  compactVisibilityClass,
   isRuntimeChannel,
   runningCheckLabel,
   verifiedLabel,
-  visibleItems,
 } from '../utils/runtime';
 import { RuntimeStateBadge } from './RuntimeStateBadge';
 
@@ -42,19 +43,20 @@ export function RuntimeStatusList({
   onCancel,
   now = new Date(),
 }: RuntimeStatusListProps) {
-  const visible = visibleItems(items, variant);
-
-  if (visible.length === 0) {
-    return (
-      <div className="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-ink-muted">
-        {compactAllReadyLabel()}
-      </div>
-    );
-  }
+  /*
+   * compact **不做 JS 过滤**：五项一律渲染，「就绪」项由 CSS 在窄屏收起（`hidden md:block`）。
+   * 这样桌面端就能满足 AC-1（一眼看到五项），窄屏则只剩需要处理的那几项。
+   */
+  const showAllReadyLine = variant === 'compact' && allReady(items);
 
   return (
     <ul className="space-y-2" data-runtime-variant={variant}>
-      {visible.map((item) => (
+      {showAllReadyLine && (
+        <li className="rounded-lg border border-line bg-panel px-3 py-2 text-sm text-ink-muted md:hidden">
+          {compactAllReadyLabel()}
+        </li>
+      )}
+      {items.map((item) => (
         <RuntimeRow
           key={item.id}
           item={item}
@@ -116,7 +118,7 @@ function RuntimeRow({
 
   return (
     <li
-      className="rounded-lg border border-line bg-panel px-3 py-2"
+      className={`rounded-lg border border-line bg-panel px-3 py-2 ${compactVisibilityClass(item.state, variant)}`}
       data-runtime-item={item.id}
       data-runtime-state={item.state}
     >

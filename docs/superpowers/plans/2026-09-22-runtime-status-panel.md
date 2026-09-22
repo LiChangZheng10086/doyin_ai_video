@@ -379,6 +379,26 @@ Expected: PASS。
 
 ### Task 7: 全量验证、编译与真机走查
 
+> **执行记录（2026-09-22，部分完成）**：全量门禁与两套产物编译已完成；AC 走查在**真实应用窗口**里做的
+> （Electron + 真实 userData + 真实 storage），结果与两处发现记在下面。
+>
+> **走查立刻抓到一处我自己的偏差**：AC-1 要求"打开发布中心即可看到**五项**"，实测只有 3 项 ——
+> 我在 Task 4 把「只显示非 ready」当成了 compact 的**恒定行为**，而 spec/计划写的是**断点行为**
+> （`≥md` 全显、`<md` 才收起）。已改为**纯 CSS 断点**（`hidden md:block`），不引入 JS 判定；
+> `visibleItems` 换成 `compactVisibilityClass` + `allReady`，用例同步改写。
+> 另外补上概览条缺的「本次检查」时刻（AC-1 的后半）。
+>
+> **又抓到一处既有 bug（未修，仅报告）**：`electron/server.ts:38` 的 dev 分支写的是
+> `path.join(__dirname, '../..')`，而 `__dirname` 是 `<repo>/dist-electron` ⇒ **仓库的上一级**。
+> 影响：`repoRoot` 与 `rootDir` 派生的路径（vendored 浏览器解析、`getWhisperRoot` 的 `rootDir/vendor/whisper`）
+> 全部指错；目前被后续兜底（playwright 缓存、`process.cwd()`）掩盖，所以一直没暴露 —— 正是
+> build tag 这类功能该暴露的东西。建议单独一次改动修它并验证（本次不动，避免与走查混在一起）。
+>
+> ⚠️ **我自己制造并立刻修掉的一次回归**：为推产物路径我在 `src/app.ts` 用了裸 `__dirname`，
+> 而 `dist/` 是 **ESM**（`src/server.ts` 用的是 `fileURLToPath(import.meta.url)`）⇒ 自由变量触发
+> `ERR_AMBIGUOUS_MODULE_SYNTAX`，**独立后端直接起不来**。`npm start` 一跑就抓出来了；
+> 改用同一 ESM 惯用法后正常。
+
 **Files:** 无新增；只读验证与记录。
 
 - [ ] **Step 1: 全量门禁**

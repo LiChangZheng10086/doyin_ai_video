@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RuntimeItem, RuntimeState } from '../types/index.js';
 import {
+  allReady,
   checkStatusLabel,
   compactAllReadyLabel,
+  compactVisibilityClass,
   formatAge,
   formatElapsed,
   isRuntimeChannel,
@@ -11,7 +13,6 @@ import {
   runtimeStateMeta,
   runningCheckLabel,
   verifiedLabel,
-  visibleItems,
 } from './runtime.js';
 
 const NOW = new Date('2026-09-22T02:00:00.000Z');
@@ -60,18 +61,20 @@ test('抖音的耗时预期是「事实」不是估计（最坏 5 分钟来自 C
   assert.equal(runningCheckLabel({ id: 'douyin', elapsedMs: 42_000 }), '已运行 42 秒 · 通常 10–30 秒，最坏 5 分钟');
 });
 
-test('visibleItems：compact 只显示非 ready；全绿时返回空（调用方渲染「环境正常」）', () => {
-  const items = [
-    item({ id: 'douyin', state: 'ready' }),
-    item({ id: 'toutiao', state: 'degraded' }),
-    item({ id: 'ffmpeg', state: 'ready' }),
-  ];
-  assert.deepEqual(visibleItems(items, 'compact').map((entry) => entry.id), ['toutiao']);
-  assert.deepEqual(visibleItems(items, 'full').map((entry) => entry.id), ['douyin', 'toutiao', 'ffmpeg']);
+test('⚠️ 断点口径：compact **不做 JS 过滤**，只给「就绪」项加窄屏隐藏类（桌面端要看到五项）', () => {
+  // 桌面端一眼看到全部五项（AC-1）；窄屏由 CSS 收起 ready 项
+  assert.equal(compactVisibilityClass('ready', 'compact'), 'hidden md:block');
+  assert.equal(compactVisibilityClass('degraded', 'compact'), '');
+  assert.equal(compactVisibilityClass('blocked', 'compact'), '');
+  // full（设置页）没有这一层：每一项都要看
+  assert.equal(compactVisibilityClass('ready', 'full'), '');
+  assert.equal(compactVisibilityClass('degraded', 'full'), '');
+});
 
-  const allReady = [item({ id: 'douyin', state: 'ready' })];
-  assert.deepEqual(visibleItems(allReady, 'compact'), []);
-  assert.deepEqual(visibleItems(allReady, 'full').length, 1, 'full 下全绿也要显示');
+test('allReady：只有非空且全就绪才算「环境正常」', () => {
+  assert.equal(allReady([item({ state: 'ready' }), item({ id: 'ffmpeg', state: 'ready' })]), true);
+  assert.equal(allReady([item({ state: 'ready' }), item({ id: 'ffmpeg', state: 'degraded' })]), false);
+  assert.equal(allReady([]), false, '空数组不算全绿（宁可不显示那句话）');
 });
 
 test('isRuntimeChannel：只有三个渠道有「登录态」可验', () => {
