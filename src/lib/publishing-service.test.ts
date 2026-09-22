@@ -587,6 +587,18 @@ test("startup recovery reports asset phases before due handling and purge", asyn
   const staleTemp = path.join(f.storageRoot, "output", "publishing", "job-1", ".next-stale");
   const orphan = path.join(f.storageRoot, "output", "publishing", "job-1", "v99-orphan");
   await mkdir(staleTemp, { recursive: true });
+  /*
+   * ⚠️ 「陈旧」必须**显式**造出来，不能指望真实 mtime 恰好落后于注入时钟。
+   *
+   * `removeStaleTemporaryPaths` 的判据是 `this.now() - mtime < TEMP_STALE_MS(1 小时)`
+   * 就跳过，而本用例为了过期垃圾桶把注入时钟推到了 `START + 31 天`（2026-09-10）。
+   * 只要**真实日期晚于那个时刻**，刚创建目录的年龄就是**负数**，于是永远「不算陈旧」
+   * 也永远清不掉 —— 这条用例因此在 2026-09-10 之后一直红着（`removedTempPaths` 为空），
+   * 而 `npm run check` 是纯类型检查根本抓不到。
+   *
+   * 显式把 mtime 设到 `START`（距注入 now 31 天），题意才与日期无关。
+   */
+  await utimes(staleTemp, START, START);
   await mkdir(orphan, { recursive: true });
   const canonicalSourceDirectory = await realpath(path.dirname(staleTemp));
   const canonicalStaleTemp = path.join(canonicalSourceDirectory, path.basename(staleTemp));
