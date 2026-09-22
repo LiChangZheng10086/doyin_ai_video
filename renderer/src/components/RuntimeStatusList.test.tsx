@@ -62,15 +62,25 @@ test('⚠️ 一个组件两种尺寸：compact 与 full 渲染的是同一份�
   assert.doesNotMatch(compact, /存储目录/);
 });
 
-test('blocked 项的每一行可照抄动作都渲染出来（两种尺寸都渲染）', () => {
+test('blocked 项的每一行可照抄动作都在 **full** 下渲染出来', () => {
   const items = fiveItems();
   const lines = items[2].guidance!;
-  for (const variant of ['compact', 'full'] as const) {
-    const markup = render(<RuntimeStatusList items={items} variant={variant} now={NOW} />);
-    for (const line of lines) {
-      assert.ok(markup.includes(line), `${variant} 少了这一行：${line}`);
-    }
+  const markup = render(<RuntimeStatusList items={items} variant="full" now={NOW} />);
+  for (const line of lines) {
+    assert.ok(markup.includes(line), `full 少了这一行：${line}`);
   }
+});
+
+test('⚠️ compact 概览条**不**摊开可照抄动作 —— 否则一条 blocked 就把概览条撑成半屏', () => {
+  const items = fiveItems();
+  const markup = render(<RuntimeStatusList items={items} variant="compact" now={NOW} />);
+
+  for (const line of items[2].guidance!) {
+    assert.ok(!markup.includes(line), `compact 不该渲染命令：${line}`);
+  }
+  // 但"发不出去"这件事本身必须说清楚，命令去设置页看
+  assert.match(markup, /没有可用的浏览器/u);
+  assert.match(markup, /小红书/u);
 });
 
 test('⚠️ INV-1：没有 verified 时不出现任何有效性字样；有 verified 时必须带时间戳', () => {

@@ -14,7 +14,7 @@ import {
   Send,
   Trash2,
 } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { stripAnsi } from '../utils/display';
 import { desktop } from '../electron-bridge';
@@ -49,6 +49,7 @@ import {
 import type { PackageContentType } from '../types';
 import { PublishingActionDialog } from '../features/publishing/PublishingActionDialog';
 import { PublishingChannelTabs } from '../components/PublishingChannelTabs';
+import { RuntimeOverviewStrip } from '../components/RuntimeOverviewStrip';
 import { PlatformLogo } from '../components/ui/PlatformLogo';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Button } from '../components/ui/Button';
@@ -69,6 +70,7 @@ interface ActionDialogConfig {
 export function PublishingPage() {
   const currentUser = useOperatorStore((state) => state.currentUser);
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const requestedStatus = params.get('status') as PublishingListStatus | null;
   const status = PUBLISH_FILTERS.some((item) => item.id === requestedStatus) ? requestedStatus! : 'action';
   // 一级「渠道」：与状态页签一样持久化在 URL 里（刷新/返回/分享链接都能还原同一视图）。
@@ -522,6 +524,12 @@ export function PublishingPage() {
           </Button>
         }
       />
+
+      {/*
+        运行环境概览条（spec §6.1）。全部来自**零副作用**的免费检查，打开发布中心即可见（AC-1）；
+        会开浏览器的深检留在设置页手动触发 —— 它要与发布抢同一个浏览器 profile。
+      */}
+      <RuntimeOverviewStrip onOpenSettings={() => navigate('/settings?section=runtime')} />
 
       {/* 说明：本页副标题曾写作「人工交付」，而 2026-09-21 之后这里已能自动提交
           三条通路 —— 把「自动发布」说成「人工交付」会让用户低估小红书的账号风险。 */}

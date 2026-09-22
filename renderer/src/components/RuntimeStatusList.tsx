@@ -105,8 +105,14 @@ function RuntimeRow({
 }) {
   const verified = verifiedLabel(item, now);
   const channel = isRuntimeChannel(item.id);
-  // 概览条只在**真的发不出去**时才摊开可照抄的动作，避免发布现场被塞满
-  const showGuidance = (item.guidance?.length ?? 0) > 0 && (variant === 'full' || item.state === 'blocked');
+  /*
+   * ⚠️ 可照抄的动作**只在 full 下摊开**。
+   *
+   * 起初 compact 也在 blocked 时摊开（"最需要命令的时刻"），实测截图否掉了这个想法：
+   * 抖音那条有 6 行命令，概览条直接被撑成半屏 —— 正是我们要避免的"发布现场被塞满"。
+   * 命令留在设置页，概览条给「查看」一键到达。
+   */
+  const showGuidance = variant === 'full' && (item.guidance?.length ?? 0) > 0;
 
   return (
     <li

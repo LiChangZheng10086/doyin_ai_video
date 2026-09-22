@@ -16,6 +16,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Gauge,
   Trash2,
   X,
   XCircle,
@@ -25,10 +26,13 @@ import { Layout } from '../components/Layout';
 import { PageHeader } from '../components/ui/PageHeader';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { ToutiaoLoginPanel } from '../components/ToutiaoLoginPanel';
+import { RuntimeEnvironmentPanel } from '../components/RuntimeEnvironmentPanel';
+import { RuntimeStatusList } from '../components/RuntimeStatusList';
 import { XhsLoginPanel } from '../components/XhsLoginPanel';
+import { useRuntimeStatus } from '../hooks/useRuntimeStatus';
 import { apiClient } from '../services/api';
 import { parseOutputLimit, toOutputLimitForm, type OutputLimitMode } from '../utils/ai-output-limit';
-import { settingsSections } from '../utils/settingsSections';
+import { loginSectionOf, settingsSections } from '../utils/settingsSections';
 import type { AiProvider } from '../types';
 
 interface AIKeyConfig {
@@ -78,6 +82,7 @@ type SettingsSection = (typeof settingsSections)[number]['id'];
 
 const settingsSectionIcons: Record<SettingsSection, typeof KeyRound> = {
   models: KeyRound,
+  runtime: Gauge,
   douyin: QrCode,
   toutiao: QrCode,
   xhs: QrCode,
@@ -88,7 +93,16 @@ const settingsSectionIcons: Record<SettingsSection, typeof KeyRound> = {
 
 export function SettingsPage() {
   const [apiKeys, setApiKeys] = useState<AIKeyConfig[]>([]);
-  const [activeSection, setActiveSection] = useState<SettingsSection>('models');
+  const [activeSection, setActiveSection] = useState<SettingsSection>(() => {
+    /*
+     * 支持 `?section=runtime` 这类锚点：发布中心概览条的「查看」与「去登录」都靠它把
+     * 用户直接送到该看的那一组，而不是丢在设置页首页让他自己找。
+     * 不认识的取值一律回落到默认（不制造空白页）。
+     */
+    const requested = new URLSearchParams(window.location.search).get('section');
+    const known = settingsSections.some((section) => section.id === requested);
+    return known ? (requested as SettingsSection) : 'models';
+  });
   const [isAdding, setIsAdding] = useState(false);
   const [newKey, setNewKey] = useState<AIKeyForm>(emptyKeyForm);
   const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
@@ -358,6 +372,9 @@ export function SettingsPage() {
               setRemoveKeyTarget={setRemoveKeyTarget}
               onSetActive={handleSetActive}
             />
+          )}
+          {activeSection === 'runtime' && (
+            <RuntimeEnvironmentPanel onGoToSection={(target) => setActiveSection(loginSectionOf(target))} />
           )}
           {activeSection === 'douyin' && <DouyinSection />}
           {activeSection === 'toutiao' && <ToutiaoSection />}
@@ -995,22 +1012,16 @@ function XhsSection() {
 }
 
 function DouyinSection() {
-  const [status, setStatus] = useState<{ hasCookie: boolean; hasAuth: boolean; path: string; status: string } | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginResult, setLoginResult] = useState<{ success: boolean; message: string } | null>(null);
-
-  useEffect(() => {
-    loadStatus();
-  }, []);
-
-  const loadStatus = async () => {
-    try {
-      const s = await apiClient.getCookieStatus();
-      setStatus(s);
-    } catch {
-      // ignore
-    }
-  };
+  /*
+   * 状态从**运行环境**那份模型来（同一份数据、同一个组件、只是 compact 尺寸）——
+   * 决策 ⑤ 选 A 时的缓解措施：常驻状态只有一个家，这行不是「第二份实现」。
+   */
+  const { status: runtimeStatus, refresh } = useRuntimeStatus();
+  const douyin = runtimeStatus?.channels.find((item) => item.id === 'douyin');
+  /** 凭据文件的真实位置由服务端下发（`evidence.paths`），界面不自己拼路径。 */
+  const credentialPath = douyin?.evidence?.paths?.find((entry) => entry.label === '凭据文件')?.value;
 
   const handleQrLogin = async () => {
     setIsLoggingIn(true);
@@ -1018,7 +1029,7 @@ function DouyinSection() {
     try {
       const result = await apiClient.startQrLogin();
       setLoginResult({ success: result.success, message: result.message });
-      await loadStatus();
+      await refresh();
     } catch (err: any) {
       setLoginResult({
         success: false,
@@ -1029,38 +1040,19 @@ function DouyinSection() {
     }
   };
 
-  const statusDisplay = status
-    ? status.status === 'authenticated'
-      ? { icon: CheckCircle2, color: 'text-success bg-success-soft border-success-line', text: '已登录', desc: 'Cookie 包含登录态，API 调用可用' }
-      : status.status === 'no_auth'
-      ? { icon: AlertCircle, color: 'text-warning bg-warning-soft border-warning-line', text: '未登录', desc: 'Cookie 存在但无登录态，需扫码登录' }
-      : { icon: XCircle, color: 'text-danger bg-danger-soft border-danger-line', text: '无 Cookie', desc: '尚未获取任何 Cookie' }
-    : null;
-
   return (
     <section className="space-y-6">
       <SectionHeader
         icon={QrCode}
         title="抖音登录"
-        description="扫码登录抖音以获取 API 调用所需的 Cookie。登录后即可使用签名 API 批量采集视频。"
+        description="扫码登录抖音。⚠️ 这份凭据**采集与发布共用同一份**；发布侧现在能不能用，以「运行环境」里带时间戳的验证结论为准。"
       />
 
-      {/* Status card */}
-      {statusDisplay && (
-        <div className={`rounded-lg border p-5 ${statusDisplay.color}`}>
-          <div className="flex items-start gap-4">
-            <statusDisplay.icon size={24} className="shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <h3 className="font-semibold text-lg">Cookie 状态：{statusDisplay.text}</h3>
-              <p className="mt-1 text-sm opacity-80">{statusDisplay.desc}</p>
-              {status && (
-                <p className="mt-2 text-xs opacity-60 break-all">
-                  存储位置：{status.path}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
+      {/* 紧凑状态行（状态的真源在「运行环境」，这里只是同一实现的紧凑尺寸） */}
+      {douyin ? (
+        <RuntimeStatusList items={[douyin]} variant="compact" now={new Date()} />
+      ) : (
+        <p className="text-sm text-ink-muted">正在读取登录状态…</p>
       )}
 
       {/* Login button */}
@@ -1132,11 +1124,11 @@ function DouyinSection() {
           将下方格式的 Cookie 字符串粘贴到输入框中保存。
         </p>
         <ManualCookieInput
-          onSaved={() => loadStatus()}
+          onSaved={() => void refresh()}
           disabled={isLoggingIn}
         />
         <p className="mt-3 text-sm text-ink-muted">
-          保存位置：<code className="bg-canvas px-2 py-0.5 rounded text-xs select-all">{status?.path || '~/.douyin-ai-video/douyin-cookie.txt'}</code>
+          保存位置：<code className="bg-canvas px-2 py-0.5 rounded text-xs select-all">{credentialPath || '~/.douyin-ai-video/douyin-cookie.txt'}</code>
         </p>
       </div>
     </section>

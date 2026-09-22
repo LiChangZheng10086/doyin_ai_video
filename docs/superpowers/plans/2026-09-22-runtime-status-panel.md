@@ -274,6 +274,23 @@ Expected: PASS。
 
 ### Task 5: 两个界面（概览条 + 运行环境）
 
+> **执行记录（2026-09-22）**：已完成（5 条新用例 + 界面实测截图复核）。四处值得记下：
+> ① **紧凑状态行复用同一个 hook 与组件**：`DouyinSection` 用 `useRuntimeStatus()` 取 douyin 那一项、
+>    交给 `RuntimeStatusList variant="compact"` 渲染 —— 不是"第二份实现"，是同一实现的紧凑尺寸
+>    （决策 ⑤ 选 A 的缓解措施）。同时把「Cookie 状态：已登录」那张卡片**迁走**，并顺手修掉
+>    文案只讲采集的问题：「这份凭据**采集与发布共用同一份**」。
+> ② ⚠️ **两套 id 不同名**：设置分组里小红书叫 `xhs`，运行环境的渠道叫 `xiaohongshu` ——
+>    直接互用会让「去登录」跳到错组。编译器拦下了（`'xiaohongshu'` 不在 `SettingsSection` 里），
+>    现在由 `loginSectionOf()` 显式映射并有 5 条用例守（含"三个渠道必须落到三个不同分组"）。
+> ③ **看截图否掉了一个我在 Task 4 定的设计**：compact 原本在 blocked 时也摊开可照抄动作，
+>    实测把那 6 行命令一渲染，概览条直接被撑成半屏 —— 正是"发布现场被塞满"。改成 compact
+>    只留徽章 + 详情，命令留在设置页，「查看」一键到达；用例也跟着反向断言（compact 不渲染命令）。
+> ④ 深检轮询**终态一到就整份重拉**（不只是更新 check 字段）：终态会改 `verified`，
+>    AC-6「概览条同步变绿」靠的就是这一次重拉。
+>
+> 实测（headless Chrome + Vite dev + 独立后端）：发布中心概览条（compact，2 行）、
+> 设置页「运行环境」（full，五项 + 诊断）、抖音登录分组（紧凑状态行 + 迁移后文案）三处均符合预期。
+
 **Files:**
 - Modify: `renderer/src/pages/PublishingPage.tsx`
 - Modify: `renderer/src/pages/SettingsPage.tsx`
@@ -286,32 +303,32 @@ Expected: PASS。
 - Consumes: Task 4 的组件与 api 方法
 - Produces: 概览条（发布中心）+ 运行环境分组（设置页）+ `DouyinSection` 迁移后的紧凑状态行
 
-- [ ] **Step 1: 概览条**
+- [x] **Step 1: 概览条**
 
 位置：页面标题下方、渠道页签上方。五项 + 右侧「重新检查」+ 标题右侧「本次检查：刚刚」。
 
-- [ ] **Step 2: 刷新时机（四选一漏一个就是观感 bug）**
+- [x] **Step 2: 刷新时机（四选一漏一个就是观感 bug）**
 
 挂载时拉一次；点「重新检查」拉一次；**深检轮询到终态**（`succeeded`/`failed`/`cancelled`）后**重拉**（否则 AC-6 不成立）；**一次发布结束**（含失败）后**重拉**（AC-7）。
 
-- [ ] **Step 3: 断点行为**
+- [x] **Step 3: 断点行为**
 
 `≥ md` 全显五项；`< md` 只显非 `ready` 项，全绿时一行「环境正常 · 刚刚检查」（断点沿用 `AppShell` 口径）。
 
-- [ ] **Step 4: 设置页「运行环境」分组**
+- [x] **Step 4: 设置页「运行环境」分组**
 
 自上而下：分组标题 + 说明（「免费检查零副作用；验证登录态会打开浏览器，同渠道的发布请等它结束」）+「重新检查」→ 发布渠道三行（徽章 + `detail` + 可折叠 `evidence` + `guidance` 等宽字体 + 复制按钮 + 「立即验证登录态」/「去登录」+ verified 时间戳）→ 发布链路依赖两行（无深检按钮）→ 深检进行中行 → 诊断信息（默认收起，见 Task 6）。
 
-- [ ] **Step 5: `DouyinSection` 迁移（本 Task 唯一的行为变更）**
+- [x] **Step 5: `DouyinSection` 迁移（本 Task 唯一的行为变更）**
 
 把那张 `Cookie 状态：…` 卡片**迁到运行环境**，原分组顶部改一行紧凑状态行（同组件 `variant="compact"`、同一份数据）；`DouyinSection` 说明补上「**采集与发布共用同一份 cookie**」。
 ⚠️ 既有渲染层用例（`components/**/*.test.tsx`，含 `shell.test.tsx` 的导航断言）是门禁，**逐条通过**；`settingsSections` 新增分组后，断言分组数量/顺序的用例要同步更新（7 → 8），并保留"状态仍可见"的覆盖（紧凑状态行仍在页面里）。
 
-- [ ] **Step 6: 「去登录」锚点**
+- [x] **Step 6: 「去登录」锚点**
 
 三个渠道行的「去登录」跳到设置页对应分组（用既有分组 id 切换，不新增路由）。
 
-- [ ] **Step 7: 运行确认通过**
+- [x] **Step 7: 运行确认通过**
 
 Run: `npm test && npm run check`
 Expected: PASS。
