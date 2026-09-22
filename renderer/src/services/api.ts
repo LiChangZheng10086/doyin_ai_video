@@ -33,6 +33,9 @@ import type {
   PublishTask,
   RawTranscript,
   RestoredPublishingPackage,
+  RuntimeChannelId,
+  RuntimeCheckSummary,
+  RuntimeStatusResponse,
   UpdatePublishingContentInput,
 } from '../types';
 import { parseSkillProgressLine, type SkillProgressEvent } from '../utils/skill-progress';
@@ -346,6 +349,43 @@ export class ApiClient {
       method: 'POST',
       url: '/api/publishing/xhs/verify',
     });
+  }
+
+  // ── 运行环境状态一览（免费检查零副作用；深检是后台任务 + 轮询）──
+
+  /** 五项**免费**检查 + 当前深检摘要。 */
+  async getRuntimeStatus(): Promise<RuntimeStatusResponse> {
+    return this.publishingRequest<RuntimeStatusResponse>({
+      method: 'GET',
+      url: '/api/runtime/status',
+    });
+  }
+
+  /** 发起深检。立刻返回 `running`（抖音那条最坏 5 分钟，不能同步等）。 */
+  async startRuntimeCheck(id: RuntimeChannelId): Promise<RuntimeCheckSummary> {
+    const response = await this.publishingRequest<{ check: RuntimeCheckSummary }>({
+      method: 'POST',
+      url: '/api/runtime/checks',
+      data: { id },
+    });
+    return response.check;
+  }
+
+  async getRuntimeCheck(checkId: string): Promise<RuntimeCheckSummary> {
+    const response = await this.publishingRequest<{ check: RuntimeCheckSummary }>({
+      method: 'GET',
+      url: `/api/runtime/checks/${checkId}`,
+    });
+    return response.check;
+  }
+
+  /** 取消检测。服务端会如实提示「可能留下会话锁，需要重新验证一次」。 */
+  async cancelRuntimeCheck(checkId: string): Promise<RuntimeCheckSummary> {
+    const response = await this.publishingRequest<{ check: RuntimeCheckSummary }>({
+      method: 'POST',
+      url: `/api/runtime/checks/${checkId}/cancel`,
+    });
+    return response.check;
   }
 
   /** 提交抖音图文。必须带上预览拿到的 `previewRevision`，缺/过期都会被服务端拒绝。 */

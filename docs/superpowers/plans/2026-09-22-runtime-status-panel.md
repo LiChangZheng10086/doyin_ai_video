@@ -222,6 +222,16 @@ Expected: PASS。
 
 ### Task 4: 渲染层组件与纯函数（测试先行）
 
+> **执行记录（2026-09-22）**：已完成，16 条用例。两处值得记下：
+> ① **组件必须显式 `import React`** —— 本仓没有 `renderer/tsconfig.json`，tsx/esbuild 走的是**根**
+>    `tsconfig.json`，而它**没有 `jsx` 设置** → 回落到 classic 转换。新组件不 import 就会
+>    `ReferenceError: React is not defined`（这正是既有每个组件都手写那行的原因）。
+> ② 徽章文案取**状态词**（就绪/待确认/不可用/未知）而不是 `detail` 的片段 —— 与稿子上的
+>    「✓ 凭据已存在」略有差异：状态词更稳（不随服务端 detail 措辞变），detail 紧跟在徽章右侧，
+>    视觉上仍是「徽章 + 短文案」。若你要严格照稿，改 `RuntimeStateBadge` 接受文案覆盖即可。
+> ③ `visibleItems(compact)` 只滤 `ready`；`blocked` 项在**两种尺寸下都摊开可照抄动作** ——
+>    发布现场最需要命令的时刻恰恰是"发不出去"的时候。
+
 **Files:**
 - Create: `renderer/src/components/RuntimeStatusList.tsx`、`renderer/src/components/RuntimeStateBadge.tsx`
 - Create: `renderer/src/utils/runtime.ts`
@@ -232,30 +242,30 @@ Expected: PASS。
 - Consumes: `RuntimeStatusResponse`（与后端同形，`renderer/src/types/index.ts` 同步类型）
 - Produces: `<RuntimeStatusList items variant="compact"|"full" />`、`<RuntimeStateBadge state />`、纯函数 `runtimeStateMeta(state)` / `visibleItems(items, variant)` / `formatElapsed(ms)`
 
-- [ ] **Step 1: 写失败用例（纯函数）**
+- [x] **Step 1: 写失败用例（纯函数）**
 
 - `runtimeStateMeta` 四态 → 图标 + 文案映射：`ready`→`CheckCircle2`、`degraded`→`AlertTriangle`、`blocked`→`XCircle`、`unknown`→`HelpCircle`；**每个都含文字**（不能只靠颜色）。
 - `formatElapsed(42_000) === "已运行 42 秒"`；**不含 `%`**（INV-5）。
 - `visibleItems(items, "compact")`：无 `ready` 项时返回全部非 ready 项；全 `ready` 时返回空数组（由调用方渲染「环境正常」那一行）。
 - **INV-1 前端再守一遍**：对 5 种 `state` 的默认文案断言**不含**「已登录」。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `node --import tsx --test renderer/src/utils/runtime.test.ts`
 Expected: FAIL。
 
-- [ ] **Step 3: 实现纯函数与两个组件**
+- [x] **Step 3: 实现纯函数与两个组件**
 
 `RuntimeStatusList` **一个组件两种尺寸**，判定一律读 `item.state`，**不在前端复算红灯**（INV-7）。徽章同时渲染图标与文字；颜色只用既有 token（`success`/`warning`/`danger`/`ink-subtle`）。
 
-- [ ] **Step 4: 写失败用例（组件渲染）**
+- [x] **Step 4: 写失败用例（组件渲染）**
 
 - `variant="compact"` 与 `"full"` 渲染**同一份模型**：断言两处都出现全部 5 项的 label。
 - `blocked` 项的 `guidance` **每一行都渲染出来**。
 - `verified` 存在时显示「N 小时前验证 · 登录态有效」；**不存在时不显示任何有效性字样**。
 - `running` 行显示「已运行 N 秒 · 通常 10–30 秒，最坏 5 分钟」+「取消检测」。
 
-- [ ] **Step 5: 实现组件 + api 方法，并确认通过**
+- [x] **Step 5: 实现组件 + api 方法，并确认通过**
 
 Run: `node --import tsx --test renderer/src/components/RuntimeStatusList.test.tsx && npm run check:renderer`
 Expected: PASS。

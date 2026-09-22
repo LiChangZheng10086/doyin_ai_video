@@ -864,3 +864,61 @@ export interface AssetRecord {
   durationMs?: number;
   createdAt: string;
 }
+
+/**
+ * 运行环境状态一览（渠道 / 引擎）。**与后端 `src/lib/runtime-status.ts` 同形** ——
+ * 前端只渲染，绝不在这一侧复算红灯（INV-7）。
+ */
+export type RuntimeItemId = 'douyin' | 'toutiao' | 'xiaohongshu' | 'ffmpeg' | 'storage';
+export type RuntimeChannelId = Extract<RuntimeItemId, 'douyin' | 'toutiao' | 'xiaohongshu'>;
+
+/** 只有四个状态，**刻意不含 "valid"** —— 有效性属于 `verified`。 */
+export type RuntimeState = 'ready' | 'degraded' | 'blocked' | 'unknown';
+
+export interface RuntimeVerifiedRecord {
+  state: 'valid' | 'invalid';
+  /** ISO 时间戳：结论在**那个时刻**成立。 */
+  at: string;
+}
+
+export interface RuntimeItem {
+  id: RuntimeItemId;
+  label: string;
+  state: RuntimeState;
+  detail: string;
+  evidence?: {
+    paths?: { label: string; value: string }[];
+    attempts?: { layer: string; ok: boolean; detail: string }[];
+    errno?: string;
+    notes?: string[];
+  };
+  /** 可照抄的动作，逐行展示。 */
+  guidance?: string[];
+  action?: { kind: 'login'; target: RuntimeChannelId };
+  verified?: RuntimeVerifiedRecord;
+}
+
+export type RuntimeCheckStatus = 'running' | 'succeeded' | 'failed' | 'cancelled';
+
+export interface RuntimeCheckSummary {
+  checkId: string;
+  id: RuntimeItemId;
+  status: RuntimeCheckStatus;
+  startedAt: string;
+  finishedAt?: string;
+  /** **服务端算**的已运行毫秒数（前端不自己拿时钟做差）。 */
+  elapsedMs?: number;
+  detail: string;
+  guidance?: string[];
+}
+
+export interface RuntimeStatusResponse {
+  checkedAt: string;
+  channels: RuntimeItem[];
+  dependencies: RuntimeItem[];
+  check: RuntimeCheckSummary | null;
+  buildTag?: {
+    backend?: { path: string; mtime: string };
+    electron?: { path: string; mtime: string };
+  };
+}
