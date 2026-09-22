@@ -15,7 +15,7 @@
  * 配置齐备、凭据存在都不够 —— 那只能得到 `degraded`（见 `resolveChannelState`）。
  */
 
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { runCommand } from "./command.js";
 import { getCookiePath, hasAuthCookie, hasCookie } from "./douyin-cookie.js";
@@ -110,6 +110,8 @@ export interface RuntimeStatusDeps {
   fs: {
     access(target: string, mode?: number): Promise<void>;
     readFile(target: string, encoding: "utf8"): Promise<string>;
+    /** 只为诊断信息（build tag）读 mtime —— 同样是只读，INV-3 不受影响。 */
+    stat(target: string): Promise<{ mtimeMs: number }>;
   };
   probe: {
     runCommand(command: string, args: string[], options?: Record<string, unknown>): Promise<{ stdout: string; stderr: string }>;
@@ -134,6 +136,16 @@ export interface RuntimeStatusConfig {
   xhsProfileDir?: string;
   ffmpegBinary?: string;
   repoRoot?: string;
+  /**
+   * 两套产物的入口文件（诊断信息用，spec §6.2 / 决策 ⑦）。
+   *
+   * ⚠️ 存在的意义正是那个反复踩的坑：`dist/` 与 `dist-electron/` **互不覆盖**，
+   * 「改了没生效」多半是产物没编译或跑的是旧产物。界面上能看到两份 mtime，
+   * 这类事故就能一眼定位，而不必去翻文件系统。
+   *
+   * 打包后这些路径可能不存在 —— 那就**不显示**，绝不让诊断信息把整条响应弄失败。
+   */
+  buildTagPaths?: { backend?: string; electron?: string };
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
 }
@@ -180,6 +192,7 @@ export function createDefaultRuntimeStatusDeps(): RuntimeStatusDeps {
     fs: {
       access: (target, mode) => (mode === undefined ? access(target) : access(target, mode)),
       readFile: (target, encoding) => readFile(target, encoding),
+      stat: (target) => stat(target),
     },
     probe: {
       runCommand: (command, args, options) =>
@@ -245,12 +258,45 @@ export async function collectRuntimeStatus(
     guard("storage", () => checkStorage(config, deps)),
   ]);
 
+  const buildTag = await collectBuildTag(config, deps);
+
   return {
     checkedAt: now.toISOString(),
     channels,
     dependencies,
     check: null,
+    ...(buildTag ? { buildTag } : {}),
   };
+}
+
+/**
+ * 两套产物的构建时间（诊断信息，spec §6.2 / 决策 ⑦）。
+ *
+ * 存在的意义：`dist/` 与 `dist-electron/` **互不覆盖**，「改了没生效」多半是踩了其中一个。
+ * 界面上看到两份 mtime，这类事故一眼可辨。
+ *
+ * ⚠️ 读不到就**不显示**（文件不存在、打包后路径不同、权限问题）—— 诊断信息**不许**
+ * 把整条状态响应弄失败。这与「免费层不改变任何状态」是同一条纪律的两个侧面。
+ */
+async function collectBuildTag(
+  config: RuntimeStatusConfig,
+  deps: RuntimeStatusDeps,
+): Promise<RuntimeStatusResponse["buildTag"] | undefined> {
+  const candidates = config.buildTagPaths;
+  if (!candidates) return undefined;
+
+  const out: NonNullable<RuntimeStatusResponse["buildTag"]> = {};
+  for (const key of ["backend", "electron"] as const) {
+    const target = candidates[key];
+    if (!target) continue;
+    try {
+      const info = await deps.fs.stat(target);
+      out[key] = { path: target, mtime: new Date(info.mtimeMs).toISOString() };
+    } catch {
+      // 不显示，也不报错
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**

@@ -322,6 +322,19 @@ Expected: 手验 AC-1…AC-5（见 Task 7）。
 
 ### Task 6: build tag 诊断区（决策 ⑦）
 
+> **执行记录（2026-09-22）**：**后端部分**完成（4 条用例）；**界面渲染归入 Task 5**（诊断区就在
+> 「运行环境」分组里，分开做会造成两次改同一个组件）。
+> 落地时两点：
+> ① `stat` 加进 `RuntimeStatusDeps.fs` 端口 —— 它仍是**只读**，INV-3 不受影响；不这么做就得为
+>    诊断信息再开一个端口，反而更碎。
+> ② 路径由 **app.ts 注入**（`<rootDir>/dist/server.js` 与 `<rootDir>/dist-electron/server.js`），
+>    而不是让 `runtime-status.ts` 去猜自己在哪个产物里 —— 打包后布局不同，猜必错。
+>    读不到就**不显示**，绝不让诊断信息把整条状态响应弄失败。
+>
+> 真机验证时它当场证明了价值：本机 `dist/server.js` 是**今天 12:13**、`dist-electron/server.js`
+> 是**昨天 13:38** —— 两份产物差一天，正是「改了没生效」那类事故的现场（本次没改 `electron/`，
+> 所以此刻无害，但一眼可见）。
+
 **Files:**
 - Modify: `src/lib/runtime-status.ts`（或 `runtime-routes.ts`）—— 产出两个产物的构建时间
 - Modify: `renderer/src/pages/SettingsPage.tsx` —— 诊断信息里渲染
@@ -330,13 +343,13 @@ Expected: 手验 AC-1…AC-5（见 Task 7）。
 **Interfaces:**
 - Produces: `RuntimeStatusResponse.buildTag?: { backend?: { path: string; mtime: string }, electron?: { path: string; mtime: string } }`
 
-- [ ] **Step 1: 写失败用例**
+- [x] **Step 1: 写失败用例**
 
 - 两个产物都存在 → 两项 `mtime` 都有。
 - Electron 产物不存在（独立后端跑）→ `electron` 为 `undefined`，**不报错**。
 - 读不到（权限/异常）→ 该字段为 `undefined`，**不影响整个响应**（免费层不许因为诊断信息而整体失败）。
 
-- [ ] **Step 2: 实现并确认通过**
+- [x] **Step 2: 实现并确认通过**
 
 Run: `node --import tsx --test src/lib/runtime-status.test.ts`
 Expected: PASS。

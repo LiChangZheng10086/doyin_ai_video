@@ -359,6 +359,11 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       ...(config.xhsBrowserBinary ? { xhsBrowserBinary: config.xhsBrowserBinary } : {}),
       ...(config.xhsProfileDir ? { xhsProfileDir: config.xhsProfileDir } : {}),
       ...(config.ffmpegBinary ? { ffmpegBinary: config.ffmpegBinary } : {}),
+      // 诊断信息：两套产物的构建时间（spec §6.2 / 决策 ⑦）。打包后路径可能不存在 → 不显示。
+      buildTagPaths: {
+        backend: path.join(config.rootDir, "dist", "server.js"),
+        electron: path.join(config.rootDir, "dist-electron", "server.js"),
+      },
       repoRoot: config.rootDir,
     },
     deps: createDefaultRuntimeStatusDeps(),

@@ -32,6 +32,7 @@ const COOKIE = "/home/.douyin-ai-video/douyin-cookie.txt";
 interface FakeFsCalls {
   access: Array<{ path: string; mode?: number }>;
   readFile: string[];
+  stat: string[];
 }
 
 /**
@@ -46,7 +47,7 @@ function makeFs(options: {
   unreadable?: string[];
   errno?: string;
 }) {
-  const calls: FakeFsCalls = { access: [], readFile: [] };
+  const calls: FakeFsCalls = { access: [], readFile: [], stat: [] };
   const existing = new Set(options.existing);
   const writable = new Set(options.writable ?? options.existing);
   const unreadable = new Set(options.unreadable ?? []);
@@ -61,6 +62,13 @@ function makeFs(options: {
         if (mode === W_OK && !writable.has(target)) {
           throw Object.assign(new Error(`EACCES: ${target}`), { code: options.errno ?? "EACCES" });
         }
+      },
+      async stat(target: string) {
+        calls.stat.push(target);
+        if (unreadable.has(target) || !existing.has(target)) {
+          throw Object.assign(new Error(`ENOENT: ${target}`), { code: "ENOENT" });
+        }
+        return { mtimeMs: NOW.getTime() };
       },
       async readFile(target: string): Promise<string> {
         calls.readFile.push(target);
@@ -338,4 +346,55 @@ test("ready 只可能来自 verified：全配置齐备且凭据存在也不足�
   for (const item of response.channels) {
     assert.notEqual(item.state, "ready", `${item.id} 没有 verified 却给了 ready`);
   }
+});
+
+/* ──────────────────── 诊断信息：两套产物的构建时间（Task 6） ──────────────────── */
+
+const BACKEND_DIST = "/repo/dist/server.js";
+const ELECTRON_DIST = "/repo/dist-electron/server.js";
+
+test("buildTag：两套产物都在 → 两项都有时间戳（「改了没生效」一眼可辨）", async () => {
+  const { deps } = makeDeps({}, {
+    existing: [SAU_BINARY, SAU_BASE_DIR, BROWSER, FFMPEG, STORAGE, BACKEND_DIST, ELECTRON_DIST],
+  });
+  const response = await collectRuntimeStatus(
+    { ...CONFIG, buildTagPaths: { backend: BACKEND_DIST, electron: ELECTRON_DIST } },
+    deps,
+  );
+
+  assert.equal(response.buildTag?.backend?.path, BACKEND_DIST);
+  assert.equal(response.buildTag?.backend?.mtime, NOW.toISOString());
+  assert.equal(response.buildTag?.electron?.path, ELECTRON_DIST);
+});
+
+test("buildTag：Electron 产物不存在（独立后端跑）→ 只报后端那项，不报错", async () => {
+  const { deps } = makeDeps({}, {
+    existing: [SAU_BINARY, SAU_BASE_DIR, BROWSER, FFMPEG, STORAGE, BACKEND_DIST],
+  });
+  const response = await collectRuntimeStatus(
+    { ...CONFIG, buildTagPaths: { backend: BACKEND_DIST, electron: ELECTRON_DIST } },
+    deps,
+  );
+
+  assert.ok(response.buildTag?.backend);
+  assert.equal(response.buildTag?.electron, undefined);
+  assert.equal(response.channels.length, 3, "诊断信息读不到不该影响五项检查");
+});
+
+test("buildTag：两项都读不到 → 整个字段不出现，响应其余部分照常", async () => {
+  const { deps } = makeDeps();
+  const response = await collectRuntimeStatus(
+    { ...CONFIG, buildTagPaths: { backend: BACKEND_DIST, electron: ELECTRON_DIST } },
+    deps,
+  );
+
+  assert.equal(response.buildTag, undefined, "读不到就不显示，绝不编一个时间");
+  assert.equal(response.dependencies.length, 2);
+  assert.equal(find(response, "ffmpeg").state, "ready");
+});
+
+test("buildTag：没配 buildTagPaths（打包后/未接线的装配）→ 字段不出现，不报错", async () => {
+  const { deps } = makeDeps();
+  const response = await collectRuntimeStatus(CONFIG, deps);
+  assert.equal(response.buildTag, undefined);
 });
