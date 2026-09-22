@@ -72,3 +72,8 @@ output/ui-audit-*/
 
 # 设计讨论（可视化伴侣）的会话产物：草图 / 状态，本地临时资料
 .superpowers/
+
+# 受限环境（沙箱）里启动 Electron 时的临时数据目录（`--user-data-dir`）。
+# 常规数据目录是 ~/Library/Application Support/douyin-ai-video，沙箱不可写，
+# 所以只能用工作区内这个 —— 它含 Cache/Cookies/Local Storage，绝不进版本库。
+.dev-userdata/
