@@ -8,6 +8,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { useRovingTabs } from '../components/ui/useRovingTabs';
 import { CreatePublishPackageDialog } from '../components/CreatePublishPackageDialog';
 import { CreateNotePackageDialog } from '../components/CreateNotePackageDialog';
 import { CreateToutiaoArticleDialog } from '../components/CreateToutiaoArticleDialog';
@@ -288,14 +289,18 @@ export function JobDetailPage() {
   // 默认侧：有成片看成片（保持既有行为），否则看原视频 —— 后者让「只下载了原视频」
   // 的任务点进视频格子就直接能看，而不是先看到「视频还没生成」。
   const activeVideoSide: 'raw' | 'final' = videoSide ?? (videoOutput ? 'final' : 'raw');
+  // 方向键切换 + roving tabindex：整组只占一个 Tab 停靠点
+  const videoSideRoving = useRovingTabs(['raw', 'final'], activeVideoSide, (key) =>
+    setVideoSide(key as 'raw' | 'final'),
+  );
 
   if (isLoading) {
     return (
       <Layout>
         <div className="flex items-center justify-center py-24">
           <div className="text-center">
-            <Loader2 className="mx-auto h-12 w-12 animate-spin text-tech-blue" />
-            <p className="mt-4 text-tech-muted">正在打开作品...</p>
+            <Loader2 className="mx-auto h-12 w-12 animate-spin text-accent" />
+            <p className="mt-4 text-ink-muted">正在打开作品...</p>
           </div>
         </div>
       </Layout>
@@ -305,12 +310,12 @@ export function JobDetailPage() {
   if (error || !job) {
     return (
       <Layout>
-        <div className="rounded-lg border border-tech-border bg-white py-20 text-center">
-          <XCircle className="mx-auto mb-4 h-12 w-12 text-red-500" />
-          <h3 className="text-xl font-semibold text-tech-text">{error || '作品不存在'}</h3>
+        <div className="rounded-lg border border-line bg-panel py-20 text-center">
+          <XCircle className="mx-auto mb-4 h-12 w-12 text-danger" />
+          <h3 className="text-xl font-semibold text-ink">{error || '作品不存在'}</h3>
           <button
             onClick={() => navigate('/')}
-            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-tech-blue px-5 py-2.5 text-white transition-all hover:bg-tech-blue-dark"
+            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2.5 text-on-accent transition-all hover:bg-accent-hover"
           >
             <ArrowLeft size={16} />
             返回创作中心
@@ -464,20 +469,20 @@ export function JobDetailPage() {
         <div className="flex items-center gap-3">
           <button
             onClick={() => navigate('/')}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-tech-border text-tech-muted transition-colors hover:bg-white hover:text-tech-text"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-line text-ink-muted transition-colors hover:bg-panel hover:text-ink"
             aria-label="返回创作中心"
           >
             <ArrowLeft size={18} />
           </button>
           <div>
-            <h1 className="text-2xl font-semibold text-tech-text">{cleaned?.output?.title || job.topic || '未命名作品'}</h1>
-            <p className="mt-1 text-sm text-tech-muted">更新于 {new Date(job.updatedAt).toLocaleString('zh-CN')}</p>
+            <h1 className="font-display text-2xl font-semibold text-ink">{cleaned?.output?.title || job.topic || '未命名作品'}</h1>
+            <p className="mt-1 text-sm text-ink-muted">更新于 {new Date(job.updatedAt).toLocaleString('zh-CN')}</p>
           </div>
         </div>
         {job.deletedAt ? (
           <button
             onClick={handleRestoreJob}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-4 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 font-medium text-on-accent transition-all hover:bg-accent-hover"
           >
             <RotateCcw size={16} />
             恢复作品
@@ -485,7 +490,7 @@ export function JobDetailPage() {
         ) : (
           <button
             onClick={() => setDeleteConfirmOpen(true)}
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-200 px-4 py-2.5 font-medium text-red-600 transition-all hover:bg-red-50"
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-danger-line px-4 py-2.5 font-medium text-danger transition-all hover:bg-danger-soft"
           >
             <Trash2 size={16} />
             删除作品
@@ -517,7 +522,7 @@ export function JobDetailPage() {
 
       {/* Outcome tabs */}
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="overflow-hidden rounded-lg border border-tech-border bg-white">
+        <div className="overflow-hidden rounded-lg border border-line bg-panel">
           <ArtifactNavigator
             active={activeArtifactKey}
             items={artifactStates.map((a) => ({ key: a.key as ArtifactKey, label: a.label, state: a.state }))}
@@ -539,21 +544,21 @@ export function JobDetailPage() {
             {activeArtifactKey === 'script' && (
               <>
                 {job.steps?.clean?.status === 'succeeded' && (
-                  <div className="mb-4 flex flex-col gap-3 rounded-lg border border-tech-border bg-gray-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-sm text-tech-muted">洗稿结果已生成。若转录遗漏了关键信息，可补充内容后让 AI 结合转录重新洗稿。</p>
+                  <div className="mb-4 flex flex-col gap-3 rounded-lg border border-line bg-elevated p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-sm text-ink-muted">洗稿结果已生成。若转录遗漏了关键信息，可补充内容后让 AI 结合转录重新洗稿。</p>
                     <button
                       onClick={() => {
                         setRecleanError(null);
                         setRecleanOpen(true);
                       }}
-                      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-tech-blue px-4 py-2 text-sm font-medium text-tech-blue transition-all hover:bg-tech-blue hover:text-white"
+                      className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-accent-line px-4 py-2 text-sm font-medium text-accent transition-all hover:bg-accent hover:text-on-accent"
                     >
                       补充内容重新洗稿
                     </button>
                   </div>
                 )}
                 {recleanError && (
-                  <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{recleanError}</div>
+                  <div className="mb-4 rounded-lg border border-danger-line bg-danger-soft p-4 text-sm text-danger">{recleanError}</div>
                 )}
                 <RewriteArtifact
                   cleaned={cleaned}
@@ -573,7 +578,8 @@ export function JobDetailPage() {
                 <div
                   role="tablist"
                   aria-label="视频来源"
-                  className="mb-5 inline-flex rounded-lg border border-tech-border bg-gray-50 p-1"
+                  onKeyDown={videoSideRoving.onKeyDown}
+                  className="mb-5 inline-flex rounded-lg border border-line bg-elevated p-1"
                 >
                   {([
                     { key: 'raw' as const, label: '原视频' },
@@ -586,11 +592,13 @@ export function JobDetailPage() {
                         type="button"
                         role="tab"
                         aria-selected={selected}
+                        tabIndex={videoSideRoving.tabIndexFor(side.key)}
+                        ref={(node) => { videoSideRoving.refs.current[side.key] = node; }}
                         onClick={() => setVideoSide(side.key)}
                         className={`rounded-md px-4 py-1.5 text-sm font-medium transition-all ${
                           selected
-                            ? 'bg-white text-tech-text shadow-sm'
-                            : 'text-tech-muted hover:text-tech-text'
+                            ? 'bg-panel text-ink shadow-sm'
+                            : 'text-ink-muted hover:text-ink'
                         }`}
                       >
                         {side.label}
@@ -621,14 +629,14 @@ export function JobDetailPage() {
                     onVideoError={() => setStreamError(true)}
                   />
                 ) : videoError ? (
-                  <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
+                  <div className="rounded-lg border border-danger-line bg-danger-soft p-4 text-danger">
                     <p className="font-semibold">视频成片不可用</p>
                     <p className="mt-1 text-sm">{videoError}</p>
                   </div>
                 ) : (
-                  <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
-                    <h3 className="font-semibold text-tech-text">视频还没生成</h3>
-                    <p className="mt-2 text-sm text-tech-muted">完成生成分镜后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。</p>
+                  <div className="rounded-lg border border-dashed border-line bg-elevated py-14 text-center">
+                    <h3 className="font-semibold text-ink">视频还没生成</h3>
+                    <p className="mt-2 text-sm text-ink-muted">完成生成分镜后，可以执行生成视频步骤，渲染 9:16 竖屏 MP4。</p>
                   </div>
                 )}
               </>
@@ -694,9 +702,9 @@ function ShotsContent({ cleaned, streamPreview }: { cleaned: CleanedScript | nul
 
   if (!shots.length && !prompts.length && !scenes.length && !streamPreview) {
     return (
-      <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
-        <h3 className="font-semibold text-tech-text">镜头列表还没生成</h3>
-        <p className="mt-2 text-sm text-tech-muted">完成生成分镜后，这里会显示 HyperFrames 使用的短视频镜头规划。</p>
+      <div className="rounded-lg border border-dashed border-line bg-elevated py-14 text-center">
+        <h3 className="font-semibold text-ink">镜头列表还没生成</h3>
+        <p className="mt-2 text-sm text-ink-muted">完成生成分镜后，这里会显示 HyperFrames 使用的短视频镜头规划。</p>
       </div>
     );
   }
@@ -705,8 +713,8 @@ function ShotsContent({ cleaned, streamPreview }: { cleaned: CleanedScript | nul
     <div className="space-y-5">
       {streamPreview && <StreamingArtifact kind="shots" preview={streamPreview} />}
       <div>
-        <h3 className="text-lg font-semibold text-tech-text">镜头列表</h3>
-        <p className="mt-1 text-sm text-tech-muted">基于 AI 洗稿结果生成的短视频镜头、字幕、动效节奏和视觉层级。</p>
+        <h3 className="text-lg font-semibold text-ink">镜头列表</h3>
+        <p className="mt-1 text-sm text-ink-muted">基于 AI 洗稿结果生成的短视频镜头、字幕、动效节奏和视觉层级。</p>
       </div>
 
       {shots.length > 0 ? (
@@ -718,14 +726,14 @@ function ShotsContent({ cleaned, streamPreview }: { cleaned: CleanedScript | nul
       ) : scenes.length > 0 ? (
         <div className="space-y-3">
           {scenes.map((scene) => (
-            <div key={scene.scene} className="rounded-lg border border-tech-border bg-gray-50 p-4">
+            <div key={scene.scene} className="rounded-lg border border-line bg-elevated p-4">
               <div className="mb-2 flex items-center justify-between gap-3">
-                <p className="font-semibold text-tech-text">场景 {scene.scene}</p>
+                <p className="font-semibold text-ink">场景 {scene.scene}</p>
                 {scene.cameraMovement && (
-                  <span className="rounded-full bg-white px-2 py-1 text-xs text-tech-muted">{scene.cameraMovement}</span>
+                  <span className="rounded-full bg-panel px-2 py-1 text-xs text-ink-muted">{scene.cameraMovement}</span>
                 )}
               </div>
-              <p className="text-sm leading-6 text-tech-text">{scene.videoPrompt}</p>
+              <p className="text-sm leading-6 text-ink">{scene.videoPrompt}</p>
               <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
                 {scene.originalVisual && <Metric label="画面" value={scene.originalVisual} />}
                 {scene.motionEffect && <Metric label="动效" value={scene.motionEffect} />}
@@ -737,7 +745,7 @@ function ShotsContent({ cleaned, streamPreview }: { cleaned: CleanedScript | nul
       ) : (
         <div className="space-y-3">
           {prompts.map((prompt, index) => (
-            <p key={index} className="rounded-lg border border-tech-border bg-gray-50 p-4 text-sm leading-6 text-tech-text">
+            <p key={index} className="rounded-lg border border-line bg-elevated p-4 text-sm leading-6 text-ink">
               {index + 1}. {prompt}
             </p>
           ))}
@@ -746,17 +754,17 @@ function ShotsContent({ cleaned, streamPreview }: { cleaned: CleanedScript | nul
 
       {output?.videoOutline && output.videoOutline.length > 0 && (
         <div>
-          <h4 className="mb-3 text-base font-semibold text-tech-text">兼容视频大纲</h4>
+          <h4 className="mb-3 text-base font-semibold text-ink">兼容视频大纲</h4>
           <div className="space-y-3">
             {output.videoOutline.map((item, index) => (
-              <div key={index} className="rounded-lg border border-tech-border bg-gray-50 p-4">
-                <p className="mb-2 font-semibold text-tech-text">{index + 1}. {item.title}</p>
-                <ul className="list-disc space-y-1 pl-5 text-sm text-tech-text">
+              <div key={index} className="rounded-lg border border-line bg-elevated p-4">
+                <p className="mb-2 font-semibold text-ink">{index + 1}. {item.title}</p>
+                <ul className="list-disc space-y-1 pl-5 text-sm text-ink">
                   {item.bullets.map((bullet, bulletIndex) => (
                     <li key={bulletIndex}>{bullet}</li>
                   ))}
                 </ul>
-                {item.visualPrompt && <p className="mt-3 text-sm text-tech-muted">{item.visualPrompt}</p>}
+                {item.visualPrompt && <p className="mt-3 text-sm text-ink-muted">{item.visualPrompt}</p>}
               </div>
             ))}
           </div>
@@ -770,9 +778,9 @@ function ShotsContent({ cleaned, streamPreview }: { cleaned: CleanedScript | nul
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-gray-50 px-4 py-3">
-      <label className="mb-1 block text-xs text-tech-muted">{label}</label>
-      <p className="text-sm text-tech-text">{value}</p>
+    <div className="rounded-lg bg-elevated px-4 py-3">
+      <label className="mb-1 block text-xs text-ink-muted">{label}</label>
+      <p className="text-sm text-ink">{value}</p>
     </div>
   );
 }

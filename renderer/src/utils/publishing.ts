@@ -272,6 +272,13 @@ export type PublishingActionId =
   | 'restore-package'
   | 'preview'
   | 'auto-publish'
+  /**
+   * 小红书图文：**只填到草稿**（自研执行器填好标题/正文/AI 声明后停手，平台自动存草稿，
+   * 由真人在小红书 App 里点发布）。姿态乙，spec §10 的**默认姿态**。
+   */
+  | 'fill-xhs'
+  /** 小红书图文：**真的点发布**（姿态甲；同一套闸门 + 频率限制，且点完不做读回）。 */
+  | 'submit-xhs'
   | 'submit-code'
   /** 文章包：下载/打开包内 `article.html`（降级通路，任何时候可用、零依赖）。 */
   | 'download-article';
@@ -315,53 +322,127 @@ export function isArticlePackage(detail: PublishingPackageDetail): boolean {
   return (detail.package.contentType ?? 'video') === 'article';
 }
 
-// ─── 发布中心「渠道」分栏（spec: 2026-09-18-publishing-channel-tabs-design.md）────
-//
-// 渠道是**内容类型的界面投影**，不是新概念：note = 抖音图文、article = 今日头条文章、
-// video = 视频人工交付（后者**不会自动上传**，只准备交付包）。
-// 为什么按内容类型而不是平台：三者本来就互斥（note 只可能配抖音、article 只可能配头条、
-// 其余都是 video），所以服务端只需要一个 `contentType` 过滤字段，不必引入复合查询。
-// 状态语义仍在服务端（前端只传 `status`），这里只做**分组与计数**。
+/**
+ * 这个包的任务文案是不是**真源**（决定要不要给「编辑文案」）。
+ *
+ * - `video`（人工交付）→ `'task'`：任务文案就是你要复制到平台的那份，改了有用；
+ * - `note`（图文）→ `'package'`：真源是**包级 `noteCopy`**，两条图文通路取文案的顺序都是
+ *   `noteCopy ?? task.*`，所以改任务文案**发出去的还是旧包文案**；
+ * - `article` → `'package'`：真源是包级 `article.html` 的渲染结果。
+ *
+ * ⚠️ 2026-09-21 补的：此前只有文章包隐藏了「编辑文案」，图文任务照给 ——
+ * 那是个**假按钮**（点了显示变了，发出去的没变），正是「文案指错动作」那一类坑。
+ */
+export function publishingCopySourceOf(detail: PublishingPackageDetail): 'task' | 'package' {
+  return (detail.package.contentType ?? 'video') === 'video' ? 'task' : 'package';
+}
 
-export type PublishChannelId = 'douyin-note' | 'toutiao-article' | 'video-manual';
+// ─── 发布中心「渠道」页签（spec: 2026-09-18-publishing-channel-tabs-design.md，
+//     2026-09-21 按用户实测反馈改版：**渠道 = 平台**，内容类型降为子页签）────
+//
+// 改版理由（用户 2026-09-21 反馈）：原版把**内容类型**当一级分栏（图文 / 今日头条文章 /
+// 视频人工交付），于是「抖音」在一级界面上根本不存在 —— 抖音图文与抖音视频被拆进两个页签；
+// 而「今日头条文章」这种「平台+类型」混写的标签又和另外两个不同构。
+// 现在一级 = 平台（抖音 / 小红书 / 今日头条 / 微信公众号 / 其它平台），
+// 二级 = 内容类型，且**只在「该渠道真的出现了多于一种内容类型」时才出现**
+// （只有图文包的抖音不长子页签 —— 只含一项的选择是假选择）。
+//
+// ⚠️ 四条必须守住的约定：
+// 1. **状态语义仍然只有服务端一份**：前端只传 `status`，绝不在前端复刻「待处理 / 资产异常」的判定。
+// 2. **渠道筛选在前端做**：服务端的 `platform` 过滤是**单值**的，表达不了「其它平台（视频号 + B站）」
+//    这类多平台页签。所以列表口径 = 服务端按 `status` 过滤后的结果，再按「渠道平台集 + 子页签内容类型」
+//    筛一遍。**计数必须来自那次不带 status 的请求**（`status=all`），否则「失败」在「待处理」视图里恒为 0。
+// 3. **一个包可以出现在多个页签里**（同一份图文同时发抖音和小红书的包），因此
+//    「这个包属于哪个渠道」这种**单值**函数已不存在：凡涉及渠道一律按**任务平台**判定，
+//    计数也必须只数渠道内的任务（拿整个包的 `tasks` 去数会让别的平台的数字漏进这个页签）。
+// 4. **渠道映射必须覆盖每一种可创建的组合**：视频包的平台向导是把 `PUBLISHING_PLATFORMS`
+//    **全量**列出来的（含今日头条、微信公众号），所以「头条视频」「公众号视频」这类包真的存在，
+//    对应渠道的 `contentTypes` 里必须有 `video` —— 漏一个，那些包就会在所有页签里都看不见。
+//    用例 `every platform is reachable from a channel` 守这条。
+
+export type PublishChannelId = 'douyin' | 'xiaohongshu' | 'toutiao' | 'wechat-mp' | 'other';
 
 export interface PublishChannel {
   id: PublishChannelId;
   label: string;
-  /** 渠道的唯一真源：包的内容类型。 */
-  contentType: PackageContentType;
-  /** 该渠道会出现的平台（用于决定平台下拉与空态文案）；单平台渠道界面不显示下拉。 */
+  /** 渠道的唯一真源：**平台集合**。 */
   platforms: PublishPlatform[];
+  /**
+   * 该渠道**可能出现**的内容类型（同时决定子页签的顺序）。
+   *
+   * 这是**能力声明**，不是「现在有什么」：子页签是否出现由实际数据决定（`channelContentTypes`），
+   * 所以声明比实际宽不会在界面上长出一个只有一项的假选择。
+   */
+  contentTypes: PackageContentType[];
+  /** 是否已接入自动发布通路；`false` = 尚未实现，页签先把位置占好（空态必须写明这一点）。 */
+  automation: boolean;
   /** 页签下方一句话：谁在提交、需要什么前置条件。 */
   hint: string;
   /** 空态里可照抄的入口。 */
   emptyHint: string;
 }
 
+/** 内容类型的中文名（子页签文案；`article` 只出现在头条 / 公众号这类文章渠道里）。 */
+export const PACKAGE_CONTENT_TYPE_LABELS: Record<PackageContentType, string> = {
+  note: '图文',
+  video: '视频',
+  article: '文章',
+};
+
 export const PUBLISH_CHANNELS: PublishChannel[] = [
   {
-    id: 'douyin-note',
-    label: '抖音图文',
-    contentType: 'note',
+    id: 'douyin',
+    label: '抖音',
     platforms: ['douyin'],
-    hint: '由外部 sau 引擎自动提交到抖音；提交前必经预览，提交后需人工核实再「标记已发布」。',
-    emptyHint: '还没有抖音图文包：到作品详情页的成果画布点「创建图文包」（图片可选场景静帧或素材库）。',
+    contentTypes: ['note', 'video'],
+    automation: true,
+    hint:
+      // ⚠️ 这里是**给用户看的纯文本**（React 原样渲染），所以不许出现 markdown 记号 ——
+      // 写成 `**粗体**` 用户看到的就是两个星号（本项目在文案链路上踩过同类坑）。
+      '图文由外部 sau 引擎自动提交（提交前必经预览）；视频不会自动上传，只准备交付包由人工发布。'
+      + '自动提交后需你到抖音核实再点「标记已发布」。'
+      + '⚠️ 自动化发布违反平台规则，风险由你的账号承担，平台可能警告、限流或封号。',
+    emptyHint: '还没有抖音的发布包：到作品详情页的成果画布点「创建图文包」，或点「加入发布中心」准备视频交付包。',
   },
   {
-    id: 'toutiao-article',
-    label: '今日头条文章',
-    contentType: 'article',
+    id: 'xiaohongshu',
+    label: '小红书',
+    platforms: ['xiaohongshu'],
+    contentTypes: ['note', 'video'],
+    automation: true,
+    hint:
+      '图文由自研执行器填写，默认只填到草稿、由你在小红书 App 里点发布（可在建包时改成由程序提交）；'
+      + '视频不会自动上传。⚠️ 这是风险最高的一条通路：平台明确点名「AI 托管代发」并封过号，风险由你的账号承担。',
+    emptyHint: '还没有小红书的发布包：到作品详情页的成果画布点「创建图文包」，并勾选 AI 声明与是否由程序提交。',
+  },
+  {
+    id: 'toutiao',
+    label: '今日头条',
     platforms: ['toutiao'],
-    hint: '由自研执行器自动提交到头条号；先在「设置 → 今日头条」扫码登录，提交前必经预览。',
-    emptyHint: '还没有头条文章包：到作品详情页的成果画布点「创建头条文章包」（AI 成文 + 16:9 封面）。',
+    // 视频向导是全平台列表，所以「头条视频交付包」是存在的（人工交付）。
+    contentTypes: ['article', 'video'],
+    automation: true,
+    hint: '文章由自研执行器自动提交到头条号（先在「设置 → 今日头条」扫码登录，提交前必经预览）；视频不会自动上传。',
+    emptyHint: '还没有头条的发布包：到作品详情页的成果画布点「创建头条文章包」（AI 成文 + 16:9 封面）。',
   },
   {
-    id: 'video-manual',
-    label: '视频人工交付',
-    contentType: 'video',
-    platforms: ['douyin', 'xiaohongshu', 'wechat_channels', 'bilibili'],
-    hint: '不会自动上传：这里只准备交付包，由人工复制文案后到平台发布，发完点「标记已发布」。',
-    emptyHint: '还没有视频交付包：到作品详情页点「加入发布中心」，按向导选平台并生成文案。',
+    id: 'wechat-mp',
+    label: '微信公众号',
+    platforms: ['wechat_mp'],
+    contentTypes: ['article', 'video'],
+    // 尚未接入自动发布：用户要求先把位置划分好（2026-09-21）。
+    automation: false,
+    hint: '尚未接入：这个页签先把位置占好。公众号目前只能人工交付 —— 包里的 article.html 与 cover.jpg 可直接粘进公众号后台。',
+    emptyHint: '微信公众号尚未接入自动发布，也还没有创建公众号发布包的入口：这里暂时是空的。要发公众号请用文章包的人工交付通路（下载 article.html 后粘进公众号后台）。',
+  },
+  {
+    id: 'other',
+    label: '其它平台',
+    platforms: ['wechat_channels', 'bilibili'],
+    contentTypes: ['video'],
+    automation: false,
+    hint: '微信视频号与哔哩哔哩都只能人工交付：这里只准备交付包，不会自动上传，复制文案后到平台发布，发完点「标记已发布」。',
+    emptyHint: '还没有视频号 / B站的发布包：到作品详情页点「加入发布中心」，按向导选这两个平台并生成文案。',
   },
 ];
 
@@ -369,46 +450,119 @@ export function findPublishChannel(channelId: string): PublishChannel {
   return PUBLISH_CHANNELS.find((channel) => channel.id === channelId) ?? PUBLISH_CHANNELS[0]!;
 }
 
-/** 包属于哪个渠道（`contentType` 缺省即视频，与后端同一口径）。 */
-export function publishChannelOf(detail: PublishingPackageDetail): PublishChannel {
-  const contentType = detail.package.contentType ?? 'video';
-  return PUBLISH_CHANNELS.find((channel) => channel.contentType === contentType) ?? PUBLISH_CHANNELS[2]!;
+/** 该渠道内的任务（按**任务平台**判定）。 */
+export function channelTasksOf(detail: PublishingPackageDetail, channelId: PublishChannelId): PublishTask[] {
+  const { platforms } = findPublishChannel(channelId);
+  return detail.tasks.filter((task) => platforms.includes(task.platform));
 }
 
-export function selectChannelPackages(
-  details: PublishingPackageDetail[],
+function packageMatchesChannel(
+  detail: PublishingPackageDetail,
   channelId: PublishChannelId,
-): PublishingPackageDetail[] {
-  const channel = findPublishChannel(channelId);
-  return details.filter((detail) => (detail.package.contentType ?? 'video') === channel.contentType);
+  contentType?: PackageContentType | '',
+): boolean {
+  if (channelTasksOf(detail, channelId).length === 0) return false;
+  if (contentType && (detail.package.contentType ?? 'video') !== contentType) return false;
+  return true;
 }
 
 /**
- * 渠道页签上的数字：各渠道的包数。
+ * 某个渠道（可再按内容类型收窄）下的包。
  *
+ * **不**过滤垃圾桶里的包：桶是 `status` 维度的事，由服务端说了算 ——
+ * 这里只做「属于哪个页签」这一个判断（历史 bug：前端自己判状态，于是「待处理」视图里失败数恒为 0）。
+ */
+export function selectChannelPackages(
+  details: PublishingPackageDetail[],
+  channelId: PublishChannelId,
+  contentType?: PackageContentType | '',
+): PublishingPackageDetail[] {
+  return details.filter((detail) => packageMatchesChannel(detail, channelId, contentType));
+}
+
+/**
+ * 渠道页签上的数字：各渠道的包数（**一个包可以同时计入多个渠道**）。
+ *
+ * 口径是「点进这个页签能看到几个包」，所以与列表长度一致；
  * **垃圾桶里的包不计入**（与后端 `status=all` 只回 active 的口径一致）——
- * 否则「删掉一个图文包」会让渠道数字忽上忽下。
+ * 否则「删掉一个包」会让渠道数字忽上忽下。
  */
 export function countChannelPackages(
   details: PublishingPackageDetail[],
 ): Record<PublishChannelId, number> {
-  const counts = { 'douyin-note': 0, 'toutiao-article': 0, 'video-manual': 0 } as Record<PublishChannelId, number>;
+  const counts = { douyin: 0, xiaohongshu: 0, toutiao: 0, 'wechat-mp': 0, other: 0 } as Record<PublishChannelId, number>;
   for (const detail of details) {
     if (detail.package.state === 'trashed') continue;
-    counts[publishChannelOf(detail).id] += 1;
+    for (const channel of PUBLISH_CHANNELS) {
+      if (packageMatchesChannel(detail, channel.id)) counts[channel.id] += 1;
+    }
   }
   return counts;
 }
 
 /**
- * 状态页签的数字：**当前渠道内**按任务计。
+ * 该渠道**当前实际出现**的内容类型（按渠道声明的顺序；声明外的类型追加在后面）。
  *
- * 与页面既有口径一致（一个包有多个平台任务时各算一次），但修掉了「局部计数」：
+ * 界面据此决定**要不要显示子页签**：只有一种就不显示（避免假选择）。
+ * ⚠️ 判定基于**全部包**（那次不带 status 的请求），不基于当前状态视图 ——
+ * 否则切到「失败」页签可能让子页签忽隐忽现。
+ * 把声明外的类型**追加**而不是丢弃：万一声明漏了，包最多是标签顺序不好看，绝不至于看不见。
+ */
+export function channelContentTypes(
+  details: PublishingPackageDetail[],
+  channelId: PublishChannelId,
+): PackageContentType[] {
+  const declared = findPublishChannel(channelId).contentTypes;
+  const present = new Set<PackageContentType>();
+  for (const detail of details) {
+    if (detail.package.state === 'trashed') continue;
+    if (channelTasksOf(detail, channelId).length === 0) continue;
+    present.add(detail.package.contentType ?? 'video');
+  }
+  const known = declared.filter((type) => present.has(type));
+  const extra = [...present].filter((type) => !declared.includes(type));
+  return [...known, ...extra];
+}
+
+/** 内容类型子页签上的数字：当前渠道内按内容类型分的包数（只回出现的类型）。 */
+export function countChannelContentTypes(
+  details: PublishingPackageDetail[],
+  channelId: PublishChannelId,
+): Partial<Record<PackageContentType, number>> {
+  const counts: Partial<Record<PackageContentType, number>> = {};
+  for (const type of channelContentTypes(details, channelId)) {
+    counts[type] = selectChannelPackages(details, channelId, type)
+      .filter((detail) => detail.package.state !== 'trashed').length;
+  }
+  return counts;
+}
+
+/**
+ * 换渠道后内容类型子页签该停在哪：新渠道里还会出现这个类型就留着，否则回到「全部」。
+ *
+ * 与「换渠道清掉平台筛选」同一个意图：**不制造一个必然筛空的视图**。
+ */
+export function contentTypeAfterChannelChange(
+  details: PublishingPackageDetail[],
+  nextChannelId: PublishChannelId,
+  current: PackageContentType | '',
+): PackageContentType | '' {
+  if (!current) return '';
+  return channelContentTypes(details, nextChannelId).includes(current) ? current : '';
+}
+
+/**
+ * 状态页签的数字：**当前渠道（可再按内容类型收窄）内**的计数。
+ *
+ * 口径与页面既有实现一致：`all` 数**包**（与列表行数一致），其余状态数**任务**
+ * （一个包在多个平台各有任务时各算一次）。**只数渠道内的任务** —— 拿整个包的 `tasks`
+ * 去数会让其它平台的数字漏进这个页签。
  * 计数必须来自**不带状态筛选**的那一次请求，否则「失败」在「待处理」视图里永远显示 0。
  */
 export function countStatusesInChannel(
   details: PublishingPackageDetail[],
   channelId: PublishChannelId,
+  contentType?: PackageContentType | '',
 ): Record<PublishingListStatus, number> {
   const counts = {
     action: 0,
@@ -422,7 +576,7 @@ export function countStatusesInChannel(
     trash: 0,
   } as Record<PublishingListStatus, number>;
 
-  for (const detail of selectChannelPackages(details, channelId)) {
+  for (const detail of selectChannelPackages(details, channelId, contentType)) {
     if (detail.package.state === 'trashed') {
       // 垃圾桶是独立视图：桶里的包只计入 trash，不再计入常规状态。
       counts.trash += 1;
@@ -430,24 +584,46 @@ export function countStatusesInChannel(
     }
     counts.all += 1;
     if (detail.package.assetHealth !== 'healthy') counts.broken += 1;
+    const tasks = channelTasksOf(detail, channelId);
     if (detail.package.assetHealth === 'broken_video'
-      || detail.tasks.some((task) => task.status === 'ready' || task.status === 'failed')) {
+      || tasks.some((task) => task.status === 'ready' || task.status === 'failed')) {
       counts.action += 1;
     }
-    for (const task of detail.tasks) counts[task.status] += 1;
+    for (const task of tasks) counts[task.status] += 1;
   }
   return counts;
 }
 
-/** 单平台渠道返回空数组 → 界面据此隐藏平台下拉（避免「选了头条却把列表筛空」）。 */
-export function channelPlatformOptions(channelId: PublishChannelId): typeof PUBLISHING_PLATFORMS {
-  const channel = findPublishChannel(channelId);
-  if (channel.platforms.length <= 1) return [];
-  return PUBLISHING_PLATFORMS.filter((item) => channel.platforms.includes(item.id));
-}
-
 export function channelEmptyHint(channelId: PublishChannelId): string {
   return findPublishChannel(channelId).emptyHint;
+}
+
+/**
+ * 小红书创作服务平台**首页** —— 草稿箱与「编辑最新笔记」都在这一页。
+ *
+ * 2026-09-21 只读侦察实测：首页文案里就有「草稿箱中有未发布的作品」与「编辑最新笔记」。
+ */
+export const XHS_CREATOR_HOME_URL = 'https://creator.xiaohongshu.com/';
+
+/**
+ * 「打开平台」这个按钮该开哪个地址、叫什么名字。
+ *
+ * - **默认**：平台表里的 `creatorUrl`（作品发布页）—— 视频人工交付就是「复制文案后去发布」；
+ * - **小红书图文**：创作服务平台**首页**。图文走的是「机器只填到草稿、由人点发布」这套，
+ *   那时候要去的是**草稿箱**（首页上就是），而 `creatorUrl` 指的 `publish/publish` 是
+ *   「发布**新**笔记」页 —— 打开它只会让人以为要重新发一条（文案/入口指错动作，本项目的老毛病）。
+ */
+export function publishingOpenPlatformTarget(
+  detail: PublishingPackageDetail,
+  task: PublishTask,
+): { url: string; label: string } {
+  if ((detail.package.contentType ?? 'video') === 'note' && task.platform === 'xiaohongshu') {
+    return { url: XHS_CREATOR_HOME_URL, label: '打开小红书创作中心' };
+  }
+  return {
+    url: PUBLISHING_PLATFORMS.find((item) => item.id === task.platform)?.creatorUrl ?? '',
+    label: '打开平台',
+  };
 }
 
 export function getPublishingActionIds(
@@ -476,10 +652,12 @@ export function getPublishingActionIds(
     actions.push('create-version');
     if (role === 'admin') actions.push('withdraw');
   } else {
-    // 文章包的正文是**包级** `article.html` 的渲染结果：改任务文案只会让「预览看到的」与
-    // 「发出去的」漂移，所以文章任务不提供「编辑文案」（要改就重建文章包）。
+    // 文章包的正文是**包级** `article.html` 的渲染结果、图文包的文案是**包级** `noteCopy`：
+    // 改任务文案只会让「预览看到的」与「发出去的」漂移，所以这两类任务都不提供「编辑文案」
+    // （要改就重建包）。⚠️ 图文这条是 2026-09-21 补的：两条图文通路取文案的顺序都是
+    // `noteCopy ?? task.*`，所以任务行上的编辑**根本影响不到发布**，那个按钮是假的。
     if (isArticlePackage(detail)) actions.push('download-article');
-    if (!isArticlePackage(detail)) actions.push('edit-content');
+    if (publishingCopySourceOf(detail) === 'task') actions.push('edit-content');
     if (task.status === 'scheduled' || task.status === 'ready') {
       actions.push('schedule');
     }
@@ -490,7 +668,20 @@ export function getPublishingActionIds(
       actions.push('open-platform', 'mark-published');
     }
     // 图文包的自动发布：只有「可以立刻提交」时才给动作，其余情况用 blocker 说明原因。
-    if (!getPublishingAutoPublishBlocker(detail, task)) actions.push('auto-publish');
+    // 小红书是**两个动作**（填草稿 / 真提交）—— 两者都过同一个 blocker，
+    // 因为「填到草稿」同样会动这个账号（平台风控看的是自动化访问，不是提交与否）。
+    if (!getPublishingAutoPublishBlocker(detail, task)) {
+      if (task.platform === 'xiaohongshu') {
+        // `fill-xhs` 永远可用：它带 `dryRun`，服务端**强制不点发布**，所以与包的设置无关。
+        actions.push('fill-xhs');
+        // `submit-xhs` **只在包自己声明了要提交时**才给 —— 因为「要不要真发出去」是
+        // `xhsOptions.submit`，而它进 `previewRevision`。给一个「会真提交」的按钮去动一个
+        // 声明了「只填草稿」的包，等于绕过预览指纹，也会让按钮文案撒谎。
+        if (detail.package.xhsOptions?.submit === true) actions.push('submit-xhs');
+      } else {
+        actions.push('auto-publish');
+      }
+    }
     if (task.autoPublish?.status === 'awaiting_code') actions.push('submit-code');
   }
 
@@ -554,6 +745,13 @@ export function getPublishingAutoPublishBlocker(
   }
   if (detail.package.imagePaths?.length === 0) return '图文包没有图片，无法发布';
 
+  // 小红书专有闸门。**只检查渲染层本地就能知道的事实**（包里有没有勾 AI 声明）——
+  // 张数上限（18）与频率上限（每日 1 篇）是**服务端的规则**，一律不在前端复刻：
+  // 复刻就是必然漂移的第二真源，让服务端 422 把原因带回来即可。
+  if (task.platform === 'xiaohongshu' && detail.package.xhsOptions?.aiDeclaration !== true) {
+    return '小红书要求声明「笔记含AI合成内容」：请重建图文包并勾选该声明（未标识的内容会被平台限制分发）';
+  }
+
   // 同步请求还在跑（或正在等验证码）时不给第二次动作，避免必然 409
   if (autoPublishInFlight(task)) return '自动发布正在进行中，请等本次结束后再试';
   if (task.status === 'published') return '任务已标记为发布，如需改动请先撤回';
@@ -589,6 +787,18 @@ export function getPublishingAutoPublishHint(task: PublishTask): string | null {
     return '等待短信验证码：请点「提交验证码」填入手机收到的验证码';
   }
   if (record.status === 'succeeded') {
+    // ⚠️ **「只填到草稿」不能说「已提交」**（2026-09-21 用户实测）：那条通路按设计
+    // **没有点发布**，内容只在平台的草稿箱里；说成「已提交」会让人去平台找内容却找不到。
+    // 判据是记录里显式的 `draftOnly`（服务层按执行器回报的 `submitted === false` 写的）。
+    //
+    // 老记录（该字段出现之前落的）没有标记，而用户当时正看着的就是那一条 ——
+    // 所以**仅在字段缺失时**用执行器自己写下的文案兜底识别一次；字段一旦存在就只看字段，
+    // 不再猜文本（猜文本是会漂移的第二真源，这里只是为了不让历史记录继续撒谎）。
+    const legacyDraftOnly = record.draftOnly === undefined
+      && /没有点「发布」|停在点「发布」之前/u.test(record.message ?? '');
+    if (record.draftOnly || legacyDraftOnly) {
+      return `已填写到${label}草稿箱（本工具没有点发布）：请到${label} App 或创作服务平台的草稿箱核对内容，由你自己点发布`;
+    }
     // 「点了发布但没拿到成功判据」必须显示出来：这是「重复发布」这个最大风险的补偿手段
     //（服务端把原话写进了 message，此前只有展开审计记录才看得到）。
     if ((record.message ?? '').includes('未能')) {
@@ -610,7 +820,8 @@ export function getPublishingAutoPublishHint(task: PublishTask): string | null {
 export function publishingNextStep(detail: PublishingPackageDetail): string {
   if (detail.package.state === 'trashed') return '由管理员恢复发布包';
   if (detail.package.assetHealth === 'broken_video') return '视频资产异常，请查看资产说明';
-  if (detail.tasks.some((task) => task.status === 'ready')) return '打开平台并完成发布';
+  const readyTasks = detail.tasks.filter((task) => task.status === 'ready');
+  if (readyTasks.length > 0) return readyNextStep(detail, readyTasks);
   if (detail.tasks.some((task) => task.status === 'failed')) return '处理失败原因并恢复任务';
   if (detail.tasks.some((task) => task.status === 'scheduled')) return '等待排期提醒';
   // 与 `getPublishingActionIds` 保持一致：只有存在已发布任务时「创建新版本」才真的可用
@@ -618,6 +829,35 @@ export function publishingNextStep(detail: PublishingPackageDetail): string {
   if (detail.tasks.every((task) => task.status === 'published')) return '已完成，可创建新版本';
   if (canCreateVersion) return '恢复已取消的任务，或基于已发布版本创建新版本';
   return '恢复已取消的任务后可继续人工发布';
+}
+
+/**
+ * 「下一步」对**图文包**必须点名**真实存在**的那个按钮。
+ *
+ * 2026-09-21 用户实测反馈「没有找到发布小红书按钮」：那一行当时写的是「打开平台并完成发布」，
+ * 而小红书图文包上真实存在的按钮是「填写到小红书（不提交）」—— 「要不要真发出去」是建包时
+ * `xhsOptions.submit` 定的（默认只填草稿，`submit-xhs` 按钮因此**不存在**）。
+ * 这与本文件既有的教训是同一类：**提示词指向一个不存在的按钮**（上一回是「恢复已取消任务或创建新版本」）。
+ * 按钮被闸门拦下时（`getPublishingAutoPublishBlocker`），这里直接把**原因**写在这一行 ——
+ * 否则那行会既没有按钮、也没有解释（图文包的发布按钮是「无阻断才出现」）。
+ */
+function readyNextStep(detail: PublishingPackageDetail, readyTasks: PublishTask[]): string {
+  if ((detail.package.contentType ?? 'video') !== 'note') return '打开平台并完成发布';
+  const xhs = readyTasks.find((task) => task.platform === 'xiaohongshu');
+  if (xhs) {
+    const blocker = getPublishingAutoPublishBlocker(detail, xhs);
+    if (blocker) return blocker;
+    return detail.package.xhsOptions?.submit === true
+      ? '点「发布到小红书」提交（点完请到小红书 App 核实），再点「标记已发布」'
+      : '本包只填到草稿：点「填写到小红书（不提交）」存进草稿箱，再到小红书 App 点发布';
+  }
+  const douyin = readyTasks.find((task) => task.platform === 'douyin');
+  if (douyin) {
+    const blocker = getPublishingAutoPublishBlocker(detail, douyin);
+    if (blocker) return blocker;
+    return '点「发布图文到抖音」提交（必经预览），提交后到抖音核实再点「标记已发布」';
+  }
+  return '打开平台并完成发布';
 }
 
 export function formatDueNotification(notification: DueNotification): string {

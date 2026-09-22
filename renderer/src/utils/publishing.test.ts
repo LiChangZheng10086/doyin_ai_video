@@ -4,7 +4,9 @@ import type {
   ActorSnapshot,
   DeliveryPackage,
   DueNotification,
+  PackageContentType,
   PlatformCopy,
+  PublishPlatform,
   PublishTask,
   PublishingPackageDetail,
 } from '../types/index.js';
@@ -24,12 +26,17 @@ import {
   isPublishingEligibleVideo,
   PUBLISHING_PLATFORMS,
   PUBLISH_CHANNELS,
+  channelContentTypes,
   channelEmptyHint,
-  channelPlatformOptions,
+  contentTypeAfterChannelChange,
+  countChannelContentTypes,
   countChannelPackages,
   countStatusesInChannel,
-  publishChannelOf,
+  findPublishChannel,
   selectChannelPackages,
+  publishingCopySourceOf,
+  publishingOpenPlatformTarget,
+  XHS_CREATOR_HOME_URL,
   publishingWizardReducer,
 } from './publishing.js';
 import { desktop } from '../electron-bridge.js';
@@ -387,7 +394,15 @@ test('publishing entry requires a complete usable MP4 output', () => {
 // ─── ② 抖音图文自动发布：动作可见性与状态提示 ────────────────────────────────
 
 function notePackageDetail(
-  overrides: { assetHealth?: PublishingPackageDetail['package']['assetHealth']; status?: PublishTask['status']; autoPublish?: PublishTask['autoPublish'] } = {},
+  overrides: {
+    assetHealth?: PublishingPackageDetail['package']['assetHealth'];
+    status?: PublishTask['status'];
+    autoPublish?: PublishTask['autoPublish'];
+    /** 平台（默认抖音；小红书那条通路要显式给）。 */
+    platform?: PublishTask['platform'];
+    /** 小红书发布选项（AI 声明 / 是否真提交）。 */
+    xhsOptions?: { aiDeclaration: boolean; submit: boolean };
+  } = {},
 ): PublishingPackageDetail {
   const detail = packageDetail("job-note", 1);
   return {
@@ -399,10 +414,12 @@ function notePackageDetail(
       noteCopy: { title: '抖音图文标题', description: '抖音图文正文', hashtags: ['内容创作'] },
       assetHealth: overrides.assetHealth ?? 'healthy',
       videoPath: undefined,
+      ...(overrides.xhsOptions ? { xhsOptions: overrides.xhsOptions } : {}),
     },
     tasks: [{
       ...detail.tasks[0],
       status: overrides.status ?? 'ready',
+      ...(overrides.platform ? { platform: overrides.platform } : {}),
       ...(overrides.autoPublish ? { autoPublish: overrides.autoPublish } : {}),
     }],
   };
@@ -548,8 +565,23 @@ test('the next-step hint matches the actions offered for each task status', () =
   const trashed = { ...video, package: { ...video.package, state: 'trashed' as const } };
   assert.match(publishingNextStep(trashed), /恢复发布包/);
 
+  // ⚠️ 2026-09-21 收紧：ready 的**图文**包不再写「打开平台」（那是视频人工交付的动作文案），
+  // 而是点名它真实的按钮 —— 并且这里断言那个按钮**确实在动作列表里**（提示与动作不许各说一套）。
   const ready = notePackageDetail({ status: 'ready' });
-  assert.match(publishingNextStep(ready), /打开平台/);
+  assert.match(publishingNextStep(ready), /发布图文到抖音/);
+  assert.equal(
+    getPublishingActionIds(ready, ready.tasks[0], 'publisher').includes('auto-publish'),
+    true,
+    '提示点到的按钮必须真的存在',
+  );
+
+  // 视频包（人工交付）仍然是「打开平台」。
+  const readyVideo = packageDetail('job-video-2', 1);
+  assert.match(publishingNextStep(readyVideo), /打开平台/);
+  assert.equal(
+    getPublishingActionIds(readyVideo, readyVideo.tasks[0], 'publisher').includes('open-platform'),
+    true,
+  );
 
   const failed = notePackageDetail({ status: 'failed' });
   assert.match(publishingNextStep(failed), /恢复任务/);
@@ -560,6 +592,46 @@ test('the next-step hint matches the actions offered for each task status', () =
   const published = notePackageDetail({ status: 'published' });
   assert.match(publishingNextStep(published), /创建新版本/);
   assert.ok(getPublishingActionIds(published, published.tasks[0], 'publisher').includes('create-version'));
+});
+
+test('「只填到草稿」的提示不能说「已提交」（用户实测：显示已提交但平台上找不到）', () => {
+  // 2026-09-21 实测：点了「填写到小红书（不提交）」后任务显示「已提交，请在小红书后台确认后点标记已发布」，
+  // 用户去小红书找内容却找不到 —— 因为那条通路**按设计没有点发布**，内容只在草稿箱里。
+  const draftOnly = notePackageDetail({
+    platform: 'xiaohongshu',
+    xhsOptions: { aiDeclaration: true, submit: false },
+    autoPublish: { status: 'succeeded', startedAt: new Date().toISOString(), attemptId: 'a', draftOnly: true },
+  });
+  const hint = getPublishingAutoPublishHint(draftOnly.tasks[0]) ?? '';
+  assert.match(hint, /草稿箱/u, hint);
+  assert.equal(hint.includes('已提交'), false, '只填草稿绝不能说已提交');
+  assert.match(hint, /没有点发布/u, hint);
+
+  // 老记录（字段出现之前落的）没有 draftOnly —— 但它的 message 是执行器写下的「没有点发布」，
+  // 只在**字段缺失**时兜底识别一次，免得用户此刻正看着的那条继续说「已提交」。
+  const legacy = notePackageDetail({
+    platform: 'xiaohongshu',
+    xhsOptions: { aiDeclaration: true, submit: false },
+    autoPublish: {
+      status: 'succeeded',
+      startedAt: new Date().toISOString(),
+      attemptId: 'legacy',
+      message: '已把标题、正文与 AI 声明填好，内容会由小红书自动存为草稿（本工具没有点「发布」）。\n逐步记录：… → 演练：停在点「发布」之前',
+    },
+  });
+  const legacyHint = getPublishingAutoPublishHint(legacy.tasks[0]) ?? '';
+  assert.match(legacyHint, /草稿箱/u, legacyHint);
+  assert.equal(legacyHint.includes('已提交'), false, '老记录也不许说已提交');
+
+  // 真提交（没有 draftOnly）仍然是「已提交」，且要求人工核实。
+  const submitted = notePackageDetail({
+    platform: 'xiaohongshu',
+    xhsOptions: { aiDeclaration: true, submit: true },
+    autoPublish: { status: 'succeeded', startedAt: new Date().toISOString(), attemptId: 'b' },
+  });
+  const submittedHint = getPublishingAutoPublishHint(submitted.tasks[0]) ?? '';
+  assert.match(submittedHint, /已提交/u, submittedHint);
+  assert.match(submittedHint, /标记已发布/u, submittedHint);
 });
 
 test('external CLI colour codes never reach the operator facing hint', () => {
@@ -667,6 +739,72 @@ test('文章包：健康时给「提交到头条号」与「下载文章 HTML」
     .includes('edit-content'));
 });
 
+test('图文任务不给「编辑文案」：图文包的真源是包级 noteCopy，改了也发不出去', () => {
+  // 2026-09-21 用户实测发现的假按钮：图文任务上的编辑改了任务文案（界面显示也变了），
+  // 但两条图文通路取的都是 `noteCopy ?? task.*` ⇒ 发出去的仍是旧包文案。
+  const note = notePackageDetail({ platform: 'xiaohongshu', xhsOptions: { aiDeclaration: true, submit: false } });
+  const noteActions = getPublishingActionIds(note, note.tasks[0], 'publisher');
+  assert.equal(noteActions.includes('edit-content'), false, '图文任务不该给假按钮');
+
+  // 视频包（人工交付）必须保留：任务文案就是你要复制到平台的那份。
+  const video = packageDetail('job-v', 1);
+  assert.equal(getPublishingActionIds(video, video.tasks[0], 'publisher').includes('edit-content'), true);
+
+  // 判定函数本身：video 才算「任务文案是真源」。
+  assert.equal(publishingCopySourceOf(video), 'task');
+  assert.equal(publishingCopySourceOf(note), 'package');
+  assert.equal(publishingCopySourceOf(articlePackageDetail()), 'package');
+});
+
+test('图文包的「下一步」必须点名真实存在的按钮（用户实测：找不到「发布小红书」）', () => {
+  // 只填草稿的包：真实存在的按钮是「填写到小红书（不提交）」，绝不能再写「打开平台并完成发布」。
+  const draft = notePackageDetail({ platform: 'xiaohongshu', xhsOptions: { aiDeclaration: true, submit: false } });
+  const draftStep = publishingNextStep(draft);
+  assert.match(draftStep, /填写到小红书（不提交）/u, draftStep);
+  assert.match(draftStep, /草稿/u, draftStep);
+  assert.equal(draftStep.includes('打开平台'), false, '不该再指向不存在的按钮');
+  // 而且这个按钮**真的在动作列表里**（提示词与动作列表不许各说一套）。
+  assert.equal(getPublishingActionIds(draft, draft.tasks[0], 'publisher').includes('fill-xhs'), true);
+
+  // 声明了要提交的包：点名「发布到小红书」。
+  const submit = notePackageDetail({ platform: 'xiaohongshu', xhsOptions: { aiDeclaration: true, submit: true } });
+  assert.match(publishingNextStep(submit), /发布到小红书/u);
+  assert.equal(getPublishingActionIds(submit, submit.tasks[0], 'publisher').includes('submit-xhs'), true);
+
+  // 抖音图文：点名「发布图文到抖音」。
+  const douyin = notePackageDetail();
+  assert.match(publishingNextStep(douyin), /发布图文到抖音/u);
+
+  // 被闸门拦下时（例如没勾 AI 声明）：按钮不存在，就必须把**原因**写在这一行。
+  const blocked = notePackageDetail({ platform: 'xiaohongshu', xhsOptions: { aiDeclaration: false, submit: false } });
+  const blockedStep = publishingNextStep(blocked);
+  assert.match(blockedStep, /AI合成内容/u, blockedStep);
+  assert.equal(getPublishingActionIds(blocked, blocked.tasks[0], 'publisher').some((id) => id.endsWith('-xhs')), false);
+
+  // 视频包（人工交付）一字未改。
+  const video = packageDetail('job-v', 1);
+  assert.match(publishingNextStep(video), /打开平台并完成发布/u);
+});
+
+test('「打开平台」对小红书图文要开草稿箱所在的创作中心首页，而不是「发布新笔记」页', () => {
+  // 这套流程（机器只填草稿、人点发布）要求按钮把人送到**草稿箱**；平台表里的 creatorUrl 是
+  // `publish/publish`（发布**新**笔记），打开它只会让人以为要重新发一条。
+  const note = notePackageDetail({ platform: 'xiaohongshu', xhsOptions: { aiDeclaration: true, submit: false } });
+  const target = publishingOpenPlatformTarget(note, note.tasks[0]);
+  assert.equal(target.url, XHS_CREATOR_HOME_URL);
+  assert.match(target.label, /创作中心/u, target.label);
+  assert.equal(target.url.includes('publish/publish'), false, '不许开「发布新笔记」页');
+
+  // 抖音图文 / 视频包仍走平台表里的作品发布页（人工交付＝复制文案后去发布）。
+  const douyin = notePackageDetail();
+  const douyinTarget = publishingOpenPlatformTarget(douyin, douyin.tasks[0]);
+  assert.match(douyinTarget.url, /creator\.douyin\.com/u);
+  assert.equal(douyinTarget.label, '打开平台');
+
+  const video = packageDetail('job-v', 1);
+  assert.equal(publishingOpenPlatformTarget(video, video.tasks[0]).label, '打开平台');
+});
+
 test('文章包 + 非头条任务：明确报「只支持今日头条」而不是静默走错通路', () => {
   const detail = articlePackageDetail();
   const task = { ...detail.tasks[0]!, platform: 'douyin' as const };
@@ -741,93 +879,211 @@ test('每个平台都有中文名（漏掉的表现是界面显示英文枚举�
   }
 });
 
-// ─── 发布中心「渠道」分栏（抖音图文 / 今日头条文章 / 视频人工交付）───────────────
+// ─── 发布中心「渠道」页签（2026-09-21 改版：一级 = 平台，二级 = 内容类型）─────────
 //
-// 渠道是**内容类型的界面投影**：note = 抖音图文、article = 今日头条文章、video = 视频人工交付。
-// 这一组用例守住三件事：渠道归属、计数（含垃圾桶口径）、以及单平台渠道不该显示平台下拉。
+// 这一组守住四件事：
+// ① 渠道映射覆盖**每一种可创建的组合**（漏一个，那种包会在所有页签里都看不见）；
+// ② 渠道归属按**任务平台**判定，一个包可以同时出现在多个页签；
+// ③ 内容类型子页签只在真的有多种类型时才出现；
+// ④ 计数只数**当前渠道内**的任务（拿整个包的 tasks 去数会让别的平台的数字漏进来）。
 
-test('渠道归属：note → 抖音图文、article → 今日头条文章、缺省 → 视频人工交付', () => {
-  // 存量包没有 `contentType` 字段 —— 按后端口径视为视频，不能猜成图文。
-  assert.equal(publishChannelOf(packageDetail('job-a', 1)).id, 'video-manual');
-  assert.equal(
-    publishChannelOf(packageDetail('job-a', 1, 'ready', { contentType: 'note' })).id,
-    'douyin-note',
-  );
-  assert.equal(
-    publishChannelOf(packageDetail('job-b', 1, 'ready', { contentType: 'article' })).id,
-    'toutiao-article',
-  );
-  // 老包没有 contentType 字段：与后端同一口径，缺省即视频。
-  assert.equal(packageDetail('job-c', 1).package.contentType, undefined);
-  assert.equal(publishChannelOf(packageDetail('job-c', 1)).id, 'video-manual');
-});
-
-test('渠道清单固定三个，且每个渠道都有可照抄的空态入口', () => {
+test('渠道清单固定五个，且每个渠道都有可照抄的空态入口', () => {
   assert.deepEqual(PUBLISH_CHANNELS.map((channel) => channel.id), [
-    'douyin-note',
-    'toutiao-article',
-    'video-manual',
+    'douyin',
+    'xiaohongshu',
+    'toutiao',
+    'wechat-mp',
+    'other',
   ]);
-  assert.deepEqual(PUBLISH_CHANNELS.map((channel) => channel.contentType), ['note', 'article', 'video']);
   for (const channel of PUBLISH_CHANNELS) {
     assert.ok(channel.label.length > 0);
     assert.ok(channel.hint.length > 0, `${channel.id} 缺少说明文案`);
     assert.ok(channel.emptyHint.length > 0, `${channel.id} 缺少空态入口文案`);
+    assert.ok(channel.platforms.length > 0, `${channel.id} 没有对应平台`);
+    assert.ok(channel.contentTypes.length > 0, `${channel.id} 没有声明内容类型`);
   }
   // 空态要指向**具体入口**，不能只说「暂无数据」。
-  assert.match(channelEmptyHint('douyin-note'), /创建图文包/u);
-  assert.match(channelEmptyHint('toutiao-article'), /创建头条文章包/u);
-  assert.match(channelEmptyHint('video-manual'), /加入发布中心/u);
+  assert.match(channelEmptyHint('douyin'), /创建图文包/u);
+  assert.match(channelEmptyHint('xiaohongshu'), /创建图文包/u);
+  assert.match(channelEmptyHint('toutiao'), /创建头条文章包/u);
+  assert.match(channelEmptyHint('other'), /加入发布中心/u);
+  // 未接入的渠道必须**明说**，不能让人以为它已经在自动发布。
+  assert.match(channelEmptyHint('wechat-mp'), /尚未接入/u);
+  assert.match(
+    PUBLISH_CHANNELS.find((channel) => channel.id === 'other')!.hint,
+    /不会自动上传/u,
+  );
+  // 微信公众号是**用户要求先划分好**的占位页签：`automation: false` 必须是真的。
+  assert.equal(PUBLISH_CHANNELS.find((channel) => channel.id === 'wechat-mp')!.automation, false);
 });
 
-test('按渠道筛选：三种包互不串台，垃圾桶也在渠道内', () => {
-  const video = packageDetail('job-v', 1);
+test('每一种可创建的「内容类型 × 平台」组合都唯一落在某个渠道里', () => {
+  // 为什么要有这条：`CreatePublishPackageDialog` 的平台步骤是把 `PUBLISHING_PLATFORMS`
+  // **全量**列出来的（含今日头条、微信公众号），所以「头条视频」「公众号视频」这类包真的存在；
+  // 渠道声明里漏掉 `video`，那些包就会在**所有**页签里都看不见 —— 静默丢数据，最难发现的那种 bug。
+  const creatable: Array<[PackageContentType, PublishPlatform]> = [
+    ...PUBLISHING_PLATFORMS.map((item) => ['video', item.id] as [PackageContentType, PublishPlatform]),
+    // 图文向导只给抖音与小红书（`NOTE_AUTOMATION_PLATFORMS`）。
+    ['note', 'douyin'],
+    ['note', 'xiaohongshu'],
+    // 文章包目前只有头条入口。
+    ['article', 'toutiao'],
+  ];
+
+  for (const [contentType, platform] of creatable) {
+    const hit = PUBLISH_CHANNELS.filter(
+      (channel) => channel.platforms.includes(platform) && channel.contentTypes.includes(contentType),
+    );
+    assert.equal(
+      hit.length,
+      1,
+      `${contentType} × ${platform} 的渠道归属不是唯一：${hit.map((channel) => channel.id).join(' / ') || '无'}`,
+    );
+  }
+});
+
+test('渠道归属按任务平台判定：同一个包可以出现在多个页签', () => {
   const note = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
-  const article = packageDetail('job-t', 1, 'ready', { contentType: 'article' });
-  const all = [video, note, article];
-
-  assert.deepEqual(selectChannelPackages(all, 'douyin-note').map((d) => d.package.id), [note.package.id]);
-  assert.deepEqual(selectChannelPackages(all, 'toutiao-article').map((d) => d.package.id), [article.package.id]);
-  assert.deepEqual(selectChannelPackages(all, 'video-manual').map((d) => d.package.id), [video.package.id]);
-});
-
-test('渠道计数：各渠道包数，且垃圾桶包不计入（与 status=all 口径一致）', () => {
-  const counts = countChannelPackages([
-    packageDetail('job-v', 1),
-    packageDetail('job-v2', 1, 'ready', { contentType: 'note' }),
-    packageDetail('job-n2', 2, 'ready', { contentType: 'note' }),
-    packageDetail('job-t', 1, 'ready', { contentType: 'article' }),
-    packageDetail('job-trash', 1, 'ready', {
-      contentType: 'note',
-      state: 'trashed',
-      deletedAt: '2026-08-20T00:00:00.000Z',
-      purgeAt: '2026-09-20T00:00:00.000Z',
-    }),
-  ]);
-
-  assert.deepEqual(counts, { 'douyin-note': 2, 'toutiao-article': 1, 'video-manual': 1 });
-});
-
-test('状态计数：只数当前渠道，且是按任务计（一个包多任务会各算一次）', () => {
-  const noteReady = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
-  const noteFailed = packageDetail('job-n2', 1, 'failed', { contentType: 'note' });
-  const article = packageDetail('job-t', 1, 'ready', { contentType: 'article' });
-  // 一个图文包两个任务（抖音 + 小红书）：两个状态各记一次。
+  // 一个图文包同时发了抖音与小红书 → 两个页签里都该看到它。
   const multi = packageDetail('job-multi', 1, 'ready', { contentType: 'note' });
-  multi.tasks.push({ ...multi.tasks[0]!, id: 'multi-xiaohongshu', platform: 'xiaohongshu', status: 'scheduled' });
+  multi.tasks.push({ ...multi.tasks[0]!, id: 'multi-xhs', platform: 'xiaohongshu', status: 'ready' });
+  // 存量包没有 `contentType` 字段 —— 按后端口径视为视频，且它的任务在抖音。
+  const legacy = packageDetail('job-old', 1);
+  const all = [note, multi, legacy];
 
-  const counts = countStatusesInChannel([noteReady, noteFailed, article, multi], 'douyin-note');
-  assert.equal(counts.ready, 2);
-  assert.equal(counts.failed, 1);
-  assert.equal(counts.scheduled, 1);
-  assert.equal(counts.all, 3);
-  // 头条那篇不该被算进抖音图文。
-  assert.equal(countStatusesInChannel([noteReady, article], 'douyin-note').ready, 1);
-  assert.equal(countStatusesInChannel([noteReady, article], 'toutiao-article').ready, 1);
+  assert.deepEqual(selectChannelPackages(all, 'douyin').map((d) => d.package.id), [
+    note.package.id,
+    multi.package.id,
+    legacy.package.id,
+  ]);
+  assert.deepEqual(selectChannelPackages(all, 'xiaohongshu').map((d) => d.package.id), [multi.package.id]);
+  assert.deepEqual(selectChannelPackages(all, 'toutiao'), []);
+  // 老包没有 contentType 字段：与后端同一口径，缺省即视频。
+  assert.equal(legacy.package.contentType, undefined);
+  assert.deepEqual(channelContentTypes(all, 'douyin'), ['note', 'video']);
 });
 
-test('状态计数：垃圾桶只数桶里的包，资产异常只数不健康的包', () => {
-  const healthy = packageDetail('job-h', 1, 'ready', { contentType: 'note' });
+test('渠道筛选可按内容类型收窄（子页签用）', () => {
+  const note = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
+  const video = packageDetail('job-v', 1, 'ready', { contentType: 'video' });
+  const article = packageDetail('job-t', 1, 'ready', { contentType: 'article' });
+  // 文章包配置在头条：任务平台也要跟着换，否则它压根不属于这个渠道。
+  article.tasks = [{ ...article.tasks[0]!, id: 'article-toutiao', platform: 'toutiao' }];
+  const all = [note, video, article];
+
+  assert.deepEqual(
+    selectChannelPackages(all, 'douyin', 'note').map((d) => d.package.id),
+    [note.package.id],
+  );
+  assert.deepEqual(
+    selectChannelPackages(all, 'douyin', 'video').map((d) => d.package.id),
+    [video.package.id],
+  );
+  // `''` = 全部内容类型。
+  assert.equal(selectChannelPackages(all, 'douyin', '').length, 2);
+  assert.deepEqual(
+    selectChannelPackages(all, 'toutiao', 'article').map((d) => d.package.id),
+    [article.package.id],
+  );
+  assert.deepEqual(selectChannelPackages(all, 'toutiao', 'note'), []);
+});
+
+test('渠道计数：各渠道包数，一个包可同时计入多个渠道，垃圾桶不计入', () => {
+  const note = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
+  const multi = packageDetail('job-multi', 1, 'ready', { contentType: 'note' });
+  multi.tasks.push({ ...multi.tasks[0]!, id: 'multi-xhs', platform: 'xiaohongshu', status: 'ready' });
+  const video = packageDetail('job-v', 1, 'ready', { contentType: 'video' });
+  const article = packageDetail('job-t', 1, 'ready', { contentType: 'article' });
+  article.tasks = [{ ...article.tasks[0]!, platform: 'toutiao' }];
+  const trashed = packageDetail('job-trash', 1, 'ready', {
+    contentType: 'note',
+    state: 'trashed',
+    deletedAt: '2026-08-20T00:00:00.000Z',
+    purgeAt: '2026-09-20T00:00:00.000Z',
+  });
+
+  assert.deepEqual(countChannelPackages([note, multi, video, article, trashed]), {
+    douyin: 3,
+    xiaohongshu: 1,
+    toutiao: 1,
+    'wechat-mp': 0,
+    other: 0,
+  });
+});
+
+test('内容类型子页签：只有一种类型时只回一种（界面据此不渲染子页签）', () => {
+  const note = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
+  const video = packageDetail('job-v', 1, 'ready', { contentType: 'video' });
+
+  // 只有图文包 → 单元素数组 → 界面不显示子页签（只含一项的选择是假选择）。
+  assert.deepEqual(channelContentTypes([note], 'douyin'), ['note']);
+  // 两种都有 → 按**渠道声明**的顺序（note 在 video 前），与数据顺序无关。
+  assert.deepEqual(channelContentTypes([note, video], 'douyin'), ['note', 'video']);
+  assert.deepEqual(channelContentTypes([video, note], 'douyin'), ['note', 'video']);
+  // 别的渠道的包不算数。
+  assert.deepEqual(channelContentTypes([note], 'xiaohongshu'), []);
+  // 垃圾桶里的包不参与「这个渠道有什么类型」。
+  const trashedVideo = packageDetail('job-tv', 1, 'ready', {
+    contentType: 'video',
+    state: 'trashed',
+    deletedAt: '2026-08-20T00:00:00.000Z',
+    purgeAt: '2026-09-20T00:00:00.000Z',
+  });
+  assert.deepEqual(channelContentTypes([note, trashedVideo], 'douyin'), ['note']);
+  // 子页签上的包数。
+  assert.deepEqual(countChannelContentTypes([note, video], 'douyin'), { note: 1, video: 1 });
+});
+
+test('内容类型子页签：声明漏了的类型也要出现（宁可标签不好看，也不能把包藏起来）', () => {
+  // 「其它平台」只声明了 video，但万一将来出现一条 B站文章包，它也必须在界面上有个位置。
+  const article = packageDetail('job-x', 1, 'ready', { contentType: 'article' });
+  article.tasks = [{ ...article.tasks[0]!, platform: 'bilibili' }];
+  assert.deepEqual(channelContentTypes([article], 'other'), ['article']);
+  assert.deepEqual(selectChannelPackages([article], 'other', 'article').map((d) => d.package.id), [
+    article.package.id,
+  ]);
+});
+
+test('换渠道后内容类型子页签：新渠道里还有就留着，没有就回到「全部」', () => {
+  const note = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
+  const multi = packageDetail('job-multi', 1, 'ready', { contentType: 'note' });
+  multi.tasks.push({ ...multi.tasks[0]!, id: 'multi-xhs', platform: 'xiaohongshu', status: 'ready' });
+  const all = [note, multi];
+
+  // 抖音 → 小红书：两边都有图文包 → 保留子页签选择。
+  assert.equal(contentTypeAfterChannelChange(all, 'xiaohongshu', 'note'), 'note');
+  // 抖音 → 头条：头条没有图文包 → 回到「全部」，否则会是一屏空列表。
+  assert.equal(contentTypeAfterChannelChange(all, 'toutiao', 'note'), '');
+  // 「全部」永远是「全部」。
+  assert.equal(contentTypeAfterChannelChange(all, 'toutiao', ''), '');
+});
+
+test('状态计数：只数当前渠道内的任务（别的平台的任务不许漏进这个页签）', () => {
+  const noteReady = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
+  const article = packageDetail('job-t', 1, 'ready', { contentType: 'article' });
+  article.tasks = [{ ...article.tasks[0]!, platform: 'toutiao' }];
+  // 一个图文包两个平台任务：抖音 ready + 小红书 scheduled。
+  const multi = packageDetail('job-multi', 1, 'ready', { contentType: 'note' });
+  multi.tasks.push({ ...multi.tasks[0]!, id: 'multi-xhs', platform: 'xiaohongshu', status: 'scheduled' });
+
+  const douyin = countStatusesInChannel([noteReady, article, multi], 'douyin');
+  assert.equal(douyin.ready, 2);
+  // ⚠️ 关键：小红书那条 scheduled **不能**出现在抖音页签里。
+  assert.equal(douyin.scheduled, 0);
+  assert.equal(douyin.all, 2);
+
+  const xhs = countStatusesInChannel([noteReady, article, multi], 'xiaohongshu');
+  assert.equal(xhs.scheduled, 1);
+  assert.equal(xhs.ready, 0);
+  assert.equal(xhs.all, 1);
+
+  // 头条那篇不该被算进抖音。
+  assert.equal(countStatusesInChannel([noteReady, article], 'toutiao').ready, 1);
+});
+
+test('状态计数：按内容类型子页签收窄，且垃圾桶/资产异常口径不变', () => {
+  const note = packageDetail('job-n', 1, 'ready', { contentType: 'note' });
+  const videoFailed = packageDetail('job-v', 1, 'failed', { contentType: 'video' });
   const broken = packageDetail('job-b', 1, 'ready', { contentType: 'note', assetHealth: 'missing_images' });
   const trashed = packageDetail('job-t', 1, 'ready', {
     contentType: 'note',
@@ -835,21 +1091,87 @@ test('状态计数：垃圾桶只数桶里的包，资产异常只数不健康�
     deletedAt: '2026-08-20T00:00:00.000Z',
     purgeAt: '2026-09-20T00:00:00.000Z',
   });
+  const all = [note, videoFailed, broken, trashed];
 
-  const counts = countStatusesInChannel([healthy, broken, trashed], 'douyin-note');
-  assert.equal(counts.broken, 1);
-  assert.equal(counts.trash, 1);
-  // 状态计数按**任务**计：被标资产异常的包其任务仍是 ready，所以 ready = 2。
-  assert.equal(counts.ready, 2);
+  // 收窄到图文：视频那条 failed 不计入。
+  const notes = countStatusesInChannel(all, 'douyin', 'note');
+  assert.equal(notes.ready, 2);
+  assert.equal(notes.failed, 0);
+  assert.equal(notes.broken, 1);
+  assert.equal(notes.trash, 1);
   // 垃圾桶里的包不再计入常规状态（与后端 `status=all` 只回 active 一致）。
-  assert.equal(counts.all, 2);
+  assert.equal(notes.all, 2);
+
+  // 不收窄时两条都在。
+  const everything = countStatusesInChannel(all, 'douyin');
+  assert.equal(everything.failed, 1);
+  assert.equal(everything.all, 3);
+  assert.equal(everything.broken, 1);
+  assert.equal(everything.trash, 1);
 });
 
-test('平台下拉：单平台渠道不给下拉，视频人工交付给四个平台', () => {
-  assert.deepEqual(channelPlatformOptions('douyin-note'), []);
-  assert.deepEqual(channelPlatformOptions('toutiao-article'), []);
+// ─── ⑤ 小红书图文（Task 8）：两个动作的可见性与本地闸门 ──────────────────────
+
+test('小红书图文：`fill-xhs` 永远可用，`submit-xhs` 只在包声明了要提交时才给', () => {
+  // 只填草稿的包：只能「填写到小红书（不提交）」。
+  const draft = notePackageDetail({
+    platform: 'xiaohongshu',
+    xhsOptions: { aiDeclaration: true, submit: false },
+  });
   assert.deepEqual(
-    channelPlatformOptions('video-manual').map((item) => item.id),
-    ['douyin', 'xiaohongshu', 'wechat_channels', 'bilibili'],
+    getPublishingActionIds(draft, draft.tasks[0], 'publisher').filter((id) => id.endsWith('-xhs')),
+    ['fill-xhs'],
   );
+
+  // 声明了要提交的包：两个都给（`submit-xhs` 才真的会点发布）。
+  const willSubmit = notePackageDetail({
+    platform: 'xiaohongshu',
+    xhsOptions: { aiDeclaration: true, submit: true },
+  });
+  assert.deepEqual(
+    getPublishingActionIds(willSubmit, willSubmit.tasks[0], 'publisher').filter((id) => id.endsWith('-xhs')),
+    ['fill-xhs', 'submit-xhs'],
+  );
+
+  // 抖音图文仍走原来的 `auto-publish`，绝不给小红书动作。
+  const douyin = notePackageDetail();
+  const douyinActions = getPublishingActionIds(douyin, douyin.tasks[0], 'publisher');
+  assert.equal(douyinActions.includes('auto-publish'), true);
+  assert.equal(douyinActions.some((id) => id.endsWith('-xhs')), false);
+});
+
+test('小红书图文：没勾 AI 声明 → 两个动作都不给，且禁用原因说明是合规要求', () => {
+  const blocked = notePackageDetail({
+    platform: 'xiaohongshu',
+    xhsOptions: { aiDeclaration: false, submit: false },
+  });
+  const actions = getPublishingActionIds(blocked, blocked.tasks[0], 'publisher');
+  assert.equal(actions.some((id) => id.endsWith('-xhs')), false);
+  assert.match(getPublishingAutoPublishBlocker(blocked, blocked.tasks[0]) ?? '', /AI合成内容/u);
+  assert.match(getPublishingAutoPublishBlocker(blocked, blocked.tasks[0]) ?? '', /限制分发/u);
+});
+
+test('小红书图文：包里没有 xhsOptions（老包）同样被拦住，而不是默认放行', () => {
+  const legacy = notePackageDetail({ platform: 'xiaohongshu' });
+  assert.equal(
+    getPublishingActionIds(legacy, legacy.tasks[0], 'publisher').some((id) => id.endsWith('-xhs')),
+    false,
+  );
+  assert.match(getPublishingAutoPublishBlocker(legacy, legacy.tasks[0]) ?? '', /AI合成内容/u);
+});
+
+test('抖音 / 小红书渠道：文案必须写明风险自负，且小红书要说明默认只填到草稿', () => {
+  const douyin = findPublishChannel('douyin');
+  const xhs = findPublishChannel('xiaohongshu');
+  assert.equal(douyin.label, '抖音');
+  assert.equal(xhs.label, '小红书');
+  assert.deepEqual(xhs.platforms, ['xiaohongshu']);
+  // 风险告知是**必须出现**的产品文案（调研结论：不能承诺安全）。
+  for (const channel of [douyin, xhs]) {
+    assert.match(channel.hint, /风险由你的账号承担/u);
+    assert.match(channel.hint, /不会自动上传/u, '视频那条必须写明不会自动上传');
+    // 面向用户的纯文本里不许出现 markdown 记号（React 会原样渲染成星号）。
+    assert.equal(channel.hint.includes('**'), false);
+  }
+  assert.match(xhs.hint, /草稿/u, '必须说明小红书默认只填到草稿');
 });

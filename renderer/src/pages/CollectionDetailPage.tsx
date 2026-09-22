@@ -20,17 +20,31 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { Modal } from '../components/ui/Modal';
+import { Button } from '../components/ui/Button';
 import { CookieHint } from '../components/CookieHint';
 import { apiClient } from '../services/api';
 import type { CollectionOverview, DouyinVideoItem, Job, PipelineStep, CollectionTranscriptsResponse, GenerateSkillResponse } from '../types';
 import { SkillViewModal } from '../features/skills/SkillViewModal';
 import { displayNickname, formatDateFromSeconds, formatDuration, formatDurationWithLabel } from '../utils/display';
 
-const pipelineSteps: Array<{ id: PipelineStep; label: string; description: string; icon: typeof Video }> = [
-  { id: 'transcribe', label: '批量转录', description: '全部子任务执行视频转录', icon: Mic },
-  { id: 'clean', label: '批量洗稿', description: '全部子任务执行 AI 洗稿', icon: Sparkles },
-  { id: 'generate_video_prompts', label: '批量分镜', description: '全部子任务生成分镜', icon: Wand2 },
-  { id: 'generate_video', label: '批量生成视频', description: '全部子任务渲染视频', icon: Video },
+const pipelineSteps: Array<{
+  id: PipelineStep;
+  label: string;
+  description: string;
+  icon: typeof Video;
+  /** 进度字段名：用来算「还剩多少个待处理」，进而把数量写进按钮 */
+  progressKey: 'transcribed' | 'cleaned' | 'scripted' | 'rendered';
+  /**
+   * 相对代价。转录要下载+抽音+本地推理，洗稿是单次 AI 调用，分镜是单次 AI 调用，
+   * 「生成视频」是逐条本地渲染、可能数小时 —— 三者不该长得一模一样。
+   */
+  cost: 'medium' | 'low' | 'heavy';
+}> = [
+  { id: 'transcribe', label: '批量转录', description: '对尚未转录的子任务执行视频转录', icon: Mic, progressKey: 'transcribed', cost: 'medium' },
+  { id: 'clean', label: '批量洗稿', description: '对已转录、未洗稿的子任务执行 AI 洗稿', icon: Sparkles, progressKey: 'cleaned', cost: 'low' },
+  { id: 'generate_video_prompts', label: '批量分镜', description: '对已洗稿、未分镜的子任务生成分镜', icon: Wand2, progressKey: 'scripted', cost: 'low' },
+  { id: 'generate_video', label: '批量生成视频', description: '对已分镜、未出片的子任务本地渲染，耗时最长', icon: Video, progressKey: 'rendered', cost: 'heavy' },
 ];
 
 export function CollectionDetailPage() {
@@ -41,6 +55,21 @@ export function CollectionDetailPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [creatingJobs, setCreatingJobs] = useState(false);
   const [runningStep, setRunningStep] = useState<string | null>(null);
+  /**
+   * 批次的开始时间与已用秒数。
+   *
+   * 批量接口是后端**串行**跑完全部子任务才响应（客户端已关掉超时，见 api.ts），
+   * 100 条视频的转录轻易几十分钟 —— 界面必须让人看到「它活着」，
+   * 否则用户面对一个静止的转圈会以为卡死，进而重复触发。
+   */
+  const [batchStartedAt, setBatchStartedAt] = useState<number | null>(null);
+  const [batchElapsed, setBatchElapsed] = useState(0);
+
+  useEffect(() => {
+    if (batchStartedAt === null) { setBatchElapsed(0); return; }
+    const timer = setInterval(() => setBatchElapsed(Math.floor((Date.now() - batchStartedAt) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [batchStartedAt]);
   const [error, setError] = useState('');
   const [batchResults, setBatchResults] = useState<Array<{ jobId: string; status: string; error?: string }> | null>(null);
   const [transcriptsData, setTranscriptsData] = useState<CollectionTranscriptsResponse | null>(null);
@@ -215,6 +244,7 @@ export function CollectionDetailPage() {
     if (!collection) return;
 
     setRunningStep(step);
+    setBatchStartedAt(Date.now());
     setError('');
     setBatchResults(null);
     try {
@@ -225,6 +255,7 @@ export function CollectionDetailPage() {
       setError(err.response?.data?.message || '批量执行失败');
     } finally {
       setRunningStep(null);
+      setBatchStartedAt(null);
     }
   };
 
@@ -346,7 +377,7 @@ export function CollectionDetailPage() {
     return (
       <Layout>
         <div className="flex items-center justify-center min-h-[420px]">
-          <Loader2 className="mx-auto h-12 w-12 animate-spin text-tech-purple" />
+          <Loader2 className="mx-auto h-12 w-12 animate-spin text-ai" />
         </div>
       </Layout>
     );
@@ -356,8 +387,8 @@ export function CollectionDetailPage() {
     return (
       <Layout>
         <div className="text-center py-20">
-          <XCircle className="mx-auto h-12 w-12 text-red-400" />
-          <p className="mt-4 text-tech-muted">合集未找到</p>
+          <XCircle className="mx-auto h-12 w-12 text-danger" />
+          <p className="mt-4 text-ink-muted">合集未找到</p>
         </div>
       </Layout>
     );
@@ -372,34 +403,34 @@ export function CollectionDetailPage() {
       {/* 返回按钮 */}
       <button
         onClick={() => navigate('/collections')}
-        className="mb-4 inline-flex items-center gap-2 text-sm text-tech-muted hover:text-tech-text transition-colors"
+        className="mb-4 inline-flex items-center gap-2 text-sm text-ink-muted hover:text-ink transition-colors"
       >
         <ArrowLeft size={16} />
         返回合集列表
       </button>
 
       {/* 用户信息卡片 */}
-      <div className="mb-6 rounded-lg border border-tech-border bg-tech-surface p-6">
+      <div className="mb-6 rounded-lg border border-line bg-panel p-6">
         <div className="flex items-start gap-5">
           {collection.avatarUrl ? (
             <img
               src={collection.avatarUrl}
               alt={displayNickname(collection.nickname)}
-              className="h-16 w-16 shrink-0 rounded-full object-cover ring-2 ring-tech-border"
+              className="h-16 w-16 shrink-0 rounded-full object-cover ring-2 ring-line"
               onError={(e) => {
                 (e.target as HTMLImageElement).style.display = 'none';
                 (e.target as HTMLImageElement).nextElementSibling?.classList.remove('hidden');
               }}
             />
           ) : null}
-          <div className={`flex h-16 w-16 items-center justify-center rounded-full border border-tech-border bg-tech-bg text-2xl font-bold text-tech-muted shrink-0 ${collection.avatarUrl ? 'hidden' : ''}`}>
+          <div className={`flex h-16 w-16 items-center justify-center rounded-full border border-line bg-canvas text-2xl font-bold text-ink-muted shrink-0 ${collection.avatarUrl ? 'hidden' : ''}`}>
             {displayNickname(collection.nickname).charAt(0)}
           </div>
           <div className="min-w-0 flex-1">
-            <h1 className="text-xl font-semibold text-tech-text">
+            <h1 className="text-xl font-semibold text-ink">
               {displayNickname(collection.nickname)}
             </h1>
-            <p className="mt-1 text-sm text-tech-muted">
+            <p className="mt-1 text-sm text-ink-muted">
               已采集 {collection.crawlResult.totalCollected} 个视频 ·
               已创建 {collection.childJobIds.length} 个子任务
             </p>
@@ -409,7 +440,7 @@ export function CollectionDetailPage() {
             <button
               onClick={handleUpdate}
               disabled={updating}
-              className="inline-flex items-center gap-2 rounded-lg border border-tech-border px-3 py-2 text-sm text-tech-text hover:bg-tech-bg transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-sm text-ink hover:bg-elevated transition-colors disabled:opacity-50"
               title="检查博主是否有新视频"
             >
               {updating ? (
@@ -420,7 +451,7 @@ export function CollectionDetailPage() {
               {updating ? '检查中…' : '检查更新'}
             </button>
             {updateResult && (
-              <p className={`mt-1 text-xs ${updateResult.newItemsCount > 0 ? 'text-emerald-600' : 'text-tech-muted'}`}>
+              <p className={`mt-1 text-xs ${updateResult.newItemsCount > 0 ? 'text-success' : 'text-ink-muted'}`}>
                 {updateResult.message}
               </p>
             )}
@@ -429,7 +460,7 @@ export function CollectionDetailPage() {
 
         {/* 进度概览 */}
         {collection.childJobIds.length > 0 && (
-          <div className="mt-5 border-t border-tech-border pt-4">
+          <div className="mt-5 border-t border-line pt-4">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <StatBadge label="已转录" value={collection.childJobProgress.transcribed} total={collection.childJobIds.length} icon={Mic} />
               <StatBadge label="已洗稿" value={collection.childJobProgress.cleaned} total={collection.childJobIds.length} icon={Sparkles} />
@@ -442,97 +473,140 @@ export function CollectionDetailPage() {
 
       {/* 批量操作按钮 */}
       {collection.childJobIds.length > 0 && (
-        <div className="mb-5 rounded-lg border border-tech-border bg-tech-surface p-4">
-          <h3 className="mb-3 text-sm font-semibold text-tech-text">批量操作</h3>
+        <div className="mb-5 rounded-lg border border-line bg-panel p-4">
+          <h3 className="mb-3 text-sm font-semibold text-ink">批量操作</h3>
           <div className="mb-3">
             <CookieHint compact />
           </div>
+          {/*
+            改造前这里有三处问题（审查 M8/M9）：
+            ① `disabled={runningStep === step.id}` —— **只禁用被点的那个**，其余仍可点，
+               于是能同时发起两个长请求，而 `runningStep` 只有一个值、状态会张冠李戴；
+            ② 按钮上**没有数量**，用户看不出「批量生成视频」会对多少个任务发起渲染；
+            ③ 四个按钮都是实心同色，转录（下载+本地推理）与生成视频（逐条渲染、可能数小时）
+               在视觉上毫无区别，点下去之前无从判断代价。
+            现在：全部互斥、按钮带「待处理数量」、代价最高的那条单独用警示描边。
+          */}
           <div className="flex flex-wrap gap-2">
-            {pipelineSteps.map((step) => (
-              <button
-                key={step.id}
-                disabled={runningStep === step.id}
-                onClick={() => handleBatchStep(step.id)}
-                className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all ${
-                  runningStep === step.id
-                    ? 'bg-tech-bg text-tech-muted cursor-wait'
-                    : 'bg-tech-purple text-white hover:bg-purple-700'
-                } disabled:opacity-50`}
-              >
-                {runningStep === step.id ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <step.icon size={14} />
-                )}
-                {step.label}
-              </button>
-            ))}
+            {/*
+              待处理数 = 子任务总数 − 该步已完成数。
+              为 0 说明这一步没有可做的了（例如 61 条全部已转录），此时按钮禁用 ——
+              但**必须把原因写在界面上**：disabled 按钮不可聚焦，键盘与读屏都读不到 title。
+              改造前这里是「四个按钮全都可点、且不带数量」，用户看不出会对多少条发起操作。
+            */}
+            {pipelineSteps.map((step) => {
+              const pending = Math.max(0, collection.childJobIds.length - collection.childJobProgress[step.progressKey]);
+              const isRunning = runningStep === step.id;
+              const anyRunning = runningStep !== null;
+              const variant = step.cost === 'heavy' ? 'heavy' : step.cost === 'medium' ? 'outline' : 'accent';
+              return (
+                <Button
+                  key={step.id}
+                  variant={isRunning ? 'ghost' : variant}
+                  disabled={anyRunning || pending === 0}
+                  title={pending === 0 ? '这一步已经没有待处理的任务了' : step.description}
+                  onClick={() => handleBatchStep(step.id)}
+                >
+                  {isRunning ? (
+                    <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                  ) : (
+                    <step.icon size={14} aria-hidden="true" />
+                  )}
+                  {step.label}
+                  {pending > 0 && <span className="tabular opacity-80">({pending})</span>}
+                </Button>
+              );
+            })}
           </div>
+          {(() => {
+            const blocked = pipelineSteps
+              .filter((step) => collection.childJobIds.length - collection.childJobProgress[step.progressKey] <= 0)
+              .map((step) => step.label);
+            if (blocked.length === 0 || runningStep) return null;
+            return (
+              <p className="mt-2 text-xs text-ink-muted">
+                {blocked.join('、')}：已经没有待处理的任务，所以不可点。
+              </p>
+            );
+          })()}
+          {runningStep && (
+            <p className="mt-3 flex items-center gap-2 text-xs text-ink-muted" role="status">
+              <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+              正在执行 {pipelineSteps.find((s) => s.id === runningStep)?.label ?? '批量任务'} ·
+              已用 {formatElapsed(batchElapsed)}。后端是逐条串行执行的，长合集可能几十分钟；
+              期间请勿重复点击，完成后会自动刷新进度。
+            </p>
+          )}
           {batchResults && (
-            <div className="mt-3 text-xs text-tech-muted">
+            <div className="mt-3 text-xs text-ink-muted">
               完成：{batchResults.filter((r) => r.status === 'ok').length} 成功，
               {batchResults.filter((r) => r.status === 'error').length} 失败
             </div>
           )}
-          {/* 查看全部转录按钮 */}
+          {/*
+            这一组与上面的批量流水线动作是**两类事**：上面是「对全部子任务跑某一步」，
+            这里是「看全部转录 / 蒸馏 Skill / 自动更新开关」。改造前它们同处一个
+            标题为「批量操作」的盒子里，把设置开关和 Skill 信息也算成了「批量操作」。
+            现在单独起一小标题，各归其位。
+          */}
           {collection.childJobProgress.transcribed > 0 && (
-            <div className="mt-3 border-t border-tech-border pt-3 flex flex-wrap items-center gap-3">
-              <button
+            <div className="mt-4 border-t border-line pt-3">
+              <p className="mb-2 text-xs font-medium text-ink-muted">内容与 Skill</p>
+              <div className="flex flex-wrap items-center gap-3">
+              <Button
+                variant="success"
                 disabled={loadingTranscripts}
                 onClick={handleViewTranscripts}
-                className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 transition-all disabled:opacity-50"
               >
                 {loadingTranscripts ? (
-                  <Loader2 size={14} className="animate-spin" />
+                  <Loader2 size={14} className="animate-spin" aria-hidden="true" />
                 ) : (
-                  <FileText size={14} />
+                  <FileText size={14} aria-hidden="true" />
                 )}
                 查看全部转录（{collection.childJobProgress.transcribed}）
-              </button>
+              </Button>
 
               {/* 生成 Skill 按钮 */}
-              <button
-                onClick={openSkillModal}
-                className="inline-flex items-center gap-2 rounded-lg bg-tech-purple px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 transition-all"
-              >
-                <Brain size={14} />
+              <Button variant="ai" onClick={openSkillModal}>
+                <Brain size={14} aria-hidden="true" />
                 生成 Skill
                 {collection.skillName && (
                   <span className="text-xs opacity-80">（更新）</span>
                 )}
-              </button>
+              </Button>
 
               {/* 自动同步开关 */}
-              <label className="inline-flex items-center gap-2 text-sm text-tech-muted cursor-pointer select-none">
+              <label className="inline-flex items-center gap-2 text-sm text-ink-muted cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={collection.autoSyncSkill || false}
                   onChange={(e) => handleToggleAutoSync(e.target.checked)}
-                  className="h-4 w-4 rounded border-tech-border text-tech-purple focus:ring-tech-purple"
+                  className="h-4 w-4 rounded border-line text-ai focus:ring-ai"
                 />
                 转录后自动更新
               </label>
+              </div>
             </div>
           )}
 
           {/* Skill 生成状态指示 */}
           {collection.skillName && !collection.childJobProgress.transcribed && (
-            <div className="mt-3 border-t border-tech-border pt-3 flex items-center gap-3 text-xs text-tech-muted">
-              <Brain size={14} className="text-tech-purple" />
+            <div className="mt-3 border-t border-line pt-3 flex items-center gap-3 text-xs text-ink-muted">
+              <Brain size={14} className="text-ai" />
               已生成 Skill「{collection.skillName}」
               {collection.skillGeneratedAt && (
                 <span>· {new Date(collection.skillGeneratedAt).toLocaleString('zh-CN')}</span>
               )}
               <button
                 onClick={handleViewSkill}
-                className="text-tech-blue hover:underline"
+                className="text-accent hover:underline"
               >
                 查看
               </button>
-              <span className="text-tech-muted">·</span>
+              <span className="text-ink-muted">·</span>
               <button
                 onClick={openSkillModal}
-                className="text-tech-blue hover:underline"
+                className="text-accent hover:underline"
               >
                 重新生成
               </button>
@@ -541,12 +615,12 @@ export function CollectionDetailPage() {
 
           {/* Skill 状态指示（有转录同时也有 Skill 时） */}
           {collection.skillName && collection.childJobProgress.transcribed > 0 && (
-            <div className="mt-3 border-t border-tech-border pt-3 flex items-center gap-3 text-xs text-tech-muted">
-              <Brain size={14} className="text-tech-purple" />
+            <div className="mt-3 border-t border-line pt-3 flex items-center gap-3 text-xs text-ink-muted">
+              <Brain size={14} className="text-ai" />
               已有 Skill「{collection.skillName}」
               <button
                 onClick={handleViewSkill}
-                className="text-tech-blue hover:underline"
+                className="text-accent hover:underline"
               >
                 查看
               </button>
@@ -557,27 +631,27 @@ export function CollectionDetailPage() {
 
       {/* 错误 */}
       {error && (
-        <div className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div className="mb-5 rounded-lg border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger">
           {error}
         </div>
       )}
 
       {/* 创建子任务区域 */}
       {uncreatedCount > 0 && (
-        <div className="mb-5 rounded-lg border border-dashed border-tech-border bg-tech-surface p-4">
+        <div className="mb-5 rounded-lg border border-dashed border-line bg-panel p-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="font-semibold text-tech-text">
+              <h3 className="font-semibold text-ink">
                 还有 {uncreatedCount} 个视频未创建子任务
               </h3>
-              <p className="text-sm text-tech-muted mt-1">
+              <p className="text-sm text-ink-muted mt-1">
                 勾选需要处理的视频，创建为独立任务。视频下载会尝试使用已配置的 Cookie 获取无水印版本。
               </p>
             </div>
             <button
               disabled={selectedIds.size === 0 || creatingJobs}
               onClick={handleCreateJobs}
-              className="inline-flex items-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white hover:bg-tech-blue-dark disabled:opacity-50"
+              className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent hover:bg-accent-hover disabled:opacity-50"
             >
               {creatingJobs ? (
                 <Loader2 size={14} className="animate-spin" />
@@ -588,7 +662,7 @@ export function CollectionDetailPage() {
             </button>
           </div>
           {selectedIds.size > 0 && (
-            <div className="mt-2 text-xs text-tech-muted">
+            <div className="mt-2 text-xs text-ink-muted">
               已选择 {selectedIds.size} 个视频
             </div>
           )}
@@ -596,19 +670,19 @@ export function CollectionDetailPage() {
       )}
 
       {/* 视频列表 */}
-      <div className="rounded-lg border border-tech-border bg-tech-surface overflow-hidden">
-        <div className="flex items-center justify-between border-b border-tech-border bg-tech-bg px-4 py-3">
-          <span className="text-sm font-medium text-tech-text">
+      <div className="rounded-lg border border-line bg-panel overflow-hidden">
+        <div className="flex items-center justify-between border-b border-line bg-canvas px-4 py-3">
+          <span className="text-sm font-medium text-ink">
             视频列表 ({collection.crawlResult.items.length})
           </span>
           <button
             onClick={toggleAll}
-            className="text-xs text-tech-purple hover:underline"
+            className="text-xs text-ai hover:underline"
           >
             {selectedIds.size > 0 ? '取消全选' : '全选未创建'}
           </button>
         </div>
-        <div className="divide-y divide-tech-border max-h-[600px] overflow-y-auto">
+        <div className="divide-y divide-line max-h-[600px] overflow-y-auto">
           {[...collection.crawlResult.items]
             .sort((a, b) => b.createTime - a.createTime)
             .map((item) => {
@@ -621,7 +695,7 @@ export function CollectionDetailPage() {
               <div
                 key={item.awemeId}
                 className={`flex items-center gap-4 px-4 py-3 transition-colors ${
-                  isSelected ? 'bg-purple-50' : 'hover:bg-tech-bg'
+                  isSelected ? 'bg-ai-soft' : 'hover:bg-elevated'
                 }`}
               >
                 {/* 复选框 */}
@@ -630,20 +704,20 @@ export function CollectionDetailPage() {
                     type="checkbox"
                     checked={isSelected}
                     onChange={() => toggleItem(item.awemeId)}
-                    className="h-4 w-4 rounded border-tech-border text-tech-purple focus:ring-tech-purple"
+                    className="h-4 w-4 rounded border-line text-ai focus:ring-ai"
                   />
                 )}
                 {hasJob && (
                   <div className="w-4 flex justify-center">
-                    <CheckCircle2 size={16} className="text-tech-muted" />
+                    <CheckCircle2 size={16} className="text-ink-muted" />
                   </div>
                 )}
 
                 {/* 封面 */}
-                <div className="h-16 w-28 shrink-0 overflow-hidden rounded-md bg-tech-bg relative">
+                <div className="h-16 w-28 shrink-0 overflow-hidden rounded-md bg-canvas relative">
                   {/* fallback icon — always there, behind the image */}
                   <div className="absolute inset-0 flex items-center justify-center">
-                    <Video size={20} className="text-tech-muted" />
+                    <Video size={20} className="text-ink-muted" />
                   </div>
                   {item.coverUrl ? (
                     <img
@@ -661,10 +735,10 @@ export function CollectionDetailPage() {
 
                 {/* 描述 */}
                 <div className="min-w-0 flex-1">
-                  <p className="line-clamp-2 text-sm font-medium text-tech-text">
+                  <p className="line-clamp-2 text-sm font-medium text-ink">
                     {item.desc || '(无描述)'}
                   </p>
-                  <p className="mt-1 text-xs text-tech-muted">
+                  <p className="mt-1 text-xs text-ink-muted">
                     {formatDuration(item.duration)} ·{' '}
                     {formatDateFromSeconds(item.createTime)}
                     {item.statistics.diggCount > 0 &&
@@ -675,37 +749,37 @@ export function CollectionDetailPage() {
                 {/* 状态 */}
                 <div className="shrink-0">
                   {status === 'pending' && (
-                    <span className="inline-flex items-center gap-1 text-xs text-tech-muted">
+                    <span className="inline-flex items-center gap-1 text-xs text-ink-muted">
                       <Clock size={12} />
                       待创建
                     </span>
                   )}
                   {status === 'unknown' && (
-                    <span className="inline-flex items-center gap-1 text-xs text-tech-muted">
+                    <span className="inline-flex items-center gap-1 text-xs text-ink-muted">
                       <Clock size={12} />
                       状态同步失败
                     </span>
                   )}
                   {status === 'processing' && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-700">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-info-soft px-2 py-1 text-xs text-info">
                       <RefreshCw size={12} className="animate-spin" />
                       处理中
                     </span>
                   )}
                   {status === 'created' && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-700">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-info-soft px-2 py-1 text-xs text-info">
                       <Clock size={12} />
                       待处理
                     </span>
                   )}
                   {status === 'done' && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-xs text-emerald-700">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-success-soft px-2 py-1 text-xs text-success">
                       <CheckCircle2 size={12} />
                       已完成
                     </span>
                   )}
                   {status === 'failed' && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-1 text-xs text-red-700">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-1 text-xs text-danger">
                       <XCircle size={12} />
                       失败
                     </span>
@@ -716,7 +790,7 @@ export function CollectionDetailPage() {
                 {hasJob && jobId && (
                   <button
                     onClick={() => navigate(`/jobs/${jobId}`)}
-                    className="shrink-0 text-xs text-tech-blue hover:underline"
+                    className="shrink-0 text-xs text-accent hover:underline"
                   >
                     查看
                   </button>
@@ -780,7 +854,7 @@ function StatBadge({
   return (
     <div
       className={`flex items-center gap-2 rounded-lg p-3 text-sm ${
-        done ? 'bg-emerald-50 text-emerald-700' : 'bg-tech-bg text-tech-muted'
+        done ? 'bg-success-soft text-success' : 'bg-canvas text-ink-muted'
       }`}
     >
       <Icon size={16} />
@@ -818,29 +892,29 @@ function TranscriptsModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="flex h-[90vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl">
+    <Modal open onClose={onClose} size="xl" ariaLabel="全部转录文本" bodyClassName="p-0" hideClose>
+      <div className="flex h-[90vh] w-full flex-col">
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-tech-border px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-line px-6 py-4">
           <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-tech-text truncate">
+            <h2 className="text-lg font-semibold text-ink truncate">
               {displayNickname(data.collection.nickname)} · 全部转录文本
             </h2>
-            <p className="text-xs text-tech-muted mt-0.5">
+            <p className="text-xs text-ink-muted mt-0.5">
               {data.summary.transcribed}/{data.summary.totalJobs} 个视频已转录
             </p>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handleCopy}
-              className="inline-flex items-center gap-2 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg transition-colors"
+              className="inline-flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-sm font-medium text-ink hover:bg-elevated transition-colors"
             >
-              {copied ? <CheckCircle2 size={16} className="text-emerald-500" /> : <Copy size={16} />}
+              {copied ? <CheckCircle2 size={16} className="text-success" /> : <Copy size={16} />}
               {copied ? '已复制' : '复制全部文本'}
             </button>
             <button
               onClick={onClose}
-              className="rounded-lg p-2 text-tech-muted hover:bg-tech-bg hover:text-tech-text transition-colors"
+              className="rounded-lg p-2 text-ink-muted hover:bg-elevated hover:text-ink transition-colors"
             >
               <X size={20} />
             </button>
@@ -848,13 +922,13 @@ function TranscriptsModal({
         </div>
 
         {/* View switcher */}
-        <div className="flex shrink-0 gap-1 border-b border-tech-border bg-tech-bg px-6 py-2">
+        <div className="flex shrink-0 gap-1 border-b border-line bg-canvas px-6 py-2">
           <button
             onClick={() => setView('merged')}
             className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
               view === 'merged'
-                ? 'bg-white text-tech-text shadow-sm'
-                : 'text-tech-muted hover:text-tech-text'
+                ? 'bg-panel text-ink shadow-sm'
+                : 'text-ink-muted hover:text-ink'
             }`}
           >
             聚合全文
@@ -863,8 +937,8 @@ function TranscriptsModal({
             onClick={() => setView('list')}
             className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
               view === 'list'
-                ? 'bg-white text-tech-text shadow-sm'
-                : 'text-tech-muted hover:text-tech-text'
+                ? 'bg-panel text-ink shadow-sm'
+                : 'text-ink-muted hover:text-ink'
             }`}
           >
             按视频查看
@@ -874,7 +948,7 @@ function TranscriptsModal({
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
           {view === 'merged' ? (
-            <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-tech-text">
+            <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-ink">
               {data.aggregatedText || '(暂无转录文本)'}
             </pre>
           ) : (
@@ -882,30 +956,30 @@ function TranscriptsModal({
               {data.transcripts.map((item, idx) => (
                 <div
                   key={item.jobId}
-                  className="rounded-lg border border-tech-border overflow-hidden"
+                  className="rounded-lg border border-line overflow-hidden"
                 >
                   <button
                     onClick={() => setExpandedIndex(expandedIndex === idx ? null : idx)}
-                    className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-tech-bg transition-colors"
+                    className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-elevated transition-colors"
                   >
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-tech-text truncate pr-2">
+                      <p className="text-sm font-medium text-ink truncate pr-2">
                         {item.desc}
                       </p>
                       {item.duration != null && (
-                        <p className="text-xs text-tech-muted mt-0.5">
+                        <p className="text-xs text-ink-muted mt-0.5">
                           {formatDurationWithLabel(item.duration)}
                           {item.segments?.length ? ` · ${item.segments.length} 个分段` : ''}
                         </p>
                       )}
                     </div>
-                    <span className={`text-tech-muted transition-transform shrink-0 ${expandedIndex === idx ? 'rotate-180' : ''}`}>
+                    <span className={`text-ink-muted transition-transform shrink-0 ${expandedIndex === idx ? 'rotate-180' : ''}`}>
                       ▼
                     </span>
                   </button>
                   {expandedIndex === idx && (
-                    <div className="border-t border-tech-border bg-tech-bg px-4 py-3">
-                      <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-tech-text">
+                    <div className="border-t border-line bg-canvas px-4 py-3">
+                      <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-ink">
                         {item.transcript}
                       </pre>
                     </div>
@@ -913,22 +987,30 @@ function TranscriptsModal({
                 </div>
               ))}
               {data.transcripts.length === 0 && (
-                <p className="text-center text-tech-muted py-8">暂无转录文本</p>
+                <p className="text-center text-ink-muted py-8">暂无转录文本</p>
               )}
             </div>
           )}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
 
 // ─── Small planned-item badge used in progress panel ─────────────
 
+/** 把秒数写成「X 分 Y 秒 / Y 秒」。 */
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest === 0 ? `${minutes} 分` : `${minutes} 分 ${rest} 秒`;
+}
+
 function PlannedItem({ label, active, icon }: { label: string; active: boolean; icon: string }) {
   return (
-    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 ${active ? 'text-tech-text' : 'text-tech-muted line-through'}`}>
+    <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 ${active ? 'text-ink' : 'text-ink-muted line-through'}`}>
       <span>{icon}</span>
       <span className="truncate">{label}</span>
     </span>
@@ -988,24 +1070,33 @@ function SkillGenModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="flex w-full max-w-lg flex-col rounded-xl bg-white shadow-2xl">
-        {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-tech-border px-6 py-4">
+    <Modal
+      open
+      onClose={onClose}
+      size="md"
+      ariaLabel={existingSkill ? '更新 Skill' : '生成 Skill'}
+      bodyClassName="p-0"
+      hideClose
+      busy={generating}
+    >
+        {/* Header —— sticky：内容区现在可滚动（Modal 给的是 max-h-[90vh] + overflow-y-auto），
+            头部与底部操作条钉住，避免长内容把「生成」按钮顶出视口（改造前根本没有滚动，
+            小窗口下底部按钮点不到）。 */}
+        <div className="sticky top-0 z-10 flex shrink-0 items-center justify-between border-b border-line bg-panel px-6 py-4">
           <div className="flex items-center gap-2">
-            <Brain size={20} className="text-tech-purple" />
-            <h2 className="text-lg font-semibold text-tech-text">
+            <Brain size={20} className="text-ai" />
+            <h2 className="text-lg font-semibold text-ink">
               {existingSkill ? '更新 Skill' : '生成 Skill'}
             </h2>
             {existingSkill && (
-              <span className="text-xs text-tech-muted">
+              <span className="text-xs text-ink-muted">
                 （{existingSkill}）
               </span>
             )}
           </div>
           <button
             onClick={onClose}
-            className="rounded-lg p-2 text-tech-muted hover:bg-tech-bg hover:text-tech-text transition-colors"
+            className="rounded-lg p-2 text-ink-muted hover:bg-elevated hover:text-ink transition-colors"
           >
             <X size={20} />
           </button>
@@ -1015,7 +1106,7 @@ function SkillGenModal({
         <div className="shrink-0 px-6 py-4 space-y-4">
           {/* 信息提示 */}
           {!generating && !result && (
-            <div className="rounded-lg border border-tech-border bg-tech-bg p-3 text-xs text-tech-muted">
+            <div className="rounded-lg border border-line bg-canvas p-3 text-xs text-ink-muted">
               <p>
                 基于 <strong>{collection.childJobProgress.transcribed}</strong> 个已转录视频，通过<strong>逐视频提炼 + 汇总生成</strong>生成知识增强型 Claude Code Skill。
               </p>
@@ -1023,10 +1114,10 @@ function SkillGenModal({
                 阶段 1：逐个视频提炼 → 阶段 2：汇总分析 → 阶段 3：生成产物
               </p>
               <p className="mt-1">
-                生成位置：<code className="text-tech-purple">~/.claude/skills/douyin-{collection.id.slice(0, 8)}/</code>
+                生成位置：<code className="text-ai">~/.claude/skills/douyin-{collection.id.slice(0, 8)}/</code>
               </p>
               {existingSkill && (
-                <p className="mt-1 text-tech-blue">
+                <p className="mt-1 text-accent">
                   已有 Skill「{existingSkill}」将被更新。
                 </p>
               )}
@@ -1035,19 +1126,19 @@ function SkillGenModal({
 
           {/* 进度条 */}
           {(generating || progress?.stage === 'error') && progress && (
-            <div className="rounded-lg border border-tech-border bg-tech-bg p-4 space-y-3">
+            <div className="rounded-lg border border-line bg-canvas p-4 space-y-3">
               {/* 阶段指示器 */}
               <div className="flex items-center gap-2 text-sm">
                 {progress.stage === 'error' ? (
-                  <XCircle size={16} className="text-red-500" />
+                  <XCircle size={16} className="text-danger" />
                 ) : progress.stage === 'analyze' || progress.stage === 'planned' ? (
-                  <Brain size={16} className="text-tech-purple animate-pulse" />
+                  <Brain size={16} className="text-ai animate-pulse" />
                 ) : progress.stage === 'done' ? (
-                  <CheckCircle2 size={16} className="text-emerald-500" />
+                  <CheckCircle2 size={16} className="text-success" />
                 ) : (
-                  <Loader2 size={16} className="text-tech-purple animate-spin" />
+                  <Loader2 size={16} className="text-ai animate-spin" />
                 )}
-                <span className="text-tech-text font-medium">
+                <span className="text-ink font-medium">
                   {progress.stage === 'collecting' && '准备阶段：读取转录内容'}
                   {progress.stage === 'extracting' && '阶段 1/3：逐个提炼视频'}
                   {progress.stage === 'extracting_item' && `阶段 1/3：提炼第 ${progress.current ?? ''}/${progress.total ?? ''} 个视频`}
@@ -1063,29 +1154,29 @@ function SkillGenModal({
                   {!progress.stage && '准备中…'}
                 </span>
                 {progress.total != null && progress.current != null && (
-                  <span className="text-xs text-tech-muted ml-auto">
+                  <span className="text-xs text-ink-muted ml-auto">
                     {progress.current}/{progress.total}
                   </span>
                 )}
               </div>
 
               {/* 进度条 */}
-              <div className="w-full bg-tech-border rounded-full h-2 overflow-hidden">
+              <div className="w-full bg-line rounded-full h-2 overflow-hidden">
                 <div
                   className={`h-full rounded-full transition-all duration-500 ${
                     progress.stage === 'error'
-                      ? 'bg-red-500'
+                      ? 'bg-danger'
                       : progress.stage === 'done'
-                      ? 'bg-emerald-500'
-                      : 'bg-gradient-to-r from-tech-purple to-tech-blue'
+                      ? 'bg-success'
+                      : 'bg-gradient-to-r from-ai to-accent'
                   }`}
                   style={{ width: `${progress.progress}%` }}
                 />
               </div>
 
               {/* 百分比 */}
-              <div className="flex items-center justify-between text-xs text-tech-muted">
-                <span className={progress.stage === 'error' ? 'text-red-600' : ''}>
+              <div className="flex items-center justify-between text-xs text-ink-muted">
+                <span className={progress.stage === 'error' ? 'text-danger' : ''}>
                   {progress.message}
                 </span>
                 <span>{progress.progress}%{generating && ` · 已用时 ${Math.floor(elapsedSeconds / 60)}分${elapsedSeconds % 60}秒`}</span>
@@ -1093,8 +1184,8 @@ function SkillGenModal({
 
               {/* 阶段 1 分析结果 */}
               {progress.stage === 'planned' && progress.generates && (
-                <div className="text-xs space-y-1 pt-1 border-t border-tech-border">
-                  <p className="font-medium text-tech-text mb-1">将生成以下产物：</p>
+                <div className="text-xs space-y-1 pt-1 border-t border-line">
+                  <p className="font-medium text-ink mb-1">将生成以下产物：</p>
                   <div className="grid grid-cols-2 gap-1">
                     <PlannedItem label="增强 SKILL.md" active icon="·" />
                     {Object.entries(progress.generates).map(([key, val]) => (
@@ -1122,7 +1213,7 @@ function SkillGenModal({
           {/* Focus prompt - 只在非进行中显示 */}
           {!generating && (
             <div>
-              <label className="block text-sm font-medium text-tech-text mb-1.5">
+              <label className="block text-sm font-medium text-ink mb-1.5">
                 聚焦方向（可选）
               </label>
               <textarea
@@ -1134,7 +1225,7 @@ function SkillGenModal({
                   '「聚焦世界观搭建和剧情节奏控制的框架」'
                 }
                 rows={4}
-                className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text placeholder-tech-muted focus:border-tech-purple focus:outline-none focus:ring-1 focus:ring-tech-purple resize-none"
+                className="w-full rounded-lg border border-line-ui bg-well px-3 py-2 text-sm text-ink placeholder-ink-muted focus:border-ai-line focus:outline-none focus:ring-1 focus:ring-ai resize-none"
                 disabled={generating}
               />
             </div>
@@ -1142,25 +1233,25 @@ function SkillGenModal({
 
           {/* Result */}
           {result && (
-            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 space-y-2">
-              <div className="flex items-center gap-2 text-emerald-700 text-sm font-medium">
+            <div className="rounded-lg border border-success-line bg-success-soft px-4 py-3 space-y-2">
+              <div className="flex items-center gap-2 text-success text-sm font-medium">
                 <CheckCircle2 size={16} />
                 Skill 生成成功
               </div>
-              <p className="text-xs text-emerald-600">
+              <p className="text-xs text-success">
                 名称：<strong>{result.skillName}</strong>
                 {result.skillType === "knowledge" && (
-                  <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-purple-100 px-1.5 py-0.5 text-purple-700">
+                  <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-ai-soft px-1.5 py-0.5 text-ai">
                     <Brain size={10} />
                     知识增强型
                   </span>
                 )}
               </p>
-              <p className="text-xs text-emerald-600 truncate">
+              <p className="text-xs text-success truncate">
                 路径：<code>{result.skillPath}</code>
               </p>
               {result.generated && result.generated.length > 0 && (
-                <div className="text-xs text-emerald-600">
+                <div className="text-xs text-success">
                   <p className="font-medium mb-1">已生成 {result.generated.length} 项产物：</p>
                   <ul className="list-disc list-inside space-y-0.5">
                     {result.generated.map((g: string, i: number) => (
@@ -1171,7 +1262,7 @@ function SkillGenModal({
               )}
               <button
                 onClick={() => { onClose(); onViewSkill(); }}
-                className="mt-2 inline-flex items-center gap-1 text-xs text-tech-blue hover:underline"
+                className="mt-2 inline-flex items-center gap-1 text-xs text-accent hover:underline"
               >
                 <Eye size={12} />
                 查看 Skill 内容
@@ -1181,17 +1272,17 @@ function SkillGenModal({
 
           {/* Error */}
           {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <div className="rounded-lg border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger">
               {error}
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="flex shrink-0 items-center justify-end gap-3 border-t border-tech-border px-6 py-4">
+        <div className="sticky bottom-0 z-10 flex shrink-0 items-center justify-end gap-3 border-t border-line bg-panel px-6 py-4">
           <button
             onClick={onClose}
-            className="rounded-lg border border-tech-border px-4 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg transition-colors"
+            className="rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-elevated transition-colors"
             disabled={generating}
           >
             {result ? '关闭' : '取消'}
@@ -1199,7 +1290,7 @@ function SkillGenModal({
           <button
             onClick={onGenerate}
             disabled={generating || collection.childJobProgress.transcribed === 0}
-            className="inline-flex items-center gap-2 rounded-lg bg-tech-purple px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 transition-all disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-lg bg-ai px-4 py-2 text-sm font-medium text-on-accent hover:bg-ai transition-all disabled:opacity-50"
           >
             {generating ? (
               <>
@@ -1214,7 +1305,6 @@ function SkillGenModal({
             )}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

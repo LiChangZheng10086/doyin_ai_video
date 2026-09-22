@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>小红书创作服务平台 · 发布笔记（离线 fixture）</title>
+<!--
+  小红书发布页**离线 fixture**（2026-09-20）。
+
+  来源与保真度说明（重要，别把它当成"随便写的假页面"）：
+  · 结构与类名来自 `storage/xhs/recon/publish-page-after-upload.html` 的真实快照：
+    页签是 `.creator-tab` 且文案在 `span.title` 里；上传框是**常驻的** `input[type=file]`
+    且 `accept` 只含图片（页面上共有 3 个 file 框：2 图片 + 1 文档）；
+    标题是 `input.d-text[placeholder="填写标题会有更多赞哦"]`；
+    正文是 `div.tiptap.ProseMirror[contenteditable="true"]`；
+    声明控件是 `div.d-select-wrapper`（⚠️ 真页把这个属性写成了 `lass="declaration-wrapper"`，
+    所以按 class 找不到它 —— 这里**照抄了这个笔误**，免得有人"顺手"改回按 class 选）；
+    选项是 `div.d-option`，含「笔记含AI合成内容」。
+  · **提交控件是 `<xhs-publish-btn>` 自定义元素 + closed shadow root**（真页实测：
+    `customElements.get()` 有定义，但 `element.shadowRoot === null` 且无子节点，
+    Playwright 的 CSS/role 定位器都穿不透）。这里用 `attachShadow({mode:"closed"})` 复刻，
+    并让内部两个按钮把点击结果写到 `documentElement.dataset.lastClick`，
+    好让用例能断言"到底点中了哪一个"。
+  · 两个按钮的**几何按真页实测值摆放**：宿主 680×90，按钮 124×42、top 24；
+    「暂存离开」中心 x=269（0.396）、「发布」中心 x=413（0.607）。
+    —— 这组偏移就是 `xhs-page.ts` 里 `XHS_SUBMIT_OFFSETS` 的来源。
+
+  URL 参数用于负例（真页改版/异常时的形态）：见文件末尾脚本。
+-->
+<style>
+  body { margin: 0; font-family: "PingFang SC", "Hiragino Sans GB", sans-serif; color: #333; }
+  .header-tabs { display: flex; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #eee; }
+  .creator-tab { padding: 8px 16px; cursor: pointer; border-radius: 6px; }
+  .creator-tab.active { background: #ffe9ec; color: #ff2442; }
+  .form { width: 680px; margin: 12px auto; }
+  .upload-wrapper { border: 1px dashed #ddd; border-radius: 8px; padding: 16px; text-align: center; }
+  .d-text { width: 100%; height: 24px; border: none; outline: none; font-size: 16px; }
+  .tiptap { min-height: 140px; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
+  .is-editor-empty::before { content: attr(data-placeholder); color: #bbb; }
+  .btns { margin-top: 8px; }
+  .contentBtn { padding: 4px 10px; }
+  .d-select-wrapper { display: inline-block; border: 1px solid #eee; border-radius: 6px; padding: 8px 12px; min-width: 280px; }
+  .d-option { padding: 6px 10px; cursor: pointer; }
+  .d-option:hover { background: #f7f7f7; }
+  .d-option.selected { color: #ff2442; }
+  .d-menu { display: none; border: 1px solid #eee; border-radius: 6px; margin-top: 4px; background: #fff; }
+  .d-menu.open { display: block; }
+  .img-preview-area { display: flex; gap: 6px; }
+  .pr { width: 48px; height: 60px; background: #eee; border-radius: 4px; }
+  xhs-publish-btn { display: block; width: 680px; height: 90px; position: relative; margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="header-tabs" id="tabs">
+  <div class="creator-tab" data-tab="video"><span class="title">上传视频</span></div>
+  <div class="creator-tab active" data-tab="image"><span class="title">上传图文</span></div>
+  <div class="creator-tab" data-tab="long"><span class="title">写长文</span></div>
+</div>
+
+<div id="uploadStage" class="form">
+  <div class="upload-wrapper">
+    <div>上传图片，或写文字生成图片</div>
+    <!-- ⚠️ 真页有 3 个 file 框，且**第一个不是图片多选框**；这里照复刻，逼实现按 accept 挑。 -->
+    <input id="docInput" type="file" accept=".pdf,.doc,.docx,.ppt,.pptx" style="display:none">
+    <input id="imageInputSingle" type="file" accept=".jpg,.jpeg,.png,.webp" style="display:none">
+    <input id="imageInput" type="file" multiple accept=".jpg,.jpeg,.png,.webp" style="display:none">
+    <div class="img-preview-area" id="preview"></div>
+    <div id="counter">0/18</div>
+    <button id="pickButton" type="button">上传图片</button>
+  </div>
+</div>
+
+<div id="formHost"></div>
+
+<!--
+  ⚠️ 表单整块放在 <template> 里，**上传之前不在 DOM 中**。
+  这不是偷懒：真页实测就是**分阶段渲染**的 —— 未上传时 `标题`/`声明`/提交控件命中数**全为 0**，
+  连 `placeholder` 属性都是 0 个。第一版 fixture 用 `hidden` 藏表单，元素仍在 DOM 里，
+  于是「未上传时找不到标题框」这条断言直接失效（用例当场抓到了，这正是它的价值）。
+  另外 template 里的自定义元素**不会被连接**，所以不会出现「先 upgrade 一次、插入时再 upgrade」。
+-->
+<template id="formTemplate">
+<div id="formStage" class="form">
+  <div class="img-preview-area" id="previewFilled"></div>
+  <div id="counterFilled">0/18</div>
+  <input class="d-text" id="titleInput" type="text" placeholder="填写标题会有更多赞哦" value="">
+  <div class="tiptap ProseMirror" id="editor" contenteditable="true"></div>
+  <div class="btns">
+    <button id="topicBtn" class="contentBtn topic-btn" type="button">话题</button>
+    <button class="contentBtn" type="button">用户</button>
+    <button class="contentBtn emoticons" type="button">表情</button>
+  </div>
+  <!-- ⚠️ 属性名照抄真页的笔误：`lass` 而不是 `class`（所以按 class 找不到它）。 -->
+  <div class="d-select-wrapper" lass="declaration-wrapper" id="declaration">
+    <span id="declarationText">添加内容类型声明</span>
+  </div>
+  <div class="d-menu" id="declarationMenu">
+    <div class="d-option" data-value="fiction">虚构演绎，仅供娱乐</div>
+    <div class="d-option" data-value="ai">笔记含AI合成内容</div>
+    <div class="d-option" data-value="ad">内容包含营销广告</div>
+    <div class="d-option" data-value="self">自主拍摄</div>
+    <div class="d-option" data-value="repost">来源转载</div>
+  </div>
+</div>
+
+<!-- 提交控件：真页是自定义元素 + closed shadow root。属性名照抄真页。 -->
+<xhs-publish-btn id="submitHost" is-publish="true" is-save-draft="true"
+  submit-text="发布" save-text="暂存离开"
+  submit-disabled="false" submit-loading="false" save-disabled="false"></xhs-publish-btn>
+</template>
+
+
+
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+
+  // ── 提交控件：closed shadow root ────────────────────────────────────────────
+  // 内部按钮把点击写到 documentElement.dataset.lastClick，好让用例断言点中了哪一个。
+  customElements.define("xhs-publish-btn", class extends HTMLElement {
+    connectedCallback() {
+      var host = this;
+      if (params.get("submitDisabled") === "1") host.setAttribute("submit-disabled", "true");
+      var root = host.attachShadow({ mode: "closed" });
+      var disabled = host.getAttribute("submit-disabled") === "true";
+      root.innerHTML = [
+        '<style>',
+        '  .btn { position: absolute; top: 24px; width: 124px; height: 42px; border-radius: 21px;',
+        '         font-size: 15px; cursor: pointer; border: 1px solid #eee; background: #fff; }',
+        '  .save { left: 207px; }',
+        '  .publish { left: 351px; background: #ff2442; color: #fff; border: none; }',
+        '</style>',
+        '<button class="btn save" type="button">' + host.getAttribute("save-text") + '</button>',
+        '<button class="btn publish" type="button"' + (disabled ? ' disabled' : '') + '>'
+          + host.getAttribute("submit-text") + '</button>',
+      ].join("");
+      root.querySelector(".save").addEventListener("click", function () {
+        document.documentElement.dataset.lastClick = "save";
+      });
+      root.querySelector(".publish").addEventListener("click", function () {
+        if (disabled) return;
+        document.documentElement.dataset.lastClick = "publish";
+      });
+    }
+  });
+
+  // ── 负例开关 ────────────────────────────────────────────────────────────────
+  if (params.get("noTab") === "1") document.getElementById("tabs").remove();
+
+  // ── 状态 ────────────────────────────────────────────────────────────────────
+  var uploaded = 0;
+
+  var formReady = false;
+  function showForm() {
+    if (params.get("noFormAfterUpload") === "1") return;
+    if (formReady) return;
+    document.getElementById("uploadStage").hidden = true;
+    var template = document.getElementById("formTemplate");
+    document.getElementById("formHost").appendChild(template.content.cloneNode(true));
+    formReady = true;
+    if (params.get("noSubmit") === "1") {
+      var host = document.getElementById("submitHost");
+      if (host) host.remove();
+    }
+    wireForm();
+  }
+  var formWired = false;
+  function wireForm() {
+    if (formWired) return;
+    formWired = true;
+
+    var titleInput2 = document.getElementById("titleInput");
+    if (params.get("oldTitle") === "1") titleInput2.value = "旧草稿标题";
+    var writes = 0;
+    titleInput2.addEventListener("input", function () {
+      writes += 1;
+      var drops = params.get("titleDrops");
+      if ((drops === "1" && writes === 1) || drops === "always") {
+        var value = titleInput2.value;
+        titleInput2.value = value.slice(0, 3) + value.slice(4);
+      }
+    });
+
+    var editor2 = document.getElementById("editor");
+    editor2.setAttribute("data-placeholder", "输入正文描述，真诚有价值的分享予人温暖");
+    editor2.classList.add("is-editor-empty");
+    editor2.addEventListener("input", function () {
+      var text = (editor2.textContent || "").trim();
+      editor2.classList.toggle("is-editor-empty", text.length === 0);
+    });
+
+    var declaration2 = document.getElementById("declaration");
+    var menu2 = document.getElementById("declarationMenu");
+    if (params.get("noAiOption") === "1") {
+      var ai = menu2.querySelector('.d-option[data-value="ai"]');
+      if (ai) ai.remove();
+    }
+    declaration2.addEventListener("click", function () { menu2.classList.toggle("open"); });
+    menu2.addEventListener("click", function (event) {
+      var option = event.target.closest(".d-option");
+      if (!option) return;
+      if (params.get("lockAi") === "1" && option.dataset.value === "ai") return;
+      var siblings = menu2.querySelectorAll(".d-option");
+      for (var i = 0; i < siblings.length; i += 1) siblings[i].classList.remove("selected");
+      option.classList.add("selected");
+      document.getElementById("declarationText").textContent = option.textContent.trim();
+      menu2.classList.remove("open");
+    });
+
+    renderPreview();
+  }
+
+  function renderPreview() {
+    var box = document.getElementById("previewFilled");
+    if (!box) return;
+    box.innerHTML = "";
+    for (var i = 0; i < uploaded; i += 1) {
+      var item = document.createElement("div");
+      item.className = "pr";
+      box.appendChild(item);
+    }
+    document.getElementById("counterFilled").textContent = uploaded + "/18";
+  }
+
+  // 上传：真页是 setInputFiles 触发 change。`?uploadFails=1` 让预览计数**不增加**
+  //（复刻"文件送进去了但平台没接住"—— 实现必须读回计数，不能假设成功）。
+  var imageInput = document.getElementById("imageInput");
+  imageInput.addEventListener("change", function () {
+    var count = imageInput.files ? imageInput.files.length : 0;
+    if (params.get("uploadFails") === "1") { showForm(); return; }
+    uploaded += count;
+    showForm();
+    renderPreview();
+  });
+  document.getElementById("pickButton").addEventListener("click", function () {
+    imageInput.click();
+  });
+
+})();
+</script>
+</body>
+</html>

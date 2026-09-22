@@ -22,9 +22,9 @@ export function SourceVideoArtifact({
 }: SourceVideoArtifactProps) {
   if (!videoPath) {
     return (
-      <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
-        <h3 className="font-semibold text-tech-text">原视频尚未下载</h3>
-        <p className="mt-2 text-sm text-tech-muted">
+      <div className="rounded-lg border border-dashed border-line bg-elevated py-14 text-center">
+        <h3 className="font-semibold text-ink">原视频尚未下载</h3>
+        <p className="mt-2 text-sm text-ink-muted">
           先执行「视频转录」，原视频会同时下载到本地，之后就能在这里直接观看。
         </p>
       </div>
@@ -33,7 +33,7 @@ export function SourceVideoArtifact({
 
   if (streamError) {
     return (
-      <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-700">
+      <div className="rounded-lg border border-warning-line bg-warning-soft p-4 text-warning">
         <p className="font-semibold">原视频文件不可读取</p>
         <p className="mt-1 text-sm">文件可能已被移动或删除，可重新执行视频转录后重试。</p>
       </div>
@@ -43,12 +43,12 @@ export function SourceVideoArtifact({
   return (
     <div className="space-y-5">
       <div>
-        <h3 className="text-lg font-semibold text-tech-text">原视频</h3>
-        <p className="mt-1 text-sm text-tech-muted">视频转录步骤下载的抖音原片，未经洗稿与渲染。</p>
+        <h3 className="text-lg font-semibold text-ink">原视频</h3>
+        <p className="mt-1 text-sm text-ink-muted">视频转录步骤下载的抖音原片，未经洗稿与渲染。</p>
       </div>
 
       {streamUrl ? (
-        <div className="rounded-lg border border-tech-border bg-black p-3">
+        <div className="rounded-lg border border-line bg-black p-3">
           <video
             src={streamUrl}
             controls

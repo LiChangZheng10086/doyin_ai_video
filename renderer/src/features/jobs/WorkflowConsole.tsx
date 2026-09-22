@@ -31,42 +31,42 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPa
   const canReClean = job.steps?.clean?.status === 'succeeded';
 
   return (
-    <section className="overflow-hidden rounded-lg border border-blue-100 bg-gradient-to-br from-blue-50 via-white to-purple-50 p-6 shadow-sm">
+    <section className="overflow-hidden rounded-lg border text-info bg-gradient-to-br from-info-soft via-panel to-ai-soft p-6 shadow-sm">
       <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
-          <p className="mb-3 inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-medium text-tech-purple shadow-sm">
+          <p className="mb-3 inline-flex items-center gap-2 rounded-full bg-panel px-3 py-1 text-xs font-medium text-ai shadow-sm">
             <Sparkles size={14} />
             {job.deletedAt ? '已归档' : job.status === 'done' ? '作品已完成' : '当前步骤'}
           </p>
-          <h2 className="text-2xl font-semibold text-tech-text">{hero.title}</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-tech-muted">{hero.description}</p>
+          <h2 className="text-2xl font-semibold text-ink">{hero.title}</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-muted">{hero.description}</p>
 
           <div className="mt-5 max-w-lg">
-            <div className="mb-2 flex items-center justify-between text-xs font-medium text-tech-muted">
+            <div className="mb-2 flex items-center justify-between text-xs font-medium text-ink-muted">
               <span>主链路进度</span>
               <span>{completed}/{total} · {percent}%</span>
             </div>
-            <div className="h-2 overflow-hidden rounded-full bg-white">
+            <div className="h-2 overflow-hidden rounded-full bg-panel">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-tech-blue to-tech-purple transition-all"
+                className="h-full rounded-full bg-gradient-to-r from-accent to-ai transition-all"
                 style={{ width: `${percent}%` }}
               />
             </div>
             {focus?.progress !== undefined && focus.status === 'running' && (
               <div className="mt-4">
-                <div className="mb-2 flex items-center justify-between text-xs font-medium text-tech-muted">
+                <div className="mb-2 flex items-center justify-between text-xs font-medium text-ink-muted">
                   <span>{focus.label}进行中</span>
                   <span>{Math.round(focus.progress)}%</span>
                 </div>
-                <div className="h-2 overflow-hidden rounded-full bg-white">
-                  <div className="h-full rounded-full bg-tech-purple transition-all" style={{ width: `${Math.min(100, Math.round(focus.progress))}%` }} />
+                <div className="h-2 overflow-hidden rounded-full bg-panel">
+                  <div className="h-full rounded-full bg-ai transition-all" style={{ width: `${Math.min(100, Math.round(focus.progress))}%` }} />
                 </div>
               </div>
             )}
           </div>
 
           {actionError && (
-            <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <div className="mt-4 rounded-lg border border-danger-line bg-danger-soft p-3 text-sm text-danger">
               {actionError}
             </div>
           )}
@@ -81,8 +81,8 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPa
               onClick={() => onRunStep(focus.key)}
               className={`inline-flex min-w-40 items-center justify-center gap-2 rounded-lg px-5 py-3 font-medium transition-all ${
                 isFailed
-                  ? 'border border-red-200 bg-white text-red-600 hover:bg-red-50'
-                  : 'bg-tech-blue text-white shadow-sm hover:bg-tech-blue-dark hover:shadow'
+                  ? 'border border-danger-line bg-panel text-danger hover:bg-danger-soft'
+                  : 'bg-accent text-on-accent shadow-sm hover:bg-accent-hover hover:shadow'
               } disabled:cursor-not-allowed disabled:opacity-50`}
             >
               {isBusy ? <Loader2 className="animate-spin" size={18} /> : isFailed || isPaused ? <RotateCcw size={18} /> : <Play size={18} />}
@@ -94,7 +94,7 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPa
               type="button"
               onClick={() => onPauseStep(focus.key)}
               disabled={Boolean(job.deletedAt)}
-              className="inline-flex min-w-40 items-center justify-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-5 py-3 font-medium text-amber-700 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex min-w-40 items-center justify-center gap-2 rounded-lg border border-warning-line bg-warning-soft px-5 py-3 font-medium text-warning transition hover:bg-warning-soft disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Pause size={18} />
               暂停当前步骤
@@ -105,7 +105,7 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPa
               type="button"
               onClick={onReClean}
               disabled={isBusy || Boolean(job.deletedAt)}
-              className="inline-flex min-w-40 items-center justify-center gap-2 rounded-lg border border-tech-blue bg-white px-5 py-3 font-medium text-tech-blue transition-all hover:bg-tech-blue hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex min-w-40 items-center justify-center gap-2 rounded-lg border border-accent-line bg-panel px-5 py-3 font-medium text-accent transition-all hover:bg-accent hover:text-on-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               <PencilLine size={18} />
               补充内容重新洗稿
@@ -158,10 +158,10 @@ function getConsoleCopy(job: Job, focus: ReturnType<typeof buildWorkflowSteps>[n
 
 function StatusChip({ job }: { job: Job }) {
   const config: Record<string, string> = {
-    queued: 'border-blue-200 bg-blue-50 text-blue-700',
-    processing: 'border-cyan-200 bg-cyan-50 text-cyan-700',
-    done: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    failed: 'border-red-200 bg-red-50 text-red-700',
+    queued: 'border-info-line bg-info-soft text-info',
+    processing: 'border-running-line bg-running-soft text-running',
+    done: 'border-success-line bg-success-soft text-success',
+    failed: 'border-danger-line bg-danger-soft text-danger',
   };
   const labels: Record<string, string> = {
     queued: '待执行',
@@ -169,7 +169,7 @@ function StatusChip({ job }: { job: Job }) {
     done: '已完成',
     failed: '失败',
   };
-  const cls = config[job.status] ?? 'border-tech-border bg-gray-50 text-tech-muted';
+  const cls = config[job.status] ?? 'border-line bg-elevated text-ink-muted';
   const label = labels[job.status] ?? job.status;
   return (
     <span className={`inline-flex items-center justify-center rounded-lg border px-4 py-2 text-sm font-medium ${cls}`}>

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AudioLines, Images, Loader2, Music4, Trash2, Upload } from 'lucide-react';
+import { AlertCircle, AudioLines, Images, Loader2, Music4, Trash2, Upload } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { PageHeader } from '../components/ui/PageHeader';
+import { EmptyState } from '../components/ui/EmptyState';
+import { Button } from '../components/ui/Button';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { apiClient } from '../services/api';
 import type { AssetKind, AssetRecord } from '../types';
@@ -55,7 +58,13 @@ export function AssetsPage() {
       }
       setRawUrls(urls);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '素材加载失败');
+      /*
+       * 改造前这里直接取 `err.message`，于是用户看到的是
+       * 「Request failed with status code 502」这种 axios 英文原文。
+       * 各页口径也不一致（作品列表用的是中文友好文案）。
+       */
+      console.error('加载素材失败:', err);
+      setError('素材加载失败，请检查后端服务是否正常运行');
     } finally {
       setIsLoading(false);
     }
@@ -105,7 +114,7 @@ export function AssetsPage() {
       type="button"
       disabled={uploading !== null}
       onClick={() => (kind === 'image' ? imageInput.current : audioInput.current)?.click()}
-      className="inline-flex items-center gap-2 rounded-lg bg-tech-blue px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-tech-blue-dark disabled:opacity-50"
+      className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-on-accent transition-all hover:bg-accent-hover disabled:opacity-50"
     >
       {uploading === kind ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
       {uploading === kind ? '上传中…' : label}
@@ -113,37 +122,40 @@ export function AssetsPage() {
   );
 
   const renderEmpty = (icon: typeof Images, title: string, hint: string) => (
-    <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface px-6 py-14 text-center">
-      <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-lg border border-tech-border bg-tech-bg text-tech-muted">
+    <div className="rounded-lg border border-dashed border-line bg-panel px-6 py-14 text-center">
+      <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-lg border border-line bg-canvas text-ink-muted">
         {icon === Images ? <Images size={28} /> : <AudioLines size={28} />}
       </div>
-      <h3 className="text-lg font-semibold text-tech-text">{title}</h3>
-      <p className="mt-2 text-sm text-tech-muted">{hint}</p>
+      <h3 className="text-lg font-semibold text-ink">{title}</h3>
+      <p className="mt-2 text-sm text-ink-muted">{hint}</p>
     </div>
   );
 
   return (
     <Layout>
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold text-tech-text">素材</h1>
-          <p className="mt-1 text-sm text-tech-muted">
-            手动上传图片与音频，供后续创作选用。
-          </p>
-        </div>
-      </div>
+      <PageHeader title="素材" description="手动上传图片与音频，供后续创作选用。" />
 
-      {error && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>
+      {/* ⚠️ 只在已有素材时显示横幅；一份都没有时改由下面的整页错误态独占。 */}
+      {error && (images.length > 0 || audio.length > 0) && (
+        <div className="mb-4 rounded-lg border border-danger-line bg-danger-soft p-4 text-sm text-danger" role="alert">{error}</div>
       )}
       {uploadError && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">{uploadError}</div>
+        <div className="mb-4 rounded-lg border border-warning-line bg-warning-soft p-4 text-sm text-warning">{uploadError}</div>
       )}
 
       {isLoading ? (
-        <div className="flex items-center justify-center py-24 text-tech-muted">
-          <Loader2 size={20} className="mr-2 animate-spin" />
+        <div className="flex items-center justify-center py-24 text-ink-muted">
+          <Loader2 size={20} className="mr-2 animate-spin" aria-hidden="true" />
           正在加载素材…
+        </div>
+      ) : error && images.length === 0 && audio.length === 0 ? (
+        <div className="rounded-xl border border-line bg-panel">
+          <EmptyState
+            icon={AlertCircle}
+            title="素材加载失败"
+            description={error}
+            action={<Button variant="outline" onClick={() => void load()}>重新加载</Button>}
+          />
         </div>
       ) : (
         <div className="space-y-8">
@@ -151,11 +163,11 @@ export function AssetsPage() {
           <section>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="flex items-center gap-2 font-semibold text-tech-text">
-                  <Images size={18} className="text-tech-muted" />
-                  图片 <span className="text-sm font-normal text-tech-muted">({images.length})</span>
+                <h2 className="flex items-center gap-2 font-semibold text-ink">
+                  <Images size={18} className="text-ink-muted" />
+                  图片 <span className="text-sm font-normal text-ink-muted">({images.length})</span>
                 </h2>
-                <p className="mt-1 text-xs text-tech-muted">支持 jpg / png / webp，单张不超过 20MB。建议 9:16 竖版。</p>
+                <p className="mt-1 text-xs text-ink-muted">支持 jpg / png / webp，单张不超过 20MB。建议 9:16 竖版。</p>
               </div>
               {renderUploadButton('image', '上传图片')}
               <input
@@ -174,10 +186,16 @@ export function AssetsPage() {
             {images.length === 0 ? (
               renderEmpty(Images, '还没有图片素材', '上传图片后，创建图文发布时可以从这里挑选。')
             ) : (
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+              /*
+               * 自适应密排：改造前是 `lg:grid-cols-4`，在 1440px 下每格 ~332px 宽，
+               * 而缩略图是 9:16 ⇒ 每张 332×590px，一个几十张的素材库要滚好几屏，
+               * 完全不是素材浏览器该有的密度。改成按最小宽度自动排：
+               * 同一屏从 4 张变 8 张，且窄窗口自动降列。
+               */
+              <div className="grid gap-3 grid-cols-[repeat(auto-fill,minmax(160px,1fr))]">
                 {images.map((record) => (
-                  <figure key={record.id} className="overflow-hidden rounded-lg border border-tech-border bg-tech-surface">
-                    <div className="aspect-[9/16] w-full bg-tech-bg">
+                  <figure key={record.id} className="overflow-hidden rounded-lg border border-line bg-panel">
+                    <div className="aspect-[9/16] w-full bg-canvas">
                       {rawUrls[record.id] && (
                         <img
                           src={rawUrls[record.id]}
@@ -187,20 +205,34 @@ export function AssetsPage() {
                         />
                       )}
                     </div>
-                    <figcaption className="space-y-1 p-3">
-                      <p className="truncate text-sm text-tech-text" title={record.originalName}>{record.originalName}</p>
-                      <p className="text-xs text-tech-muted">
-                        {record.width && record.height ? `${record.width}×${record.height} · ` : ''}
-                        {formatBytes(record.bytes)} · {formatDate(record.createdAt)}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => setDeleteTarget(record)}
-                        className="inline-flex items-center gap-1 text-xs text-red-600 hover:underline"
+                    <figcaption className="space-y-1 p-2.5">
+                      <div className="flex items-center gap-1">
+                        <p className="min-w-0 flex-1 truncate text-sm text-ink" title={record.originalName}>
+                          {record.originalName}
+                        </p>
+                        {/*
+                          删除改成 32×32 的图标按钮。
+                          改造前是一行 12px 的文字链，热区约 18px 高 —— 而它是每张卡片上
+                          唯一的破坏性操作，既难点中也容易误点（审查 M13）。
+                          无障碍名带上文件名，读屏不会只念「删除」。
+                        */}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`删除「${record.originalName}」`}
+                          onClick={() => setDeleteTarget(record)}
+                          className="text-danger hover:bg-danger-soft"
+                        >
+                          <Trash2 size={14} aria-hidden="true" />
+                        </Button>
+                      </div>
+                      <p
+                        className="truncate text-xs tabular text-ink-muted"
+                        title={`${record.width && record.height ? `${record.width}×${record.height} · ` : ''}${formatBytes(record.bytes)} · ${formatDate(record.createdAt)}`}
                       >
-                        <Trash2 size={13} />
-                        删除
-                      </button>
+                        {record.width && record.height ? `${record.width}×${record.height} · ` : ''}
+                        {formatBytes(record.bytes)}
+                      </p>
                     </figcaption>
                   </figure>
                 ))}
@@ -212,11 +244,11 @@ export function AssetsPage() {
           <section>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="flex items-center gap-2 font-semibold text-tech-text">
-                  <Music4 size={18} className="text-tech-muted" />
-                  音频 <span className="text-sm font-normal text-tech-muted">({audio.length})</span>
+                <h2 className="flex items-center gap-2 font-semibold text-ink">
+                  <Music4 size={18} className="text-ink-muted" />
+                  音频 <span className="text-sm font-normal text-ink-muted">({audio.length})</span>
                 </h2>
-                <p className="mt-1 text-xs text-tech-muted">支持 mp3 / wav / m4a / aac，单个不超过 50MB。</p>
+                <p className="mt-1 text-xs text-ink-muted">支持 mp3 / wav / m4a / aac，单个不超过 50MB。</p>
               </div>
               {renderUploadButton('audio', '上传音频')}
               <input
@@ -233,7 +265,7 @@ export function AssetsPage() {
             </div>
 
             {/* 这条提示是刻意的：上传的音频目前不会混进成片 */}
-            <div className="mb-4 rounded-lg border border-tech-border bg-gray-50 px-4 py-3 text-sm text-tech-muted">
+            <div className="mb-4 rounded-lg border border-line bg-elevated px-4 py-3 text-sm text-ink-muted">
               音频暂未接入成片，本轮仅支持上传与试听。
             </div>
 
@@ -242,20 +274,20 @@ export function AssetsPage() {
             ) : (
               <ul className="space-y-3">
                 {audio.map((record) => (
-                  <li key={record.id} className="rounded-lg border border-tech-border bg-tech-surface p-4">
+                  <li key={record.id} className="rounded-lg border border-line bg-panel p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-tech-text" title={record.originalName}>
+                        <p className="truncate text-sm font-medium text-ink" title={record.originalName}>
                           {record.originalName}
                         </p>
-                        <p className="mt-1 text-xs text-tech-muted">
+                        <p className="mt-1 text-xs text-ink-muted">
                           {formatDuration(record.durationMs)} · {formatBytes(record.bytes)} · {formatDate(record.createdAt)}
                         </p>
                       </div>
                       <button
                         type="button"
                         onClick={() => setDeleteTarget(record)}
-                        className="inline-flex items-center gap-1 text-xs text-red-600 hover:underline"
+                        className="inline-flex items-center gap-1 text-xs text-danger hover:underline"
                       >
                         <Trash2 size={13} />
                         删除

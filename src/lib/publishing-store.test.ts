@@ -1279,3 +1279,83 @@ test("未登记的 (内容类型 × 平台) 组合被拒且不写盘；视频包
 
   assert.deepEqual(await readIndexBytes(), before);
 });
+
+// ─── ③ 小红书图文选项（xhsOptions）与**指纹兼容性** ─────────────────────────────
+
+/**
+ * 这两个哈希是 2026-09-20 **加 `xhsOptions` 之前**算出来的，**故意写死**。
+ *
+ * 守住的是这样一件事：新字段如果被**无条件**塞进 `note` 分支的哈希流
+ *（哪怕只有一个 `\0` 分隔的参数），**所有既有抖音图文包的 `previewRevision` 都会变**，
+ * 于是「预览过、还没提交」的包会突然全部报 409。那种红是「指纹口径被悄悄改了」，
+ * 不是「功能坏了」—— 所以必须有一条 baseline 用例把它钉住。
+ */
+const NOTE_REVISION_BASELINE = "556e908c1b44ed1368e3c9fed87df37627bd2de385ada657fd093f6fab510abb";
+// ⚠️ 这个值**必须从真实夹具上取**，不能拿手抄的副本去算 —— 第一版我就是手抄了一份
+// `packageRecord()`，`videoSha256` 与夹具不同，于是「基线」本身就是错的（实测踩到）。
+const VIDEO_REVISION_BASELINE = "0007ffeb520fda524dbfbf42863f8489e6006e07a3748d9013d6e378fe4e918d";
+
+test("⚠️ 兼容性基线：不含 xhsOptions 的包，其 previewRevision 与改动前**逐字节相同**", () => {
+  assert.equal(
+    packagePreviewRevision(notePackageRecord(), [taskRecord()]),
+    NOTE_REVISION_BASELINE,
+    "图文包的指纹口径被改动了 —— 既有抖音图文包会在「预览后」突然全部 409",
+  );
+  assert.equal(
+    packagePreviewRevision(packageRecord(), [taskRecord()]),
+    VIDEO_REVISION_BASELINE,
+    "视频包的指纹口径被改动了",
+  );
+  // 显式给 undefined 与「压根不给」必须完全等价（存档里两种形态都会出现）。
+  assert.equal(
+    packagePreviewRevision(notePackageRecord({ xhsOptions: undefined }), [taskRecord()]),
+    NOTE_REVISION_BASELINE,
+  );
+});
+
+test("xhsOptions 参与指纹：AI 声明与「是否提交」任一变化都让旧 revision 失效", () => {
+  const base = notePackageRecord({ xhsOptions: { aiDeclaration: true, submit: false } });
+  const aiOff = notePackageRecord({ xhsOptions: { aiDeclaration: false, submit: false } });
+  const willSubmit = notePackageRecord({ xhsOptions: { aiDeclaration: true, submit: true } });
+
+  const baseRevision = packagePreviewRevision(base, [taskRecord()]);
+  assert.notEqual(
+    packagePreviewRevision(aiOff, [taskRecord()]),
+    baseRevision,
+    "取消 AI 标识声明必须让旧 revision 失效（否则会出现「预览时没声明、提交时声明了」）",
+  );
+  assert.notEqual(
+    packagePreviewRevision(willSubmit, [taskRecord()]),
+    baseRevision,
+    "改「是否真点发布」同样改变「要发生什么」，必须进指纹",
+  );
+  // 幂等：同样的内容必须得到同样的指纹。
+  assert.equal(
+    packagePreviewRevision(notePackageRecord({ xhsOptions: { aiDeclaration: true, submit: false } }), [taskRecord()]),
+    baseRevision,
+  );
+});
+
+test("存档形状：xhsOptions 畸形（非布尔）视为**索引损坏**，而不是静默丢掉该字段", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "publishing-store-xhs-shape-"));
+  const storage = new LocalStorage(root);
+  const storagePath = path.join(root, "cache", "publishing-index.json");
+  await mkdir(path.dirname(storagePath), { recursive: true });
+
+  // 结构上是合法 JSON，但 xhsOptions 里的值是字符串 —— 属于「索引损坏」这条既定口径。
+  const index = seededIndex(
+    [notePackageRecord({ xhsOptions: { aiDeclaration: "yes", submit: false } as never })],
+    [taskRecord()],
+  );
+  await writeFile(storagePath, JSON.stringify(index));
+  const store = new PublishingStore(storage, () => new Date(NOW));
+
+  await store.init();
+
+  // 与既有口径一致：坏索引保持只读，任何写入都被拒。
+  assert.deepEqual((await store.snapshot()).packages, {});
+  await assert.rejects(
+    () => store.reserveVersion("job-1"),
+    (error: PublishingError) => error.code === "publish_index_corrupt",
+  );
+});

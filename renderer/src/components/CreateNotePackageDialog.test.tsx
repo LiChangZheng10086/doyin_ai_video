@@ -61,6 +61,12 @@ function formProps(overrides: Partial<NotePackageFormProps> = {}): NotePackageFo
     titleCompressed: false,
     selectedImageIds: ['asset-b', 'asset-a'],
     onToggleImage: noop,
+    platforms: ['douyin'],
+    onTogglePlatform: () => undefined,
+    xhsAiDeclaration: true,
+    onXhsAiDeclarationChange: () => undefined,
+    xhsSubmit: false,
+    onXhsSubmitChange: () => undefined,
     busy: false,
     error: '',
     onCreate: noop,
@@ -125,4 +131,50 @@ test('the note form explains an empty library and a compressed title', () => {
   // 静帧来源列出场景静帧，并标注标题被压缩过（可编辑）
   assert.match(compressed, /frame-00-at-3s\.png/u);
   assert.match(compressed, /已压缩/u);
+});
+
+// ─── 平台选择与小红书合规开关（Task 8 收尾） ──────────────────────────────────
+
+test('只选抖音时不渲染小红书选项，且文案写明风险自负', () => {
+  const markup = renderToStaticMarkup(React.createElement(NotePackageForm, formProps()));
+  assert.equal(markup.includes('笔记含AI合成内容'), false);
+  assert.equal(markup.includes('创建后由程序点发布'), false);
+  // 风险告知是必须出现的产品文案（调研结论：不能承诺安全）
+  assert.match(markup, /风险由你的账号承担/u);
+});
+
+test('选中小红书后出现两个选项：AI 声明默认勾选、程序点发布默认不勾', () => {
+  const markup = renderToStaticMarkup(React.createElement(NotePackageForm, formProps({
+    platforms: ['douyin', 'xiaohongshu'],
+  })));
+  assert.match(markup, /笔记含AI合成内容/u);
+  assert.match(markup, /创建后由程序点发布/u);
+  // 默认姿态乙：只填到草稿，真人点最后一下（spec §10）——
+  // 2026-09-21 起文案把「这就是推荐做法」也说明白（用户实测确认按这套走）。
+  assert.match(markup, /推荐保持关闭：只把标题、正文、图片与 AI 声明填好/u);
+
+  const checkboxes = markup.match(/<input type="checkbox"[^>]*>/gu) ?? [];
+  assert.equal(checkboxes.length, 2, '应当正好两个复选框（AI 声明 / 是否提交）');
+  assert.match(checkboxes[0]!, /checked=""/u, 'AI 声明默认必须勾上（合规红线）');
+  assert.equal(/checked/u.test(checkboxes[1]!), false, '「程序点发布」默认必须不勾');
+});
+
+test('取消 AI 声明 → 出现阻塞原因且创建按钮禁用', () => {
+  const blocked = renderToStaticMarkup(React.createElement(NotePackageForm, formProps({
+    platforms: ['xiaohongshu'],
+    xhsAiDeclaration: false,
+  })));
+  assert.match(blocked, /小红书要求声明/u);
+  // 创建按钮必须禁用（不能带着未声明的 AI 内容去建包）。
+  // 按钮的标签里有图标节点，所以按「标签 + 文本」宽松匹配，只取那一个 button。
+  const createButton = blocked.match(/<button[^>]*>(?:(?!<\/button>)[\s\S])*?创建图文包(?:(?!<\/button>)[\s\S])*?<\/button>/u)?.[0] ?? '';
+  assert.notEqual(createButton, '', '没找到创建按钮 —— 断言本身失效了');
+  assert.match(createButton, /disabled/u);
+
+  // 勾回来后不再阻塞
+  const ready = renderToStaticMarkup(React.createElement(NotePackageForm, formProps({
+    platforms: ['xiaohongshu'],
+    xhsAiDeclaration: true,
+  })));
+  assert.equal(/小红书要求声明/u.test(ready), false);
 });

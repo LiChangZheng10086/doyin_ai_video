@@ -64,6 +64,16 @@ export interface PlatformCopy {
   hashtags: string[];
 }
 
+export interface XhsNoteOptions {
+  aiDeclaration: boolean;
+  submit: boolean;
+}
+
+export interface XhsNoteOptions {
+  aiDeclaration: boolean;
+  submit: boolean;
+}
+
 export interface DeliveryPackage {
   id: string;
   sourceJobId: string;
@@ -85,6 +95,12 @@ export interface DeliveryPackage {
   noteCopy?: PlatformCopy;
   /** 仅文章包：文章文案 + 包内 `article.html` 的哈希。 */
   articleCopy?: { title: string; digest?: string; author?: string; htmlSha256: string };
+  /**
+   * 仅图文包（小红书）：AI 标识声明与「是否真点发布」。
+   * 渲染层**只读**它来给出禁用原因（这是本地就有的数据）；
+   * 张数上限（18）与每日频率那类**服务端规则**一律不在前端复刻。
+   */
+  xhsOptions?: XhsNoteOptions;
   /** 仅文章包（今日头条）：发布选项 —— 它们改变要发出去的内容，所以参与 previewRevision。 */
   toutiaoOptions?: ToutiaoPublishOptions;
   createdBy: ActorSnapshot;
@@ -109,6 +125,12 @@ export interface PublishAutoPublish {
   finishedAt?: string;
   message?: string;
   attemptId: string;
+  /**
+   * 「只填到草稿」：本次**没有点发布**，内容只在平台草稿箱里。
+   * 界面必须据此说「已填写到草稿箱」而不是「已提交」（2026-09-21 用户实测：
+   * 显示「已提交」→ 去小红书找不到内容，因为它在草稿箱）。
+   */
+  draftOnly?: boolean;
 }
 
 export interface PublishTask extends PlatformCopy {
@@ -306,6 +328,12 @@ export interface CreatePublishingPackageInput {
   imageSource?: NoteImageSource;
   /** 仅图文包：`library` 时必填，按选择顺序进包。 */
   imageAssetIds?: string[];
+  /**
+   * 仅图文包（小红书）：AI 标识声明与「是否真点发布」。
+   * 与 `toutiaoOptions` 同一纪律：它们改变「要发出去的是什么/会不会真发出去」，
+   * 所以**参与 `previewRevision`**，也就必须与预览时一致。
+   */
+  xhsOptions?: XhsNoteOptions;
   platforms: Array<{
     platform: PublishPlatform;
     copy: PlatformCopy;

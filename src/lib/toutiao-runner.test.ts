@@ -189,9 +189,42 @@ test("拿不到二维码时明确报错并关闭浏览器（不留孤儿）", as
   assert.deepEqual(await runner.pollLogin(), { status: "idle" });
 });
 
+test("本来就已经登录时：报 already_logged_in（409）而不是「取不到二维码」（422）", async () => {
+  /*
+   * 账号已登录时访问登录页会被重定向到后台首页，页面上没有二维码。
+   * 改造前这条路会走到取码失败、报 `toutiao_qr_unavailable` + 「页面结构可能已改版」——
+   * 一句误诊，把「你不需要扫码」说成「页面坏了」（2026-09-21 真机踩到，还把人引去改选择器）。
+   * 小红书早已修过同一个坑，头条这里补齐。
+   */
+  const { runner, session } = fakeRunner({
+    page: new FakePage({
+      urlAfterGoto: "https://mp.toutiao.com/profile_v4/index",
+      username: "头条作者",
+      qrDataUrl: null,
+    }),
+  });
+
+  await assert.rejects(
+    () => runner.startLogin(),
+    (error: unknown) =>
+      error instanceof ToutiaoRunnerError &&
+      error.code === "toutiao_already_logged_in" &&
+      error.status === 409 &&
+      /已经是登录状态（头条作者）/.test(error.message),
+  );
+  assert.equal(session.closed, true);
+  // 与真·取码失败一样：不留「正在登录」的假状态
+  assert.deepEqual(await runner.pollLogin(), { status: "idle" });
+});
+
 test("轮询到已登录时返回昵称并关闭浏览器（会话留在 profile 目录里）", async () => {
   const { runner, session } = fakeRunner({
-    page: new FakePage({ urls: [LOGIN_URL, PUBLISH_URL], username: "头条作者" }),
+    /*
+     * 序列里有**两个** LOGIN_URL：`startLogin` 现在会在 goto 之后读一次 URL
+     * 判断「是不是本来就已经登录」（已登录时登录页会重定向走）。
+     * 第一次读被那次检查用掉，第二次读才是 pollLogin 看到的状态。
+     */
+    page: new FakePage({ urls: [LOGIN_URL, LOGIN_URL, PUBLISH_URL], username: "头条作者" }),
   });
   await runner.startLogin();
 

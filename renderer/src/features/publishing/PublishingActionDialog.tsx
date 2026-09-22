@@ -106,10 +106,10 @@ export function PublishingActionDialog({
   if (!open) return null;
 
   const confirmBtnClass = tone === 'danger'
-    ? 'bg-red-600 hover:bg-red-700 text-white'
+    ? 'bg-danger hover:bg-danger text-on-accent'
     : tone === 'warning'
-      ? 'bg-amber-600 hover:bg-amber-700 text-white'
-      : 'bg-tech-blue hover:bg-tech-blue-dark text-white';
+      ? 'bg-warning hover:bg-warning text-on-accent'
+      : 'bg-accent hover:bg-accent-hover text-on-accent';
 
   const defaultConfirmLabel = type === 'withdraw' && withdrawStep === 'reason'
     ? '下一步'
@@ -145,7 +145,7 @@ export function PublishingActionDialog({
   const renderBody = () => {
     if (type === 'withdraw' && withdrawStep === 'confirm') {
       return (
-        <p className="text-sm text-tech-muted">
+        <p className="text-sm text-ink-muted">
           只撤回本地状态，不会删除平台视频。确认继续？
         </p>
       );
@@ -156,14 +156,14 @@ export function PublishingActionDialog({
       const isMultiline = inputLabel?.includes('原因') || inputPlaceholder?.includes('原因');
       return (
         <label className="block">
-          {inputLabel && <span className="mb-1.5 block text-sm font-medium text-tech-text">{inputLabel}</span>}
+          {inputLabel && <span className="mb-1.5 block text-sm font-medium text-ink">{inputLabel}</span>}
           {isMultiline ? (
             <textarea
               value={value}
               onChange={(e) => setValue(e.target.value)}
               placeholder={inputPlaceholder}
               rows={3}
-              className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue resize-y"
+              className="w-full rounded-lg border border-line-ui bg-well px-3 py-2 text-sm text-ink outline-none focus:border-accent-line focus:ring-1 focus:ring-accent resize-y"
               autoFocus
             />
           ) : (
@@ -172,7 +172,7 @@ export function PublishingActionDialog({
               value={value}
               onChange={(e) => setValue(e.target.value)}
               placeholder={inputPlaceholder}
-              className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue"
+              className="w-full rounded-lg border border-line-ui bg-well px-3 py-2 text-sm text-ink outline-none focus:border-accent-line focus:ring-1 focus:ring-accent"
               autoFocus
             />
           )}
@@ -184,31 +184,31 @@ export function PublishingActionDialog({
       return (
         <div className="space-y-4">
           <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-tech-text">标题</span>
+            <span className="mb-1.5 block text-sm font-medium text-ink">标题</span>
             <input
               type="text"
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
-              className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue"
+              className="w-full rounded-lg border border-line-ui bg-well px-3 py-2 text-sm text-ink outline-none focus:border-accent-line focus:ring-1 focus:ring-accent"
               autoFocus
             />
           </label>
           <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-tech-text">正文</span>
+            <span className="mb-1.5 block text-sm font-medium text-ink">正文</span>
             <textarea
               value={editDescription}
               onChange={(e) => setEditDescription(e.target.value)}
               rows={4}
-              className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue resize-y"
+              className="w-full rounded-lg border border-line-ui bg-well px-3 py-2 text-sm text-ink outline-none focus:border-accent-line focus:ring-1 focus:ring-accent resize-y"
             />
           </label>
           <label className="block">
-            <span className="mb-1.5 block text-sm font-medium text-tech-text">标签（空格分隔）</span>
+            <span className="mb-1.5 block text-sm font-medium text-ink">标签（空格分隔）</span>
             <input
               type="text"
               value={editHashtags}
               onChange={(e) => setEditHashtags(e.target.value)}
-              className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue"
+              className="w-full rounded-lg border border-line-ui bg-well px-3 py-2 text-sm text-ink outline-none focus:border-accent-line focus:ring-1 focus:ring-accent"
             />
           </label>
         </div>
@@ -218,12 +218,12 @@ export function PublishingActionDialog({
     if (type === 'withdraw') {
       return (
         <label className="block">
-          <span className="mb-1.5 block text-sm font-medium text-tech-text">填写撤回本地已发布状态的原因</span>
+          <span className="mb-1.5 block text-sm font-medium text-ink">填写撤回本地已发布状态的原因</span>
           <textarea
             value={withdrawReason}
             onChange={(e) => setWithdrawReason(e.target.value)}
             rows={3}
-            className="w-full rounded-lg border border-tech-border bg-tech-bg px-3 py-2 text-sm text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue resize-y"
+            className="w-full rounded-lg border border-line-ui bg-well px-3 py-2 text-sm text-ink outline-none focus:border-accent-line focus:ring-1 focus:ring-accent resize-y"
             autoFocus
           />
         </label>
@@ -231,7 +231,7 @@ export function PublishingActionDialog({
     }
 
     // confirm mode
-    return description ? <p className="text-sm text-tech-muted">{description}</p> : null;
+    return description ? <p className="text-sm text-ink-muted">{description}</p> : null;
   };
 
   return createPortal(
@@ -241,15 +241,15 @@ export function PublishingActionDialog({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        className="relative z-10 w-full max-w-md rounded-xl bg-white p-6 shadow-lg"
+        className="relative z-10 w-full max-w-md rounded-xl bg-panel p-6 shadow-lg"
       >
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-tech-text">{title}</h2>
+          <h2 className="text-lg font-semibold text-ink">{title}</h2>
           <button
             type="button"
             onClick={onClose}
             disabled={busy}
-            className="rounded-lg p-1.5 text-tech-muted hover:bg-tech-bg hover:text-tech-text disabled:opacity-50"
+            className="rounded-lg p-1.5 text-ink-muted hover:bg-elevated hover:text-ink disabled:opacity-50"
             aria-label="关闭"
           >
             <X size={18} />
@@ -270,7 +270,7 @@ export function PublishingActionDialog({
                 onClose();
               }}
               disabled={busy}
-              className="rounded-lg border border-tech-border px-4 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg disabled:opacity-50"
+              className="rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-elevated disabled:opacity-50"
             >
               {type === 'withdraw' && withdrawStep === 'confirm' ? '上一步' : '取消'}
             </button>

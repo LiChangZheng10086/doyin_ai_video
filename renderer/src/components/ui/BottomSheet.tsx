@@ -70,14 +70,14 @@ export function BottomSheet({ open, title, children, onClose }: BottomSheetProps
         ref={sheetRef}
         role="dialog"
         aria-modal="true"
-        className="fixed inset-x-0 bottom-0 z-10 max-h-[85vh] overflow-y-auto rounded-t-xl bg-white p-5 shadow-lg md:inset-x-auto md:bottom-auto md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:max-w-md md:w-full"
+        className="fixed inset-x-0 bottom-0 z-10 max-h-[85vh] overflow-y-auto rounded-t-xl bg-panel p-5 shadow-lg md:inset-x-auto md:bottom-auto md:left-1/2 md:top-1/2 md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-xl md:max-w-md md:w-full"
       >
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-tech-text">{title}</h2>
+          <h2 className="text-lg font-semibold text-ink">{title}</h2>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-tech-muted hover:bg-tech-bg hover:text-tech-text"
+            className="rounded-lg p-1.5 text-ink-muted hover:bg-elevated hover:text-ink"
             aria-label="关闭"
           >
             <X size={18} />

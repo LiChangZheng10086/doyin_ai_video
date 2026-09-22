@@ -7,8 +7,8 @@ export interface WorkflowStepperProps {
 
 export function WorkflowStepper({ steps }: WorkflowStepperProps) {
   return (
-    <section className="mt-6 rounded-lg border border-tech-border bg-white p-5">
-      <h3 className="mb-4 font-semibold text-tech-text">主链路</h3>
+    <section className="mt-6 rounded-lg border border-line bg-panel p-5">
+      <h3 className="mb-4 font-semibold text-ink">主链路</h3>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         {steps.map((step) => {
           const stepCardClass = getStepCardClass(step.status);
@@ -23,23 +23,23 @@ export function WorkflowStepper({ steps }: WorkflowStepperProps) {
                     <span className="text-xs font-semibold">{step.index}</span>
                   ) : null}
                 </span>
-                <span className="text-xs font-medium text-tech-muted">0{step.index}</span>
+                <span className="text-xs font-medium text-ink-muted">0{step.index}</span>
               </div>
-              <h4 className="font-semibold text-tech-text">{step.label}</h4>
-              <p className="mt-1 text-xs text-tech-muted">{step.actionLabel}</p>
+              <h4 className="font-semibold text-ink">{step.label}</h4>
+              <p className="mt-1 text-xs text-ink-muted">{step.actionLabel}</p>
               {step.status === 'running' && step.progress !== undefined && (
                 <div className="mt-3">
-                  <div className="mb-1 flex items-center justify-between text-[11px] text-tech-muted">
+                  <div className="mb-1 flex items-center justify-between text-[11px] text-ink-muted">
                     <span>进度</span>
                     <span>{Math.round(step.progress)}%</span>
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-gray-200">
-                    <div className="h-full rounded-full bg-tech-blue transition-all" style={{ width: `${Math.min(100, Math.round(step.progress))}%` }} />
+                  <div className="h-1.5 overflow-hidden rounded-full bg-line-strong">
+                    <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.min(100, Math.round(step.progress))}%` }} />
                   </div>
                 </div>
               )}
               {step.error && (
-                <p className="mt-2 line-clamp-2 text-xs text-red-600">{step.error}</p>
+                <p className="mt-2 line-clamp-2 text-xs text-danger">{step.error}</p>
               )}
             </div>
           );
@@ -51,22 +51,22 @@ export function WorkflowStepper({ steps }: WorkflowStepperProps) {
 
 function getStepCardClass(status: WorkflowStepView['status']) {
   const classes: Record<WorkflowStepView['status'], string> = {
-    pending: 'border-tech-border bg-white',
-    running: 'border-cyan-200 bg-cyan-50',
-    succeeded: 'border-emerald-200 bg-emerald-50',
-    failed: 'border-red-200 bg-red-50',
-    paused: 'border-amber-200 bg-amber-50',
+    pending: 'border-line bg-panel',
+    running: 'border-running-line bg-running-soft',
+    succeeded: 'border-success-line bg-success-soft',
+    failed: 'border-danger-line bg-danger-soft',
+    paused: 'border-warning-line bg-warning-soft',
   };
   return classes[status];
 }
 
 function getStepIconClass(status: WorkflowStepView['status']) {
   const classes: Record<WorkflowStepView['status'], string> = {
-    pending: 'bg-gray-100 text-tech-muted',
-    running: 'bg-cyan-100 text-cyan-700',
-    succeeded: 'bg-emerald-100 text-emerald-700',
-    failed: 'bg-red-100 text-red-700',
-    paused: 'bg-amber-100 text-amber-700',
+    pending: 'bg-elevated text-ink-muted',
+    running: 'bg-running-soft text-running',
+    succeeded: 'bg-success-soft text-success',
+    failed: 'bg-danger-soft text-danger',
+    paused: 'bg-warning-soft text-warning',
   };
   return classes[status];
 }

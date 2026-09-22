@@ -133,7 +133,7 @@ test('preview dialog marks the whole copy block red when that field is over the 
   const html = renderToStaticMarkup(<PublishPreviewDialog open preview={over} onClose={noop} />);
 
   // 超限的标题正文本身也要标红（不只是计数）
-  assert.match(html, /font-medium text-red-600"[^>]*>这是一个明显超过二十个字上限的标题示例文案/u);
+  assert.match(html, /font-medium text-danger"[^>]*>这是一个明显超过二十个字上限的标题示例文案/u);
   assert.match(html, /（无）/, '空话题要有占位，不能渲染成空白');
 });
 
@@ -174,7 +174,11 @@ test('preview dialog shows character counts and marks over limit copy in red', (
   const overHtml = renderToStaticMarkup(<PublishPreviewDialog open preview={over} onClose={noop} />);
 
   assert.match(overHtml, /标题 21\/20/);
-  assert.match(overHtml, /text-red-/);
+  // 断言语义标记与语义令牌，而不是具体色阶类名。改造前这里写的是 /text-red-/，
+  // 等于把「原生调色板类」焊进了测试：它并不关心是哪个红，却会在换色时误报。
+  // 组件本来就暴露了 data-over 这个语义契约，那才是该守的东西。
+  assert.match(overHtml, /data-over="true"/);
+  assert.match(overHtml, /text-danger/);
   assert.match(overHtml, /最多 20 字/);
 });
 

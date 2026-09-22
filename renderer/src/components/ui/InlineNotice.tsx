@@ -8,11 +8,11 @@ export interface InlineNoticeProps {
 }
 
 const borderClasses: Record<InlineNoticeProps['tone'], string> = {
-  info: 'border-l-blue-500 bg-blue-50 text-blue-800',
-  processing: 'border-l-cyan-500 bg-cyan-50 text-cyan-800',
-  success: 'border-l-emerald-500 bg-emerald-50 text-emerald-800',
-  warning: 'border-l-amber-500 bg-amber-50 text-amber-800',
-  danger: 'border-l-red-500 bg-red-50 text-red-800',
+  info: 'border-l-blue-500 bg-info-soft text-info',
+  processing: 'border-l-cyan-500 bg-running-soft text-running',
+  success: 'border-l-emerald-500 bg-success-soft text-success',
+  warning: 'border-l-amber-500 bg-warning-soft text-warning',
+  danger: 'border-l-red-500 bg-danger-soft text-danger',
 };
 
 export function InlineNotice({ tone, title, children }: InlineNoticeProps) {

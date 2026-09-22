@@ -37,13 +37,16 @@ export type ToutiaoRunnerErrorCode =
   | "toutiao_profile_dir_unsafe"
   | "toutiao_login_in_progress"
   | "toutiao_not_logged_in"
-  | "toutiao_qr_unavailable";
+  | "toutiao_qr_unavailable"
+  /** 本来就已经登录了 —— 不是失败，是「你不需要扫码」。 */
+  | "toutiao_already_logged_in";
 
 /** 每个错误码对应的 HTTP 语义：并发冲突与其余「输入/环境不对」分开，界面/路由才能给出不同动作。 */
 const ERROR_STATUS: Record<ToutiaoRunnerErrorCode, number> = {
   toutiao_browser_unavailable: 422,
   toutiao_profile_dir_unsafe: 422,
   toutiao_login_in_progress: 409,
+  toutiao_already_logged_in: 409,
   toutiao_not_logged_in: 422,
   toutiao_qr_unavailable: 422,
 };
@@ -278,6 +281,27 @@ export class ToutiaoRunner {
     try {
       await session.page.goto(TOUTIAO_LOGIN_URL, { waitUntil: "domcontentloaded" });
       await settle(session.page);
+      /*
+       * ⚠️ **先判「本来就已经登录」**，再去取二维码。
+       *
+       * 账号已登录时访问登录页会被**重定向到后台首页**（实测最终 URL 是
+       * `https://mp.toutiao.com/profile_v4/index`），页面上根本没有二维码 ——
+       * 原先那条路会一路走到取码失败、报出
+       * 「没能从头条登录页取到二维码（页面结构可能已改版）」。
+       * 那是一句**误诊**：把「你不需要扫码」说成「页面坏了」，还会把用户和后来的人
+       * 引去跑侦察脚本改选择器（2026-09-21 我就是这么被带偏的）。
+       *
+       * 小红书早就修过同一个坑（见 xhs-runner 里 `xhs_already_logged_in` 的注释），
+       * 头条这条路当时漏了。现在补齐：返回 409 + 「已经是登录状态（昵称），无需再扫码」。
+       */
+      if (!isLoginUrl(session.page.url())) {
+        const username = await readUsername(session.page).catch(() => undefined);
+        throw new ToutiaoRunnerError(
+          "toutiao_already_logged_in",
+          `当前已经是登录状态${username ? `（${username}）` : ""}，无需再扫码。`
+            + "若要换账号，请先在今日头条 App 或网页端退出登录（或用另一个浏览器会话目录），再重新扫码。",
+        );
+      }
       const qrDataUrl = await readQrDataUrl(session.page);
       if (!qrDataUrl) {
         throw new ToutiaoRunnerError(

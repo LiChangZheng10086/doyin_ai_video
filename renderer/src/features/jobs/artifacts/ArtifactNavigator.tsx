@@ -1,4 +1,5 @@
 import React from 'react';
+import { useRovingTabs } from '../../../components/ui/useRovingTabs';
 
 export type ArtifactKey = 'transcript' | 'script' | 'shots' | 'video';
 export type ArtifactState = 'ready' | 'processing' | 'waiting' | 'failed';
@@ -17,15 +18,24 @@ const stateLabels: Record<ArtifactState, string> = {
 };
 
 const stateClasses: Record<ArtifactState, string> = {
-  ready: 'bg-emerald-50 text-emerald-700',
-  processing: 'bg-cyan-50 text-cyan-700',
-  waiting: 'bg-gray-100 text-tech-muted',
-  failed: 'bg-red-50 text-red-700',
+  ready: 'bg-success-soft text-success',
+  processing: 'bg-running-soft text-running',
+  waiting: 'bg-elevated text-ink-muted',
+  failed: 'bg-danger-soft text-danger',
 };
 
 export function ArtifactNavigator({ active, items, onChange }: ArtifactNavigatorProps) {
+  // 方向键切换 + roving tabindex：整组只占一个 Tab 停靠点
+  const roving = useRovingTabs(items.map((item) => item.key), active, (key) =>
+    onChange(key as ArtifactKey),
+  );
   return (
-    <div role="tablist" className="flex overflow-x-auto border-b border-tech-border bg-gray-50 px-2 pt-2">
+    <div
+      role="tablist"
+      aria-label="成果切换"
+      onKeyDown={roving.onKeyDown}
+      className="flex overflow-x-auto border-b border-line bg-elevated px-2 pt-2"
+    >
       {items.map((item) => {
         const isActive = active === item.key;
         return (
@@ -34,15 +44,17 @@ export function ArtifactNavigator({ active, items, onChange }: ArtifactNavigator
             type="button"
             role="tab"
             aria-selected={isActive}
+            tabIndex={roving.tabIndexFor(item.key)}
+            ref={(node) => { roving.refs.current[item.key] = node; }}
             onClick={() => onChange(item.key)}
             className={`mr-1 flex min-w-[130px] items-center justify-between gap-2 rounded-t-lg px-4 py-3 text-left text-sm font-semibold transition-all ${
               isActive
-                ? 'bg-white text-tech-text shadow-sm'
-                : 'text-tech-muted hover:bg-white/60'
+                ? 'bg-panel text-ink shadow-sm'
+                : 'text-ink-muted hover:bg-panel/60'
             }`}
           >
             <span>{item.label}</span>
-            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${stateClasses[item.state]}`}>
+            <span className={`rounded-full px-1.5 py-0.5 text-[11px] font-medium ${stateClasses[item.state]}`}>
               {stateLabels[item.state]}
             </span>
           </button>

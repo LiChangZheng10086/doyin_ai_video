@@ -3,8 +3,11 @@ import { test } from 'node:test';
 import type { PublishingPreview } from '../types/index.js';
 import {
   buildNotePackageInput,
+  getNotePlatformBlocker,
+  toggleNotePlatform,
   getNoteImageBlocker,
   noteCopyFieldErrors,
+  notePublishDialogTitle,
   selectionOrder,
   toggleLibraryImage,
 } from './notePackage.js';
@@ -129,6 +132,7 @@ test('building the create input sends the ordered library ids and the package-le
     copy,
     source: 'library',
     selectedImageIds: ['asset-b', 'asset-a'],
+    platforms: ['douyin'],
   });
 
   assert.equal(input.contentType, 'note');
@@ -151,6 +155,7 @@ test('a frames package never carries library ids and requires a finished preview
     copy: { title: '图文标题', description: '正文', hashtags: [] },
     source: 'frames',
     selectedImageIds: ['asset-a'],
+    platforms: ['douyin'],
   });
 
   // 换了来源就不能把上一次的选择带上去（服务端会直接 400）
@@ -165,7 +170,72 @@ test('a frames package never carries library ids and requires a finished preview
       copy: { title: '图文标题', description: '正文', hashtags: [] },
       source: 'frames',
       selectedImageIds: [],
+      platforms: ['douyin'],
     }),
     /预览/u,
   );
+});
+
+
+// ─── 平台选择与小红书合规开关（Task 8 收尾） ──────────────────────────────────
+
+test('toggleNotePlatform：不允许把最后一个平台取消掉，且顺序稳定', () => {
+  // 只剩一个时再点它 = 没变化（一个平台都不选的包没有意义，服务端也会 400）
+  assert.deepEqual(toggleNotePlatform(['douyin'], 'douyin'), ['douyin']);
+  // 加上小红书 → 按固定顺序排（不随点击顺序抖动，请求体才可比）
+  assert.deepEqual(toggleNotePlatform(['douyin'], 'xiaohongshu'), ['douyin', 'xiaohongshu']);
+  assert.deepEqual(toggleNotePlatform(['xiaohongshu'], 'douyin'), ['douyin', 'xiaohongshu']);
+  // 两个时取消一个仍然可以
+  assert.deepEqual(toggleNotePlatform(['douyin', 'xiaohongshu'], 'xiaohongshu'), ['douyin']);
+});
+
+test('getNotePlatformBlocker：选了小红书就必须声明 AI 合成内容', () => {
+  assert.equal(getNotePlatformBlocker(['douyin'], false), null, '抖音不要求那个声明');
+  assert.equal(getNotePlatformBlocker(['xiaohongshu'], true), null);
+  assert.match(getNotePlatformBlocker(['xiaohongshu'], false) ?? '', /AI合成内容/u);
+  assert.match(getNotePlatformBlocker([], true) ?? '', /至少选择一个发布平台/u);
+});
+
+test('buildNotePackageInput：选了小红书才带 xhsOptions；纯抖音包**不许**带', () => {
+  const preview = notePreview();
+  const copy = { title: '图文标题', description: '正文', hashtags: ['效率'] };
+
+  const xhs = buildNotePackageInput({
+    sourceJobId: 'job-1',
+    title: '作品标题',
+    preview,
+    copy,
+    source: 'frames',
+    selectedImageIds: [],
+    platforms: ['douyin', 'xiaohongshu'],
+    xhsOptions: { aiDeclaration: true, submit: false },
+  });
+  assert.deepEqual(xhs.platforms?.map((item) => item.platform), ['douyin', 'xiaohongshu']);
+  assert.deepEqual(xhs.xhsOptions, { aiDeclaration: true, submit: false });
+  // 两个平台的文案都取自同一份包级 noteCopy（服务端也会这么同步，避免两处漂移）
+  assert.deepEqual(xhs.platforms?.[1]?.copy, xhs.platforms?.[0]?.copy);
+
+  const douyinOnly = buildNotePackageInput({
+    sourceJobId: 'job-1',
+    title: '作品标题',
+    preview,
+    copy,
+    source: 'frames',
+    selectedImageIds: [],
+    platforms: ['douyin'],
+    // 即使调用方塞了，也不该进请求体 —— 它进 previewRevision，会给纯抖音包引入不一致的口径
+    xhsOptions: { aiDeclaration: true, submit: true },
+  });
+  assert.equal('xhsOptions' in douyinOnly, false);
+  assert.deepEqual(douyinOnly.platforms?.map((item) => item.platform), ['douyin']);
+});
+
+test('图文向导标题按所选平台写：只选小红书时不能再写着「抖音图文」', () => {
+  // 这是「文案指错平台」那类问题的守卫（标题栏以前写死「加入图文发布（抖音图文）」）。
+  assert.equal(notePublishDialogTitle(['douyin']), '加入图文发布（抖音图文）');
+  assert.equal(notePublishDialogTitle(['xiaohongshu']), '加入图文发布（小红书图文）');
+  assert.equal(notePublishDialogTitle(['douyin', 'xiaohongshu']), '加入图文发布（抖音 + 小红书图文）');
+  // 平台顺序不该影响标题（请求体顺序与 `NOTE_AUTOMATION_PLATFORMS` 对齐）。
+  assert.equal(notePublishDialogTitle(['xiaohongshu', 'douyin']), '加入图文发布（抖音 + 小红书图文）');
+  assert.equal(notePublishDialogTitle([]), '加入图文发布');
 });

@@ -1,5 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { Brain, CheckCircle2, Copy, Loader2, X } from 'lucide-react';
+import { Modal } from '../../components/ui/Modal';
+import { Button } from '../../components/ui/Button';
 
 export interface SkillViewData {
   skillName: string;
@@ -25,45 +27,15 @@ export interface SkillViewModalProps {
 export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) {
   const [tab, setTab] = useState<string>('skill');
   const [copied, setCopied] = useState(false);
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const previousFocusRef = useRef<HTMLElement | null>(null);
-
-  // Focus trap and Escape handling
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement as HTMLElement;
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-        return;
-      }
-      if (e.key !== 'Tab') return;
-      const focusable = dialog.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      );
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) return;
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    document.body.style.overflow = 'hidden';
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = '';
-      previousFocusRef.current?.focus();
-    };
-  }, [onClose]);
+  /*
+   * 焦点陷阱 / Esc / 滚动锁 / #root inert 全部交给共享的 `Modal`。
+   * 这里原本自己实现，但有两个真实缺陷：
+   *   ① 依赖数组是 `[onClose]`，而调用方传的是每次渲染新建的内联箭头函数
+   *      ⇒ 父组件一重渲染就 cleanup→setup，参考焦点被覆盖、且关闭时归位的焦点
+   *      可能已卸载；② `loading` 分支是**另一个 return**、没有挂 ref，
+   *      于是「dialog 为 null 就 return」让它永不注册 —— 那一帧里
+   *      `aria-modal="true"` 是假的（Esc 关不掉、Tab 能跑到遮罩后面、body 没锁滚动）。
+   */
 
   const getCurrentContent = useCallback((): string => {
     switch (tab) {
@@ -94,20 +66,28 @@ export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) 
     }
   }, [tab, data]);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(getCurrentContent());
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const [copyError, setCopyError] = useState('');
+  const handleCopy = async () => {
+    /* 改造前不 await 也不 catch：写剪贴板失败照样提示「已复制」，
+       用户粘贴出空内容会去怀疑 Skill 生成有问题。 */
+    try {
+      await navigator.clipboard.writeText(getCurrentContent());
+      setCopied(true);
+      setCopyError('');
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopyError('复制失败，请手动选择文本');
+    }
   };
 
   if (loading) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="加载 Skill 内容">
-        <div className="flex items-center gap-3 rounded-xl bg-white p-8 shadow-2xl">
-          <Loader2 size={24} className="animate-spin text-tech-purple" />
-          <span className="text-tech-text">加载 Skill 内容…</span>
+      <Modal open onClose={onClose} size="sm" ariaLabel="加载 Skill 内容">
+        <div className="flex items-center gap-3 py-3">
+          <Loader2 size={24} className="animate-spin text-ai" aria-hidden="true" />
+          <span className="text-ink">加载 Skill 内容…</span>
         </div>
-      </div>
+      </Modal>
     );
   }
 
@@ -127,34 +107,29 @@ export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) 
   const currentContent = getCurrentContent();
 
   return (
-    <div
-      ref={dialogRef}
-      role="dialog"
-      aria-modal="true"
-      aria-label={data.skillName}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-    >
-      <div className="flex h-[90vh] w-full max-w-4xl flex-col rounded-xl bg-white shadow-2xl">
+    <Modal open onClose={onClose} size="xl" ariaLabel={data.skillName} bodyClassName="p-0" hideClose>
+      <div className="flex h-[90vh] w-full flex-col">
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-tech-border px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-line px-6 py-4">
           <div className="flex min-w-0 items-center gap-3">
-            <Brain size={20} className="shrink-0 text-tech-purple" />
+            <Brain size={20} className="shrink-0 text-ai" />
             <div className="min-w-0">
-              <h2 id="skill-view-title" className="truncate text-lg font-semibold text-tech-text">{data.skillName}</h2>
-              <p className="mt-0.5 truncate text-xs text-tech-muted">{data.skillPath}</p>
+              <h2 id="skill-view-title" className="truncate text-lg font-semibold text-ink">{data.skillName}</h2>
+              <p className="mt-0.5 truncate text-xs text-ink-muted">{data.skillPath}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={handleCopy}
-              className="inline-flex items-center gap-2 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text transition-colors hover:bg-tech-bg"
+              className="inline-flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-sm font-medium text-ink transition-colors hover:bg-elevated"
             >
-              {copied ? <CheckCircle2 size={16} className="text-emerald-500" /> : <Copy size={16} />}
+              {copied ? <CheckCircle2 size={16} className="text-success" /> : <Copy size={16} />}
               {copied ? '已复制' : '复制'}
             </button>
+            {copyError && <span className="text-xs text-danger">{copyError}</span>}
             <button
               onClick={onClose}
-              className="rounded-lg p-2 text-tech-muted transition-colors hover:bg-tech-bg hover:text-tech-text"
+              className="rounded-lg p-2 text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
               aria-label="关闭 Skill 查看"
             >
               <X size={20} />
@@ -163,15 +138,15 @@ export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) 
         </div>
 
         {/* Tabs */}
-        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-tech-border bg-tech-bg px-6 py-2">
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-line bg-canvas px-6 py-2">
           {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
               className={`rounded-lg px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors ${
                 tab === t.id
-                  ? 'bg-white text-tech-text shadow-sm'
-                  : 'text-tech-muted hover:text-tech-text'
+                  ? 'bg-panel text-ink shadow-sm'
+                  : 'text-ink-muted hover:text-ink'
               }`}
             >
               {t.label}
@@ -190,22 +165,24 @@ export function SkillViewModal({ data, loading, onClose }: SkillViewModalProps) 
           tab === 'evals' ||
           tab.startsWith('tpl_') ? (
             <div className="p-6">
-              <div className="prose prose-sm max-w-none">
+              {/* `prose prose-sm` 在本项目里是**空转**的：package.json 没有
+                  @tailwindcss/typography，这两个类不产出任何样式。正文可读性靠限宽实现。 */}
+              <div className="max-w-[72ch]">
                 <RenderMarkdown content={currentContent} />
               </div>
             </div>
           ) : tab === 'source' ? (
-            <pre className="whitespace-pre-wrap p-6 font-mono text-sm leading-relaxed text-tech-text">
+            <pre className="whitespace-pre-wrap p-6 font-mono text-sm leading-relaxed text-ink">
               {data.sourceMarkdown || '(暂无原始来源)'}
             </pre>
           ) : (
-            <pre className="whitespace-pre-wrap p-6 font-mono text-sm leading-relaxed text-tech-text">
+            <pre className="whitespace-pre-wrap p-6 font-mono text-sm leading-relaxed text-ink">
               {JSON.stringify(data.meta, null, 2) || '(暂无元信息)'}
             </pre>
           )}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -223,7 +200,7 @@ export function RenderMarkdown({ content }: { content: string }) {
       elements.push(
         <pre
           key={elements.length}
-          className="my-3 overflow-x-auto rounded-lg border border-tech-border bg-tech-bg p-4"
+          className="my-3 overflow-x-auto rounded-lg border border-line bg-canvas p-4"
         >
           <code className="font-mono text-sm">{codeContent.trim()}</code>
         </pre>
@@ -259,7 +236,7 @@ export function RenderMarkdown({ content }: { content: string }) {
         elements.push(
           <div
             key={elements.length}
-            className="my-3 rounded-lg border border-tech-border bg-tech-bg p-3 font-mono text-sm text-tech-muted"
+            className="my-3 rounded-lg border border-line bg-canvas p-3 font-mono text-sm text-ink-muted"
           >
             {fmLines.map((fl, fi) => (
               <div key={fi}>{fl}</div>
@@ -274,7 +251,7 @@ export function RenderMarkdown({ content }: { content: string }) {
     // Headings
     if (line.startsWith('### ')) {
       elements.push(
-        <h3 key={elements.length} className="mt-5 mb-2 text-base font-semibold text-tech-text">
+        <h3 key={elements.length} className="mt-5 mb-2 text-base font-semibold text-ink">
           {line.slice(4)}
         </h3>
       );
@@ -284,7 +261,7 @@ export function RenderMarkdown({ content }: { content: string }) {
       elements.push(
         <h2
           key={elements.length}
-          className="mt-6 mb-3 border-b border-tech-border pb-1 text-lg font-bold text-tech-text"
+          className="mt-6 mb-3 border-b border-line pb-1 text-lg font-bold text-ink"
         >
           {line.slice(3)}
         </h2>
@@ -293,7 +270,7 @@ export function RenderMarkdown({ content }: { content: string }) {
     }
     if (line.startsWith('# ')) {
       elements.push(
-        <h1 key={elements.length} className="mt-6 mb-3 text-xl font-bold text-tech-text">
+        <h1 key={elements.length} className="mt-6 mb-3 text-xl font-bold text-ink">
           {line.slice(2)}
         </h1>
       );
@@ -304,8 +281,8 @@ export function RenderMarkdown({ content }: { content: string }) {
     const olMatch = line.match(/^(\d+)\.\s+(.+)/);
     if (olMatch) {
       elements.push(
-        <div key={elements.length} className="my-0.5 ml-4 flex gap-2 text-sm text-tech-text">
-          <span className="min-w-[1.5em] text-right text-tech-muted">{olMatch[1]}.</span>
+        <div key={elements.length} className="my-0.5 ml-4 flex gap-2 text-sm text-ink">
+          <span className="min-w-[1.5em] text-right text-ink-muted">{olMatch[1]}.</span>
           <span>{renderInline(olMatch[2])}</span>
         </div>
       );
@@ -316,8 +293,8 @@ export function RenderMarkdown({ content }: { content: string }) {
     if (/^[-*]\s+/.test(line)) {
       const text = line.replace(/^[-*]\s+/, '');
       elements.push(
-        <div key={elements.length} className="my-0.5 ml-4 flex gap-2 text-sm text-tech-text">
-          <span className="text-tech-muted">•</span>
+        <div key={elements.length} className="my-0.5 ml-4 flex gap-2 text-sm text-ink">
+          <span className="text-ink-muted">•</span>
           <span>{renderInline(text)}</span>
         </div>
       );
@@ -333,7 +310,7 @@ export function RenderMarkdown({ content }: { content: string }) {
     // Bold text only
     if (/^\*\*.+\*\*$/.test(line.trim())) {
       elements.push(
-        <p key={elements.length} className="my-1 text-sm font-semibold text-tech-text">
+        <p key={elements.length} className="my-1 text-sm font-semibold text-ink">
           {line.trim().replace(/\*\*/g, '')}
         </p>
       );
@@ -342,7 +319,7 @@ export function RenderMarkdown({ content }: { content: string }) {
 
     // Regular paragraph
     elements.push(
-      <p key={elements.length} className="my-1 text-sm leading-relaxed text-tech-text">
+      <p key={elements.length} className="my-1 text-sm leading-relaxed text-ink">
         {renderInline(line)}
       </p>
     );
@@ -367,7 +344,7 @@ export function renderInline(text: string): React.ReactNode {
     return codeParts.map((cp, j) => {
       if (cp.startsWith('`') && cp.endsWith('`')) {
         return (
-          <code key={j} className="rounded bg-tech-bg px-1 py-0.5 font-mono text-xs text-tech-purple">
+          <code key={j} className="rounded bg-canvas px-1 py-0.5 font-mono text-xs text-ai">
             {cp.slice(1, -1)}
           </code>
         );

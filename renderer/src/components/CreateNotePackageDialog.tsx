@@ -9,19 +9,24 @@ import type {
   AssetRecord,
   NoteImageSource,
   PlatformCopy,
+  PublishPlatform,
   PublishingPackageDetail,
   PublishingPreview,
 } from '../types';
 import {
   buildNotePackageInput,
   getNoteImageBlocker,
+  NOTE_AUTOMATION_PLATFORMS,
+  getNotePlatformBlocker,
   noteCopyFieldErrors,
+  notePublishDialogTitle,
   selectionOrder,
   toggleLibraryImage,
+  toggleNotePlatform,
 } from '../utils/notePackage';
 
 /**
- * 图文包（抖音图文）创建弹窗。
+ * 图文包（抖音 / 小红书图文）创建弹窗。
  *
  * 与视频向导 `CreatePublishPackageDialog` **相互独立**：图文与视频的资产口径、
  * 必填项、文案规则都不同，塞进同一个向导只会让两套规则纠缠（视频链路因此一行未改）。
@@ -45,6 +50,16 @@ export function CreateNotePackageDialog({ jobId, title, onClose }: Props) {
   const [libraryError, setLibraryError] = useState('');
   const [selectedImageIds, setSelectedImageIds] = useState<string[]>([]);
   const [copy, setCopy] = useState<PlatformCopy>(EMPTY_COPY);
+  // 平台与小红书发布选项。默认「只发抖音」+「已声明 AI」，与后端默认姿态一致（spec §10/§11）。
+  const [platforms, setPlatforms] = useState<PublishPlatform[]>(['douyin']);
+  /**
+   * 平台集合的稳定键：排序后拼接。
+   * 预览 effect 依赖它而不是数组引用 —— 数组每次渲染都是新引用，
+   * 直接依赖会在无关重渲染里反复打预览接口。
+   */
+  const platformKey = [...platforms].sort().join(',');
+  const [xhsAiDeclaration, setXhsAiDeclaration] = useState(true);
+  const [xhsSubmit, setXhsSubmit] = useState(false);
   const [preview, setPreview] = useState<PublishingPreview | undefined>();
   const [previewing, setPreviewing] = useState(true);
   const [previewError, setPreviewError] = useState('');
@@ -77,7 +92,12 @@ export function CreateNotePackageDialog({ jobId, title, onClose }: Props) {
       appRoot?.removeAttribute('aria-hidden');
       appRoot?.removeAttribute('inert');
       document.removeEventListener('keydown', onKeyDown);
-      requestAnimationFrame(() => previousFocus.current?.focus());
+      // ⚠️ 不用 rAF：窗口被遮挡时 Chromium 会完全节流 rAF（实测 800ms 内一次都不跑），
+      // 焦点就回不到触发按钮上。setTimeout 不受此影响。
+      setTimeout(() => {
+        const target = previousFocus.current;
+        if (target?.isConnected) target.focus();
+      }, 0);
     };
   }, []);
 
@@ -98,7 +118,22 @@ export function CreateNotePackageDialog({ jobId, title, onClose }: Props) {
     return () => { active = false; };
   }, []);
 
-  // 每次「来源 / 选择」变化都重新预览：它同时产出创建时必须回传的 previewRevision
+  /*
+   * 每次「来源 / 选择 / **所选平台**」变化都重新预览：它同时产出创建时必须回传的
+   * previewRevision。
+   *
+   * ⚠️ 平台必须参与，而且**要传真实所选平台**（改造前这里硬编码成 `['douyin']`）。
+   * 服务端的 `sourceRevision()` 会把平台列表排序后拼进哈希：
+   *   `hash.update([...platforms].sort().join(","))`
+   * 于是勾上「小红书」后，创建时服务端按 `['douyin','xiaohongshu']` 重算，
+   * 与预览时的 `['douyin']` 必然不等 → **409「源内容自预览后发生变化，请重新预览后创建」**，
+   * 而按提示重新预览仍然用 `['douyin']` ⇒ 重试永远失败、小红书流程在界面上不可达。
+   * 同一行还导致小红书 18 张的图片上限被当成抖音的 35 张（服务端按所选平台下发 imageLimit），
+   * 用户会建出 20 张的包、走到「提交到小红书」才吃 422。
+   *
+   * 依赖用 `platformKey`（排序后拼接的字符串）而不是数组本身：数组每次都是新引用，
+   * 用它会在一堆无关重渲染里反复打预览接口。
+   */
   useEffect(() => {
     // 素材库一张没选时预览会被服务端拒绝（400），此时交给 blocker 提示，不发这个请求
     if (source === 'library' && selectedImageIds.length === 0) {
@@ -112,7 +147,7 @@ export function CreateNotePackageDialog({ jobId, title, onClose }: Props) {
     previewToken.current = token;
     setPreviewing(true);
     setPreviewError('');
-    void apiClient.previewPublishing(jobId, ['douyin'], 'note', {
+    void apiClient.previewPublishing(jobId, platforms, 'note', {
       imageSource: source,
       ...(source === 'library' ? { imageAssetIds: selectedImageIds } : {}),
     }).then((result) => {
@@ -133,7 +168,8 @@ export function CreateNotePackageDialog({ jobId, title, onClose }: Props) {
     }).finally(() => {
       if (previewToken.current === token) setPreviewing(false);
     });
-  }, [jobId, source, selectedImageIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 用 platformKey 代替 platforms 引用
+  }, [jobId, source, selectedImageIds, platformKey]);
 
   const limits = preview?.copyLimits;
   const imageLimit = preview?.imageLimit ?? 35;
@@ -166,6 +202,8 @@ export function CreateNotePackageDialog({ jobId, title, onClose }: Props) {
         copy,
         source,
         selectedImageIds,
+        platforms,
+        xhsOptions: { aiDeclaration: xhsAiDeclaration, submit: xhsSubmit },
       })));
     } catch (requestError) {
       setError(parseApiError(requestError).message);
@@ -176,13 +214,13 @@ export function CreateNotePackageDialog({ jobId, title, onClose }: Props) {
 
   const dialog = (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" onMouseDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
-      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="note-publish-title" className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-tech-border bg-tech-surface shadow-2xl">
-        <header className="flex items-center justify-between border-b border-tech-border px-5 py-4">
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="note-publish-title" className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-line bg-panel shadow-2xl">
+        <header className="flex items-center justify-between border-b border-line px-5 py-4">
           <div>
-            <h2 id="note-publish-title" className="text-lg font-semibold text-tech-text">加入图文发布（抖音图文）</h2>
-            <p className="mt-1 text-sm text-tech-muted">图片会复制进交付包，之后删除源素材不影响已建好的包。</p>
+            <h2 id="note-publish-title" className="text-lg font-semibold text-ink">{notePublishDialogTitle(platforms)}</h2>
+            <p className="mt-1 text-sm text-ink-muted">图片会复制进交付包，之后删除源素材不影响已建好的包。</p>
           </div>
-          <button type="button" onClick={onClose} disabled={busy} aria-label="关闭" className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-tech-muted hover:bg-tech-bg hover:text-tech-text disabled:opacity-50">
+          <button type="button" onClick={onClose} disabled={busy} aria-label="关闭" className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-muted hover:bg-elevated hover:text-ink disabled:opacity-50">
             <X size={18} />
           </button>
         </header>
@@ -190,15 +228,15 @@ export function CreateNotePackageDialog({ jobId, title, onClose }: Props) {
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           {created ? (
             <div className="py-8 text-center">
-              <span className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-full bg-emerald-50 text-emerald-600"><Check size={24} /></span>
-              <h3 className="mt-4 text-xl font-semibold text-tech-text">图文包已创建</h3>
-              <p className="mt-2 text-sm text-tech-muted">
+              <span className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-full bg-success-soft text-success"><Check size={24} /></span>
+              <h3 className="mt-4 text-xl font-semibold text-ink">图文包已创建</h3>
+              <p className="mt-2 text-sm text-ink-muted">
                 v{created.package.version} · 共 {created.package.imagePaths?.length ?? 0} 张图片
               </p>
-              <p className="mt-2 text-sm text-tech-muted">到发布中心点「发布图文到抖音」，提交前会强制预览确认。</p>
+              <p className="mt-2 text-sm text-ink-muted">到发布中心点「发布图文到抖音」，提交前会强制预览确认。</p>
               <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
-                <button type="button" onClick={onClose} className="rounded-lg border border-tech-border px-4 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg">关闭</button>
-                <button type="button" onClick={() => navigate('/publishing')} className="rounded-lg bg-tech-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90">前往发布中心</button>
+                <button type="button" onClick={onClose} className="rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-elevated">关闭</button>
+                <button type="button" onClick={() => navigate('/publishing')} className="rounded-lg bg-ai px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90">前往发布中心</button>
               </div>
             </div>
           ) : (
@@ -215,6 +253,12 @@ export function CreateNotePackageDialog({ jobId, title, onClose }: Props) {
               titleCompressed={titleCompressed}
               selectedImageIds={selectedImageIds}
               onToggleImage={toggleImage}
+              platforms={platforms}
+              onTogglePlatform={(platform) => setPlatforms((current) => toggleNotePlatform(current, platform))}
+              xhsAiDeclaration={xhsAiDeclaration}
+              onXhsAiDeclarationChange={setXhsAiDeclaration}
+              xhsSubmit={xhsSubmit}
+              onXhsSubmitChange={setXhsSubmit}
               busy={busy}
               error={error || previewError}
               onCreate={() => void create()}
@@ -244,6 +288,15 @@ export interface NotePackageFormProps {
   /** 素材库选择，顺序即入包顺序。 */
   selectedImageIds: string[];
   onToggleImage: (assetId: string) => void;
+  /** 要建包的平台（至少一个）；抖音走外部 sau、小红书走自研执行器。 */
+  platforms: PublishPlatform[];
+  onTogglePlatform: (platform: PublishPlatform) => void;
+  /** 小红书合规开关：声明「笔记含AI合成内容」。默认开。 */
+  xhsAiDeclaration: boolean;
+  onXhsAiDeclarationChange: (value: boolean) => void;
+  /** 小红书最后一步：`true` = 由程序点发布；默认 `false`（只填到草稿，真人在 App 里点）。 */
+  xhsSubmit: boolean;
+  onXhsSubmitChange: (value: boolean) => void;
   busy: boolean;
   error: string;
   onCreate: () => void;
@@ -273,12 +326,14 @@ export function NotePackageForm(props: NotePackageFormProps) {
     limit: imageLimit,
   });
   const fieldErrors = limits ? noteCopyFieldErrors(copy, limits) : [];
-  const canCreate = !blocker && fieldErrors.length === 0 && Boolean(preview) && !previewing && !props.busy;
+  const platformBlocker = getNotePlatformBlocker(props.platforms, props.xhsAiDeclaration);
+  const canCreate = !blocker && !platformBlocker && fieldErrors.length === 0
+    && Boolean(preview) && !previewing && !props.busy;
 
   return (
     <div className="space-y-5">
       <section>
-        <h3 className="text-base font-semibold text-tech-text">图片来源</h3>
+        <h3 className="text-base font-semibold text-ink">图片来源</h3>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <SourceOption
             value="frames"
@@ -299,26 +354,26 @@ export function NotePackageForm(props: NotePackageFormProps) {
 
       <section>
         <div className="flex items-center justify-between gap-3">
-          <h3 className="text-base font-semibold text-tech-text">图片</h3>
-          <span className="text-xs text-tech-muted">
+          <h3 className="text-base font-semibold text-ink">图片</h3>
+          <span className="text-xs text-ink-muted">
             {source === 'library' ? `已选 ${selectedImageIds.length}/${imageLimit}` : `共 ${preview?.images?.length ?? 0} 张 · 上限 ${imageLimit} 张`}
           </span>
         </div>
 
-        {previewing && <p className="mt-3 text-sm text-tech-muted">正在准备图片清单…</p>}
+        {previewing && <p className="mt-3 text-sm text-ink-muted">正在准备图片清单…</p>}
 
         {source === 'frames' ? (
           <ul className="mt-3 space-y-1.5">
             {(preview?.images ?? []).map((image) => (
-              <li key={image.name} className="flex items-center justify-between rounded-lg border border-tech-border px-3 py-2 text-sm text-tech-text">
+              <li key={image.name} className="flex items-center justify-between rounded-lg border border-line px-3 py-2 text-sm text-ink">
                 <span className="truncate">{image.name}</span>
-                <span className="ml-3 shrink-0 text-xs text-tech-muted">{formatBytes(image.size)}</span>
+                <span className="ml-3 shrink-0 text-xs text-ink-muted">{formatBytes(image.size)}</span>
               </li>
             ))}
           </ul>
         ) : libraryImages.length === 0 ? (
           // 纯展示组件不挂路由：这里给的是「去哪儿上传」的明确指引，导航交给侧栏
-          <p className="mt-3 flex items-center gap-2 rounded-lg border border-dashed border-tech-border px-3 py-4 text-sm text-tech-muted">
+          <p className="mt-3 flex items-center gap-2 rounded-lg border border-dashed border-line px-3 py-4 text-sm text-ink-muted">
             <Images size={16} /> 素材库里还没有图片，请先到左侧「素材」页上传（jpg/png/webp，单张 ≤20MB）。
           </p>
         ) : (
@@ -333,17 +388,17 @@ export function NotePackageForm(props: NotePackageFormProps) {
                     onClick={() => props.onToggleImage(image.id)}
                     aria-pressed={order > 0}
                     aria-label={order > 0 ? `第 ${order} 张：${image.originalName}` : `选择 ${image.originalName}`}
-                    className={`w-full overflow-hidden rounded-lg border text-left transition-colors ${order > 0 ? 'border-tech-blue bg-blue-50' : 'border-tech-border hover:bg-tech-bg'}`}
+                    className={`w-full overflow-hidden rounded-lg border text-left transition-colors ${order > 0 ? 'border-accent-line bg-info-soft' : 'border-line hover:bg-elevated'}`}
                   >
-                    <span className="relative block aspect-video w-full bg-gray-100">
+                    <span className="relative block aspect-video w-full bg-elevated">
                       {url
                         ? <img src={url} alt={image.originalName} loading="lazy" className="h-full w-full object-cover" />
-                        : <span className="flex h-full w-full items-center justify-center text-xs text-tech-muted">图片</span>}
+                        : <span className="flex h-full w-full items-center justify-center text-xs text-ink-muted">图片</span>}
                       {order > 0 && (
-                        <span className="absolute left-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-tech-blue text-xs font-semibold text-white">{order}</span>
+                        <span className="absolute left-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-accent text-xs font-semibold text-on-accent">{order}</span>
                       )}
                     </span>
-                    <span className="block truncate px-2 py-1.5 text-xs text-tech-text">{image.originalName}</span>
+                    <span className="block truncate px-2 py-1.5 text-xs text-ink">{image.originalName}</span>
                   </button>
                 </li>
               );
@@ -351,34 +406,97 @@ export function NotePackageForm(props: NotePackageFormProps) {
           </ul>
         )}
 
-        {libraryError && <p className="mt-3 text-sm text-red-600" role="alert">素材库加载失败：{libraryError}</p>}
-        {blocker && <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{blocker}</p>}
+        {libraryError && <p className="mt-3 text-sm text-danger" role="alert">素材库加载失败：{libraryError}</p>}
+        {blocker && <p className="mt-3 rounded-lg border border-warning-line bg-warning-soft px-3 py-2 text-sm text-warning">{blocker}</p>}
       </section>
 
       <section className="space-y-3">
-        <h3 className="text-base font-semibold text-tech-text">图文文案</h3>
+        <h3 className="text-base font-semibold text-ink">发布平台</h3>
+        <div className="flex flex-wrap gap-2">
+          {NOTE_AUTOMATION_PLATFORMS.map((platform) => {
+            const checked = props.platforms.includes(platform);
+            const label = platform === 'douyin' ? '抖音' : '小红书';
+            return (
+              <button
+                key={platform}
+                type="button"
+                aria-pressed={checked}
+                onClick={() => props.onTogglePlatform(platform)}
+                className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors ${checked ? 'border-accent-line bg-accent-soft text-accent' : 'border-line text-ink-muted hover:bg-elevated hover:text-ink'}`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-xs leading-5 text-ink-muted">
+          抖音由外部引擎提交；小红书由自研执行器填写（默认只填到草稿，由你在小红书 App 里点发布）。
+          ⚠️ 自动化发布违反平台规则，风险由你的账号承担。
+        </p>
+
+        {props.platforms.includes('xiaohongshu') && (
+          <div className="space-y-2 rounded-lg border border-line bg-canvas p-3">
+            <label className="flex items-start gap-2 text-sm text-ink">
+              <input
+                type="checkbox"
+                checked={props.xhsAiDeclaration}
+                onChange={(event) => props.onXhsAiDeclarationChange(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                声明「笔记含AI合成内容」
+                <span className="mt-0.5 block text-xs text-ink-muted">
+                  小红书要求 AI 生成内容主动标识，未标识会被限制分发。取消勾选将无法创建小红书图文包。
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 text-sm text-ink">
+              <input
+                type="checkbox"
+                checked={props.xhsSubmit}
+                onChange={(event) => props.onXhsSubmitChange(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                创建后由程序点发布
+                <span className="mt-0.5 block text-xs text-ink-muted">
+                  推荐保持关闭：只把标题、正文、图片与 AI 声明填好并存为草稿，最后一下由你在 App 里点。
+                  打开后提交时会真的点「发布」，请自行评估账号风险。
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
+
+        {platformBlocker && (
+          <p className="rounded-lg border border-warning-line bg-warning-soft px-3 py-2 text-sm text-warning">{platformBlocker}</p>
+        )}
+      </section>
+
+      <section className="space-y-3">
+        <h3 className="text-base font-semibold text-ink">图文文案</h3>
         {titleCompressed && (
-          <p className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+          <p className="rounded-lg border border-info-line bg-info-soft px-3 py-2 text-sm text-info">
             原标题超过图文口径，已压缩到 {limits?.titleMax ?? 20} 字，可编辑。
           </p>
         )}
-        <label className="block text-sm font-medium text-tech-text">
+        <label className="block text-sm font-medium text-ink">
           标题
           {limits && (
-            <span className={`float-right text-xs font-normal ${[...copy.title].length > limits.titleMax ? 'text-red-600' : 'text-tech-muted'}`}>
+            <span className={`float-right text-xs font-normal ${[...copy.title].length > limits.titleMax ? 'text-danger' : 'text-ink-muted'}`}>
               {[...copy.title].length}/{limits.titleMax}
             </span>
           )}
           <input
             value={copy.title}
             onChange={(event) => props.onCopyChange('title', event.target.value)}
-            className="mt-2 w-full rounded-lg border border-tech-border px-3 py-2 text-sm outline-none focus:border-tech-blue focus:ring-2 focus:ring-blue-100"
+            className="mt-2 w-full rounded-lg border border-line-ui px-3 py-2 text-sm outline-none focus:border-accent-line focus:ring-2 focus:ring-accent"
           />
         </label>
-        <label className="block text-sm font-medium text-tech-text">
+        <label className="block text-sm font-medium text-ink">
           正文
           {limits && (
-            <span className={`float-right text-xs font-normal ${[...copy.description].length > limits.descriptionMax ? 'text-red-600' : 'text-tech-muted'}`}>
+            <span className={`float-right text-xs font-normal ${[...copy.description].length > limits.descriptionMax ? 'text-danger' : 'text-ink-muted'}`}>
               {[...copy.description].length}/{limits.descriptionMax}
             </span>
           )}
@@ -386,40 +504,40 @@ export function NotePackageForm(props: NotePackageFormProps) {
             value={copy.description}
             onChange={(event) => props.onCopyChange('description', event.target.value)}
             rows={6}
-            className="mt-2 w-full resize-y rounded-lg border border-tech-border px-3 py-2 text-sm outline-none focus:border-tech-blue focus:ring-2 focus:ring-blue-100"
+            className="mt-2 w-full resize-y rounded-lg border border-line-ui px-3 py-2 text-sm outline-none focus:border-accent-line focus:ring-2 focus:ring-accent"
           />
         </label>
-        <label className="block text-sm font-medium text-tech-text">
+        <label className="block text-sm font-medium text-ink">
           话题（空格分隔）
           {limits && (
-            <span className={`float-right text-xs font-normal ${copy.hashtags.length > limits.hashtagMax ? 'text-red-600' : 'text-tech-muted'}`}>
+            <span className={`float-right text-xs font-normal ${copy.hashtags.length > limits.hashtagMax ? 'text-danger' : 'text-ink-muted'}`}>
               {copy.hashtags.length}/{limits.hashtagMax}
             </span>
           )}
           <input
             value={copy.hashtags.join(' ')}
             onChange={(event) => props.onCopyChange('hashtags', event.target.value.split(/\s+/u).filter(Boolean))}
-            className="mt-2 w-full rounded-lg border border-tech-border px-3 py-2 text-sm outline-none focus:border-tech-blue focus:ring-2 focus:ring-blue-100"
+            className="mt-2 w-full rounded-lg border border-line-ui px-3 py-2 text-sm outline-none focus:border-accent-line focus:ring-2 focus:ring-accent"
           />
         </label>
-        {fieldErrors.map((message) => <p key={message} className="text-sm text-red-600">{message}</p>)}
+        {fieldErrors.map((message) => <p key={message} className="text-sm text-danger">{message}</p>)}
       </section>
 
-      {props.error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">{props.error}</p>}
+      {props.error && <p className="rounded-lg border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger" role="alert">{props.error}</p>}
 
       {/*
         操作行吸在滚动区底部：这个表单比弹窗高，若把「创建图文包」放在内容末尾，
         用户要先滚到底才能找到它 —— 本项目已经因为「入口藏起来」返工过两次。
       */}
-      <div className="sticky bottom-0 z-10 -mx-5 -mb-5 mt-4 flex items-center justify-between gap-3 border-t border-tech-border bg-tech-surface px-5 py-4">
-        <button type="button" onClick={props.onClose} disabled={props.busy} className="rounded-lg border border-tech-border px-4 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg disabled:opacity-50">
+      <div className="sticky bottom-0 z-10 -mx-5 -mb-5 mt-4 flex items-center justify-between gap-3 border-t border-line bg-panel px-5 py-4">
+        <button type="button" onClick={props.onClose} disabled={props.busy} className="rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink hover:bg-elevated disabled:opacity-50">
           取消
         </button>
         <button
           type="button"
           onClick={props.onCreate}
           disabled={!canCreate}
-          className="inline-flex items-center gap-2 rounded-lg bg-tech-purple px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+          className="inline-flex items-center gap-2 rounded-lg bg-ai px-4 py-2 text-sm font-medium text-on-accent hover:opacity-90 disabled:opacity-50"
         >
           {props.busy ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
           创建图文包
@@ -444,7 +562,7 @@ function SourceOption({
 }) {
   const active = value === current;
   return (
-    <label className={`flex cursor-pointer flex-col gap-1 rounded-lg border p-3 ${active ? 'border-tech-blue bg-blue-50' : 'border-tech-border hover:bg-tech-bg'}`}>
+    <label className={`flex cursor-pointer flex-col gap-1 rounded-lg border p-3 ${active ? 'border-accent-line bg-info-soft' : 'border-line hover:bg-elevated'}`}>
       <span className="flex items-center gap-2">
         <input
           type="radio"
@@ -454,9 +572,9 @@ function SourceOption({
           onChange={() => onSelect(value)}
           className="h-4 w-4 accent-tech-blue"
         />
-        <span className="font-medium text-tech-text">{label}</span>
+        <span className="font-medium text-ink">{label}</span>
       </span>
-      <span className="pl-6 text-xs text-tech-muted">{hint}</span>
+      <span className="pl-6 text-xs text-ink-muted">{hint}</span>
     </label>
   );
 }

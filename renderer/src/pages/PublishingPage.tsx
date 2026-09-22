@@ -9,7 +9,6 @@ import {
   ExternalLink,
   FolderOpen,
   ImageIcon,
-  Loader2,
   RefreshCw,
   Search,
   Send,
@@ -21,7 +20,7 @@ import { stripAnsi } from '../utils/display';
 import { desktop } from '../electron-bridge';
 import { apiClient, parseApiError } from '../services/api';
 import { useOperatorStore } from '../store/operator';
-import type { PublishPlatform, PublishTask, PublishingListFilters, PublishingListStatus, PublishingPackageDetail, PublishingPackagePreview } from '../types';
+import type { PublishTask, PublishingListFilters, PublishingListStatus, PublishingPackageDetail, PublishingPackagePreview } from '../types';
 import {
   formatPublishingCopy,
   formatDueNotification,
@@ -31,20 +30,29 @@ import {
   getPublishingAutoPublishBlocker,
   getPublishingAutoPublishHint,
   publishingNextStep,
+  publishingOpenPlatformTarget,
   groupPublishingPackages,
   PUBLISH_FILTERS,
   PUBLISH_STATUS_LABELS,
   PUBLISHING_PLATFORMS,
   PUBLISH_CHANNELS,
+  channelContentTypes,
   channelEmptyHint,
-  channelPlatformOptions,
+  contentTypeAfterChannelChange,
+  countChannelContentTypes,
   countChannelPackages,
   countStatusesInChannel,
   findPublishChannel,
+  selectChannelPackages,
   type PublishChannelId,
 } from '../utils/publishing';
+import type { PackageContentType } from '../types';
 import { PublishingActionDialog } from '../features/publishing/PublishingActionDialog';
 import { PublishingChannelTabs } from '../components/PublishingChannelTabs';
+import { PlatformLogo } from '../components/ui/PlatformLogo';
+import { EmptyState } from '../components/ui/EmptyState';
+import { Button } from '../components/ui/Button';
+import { PageHeader } from '../components/ui/PageHeader';
 
 interface ActionDialogConfig {
   type: 'confirm' | 'prompt' | 'edit-content' | 'withdraw';
@@ -68,9 +76,16 @@ export function PublishingPage() {
   const requestedChannel = params.get('channel');
   const channelId: PublishChannelId = PUBLISH_CHANNELS.some((item) => item.id === requestedChannel)
     ? (requestedChannel as PublishChannelId)
-    : 'douyin-note';
+    : 'douyin';
   const channel = findPublishChannel(channelId);
-  const [platform, setPlatform] = useState<PublishPlatform | ''>('');
+  // 二级「内容类型」子页签（`''` = 全部）。它只在真实数据多于一种时才渲染 —— 但 URL 里
+  // 可以留着一个当前不存在的值（比如包被删了），所以下面还要按实际类型收窄一次。
+  const requestedContentType = params.get('contentType');
+  const contentTypeParam: PackageContentType | '' = requestedContentType === 'note'
+    || requestedContentType === 'video'
+    || requestedContentType === 'article'
+    ? requestedContentType
+    : '';
   const [sourceJobId, setSourceJobId] = useState('');
   const [version, setVersion] = useState('');
   const [createdBy, setCreatedBy] = useState('');
@@ -79,9 +94,11 @@ export function PublishingPage() {
   const [packages, setPackages] = useState<PublishingPackageDetail[]>([]);
   /** 渠道页签的数字（来自不带状态筛选的那次请求）。 */
   const [channelCounts, setChannelCounts] = useState<Record<PublishChannelId, number>>({
-    'douyin-note': 0,
-    'toutiao-article': 0,
-    'video-manual': 0,
+    douyin: 0,
+    xiaohongshu: 0,
+    toutiao: 0,
+    'wechat-mp': 0,
+    other: 0,
   });
   /** 同一份「不带状态筛选」的结果，用来算当前渠道的状态页签计数。 */
   const [allForCounts, setAllForCounts] = useState<PublishingPackageDetail[]>([]);
@@ -104,7 +121,12 @@ export function PublishingPage() {
     mode: 'preview' | 'publish';
     /** 成片流的绝对 URL：相对路径在 Electron 里会打到 Vite 的开发代理（错误的后端）。 */
     videoUrl: string;
-  }>({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '' });
+    /**
+     * 小红书专用：`true` = 只填到草稿（服务端强制不点发布）。
+     * 由「填写到小红书（不提交）」这个动作置位，随预览态一起传到确认提交那一步。
+     */
+    dryRun: boolean;
+  }>({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '', dryRun: false });
   const [actionDialog, setActionDialog] = useState<ActionDialogConfig & { open: boolean; busy?: boolean; resolve: ((value: any) => void) | null }>({
     type: 'confirm',
     title: '',
@@ -120,39 +142,48 @@ export function PublishingPage() {
 
   /**
    * 改视图只动该动的参数：此前状态页签用 `setParams({status})` 整体替换 query，
-   * 加了渠道之后那会把 `?channel=` 一起冲掉（点一下状态就跳回抖音图文）。
+   * 加了渠道之后那会把 `?channel=` 一起冲掉（点一下状态就跳回抖音）。
    * 缺省值不写进 URL，链接保持干净。
    */
-  const setView = useCallback((next: { channel?: PublishChannelId; status?: PublishingListStatus }) => {
+  const setView = useCallback((next: {
+    channel?: PublishChannelId;
+    status?: PublishingListStatus;
+    contentType?: PackageContentType | '';
+  }) => {
     const merged = new URLSearchParams(params);
     if (next.channel !== undefined) merged.set('channel', next.channel);
     if (next.status !== undefined) merged.set('status', next.status);
-    if (merged.get('channel') === 'douyin-note') merged.delete('channel');
+    if (next.contentType !== undefined) {
+      if (next.contentType) merged.set('contentType', next.contentType);
+      else merged.delete('contentType');
+    }
+    if (merged.get('channel') === 'douyin') merged.delete('channel');
     if (merged.get('status') === 'action') merged.delete('status');
     setParams(merged);
   }, [params, setParams]);
 
+  // ⚠️ 渠道**不**在这里下发给服务端：渠道 = 平台，而服务端的 `platform` 是单值过滤，
+  // 表达不了「其它平台（视频号 + B站）」这种多平台页签；`contentType` 过滤同理被内容类型
+  // 子页签取代。所以这里只保留状态（语义只有服务端一份）与那几个正交筛选，
+  // 渠道维度由下面的 `selectChannelPackages()` 在客户端收窄（见 utils/publishing.ts 顶部说明）。
   const filters = useMemo<PublishingListFilters>(() => ({
     status,
-    // 渠道就是内容类型（见 spec）：服务端按它过滤，状态语义仍由服务端定义。
-    contentType: channel.contentType,
-    ...(platform ? { platform } : {}),
     ...(sourceJobId.trim() ? { sourceJobId: sourceJobId.trim() } : {}),
     ...(Number(version) > 0 ? { version: Number(version) } : {}),
     ...(createdBy.trim() ? { createdBy: createdBy.trim() } : {}),
     ...(search.trim() ? { search: search.trim() } : {}),
-  }), [channel.contentType, createdBy, platform, search, sourceJobId, status, version]);
+  }), [createdBy, search, sourceJobId, status, version]);
 
-  // 计数用的那一次请求**不带 status、不带渠道**：否则「失败」在「待处理」视图里永远显示 0
-  // （这就是改动前那版「局部计数」的毛病）。
+  // 计数用的那一次请求**不带 status**：否则「失败」在「待处理」视图里永远显示 0
+  // （这就是改动前那版「局部计数」的毛病）。渠道/内容类型同样不在服务端筛 ——
+  // 这份结果必须覆盖全部渠道，否则别的渠道的包数会跟着当前视图一起塌掉。
   const countFilters = useMemo<PublishingListFilters>(() => ({
     status: 'all',
-    ...(platform ? { platform } : {}),
     ...(sourceJobId.trim() ? { sourceJobId: sourceJobId.trim() } : {}),
     ...(Number(version) > 0 ? { version: Number(version) } : {}),
     ...(createdBy.trim() ? { createdBy: createdBy.trim() } : {}),
     ...(search.trim() ? { search: search.trim() } : {}),
-  }), [createdBy, platform, search, sourceJobId, version]);
+  }), [createdBy, search, sourceJobId, version]);
 
   const load = useCallback(async () => {
     const sequence = ++loadSequence.current;
@@ -232,13 +263,17 @@ export function PublishingPage() {
       return;
     }
     if (action === 'open-platform') {
-      if (!detail.package.coverPath) {
+      // 封面只对**视频 / 文章**包有意义；图文包的资产是图片，对它弹「缺少封面」纯属虚惊
+      // （2026-09-21 顺手修：小红书图文包点「打开平台」时会先被问一句莫名其妙的封面）。
+      if (!detail.package.coverPath && (detail.package.contentType ?? 'video') !== 'note') {
         const confirmed = await showDialog({ type: 'confirm', title: '缺少封面', description: '当前发布包没有封面，仍然打开平台吗？', tone: 'warning' });
         if (!confirmed) return;
       }
-      const policy = PUBLISHING_PLATFORMS.find((item) => item.id === task.platform)!;
+      // ⚠️ 开哪个地址由**内容类型 + 平台**决定：小红书图文要去的是草稿箱所在的创作中心首页，
+      // 而不是平台表里的「发布新笔记」页（见 `publishingOpenPlatformTarget` 的说明）。
+      const target = publishingOpenPlatformTarget(detail, task);
       try {
-        const result = await desktop.openExternal(policy.creatorUrl);
+        const result = await desktop.openExternal(target.url);
         if (!result.available) await recordDesktopError(task, 'open_platform', '当前环境不支持打开外部发布平台');
       } catch {
         await recordDesktopError(task, 'open_platform', '无法打开官方发布平台');
@@ -291,6 +326,17 @@ export function PublishingPage() {
       return;
     }
 
+    // 小红书两个动作都走「必经预览」：`fill-xhs` 带 `dryRun`（服务端强制不点发布），
+    // `submit-xhs` 不带（由包上的 `xhsOptions.submit` 决定，那份声明已进 previewRevision）。
+    if (action === 'fill-xhs' || action === 'submit-xhs') {
+      const blocker = getPublishingAutoPublishBlocker(detail, task);
+      if (blocker) {
+        setError(blocker);
+        return;
+      }
+      await openPackagePreview(detail.package.id, 'publish', task.id, action === 'fill-xhs');
+      return;
+    }
     if (action === 'auto-publish') {
       const blocker = getPublishingAutoPublishBlocker(detail, task);
       if (blocker) {
@@ -373,17 +419,22 @@ export function PublishingPage() {
   };
 
   /** 打开预览弹窗：先取包级预览，视频包再把成片流解析成绝对 URL。 */
-  const openPackagePreview = async (packageId: string, mode: 'preview' | 'publish', taskId: string) => {
+  const openPackagePreview = async (
+    packageId: string,
+    mode: 'preview' | 'publish',
+    taskId: string,
+    dryRun = false,
+  ) => {
     const preview = await run(() => apiClient.getPublishingPackagePreview(packageId), '');
     if (!preview) return;
     const videoUrl = preview.package.contentType === 'note'
       ? ''
       : await apiClient.getJobVideoStreamUrl(preview.package.sourceJobId).catch(() => '');
-    setPublishPreview({ open: true, busy: false, preview, taskId, mode, videoUrl });
+    setPublishPreview({ open: true, busy: false, preview, taskId, mode, videoUrl, dryRun });
   };
 
   const confirmPublish = async () => {
-    const { preview, taskId } = publishPreview;
+    const { preview, taskId, dryRun } = publishPreview;
     if (!preview) return;
     setPublishPreview((current) => ({ ...current, busy: true }));
     // 成功提示也要按平台取文案（头条任务说「抖音后台」是误导）。
@@ -391,10 +442,12 @@ export function PublishingPage() {
       ?? preview.tasks[0]?.platform
       ?? 'douyin';
     const task = await run(
-      () => apiClient.autoPublishPublishingTask(taskId, preview.previewRevision),
-      `已提交，请在${publishingPlatformLabel(platform)}后台确认后点「标记已发布」`,
+      () => apiClient.autoPublishPublishingTask(taskId, preview.previewRevision, dryRun ? { dryRun: true } : {}),
+      dryRun
+        ? `已填写到${publishingPlatformLabel(platform)}草稿，请到 App 里核对后自行发布`
+        : `已提交，请在${publishingPlatformLabel(platform)}后台确认后点「标记已发布」`,
     );
-    setPublishPreview({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '' });
+    setPublishPreview({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '', dryRun: false });
     // 提交后落在 awaiting_code 时，直接把验证码入口摆出来（图文通路当前不触发，见 spec §7）
     if (task?.autoPublish?.status === 'awaiting_code') {
       const code = await showDialog<string>({
@@ -409,12 +462,28 @@ export function PublishingPage() {
     }
   };
 
-  const groups = groupPublishingPackages(packages);
-  const statusCounts = useMemo(() => countStatusesInChannel(allForCounts, channelId), [allForCounts, channelId]);
-  const platformOptions = useMemo(() => channelPlatformOptions(channelId), [channelId]);
-  const hasExtraFilters = Boolean(
-    platform || sourceJobId.trim() || version.trim() || createdBy.trim() || search.trim(),
+  // ── 渠道维度在客户端收窄（服务端只管 status 与那几个正交筛选）──
+  // 子页签只在**实际出现多于一种内容类型**时才渲染；URL 里那个值若在当前渠道已经不存在
+  // （包被删了、或换了渠道），就按「全部」处理 —— 否则会出现一屏空列表却看不出原因。
+  const contentTypes = useMemo(() => channelContentTypes(allForCounts, channelId), [allForCounts, channelId]);
+  const contentTypeCounts = useMemo(() => countChannelContentTypes(allForCounts, channelId), [allForCounts, channelId]);
+  const activeContentType: PackageContentType | '' = contentTypeParam && contentTypes.includes(contentTypeParam)
+    ? contentTypeParam
+    : '';
+  const visiblePackages = useMemo(
+    () => selectChannelPackages(packages, channelId, activeContentType),
+    [packages, channelId, activeContentType],
   );
+  const groups = groupPublishingPackages(visiblePackages);
+  const statusCounts = useMemo(
+    () => countStatusesInChannel(allForCounts, channelId, activeContentType),
+    [allForCounts, channelId, activeContentType],
+  );
+  const hasExtraFilters = Boolean(
+    sourceJobId.trim() || version.trim() || createdBy.trim() || search.trim(),
+  );
+  /** 该渠道下的包数（不含垃圾桶）：用来区分「这个渠道真的没有包」与「只是当前状态/筛选下没有」。 */
+  const channelTotal = channelCounts[channelId] ?? 0;
 
   // ── Mobile bottom bar: primary actions for expanded packages ──
   const mobileBarActions = useMemo(() => {
@@ -439,37 +508,49 @@ export function PublishingPage() {
 
   return (
     <Layout>
-      <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <h1 className="mt-2 text-3xl font-semibold text-tech-text">发布中心</h1>
-          <p className="mt-2 text-tech-muted">整理交付包、复制文案并跟踪人工发布状态。</p>
-        </div>
-        <button type="button" onClick={() => void load()} disabled={loading || !currentUser} className="inline-flex items-center justify-center gap-2 rounded-lg border border-tech-border px-4 py-2.5 text-sm font-medium text-tech-text hover:bg-tech-surface disabled:opacity-50">
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> 刷新
-        </button>
-      </div>
+      <PageHeader
+        title="发布中心"
+        description={
+          <>
+            按渠道整理交付包。抖音图文、小红书图文与头条文章可自动提交，提交前必经预览；视频与其它平台只准备交付包，由你手动发布。
+          </>
+        }
+        actions={
+          <Button variant="outline" onClick={() => void load()} disabled={loading || !currentUser}>
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+            刷新
+          </Button>
+        }
+      />
 
-      {!desktop.capabilities.showNotification && <div className="mb-4 flex items-start gap-2 border-l-4 border-amber-400 bg-amber-50 px-4 py-3 text-sm text-amber-800"><AlertTriangle size={17} className="mt-0.5 shrink-0" />浏览器模式不会显示系统排期通知，任务状态仍会正常更新。</div>}
+      {/* 说明：本页副标题曾写作「人工交付」，而 2026-09-21 之后这里已能自动提交
+          三条通路 —— 把「自动发布」说成「人工交付」会让用户低估小红书的账号风险。 */}
+
+      {!desktop.capabilities.showNotification && <div className="mb-4 flex items-start gap-2 border-l-4 border-warning-line bg-warning-soft px-4 py-3 text-sm text-warning"><AlertTriangle size={17} className="mt-0.5 shrink-0" />浏览器模式不会显示系统排期通知，任务状态仍会正常更新。</div>}
       {!currentUser ? (
-        <div className="border-y border-tech-border py-16 text-center"><p className="text-lg font-semibold text-tech-text">本机操作者未就绪</p><p className="mt-2 text-sm text-tech-muted">请重试后再查看发布任务。</p></div>
+        <div className="border-y border-line py-16 text-center"><p className="text-lg font-semibold text-ink">本机操作者未就绪</p><p className="mt-2 text-sm text-ink-muted">请重试后再查看发布任务。</p></div>
       ) : (
         <>
-          {/* 一级「渠道」：抖音图文 / 今日头条文章 / 视频人工交付（三者的提交方式完全不同） */}
+          {/* 一级「渠道」= 平台；二级「内容类型」子页签只在真的有多种类型时出现 */}
           <PublishingChannelTabs
             active={channelId}
             counts={channelCounts}
+            contentTypes={contentTypes}
+            contentTypeCounts={contentTypeCounts}
+            activeContentType={activeContentType}
             onSelect={(next) => {
-              // 换渠道时清掉平台筛选：单平台渠道没有下拉，留着别的平台的筛选会把列表筛空。
-              setPlatform('');
-              setView({ channel: next });
+              // 换渠道时顺手把内容类型子页签收进合法范围：新渠道里还有这个类型就留着，
+              // 没有就回到「全部」—— 与旧版「换渠道清掉平台筛选」同一个意图：不制造必然筛空的视图。
+              setView({ channel: next, contentType: contentTypeAfterChannelChange(allForCounts, next, activeContentType) });
             }}
+            onSelectContentType={(next) => setView({ contentType: next })}
           />
           {/* Status filter chips with counts（计数取自不带状态筛选的那次请求，不再只数当前视图） */}
-          <div className="mb-3 flex gap-2 overflow-x-auto border-b border-tech-border pb-3">
+          <div className="mb-3 flex gap-2 overflow-x-auto border-b border-line pb-3">
             {PUBLISH_FILTERS.map((item) => {
               const count = statusCounts[item.id];
               return (
-                <button key={item.id} type="button" onClick={() => setView({ status: item.id })} className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${status === item.id ? 'bg-blue-50 text-tech-blue' : 'text-tech-muted hover:bg-tech-surface'}`}>
+                <button key={item.id} type="button" onClick={() => setView({ status: item.id })} className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${status === item.id ? 'bg-accent-soft text-accent' : 'text-ink-muted hover:bg-panel'}`}>
                   {item.label}
                   {count > 0 && <span className="ml-1.5 text-xs opacity-70">{count}</span>}
                 </button>
@@ -479,17 +560,15 @@ export function PublishingPage() {
           {/* Primary filters: always visible */}
           <div className="mb-3 grid gap-3 md:grid-cols-2">
             <FilterInput icon={<Search size={15} />} value={search} onChange={setSearch} placeholder="搜索标题/文案" />
-            {/* 单平台渠道（抖音图文 / 今日头条文章）不给平台下拉：只有一条通路，给了只会制造矛盾操作 */}
-            {platformOptions.length > 0 && (
-              <select value={platform} onChange={(event) => setPlatform(event.target.value as PublishPlatform | '')} className="rounded-lg border border-tech-border bg-tech-surface px-3 py-2 text-sm text-tech-text"><option value="">全部平台</option>{platformOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select>
-            )}
+            {/* 平台下拉已随改版移除：一级页签本身就是平台，再给一个平台筛选只会出现
+                「在抖音页签里筛今日头条」这种自相矛盾的操作（旧版只在单平台渠道才隐藏它）。 */}
           </div>
           {/* More filters toggle */}
           <div className="mb-3">
             <button
               type="button"
               onClick={() => setShowMoreFilters((v) => !v)}
-              className="inline-flex items-center gap-1.5 text-sm text-tech-muted hover:text-tech-text transition-colors"
+              className="inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink transition-colors"
             >
               {showMoreFilters ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
               更多筛选
@@ -497,19 +576,70 @@ export function PublishingPage() {
           </div>
           {/* Extended filters: collapsed by default */}
           {showMoreFilters && (
-            <div className="mb-6 grid gap-3 border-t border-tech-border pt-4 md:grid-cols-3">
+            <div className="mb-6 grid gap-3 border-t border-line pt-4 md:grid-cols-3">
               <FilterInput value={sourceJobId} onChange={setSourceJobId} placeholder="源任务 ID" />
               <FilterInput value={version} onChange={setVersion} placeholder="版本号" type="number" />
               <FilterInput value={createdBy} onChange={setCreatedBy} placeholder="创建者 ID" />
-              <button type="button" onClick={() => { setPlatform(''); setSourceJobId(''); setVersion(''); setCreatedBy(''); setSearch(''); }} className="rounded-lg border border-tech-border px-3 py-2 text-sm text-tech-muted hover:bg-tech-surface self-end">清空筛选</button>
+              <button type="button" onClick={() => { setSourceJobId(''); setVersion(''); setCreatedBy(''); setSearch(''); }} className="rounded-lg border border-line px-3 py-2 text-sm text-ink-muted hover:bg-panel self-end">清空筛选</button>
             </div>
           )}
 
-          {error && <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700" role="alert">{error}</p>}
-          {feedback && <p className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700"><Check size={16} />{feedback}</p>}
-          {loading ? <div className="flex justify-center py-20"><Loader2 className="animate-spin text-tech-blue" size={32} /></div> : groups.length === 0 ? <div className="border-y border-tech-border py-16 text-center"><p className="font-semibold text-tech-text">{hasExtraFilters ? '没有符合条件的发布包' : `${channel.label}里还没有发布包`}</p><p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-tech-muted">{hasExtraFilters ? '换个筛选条件，或点「清空筛选」重来。' : channelEmptyHint(channelId)}</p></div> : (
+          {error && groups.length > 0 && <p className="mb-4 rounded-lg border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger" role="alert">{error}</p>}
+          {feedback && <p className="mb-4 flex items-center gap-2 rounded-lg border border-success-line bg-success-soft px-4 py-3 text-sm text-success"><Check size={16} />{feedback}</p>}
+          {loading && groups.length === 0 ? (
+            /* 骨架屏（改造前全站只有整页转圈，内容到达时整块跳变） */
+            <PackageListSkeleton />
+          ) : error && groups.length === 0 ? (
+            /*
+             * ⚠️ 错误态与空态**必须互斥**。改造前这里只判断 `groups.length === 0`，
+             * 于是后端挂掉时会同时显示「加载失败」和「还没有发布包」—— 用户会以为
+             * 自己的发布包没了，而不是后端没连上。同一个写法在 JobListPage /
+             * TrashPage / CollectionListPage 上都有（见审查报告 S4）。
+             */
+            <EmptyState
+              icon={AlertTriangle}
+              title="发布包列表加载失败"
+              description={error}
+              action={<Button variant="outline" onClick={() => void load()}>重试</Button>}
+            />
+          ) : groups.length === 0 ? (
+            <EmptyState
+              icon={Send}
+              title={
+                hasExtraFilters
+                  ? '没有符合条件的发布包'
+                  : channelTotal > 0
+                    ? `${channel.label}下这个状态下没有发布包`
+                    : `${channel.label}里还没有发布包`
+              }
+              description={
+                hasExtraFilters
+                  ? '换个筛选条件，或点「清空筛选」重来。'
+                  : channelTotal > 0
+                    ? '换个状态页签，或点「全部」看看这个渠道下的所有发布包。'
+                    : channelEmptyHint(channelId)
+              }
+              action={
+                hasExtraFilters ? (
+                  <Button variant="outline" onClick={() => { setSourceJobId(''); setVersion(''); setCreatedBy(''); setSearch(''); }}>
+                    清空筛选
+                  </Button>
+                ) : undefined
+              }
+            />
+          ) : (
             <div className="space-y-6 pb-20 md:pb-0">
-              {groups.map((group) => <section key={group.sourceJobId} className="overflow-hidden rounded-lg border border-tech-border bg-tech-surface"><header className="flex flex-col gap-1 border-b border-tech-border px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-semibold text-tech-text">{group.title}</h2></div><span className="text-sm text-tech-muted">{group.versions.length} 个版本</span></header><div className="divide-y divide-tech-border">{group.versions.map((detail) => <PackageRow key={detail.package.id} detail={detail} sourceJobId={group.sourceJobId} role={currentUser.role} expanded={expanded.has(detail.package.id)} busy={busyAction} onToggle={() => setExpanded((value) => { const next = new Set(value); next.has(detail.package.id) ? next.delete(detail.package.id) : next.add(detail.package.id); return next; })} onAction={handleTaskAction} />)}</div></section>)}
+              {groups.map((group) => (
+                <section key={group.sourceJobId} className="overflow-hidden rounded-xl border border-line bg-panel">
+                  <header className="flex flex-col gap-1 border-b border-line px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                    <h2 className="min-w-0 truncate font-display text-lg font-semibold text-ink">{group.title}</h2>
+                    <span className="shrink-0 text-sm tabular text-ink-muted">{group.versions.length} 个版本</span>
+                  </header>
+                  <div className="divide-y divide-line">
+                    {group.versions.map((detail) => <PackageRow key={detail.package.id} detail={detail} sourceJobId={group.sourceJobId} role={currentUser.role} expanded={expanded.has(detail.package.id)} busy={busyAction} onToggle={() => setExpanded((value) => { const next = new Set(value); next.has(detail.package.id) ? next.delete(detail.package.id) : next.add(detail.package.id); return next; })} onAction={handleTaskAction} />)}
+                  </div>
+                </section>
+              ))}
             </div>
           )}
         </>
@@ -517,7 +647,7 @@ export function PublishingPage() {
 
       {/* Mobile bottom action bar */}
       {mobileBarActions.length > 0 && (
-        <div className="fixed bottom-0 inset-x-0 z-40 border-t border-tech-border bg-white px-4 py-3 md:hidden">
+        <div className="fixed bottom-0 inset-x-0 z-40 border-t border-line bg-panel px-4 py-3 md:hidden">
           <div className="flex gap-2">
             {mobileBarActions.map(({ label, action, detail, task }) => (
               <button
@@ -527,8 +657,8 @@ export function PublishingPage() {
                 onClick={() => void handleTaskAction(detail, task, action)}
                 className={`flex-1 rounded-lg px-3 py-2.5 text-sm font-medium disabled:opacity-50 ${
                   action === 'mark-published' || action === 'open-platform'
-                    ? 'bg-tech-blue text-white'
-                    : 'border border-tech-border text-tech-text'
+                    ? 'bg-accent text-on-accent'
+                    : 'border border-line text-ink'
                 }`}
               >
                 {label}
@@ -571,16 +701,16 @@ export function PublishingPage() {
             ?? publishPreview.preview?.tasks[0]?.platform
             ?? 'douyin',
         )}
-        onClose={() => setPublishPreview({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '' })}
+        onClose={() => setPublishPreview({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '', dryRun: false })}
         onConfirm={publishPreview.mode === 'publish' ? () => void confirmPublish() : undefined}
       />
     </Layout>
   );
 }
 
-function PackageRow({ detail, sourceJobId, role, expanded, busy, onToggle, onAction }: { detail: PublishingPackageDetail; sourceJobId: string; role: 'admin' | 'publisher'; expanded: boolean; busy: boolean; onToggle: () => void; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
+export function PackageRow({ detail, sourceJobId, role, expanded, busy, onToggle, onAction }: { detail: PublishingPackageDetail; sourceJobId: string; role: 'admin' | 'publisher'; expanded: boolean; busy: boolean; onToggle: () => void; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const pkg = detail.package;
-  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-tech-bg"><CoverThumbnail packageId={pkg.id} title={pkg.title} hasCover={Boolean(pkg.coverPath)} /><span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-purple-50 text-sm font-bold text-tech-purple">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-tech-text">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">垃圾桶</span>}</div><p className="mt-1 text-xs text-tech-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p><p className="mt-1 text-xs font-medium text-tech-blue">下一步：{publishingNextStep(detail)}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-tech-border bg-tech-bg/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} busy={busy} onAction={onAction} />)}</div><details className="mt-4 border-t border-tech-border pt-4"><summary className="cursor-pointer text-sm font-medium text-tech-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-tech-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-tech-text">{event.actor.displayName} · {event.action}{event.reason ? ` · ${stripAnsi(event.reason)}` : ''}</span></li>)}</ol></details>{sourceJobId && <p className="mt-3 text-xs text-tech-muted">源任务 {sourceJobId}</p>}</div>}</div>;
+  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-elevated"><CoverThumbnail packageId={pkg.id} title={pkg.title} hasCover={Boolean(pkg.coverPath)} /><span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ai-soft text-sm font-bold text-ai">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-ink">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-elevated px-2 py-1 text-xs text-ink-muted">垃圾桶</span>}</div><p className="mt-1 text-xs text-ink-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p><p className="mt-1 text-xs font-medium text-accent">下一步：{publishingNextStep(detail)}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-line bg-canvas/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} busy={busy} onAction={onAction} />)}</div><details className="mt-4 border-t border-line pt-4"><summary className="cursor-pointer text-sm font-medium text-ink-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-ink-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-ink">{event.actor.displayName} · {event.action}{event.reason ? ` · ${stripAnsi(event.reason)}` : ''}</span></li>)}</ol></details>{sourceJobId && <p className="mt-3 text-xs text-ink-muted">源任务 {sourceJobId}</p>}</div>}</div>;
 }
 
 function CoverThumbnail({ packageId, title, hasCover }: { packageId: string; title: string; hasCover: boolean }) {
@@ -599,29 +729,119 @@ function CoverThumbnail({ packageId, title, hasCover }: { packageId: string; tit
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [hasCover, packageId]);
-  return <span className="flex h-16 w-11 shrink-0 items-center justify-center overflow-hidden rounded-md bg-tech-bg text-tech-muted">{url ? <img src={url} alt={`${title}封面`} className="h-full w-full object-cover" /> : <ImageIcon size={18} aria-hidden="true" />}</span>;
+  return <span className="flex h-16 w-11 shrink-0 items-center justify-center overflow-hidden rounded-md bg-canvas text-ink-muted">{url ? <img src={url} alt={`${title}封面`} className="h-full w-full object-cover" /> : <ImageIcon size={18} aria-hidden="true" />}</span>;
 }
 
 
-function TaskRow({ detail, task, role, busy, onAction }: { detail: PublishingPackageDetail; task: PublishTask; role: 'admin' | 'publisher'; busy: boolean; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
+export function TaskRow({ detail, task, role, busy, onAction }: { detail: PublishingPackageDetail; task: PublishTask; role: 'admin' | 'publisher'; busy: boolean; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const policy = PUBLISHING_PLATFORMS.find((item) => item.id === task.platform)!;
   const actions = getPublishingActionIds(detail, task, role);
-  const labels: Record<string, string> = { 'copy-title': '复制标题', 'copy-description': '复制正文', 'copy-hashtags': '复制标签', 'copy-full': '复制全部', 'show-in-finder': 'Finder', 'open-platform': '打开平台', 'edit-content': '编辑文案', schedule: '修改排期', 'mark-published': '标记已发布', 'record-failure': '记录失败', cancel: '取消任务', restore: '恢复任务', 'create-version': '创建新版本', withdraw: '撤回本地状态', 'trash-package': '删除发布包', 'restore-package': '恢复发布包', 'auto-publish': task.platform === 'toutiao' ? '提交到头条号' : '发布图文到抖音', 'submit-code': '提交验证码', preview: '预览', 'download-article': '下载文章 HTML' };
-  return <div className="rounded-lg border border-tech-border bg-tech-surface p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-semibold text-tech-text">{policy.label}</span><StatusBadge task={task} /><span className="text-xs text-tech-muted">版本 {task.contentRevision} · {task.copySource === 'user_edited' ? '已编辑' : task.copySource === 'ai' ? 'AI' : '洗稿回退'}</span></div><p className="mt-2 font-medium text-tech-text">{task.title}</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-tech-muted">{task.description}</p><p className="mt-2 text-sm text-tech-purple">{formatPublishingCopy(task).hashtags}</p>{task.scheduledAt && <p className="mt-2 text-xs text-tech-muted">计划 {new Date(task.scheduledAt).toLocaleString('zh-CN')}</p>}{task.publishedAt && <p className="mt-1 text-xs text-emerald-600">发布于 {new Date(task.publishedAt).toLocaleString('zh-CN')}</p>}{task.lastError && <p className="mt-2 text-sm text-red-600">{task.lastError}</p>}<AutoPublishHint task={task} /></div><div className="flex max-w-md flex-wrap gap-2 lg:justify-end">{actions.map((action) => <button key={action} type="button" title={labels[action]} disabled={busy} onClick={() => void onAction(detail, task, action)} className={`rounded-lg border px-2.5 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${action === 'mark-published' || action === 'open-platform' || action === 'auto-publish' ? 'border-tech-blue bg-blue-50 text-tech-blue' : action === 'trash-package' || action === 'withdraw' ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-tech-border text-tech-muted hover:bg-tech-bg hover:text-tech-text'}`}>{action.startsWith('copy-') ? <Clipboard size={14} aria-label={labels[action]} /> : action === 'show-in-finder' ? <FolderOpen size={14} aria-label={labels[action]} /> : action === 'open-platform' ? <ExternalLink size={14} aria-label={labels[action]} /> : action === 'trash-package' ? <Trash2 size={14} aria-label={labels[action]} /> : labels[action]}</button>)}</div></div></div>;
+  const labels: Record<string, string> = { 'copy-title': '复制标题', 'copy-description': '复制正文', 'copy-hashtags': '复制标签', 'copy-full': '复制全部', 'show-in-finder': 'Finder', 'open-platform': publishingOpenPlatformTarget(detail, task).label, 'edit-content': '编辑文案', schedule: '修改排期', 'mark-published': '标记已发布', 'record-failure': '记录失败', cancel: '取消任务', restore: '恢复任务', 'create-version': '创建新版本', withdraw: '撤回本地状态', 'trash-package': '删除发布包', 'restore-package': '恢复发布包', 'auto-publish': task.platform === 'toutiao' ? '提交到头条号' : '发布图文到抖音', 'submit-code': '提交验证码', preview: '预览', 'download-article': '下载文章 HTML', 'fill-xhs': '填写到小红书（不提交）', 'submit-xhs': '发布到小红书' };
+  return <div className="rounded-lg border border-line bg-panel p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><PlatformLogo platform={task.platform} size="sm" /><span className="font-semibold text-ink">{policy.label}</span><StatusBadge task={task} /><span className="text-xs text-ink-muted">版本 {task.contentRevision} · {task.copySource === 'user_edited' ? '已编辑' : task.copySource === 'ai' ? 'AI' : '洗稿回退'}</span></div><p className="mt-2 font-medium text-ink">{task.title}</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-ink-muted">{task.description}</p><p className="mt-2 text-sm text-ai">{formatPublishingCopy(task).hashtags}</p>{task.scheduledAt && <p className="mt-2 text-xs text-ink-muted">计划 {new Date(task.scheduledAt).toLocaleString('zh-CN')}</p>}{task.publishedAt && <p className="mt-1 text-xs text-success">发布于 {new Date(task.publishedAt).toLocaleString('zh-CN')}</p>}{task.lastError && <p className="mt-2 text-sm text-danger">{task.lastError}</p>}<AutoPublishHint task={task} /></div><div className="flex max-w-md flex-wrap gap-1.5 lg:justify-end">{actions.map((action) => {
+    /*
+     * 改用 Button 原语。改造前这里是 148 个手写 button 中的一处，且：
+     *   - 点击目标 ≈26px 高（`px-2.5 py-1.5` + 14px 图标），低于桌面 32px 下限，
+     *     而「复制标题/正文/标签」是高频操作；
+     *   - 图标按钮的 `aria-label` 挂在 <svg> 上而不是 <button> 上，读屏拿不到按钮名。
+     */
+    const variant = action === 'mark-published' || action === 'open-platform' || action === 'auto-publish'
+      ? 'accent'
+      : action === 'trash-package' || action === 'withdraw'
+        ? 'subtleDanger'
+        : 'outline';
+    const icon = action.startsWith('copy-') ? <Clipboard size={14} aria-hidden="true" />
+      : action === 'show-in-finder' ? <FolderOpen size={14} aria-hidden="true" />
+        : action === 'open-platform' ? <ExternalLink size={14} aria-hidden="true" />
+          : action === 'trash-package' ? <Trash2 size={14} aria-hidden="true" />
+            : null;
+    return (
+      <Button
+        key={action}
+        size={icon ? 'icon' : 'sm'}
+        variant={variant}
+        title={labels[action]}
+        aria-label={labels[action]}
+        disabled={busy}
+        onClick={() => void onAction(detail, task, action)}
+      >
+        {icon ?? labels[action]}
+      </Button>
+    );
+  })}</div></div></div>;
 }
 
-function AutoPublishHint({ task }: { task: PublishTask }) {
+export function AutoPublishHint({ task }: { task: PublishTask }) {
   const hint = getPublishingAutoPublishHint(task);
   if (!hint) return null;
   const tone = task.autoPublish?.status === 'failed'
-    ? 'bg-red-50 text-red-700'
+    ? 'bg-danger-soft text-danger'
     : task.autoPublish?.status === 'succeeded'
-      ? 'bg-emerald-50 text-emerald-700'
-      : 'bg-amber-50 text-amber-700';
+      ? 'bg-success-soft text-success'
+      : 'bg-warning-soft text-warning';
   return <p className={`mt-2 rounded-lg px-3 py-2 text-xs ${tone}`}>{hint}</p>;
 }
 
-function StatusBadge({ task }: { task: PublishTask }) { const colors = { scheduled: 'bg-cyan-50 text-cyan-700', ready: 'bg-blue-50 text-blue-700', published: 'bg-emerald-50 text-emerald-700', failed: 'bg-red-50 text-red-700', cancelled: 'bg-gray-100 text-gray-600' }; return <span className={`rounded-full px-2 py-1 text-xs font-medium ${colors[task.status]}`}>{PUBLISH_STATUS_LABELS[task.status]}</span>; }
-function AssetBadge({ health }: { health: PublishingPackageDetail['package']['assetHealth'] }) { const text = health === 'healthy' ? '资产正常' : health === 'missing_cover' ? '缺少封面' : '视频异常'; return <span className={`rounded-full px-2 py-1 text-xs ${health === 'broken_video' ? 'bg-red-50 text-red-700' : health === 'missing_cover' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>{text}</span>; }
-function FilterInput({ icon, value, onChange, placeholder, type = 'text' }: { icon?: ReactNode; value: string; onChange: (value: string) => void; placeholder: string; type?: string }) { return <label className="flex items-center gap-2 rounded-lg border border-tech-border bg-tech-surface px-3"><span className="text-tech-muted">{icon}</span><input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="min-w-0 flex-1 bg-transparent py-2 text-sm text-tech-text outline-none" /></label>; }
+export function StatusBadge({ task }: { task: PublishTask }) { const colors = { scheduled: 'bg-running-soft text-running', ready: 'bg-info-soft text-info', published: 'bg-success-soft text-success', failed: 'bg-danger-soft text-danger', cancelled: 'bg-elevated text-ink-muted' }; return <span className={`rounded-full px-2 py-1 text-xs font-medium ${colors[task.status]}`}>{PUBLISH_STATUS_LABELS[task.status]}</span>; }
+/**
+ * 资产健康徽章。
+ *
+ * 改造前这里只有 healthy / missing_cover 两个分支 + 一个兜底，而
+ * `PublishAssetHealth` 有**四个**取值（见 types/index.ts）——于是 `missing_images`
+ * （图文包缺图，是可达状态：frames 一张静帧都没有时不报错、只标 missing_images）
+ * 掉进兜底，显示成**绿色的「视频异常」**：既说错了原因（图文包没有视频），
+ * 又用绿色传达了「没事」。权威文案在 PublishPreviewDialog 里是「缺少图片」+ 红色。
+ *
+ * 改成穷尽的 Record：类型系统会保证四个取值都被覆盖，以后新增状态会**编译报错**，
+ * 而不是再静默掉进兜底。
+ */
+const ASSET_HEALTH_BADGE: Record<
+  PublishingPackageDetail['package']['assetHealth'],
+  { text: string; tone: string }
+> = {
+  healthy: { text: '资产正常', tone: 'bg-success-soft text-success' },
+  missing_cover: { text: '缺少封面', tone: 'bg-warning-soft text-warning' },
+  missing_images: { text: '缺少图片', tone: 'bg-danger-soft text-danger' },
+  broken_video: { text: '视频异常', tone: 'bg-danger-soft text-danger' },
+};
+
+export function AssetBadge({ health }: { health: PublishingPackageDetail['package']['assetHealth'] }) {
+  const { text, tone } = ASSET_HEALTH_BADGE[health];
+  return <span className={`rounded-full px-2 py-1 text-xs ${tone}`}>{text}</span>;
+}
+function FilterInput({ icon, value, onChange, placeholder, type = 'text' }: { icon?: ReactNode; value: string; onChange: (value: string) => void; placeholder: string; type?: string }) { return <label className="flex items-center gap-2 rounded-lg border border-line-ui bg-well px-3"><span className="text-ink-muted">{icon}</span><input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="min-w-0 flex-1 bg-transparent py-2 text-sm text-ink outline-none" /></label>; }
 function toLocalDateTimeValue(value: string): string { const date = new Date(value); const offset = date.getTimezoneOffset() * 60_000; return new Date(date.getTime() - offset).toISOString().slice(0, 16); }
+
+/**
+ * 发布包列表的骨架屏。
+ *
+ * 改造前全站**没有任何骨架屏**：加载态一律是整页居中的 `animate-spin`，
+ * 内容到达时整块插入 → 布局跳变、滚动位置丢失。骨架屏的行高按真实行取，
+ * 让「正在加载」和「加载完成」占同样的空间。
+ */
+function PackageListSkeleton() {
+  const rows = [0, 1, 2];
+  return (
+    <div className="space-y-6" aria-busy="true" aria-label="正在加载发布包">
+      {[0, 1].map((section) => (
+        <section key={section} className="overflow-hidden rounded-xl border border-line bg-panel">
+          <header className="flex items-center justify-between border-b border-line px-5 py-4">
+            <span className="h-5 w-48 rounded bg-elevated animate-pulse" />
+            <span className="h-4 w-16 rounded bg-elevated animate-pulse" />
+          </header>
+          <div className="divide-y divide-line">
+            {rows.map((row) => (
+              <div key={row} className="flex items-center gap-4 px-5 py-4">
+                <span className="h-16 w-11 shrink-0 rounded-md bg-elevated animate-pulse" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <span className="block h-4 w-1/3 rounded bg-elevated animate-pulse" />
+                  <span className="block h-3 w-2/3 rounded bg-elevated animate-pulse" />
+                </div>
+                <span className="h-7 w-24 shrink-0 rounded-lg bg-elevated animate-pulse" />
+              </div>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}

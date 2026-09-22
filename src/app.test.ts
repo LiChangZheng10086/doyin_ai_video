@@ -10,6 +10,7 @@ import { PublishingStore } from "./lib/publishing-store.js";
 import { SauRunner } from "./lib/sau-runner.js";
 import { LocalStorage } from "./lib/storage.js";
 import { ToutiaoRunnerError } from "./lib/toutiao-runner.js";
+import { XhsRunnerError } from "./lib/xhs-runner.js";
 import type { DeliveryPackage, PublishTask } from "./types.js";
 
 type JsonResponse = {
@@ -21,7 +22,12 @@ async function serveApp(
   storageRoot: string,
   overrides: Partial<Parameters<typeof createExpressApp>[0]> = {},
 ) {
-  const app = await createExpressApp({ storagePath: storageRoot, rootDir: storageRoot, ...overrides });
+  const app = await createExpressApp({
+    storagePath: storageRoot,
+    rootDir: storageRoot,
+    noteMedia: passThroughNoteMedia,
+    ...overrides,
+  });
   const server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, resolve));
   const address = server.address();
@@ -126,6 +132,23 @@ const NOTE_PNG_LATE = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
   "base64",
 );
+
+/**
+ * 图文配图的**直通**预处理（方案甲：建图文包时先裁成 3:4）。
+ *
+ * app 级用例关心的是路由/服务的行为，不是滤镜语法；用真 ffmpeg 去处理夹具里那些
+ * 几十字节的假图片只会全线报错。裁切本身由 `note-media.test.ts`（含真实 ffmpeg 实测）
+ * 与 `publishing-service.test.ts` 里那条「包内图片确实取自裁切产物」覆盖。
+ */
+const passThroughNoteMedia = {
+  async prepareNoteImage(srcPath: string, outDir: string, index: number) {
+    await mkdir(outDir, { recursive: true });
+    const target = path.join(outDir, `note-${String(index).padStart(2, "0")}.png`);
+    const bytes = await readFile(srcPath);
+    await writeFile(target, bytes);
+    return { path: target, bytes: bytes.length };
+  },
+};
 
 async function publishingApiFixture(
   overrides: Partial<Parameters<typeof createExpressApp>[0]> = {},
@@ -2464,7 +2487,13 @@ test("note preview and creation can use library images in the order they were se
     assert.deepEqual(pkg.imagePaths, ["images/01.png", "images/02.png"]);
     assert.equal(pkg.assetHealth, "healthy");
 
-    // 包内 01 是选择顺序里的第一张（素材 B），并且与上传的原文件逐字节一致
+    // 包内 01 是选择顺序里的第一张（素材 B）。
+    //
+    // ⚠️ **这条「逐字节一致」只在测试里成立，不是生产事实**（2026-09-20 方案甲之后）：
+    // 生产路径会把每张源图**裁成 3:4（1080×1440）PNG** 再入包（`NoteMediaService`），
+    // 而本文件的 fixture 注入的是**直通**预处理（`passThroughNoteMedia`），所以这里字节相同。
+    // 真正验证裁切的是 `note-media.test.ts`（含一条真实 ffmpeg 端到端用例断言 `png,1080,1440`）。
+    // 保留这条断言的价值在于**顺序**：包内 01/02 必须与点选顺序一致。
     const packagePath = path.join(fixture.storageRoot, "output", "publishing", fixture.jobId, `v1-${pkg.id}`);
     assert.deepEqual(
       await readFile(path.join(packagePath, "images", "01.png")),
@@ -3231,6 +3260,452 @@ test("unconfirmed article publish records the runner message verbatim, with post
     // 不变式照旧：机器只记「已提交」，任务状态与 publishedAt 不动。
     assert.equal(task.status, "ready");
     assert.equal(task.publishedAt, undefined);
+  } finally {
+    await fixture.close();
+  }
+});
+
+// ─── ④ Task 7：小红书图文自动发布（服务层闸门与落记录） ──────────────────────
+
+/**
+ * 假的小红书执行器：只实现服务层用到的那一面（与 `fakeToutiaoRunner` 同一手法）。
+ * ⚠️ 注入键名必须与 `ServerConfig` 一致（`xhsRunner`）—— 头条那轮把夹具注入到**错误的键**上，
+ * 结果测试里构造的是**真执行器**、真的启动了一个无头浏览器并留下 5 个孤儿进程。
+ */
+function fakeXhsRunner(options: {
+  result?: Partial<Record<string, unknown>>;
+  throwWith?: Error;
+  loggedIn?: boolean;
+  /** 让某个登录方法抛真实的执行器错误（验证「错误必须原样透出」）。 */
+  loginFailWith?: { method: "startLogin" | "pollLogin" | "checkLogin" | "loginInWindow"; error: Error };
+} = {}) {
+  const calls: Array<Record<string, unknown>> = [];
+  const loginCalls: string[] = [];
+  /** 服务层有没有把 dryRun 覆盖传下来（「只填到草稿」必须走这条路）。 */
+  const dryRunFlags: boolean[] = [];
+  const maybeFail = (method: string): void => {
+    if (options.loginFailWith?.method === method) throw options.loginFailWith.error;
+  };
+  return {
+    calls,
+    loginCalls,
+    dryRunFlags,
+    runner: {
+      assertConfigured() {},
+      installExitCleanup() {},
+      async checkLogin() {
+        loginCalls.push("checkLogin");
+        maybeFail("checkLogin");
+        return options.loggedIn === false
+          ? { loggedIn: false, url: "https://creator.xiaohongshu.com/login" }
+          : { loggedIn: true, url: "https://creator.xiaohongshu.com/new/home", username: "李在那" };
+      },
+      async startLogin() {
+        loginCalls.push("startLogin");
+        maybeFail("startLogin");
+        return {
+          qrDataUrl: "data:image/png;base64,AAAA",
+          startedAt: "2026-09-21T00:00:00.000Z",
+          expiresAt: "2026-09-21T00:10:00.000Z",
+        };
+      },
+      async pollLogin() {
+        loginCalls.push("pollLogin");
+        maybeFail("pollLogin");
+        return options.loggedIn === false ? { status: "waiting" } : { status: "logged_in", username: "李在那" };
+      },
+      async cancelLogin() {
+        loginCalls.push("cancelLogin");
+      },
+      async loginInWindow() {
+        loginCalls.push("loginInWindow");
+        maybeFail("loginInWindow");
+        return { loggedIn: true, username: "李在那", message: "扫码登录成功（李在那）" };
+      },
+      // ⚠️ 假实现必须与**真实执行器的契约**一致：真实实现是
+      // `input.submit === true && options.dryRun !== true` 才点发布（xhs-runner.ts），
+      // 只看 input.submit 的假实现会把「dryRun 降级」这件事测没（2026-09-21 踩到）。
+      async publishNote(input: Record<string, unknown>, runOptions: { dryRun?: boolean } = {}) {
+        calls.push(input);
+        dryRunFlags.push(runOptions.dryRun === true);
+        if (options.throwWith) throw options.throwWith;
+        const willSubmit = input.submit === true && runOptions.dryRun !== true;
+        return {
+          ok: true,
+          submitted: willSubmit,
+          verification: "unconfirmed",
+          steps: willSubmit
+            ? ["进入发布页", "上传图片：送入 2 张，页面读回 2 张", "填写标题：读回与目标逐字一致（6 字）", "点击发布"]
+            : ["进入发布页", "上传图片：送入 2 张，页面读回 2 张", "填写标题：读回与目标逐字一致（6 字）", "演练：停在点「发布」之前"],
+          message: willSubmit
+            ? "已点击发布，但**按设计没有做任何读回**。请先到小红书 App 核实是否真的发出去了。"
+            : "已把标题、正文与 AI 声明填好，内容会由小红书自动存为**草稿**（本工具没有点「发布」）。",
+          ...(options.result ?? {}),
+        };
+      },
+    },
+  };
+}
+
+/** 建一个**小红书**图文包：预览 → 建包（带 xhsOptions）→ 包级预览取 revision。 */
+async function xhsNoteFixture(options: {
+  runner?: ReturnType<typeof fakeXhsRunner>;
+  xhsOptions?: Record<string, unknown> | null;
+} = {}) {
+  const fixture = await publishingApiFixture(
+    options.runner ? { xhsRunner: options.runner.runner as never } : {},
+  );
+  const jobPreview = await jsonFetch(fixture.baseUrl, `/api/jobs/${fixture.jobId}/publishing/preview`, {
+    method: "POST",
+    token: fixture.publisherToken,
+    body: notePreviewBody(["xiaohongshu"]),
+  });
+  const noteCopy = { title: "小红书标题", description: "小红书正文", hashtags: ["效率"] };
+  const created = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+    method: "POST",
+    token: fixture.publisherToken,
+    body: {
+      ...noteCreateBody(
+        (jobPreview.body.preview as Record<string, any>).previewRevision,
+        noteCopy,
+        ["xiaohongshu"],
+      ),
+      // 默认带上「已声明 AI、只填到草稿」—— 与界面的默认值一致。
+      ...(options.xhsOptions === null
+        ? {}
+        : { xhsOptions: options.xhsOptions ?? { aiDeclaration: true, submit: false } }),
+    },
+  });
+  const pkg = created.body.package.package as Record<string, any>;
+  const taskId = (created.body.package.tasks[0] as Record<string, any>).id as string;
+  // ⚠️ 必须**真的打一次预览接口**拿 revision（不许直接读 store）：头条那轮就是直接读 store，
+  // 把「预览接口 500」整个绕过去了。
+  const packagePreview = await jsonFetch(fixture.baseUrl, `/api/publishing/packages/${pkg.id}/preview`, {
+    token: fixture.publisherToken,
+  });
+  return {
+    fixture,
+    taskId,
+    packageId: pkg.id as string,
+    createdStatus: created.response.status,
+    packagePreviewStatus: packagePreview.response.status,
+    previewRevision: (packagePreview.body.preview as Record<string, any>)?.previewRevision as string,
+  };
+}
+
+test("小红书图文：走预览接口拿 revision → 提交 → succeeded，且任务状态仍是 ready", async () => {
+  const runner = fakeXhsRunner();
+  const ctx = await xhsNoteFixture({ runner });
+  try {
+    assert.equal(ctx.createdStatus, 201);
+    assert.equal(ctx.packagePreviewStatus, 200, "包级预览必须回来（revision 只能由它产出）");
+    assert.ok(ctx.previewRevision, "预览接口必须下发 previewRevision");
+
+    const published = await jsonFetch(
+      ctx.fixture.baseUrl,
+      `/api/publishing/tasks/${ctx.taskId}/auto-publish`,
+      { method: "POST", token: ctx.fixture.publisherToken, body: { previewRevision: ctx.previewRevision } },
+    );
+
+    assert.equal(published.response.status, 200);
+    assert.equal(published.body.task.autoPublish.status, "succeeded");
+    // 最关键的不变式：机器只记「已提交」，绝不写 published。
+    assert.equal(published.body.task.status, "ready");
+    // 姿态乙（默认）：执行器收到 submit:false，且文案必须是「草稿 + 去 App 发布」。
+    assert.equal(runner.calls[0]?.submit, false);
+    assert.match(String(published.body.task.autoPublish.message), /草稿/u);
+    assert.match(String(published.body.task.autoPublish.message), /逐步记录/u);
+    // ⚠️ 记录里必须有**显式**的「只填到草稿」标记：界面靠它区分「已填写到草稿箱」与「已提交」。
+    // 用户 2026-09-21 实测：没有这个标记时界面说「已提交」，他去小红书找不到内容（内容在草稿箱）。
+    // 判据是执行器回报的 `submitted`（这一次到底点没点发布），**不是** dryRun 参数 ——
+    // 这个包自己声明了 submit:false，执行器同样一个提交键都没点。
+    assert.equal(published.body.task.autoPublish.draftOnly, true);
+  } finally {
+    await ctx.fixture.close();
+  }
+});
+
+test("小红书图文：dryRun 也记 draftOnly；真提交（submit:true）**不许**带这个标记", async () => {
+  // ① dryRun：即使包声明了 submit:true，服务层也强制不点发布 → 记录必须标 draftOnly。
+  const willSubmit = fakeXhsRunner();
+  const submitCtx = await xhsNoteFixture({ runner: willSubmit, xhsOptions: { aiDeclaration: true, submit: true } });
+  try {
+    const dry = await jsonFetch(
+      submitCtx.fixture.baseUrl,
+      `/api/publishing/tasks/${submitCtx.taskId}/auto-publish`,
+      { method: "POST", token: submitCtx.fixture.publisherToken, body: { previewRevision: submitCtx.previewRevision, dryRun: true } },
+    );
+    assert.equal(dry.response.status, 200);
+    // 服务层照常把包声明的 submit:true 传下去，但**必须同时传 dryRun 覆盖**；
+    // 真正的「不点发布」是执行器按 `submit && !dryRun` 判的（这里由 submitted 回报）。
+    assert.equal(willSubmit.calls[0]?.submit, true);
+    assert.equal(willSubmit.dryRunFlags[0], true, "dryRun 覆盖必须真的传进执行器");
+    assert.equal(dry.body.task.autoPublish.draftOnly, true, "没点发布就必须标 draftOnly");
+  } finally {
+    await submitCtx.fixture.close();
+  }
+
+  // ② 真提交：点过发布 → **不能**标 draftOnly（否则界面会把「已提交」说成「只填了草稿」）。
+  const real = fakeXhsRunner();
+  const realCtx = await xhsNoteFixture({ runner: real, xhsOptions: { aiDeclaration: true, submit: true } });
+  try {
+    const published = await jsonFetch(
+      realCtx.fixture.baseUrl,
+      `/api/publishing/tasks/${realCtx.taskId}/auto-publish`,
+      { method: "POST", token: realCtx.fixture.publisherToken, body: { previewRevision: realCtx.previewRevision } },
+    );
+    assert.equal(published.response.status, 200);
+    assert.equal(real.calls[0]?.submit, true);
+    assert.equal(real.dryRunFlags[0], false, "没传 dryRun 时不许自己抑制");
+    assert.equal(published.body.task.autoPublish.draftOnly === true, false, "真提交不许标 draftOnly");
+    assert.match(String(published.body.task.autoPublish.message), /核实/u);
+  } finally {
+    await realCtx.fixture.close();
+  }
+});
+
+test("小红书图文：没声明 AI 合成内容 → 422，且**不产生** autoPublish 记录", async () => {
+  const runner = fakeXhsRunner();
+  const ctx = await xhsNoteFixture({ runner, xhsOptions: { aiDeclaration: false, submit: false } });
+  try {
+    const published = await jsonFetch(
+      ctx.fixture.baseUrl,
+      `/api/publishing/tasks/${ctx.taskId}/auto-publish`,
+      { method: "POST", token: ctx.fixture.publisherToken, body: { previewRevision: ctx.previewRevision } },
+    );
+
+    assert.equal(published.response.status, 422);
+    assert.equal(published.body.code, "publish_xhs_ai_declaration_required");
+    // 合规红线：在**点任何页面之前**就拒掉 —— 执行器一次都不该被调用。
+    assert.deepEqual(runner.calls, []);
+    // 详情接口的形状是 `{ package: { package, tasks } }`（与创建接口同一形状）。
+    const detail = await jsonFetch(ctx.fixture.baseUrl, `/api/publishing/packages/${ctx.packageId}`, {
+      token: ctx.fixture.publisherToken,
+    });
+    const tasks = (detail.body.package as Record<string, any>).tasks as Array<Record<string, any>>;
+    const task = tasks.find((item) => item.id === ctx.taskId);
+    assert.equal(task?.autoPublish, undefined, "被闸门挡下的请求不该留下任何 autoPublish 记录");
+  } finally {
+    await ctx.fixture.close();
+  }
+});
+
+test("小红书图文：**当日第二篇**被频率闸门挡住（422 且不产生记录）", async () => {
+  const runner = fakeXhsRunner();
+  const ctx = await xhsNoteFixture({ runner });
+  try {
+    const first = await jsonFetch(
+      ctx.fixture.baseUrl,
+      `/api/publishing/tasks/${ctx.taskId}/auto-publish`,
+      { method: "POST", token: ctx.fixture.publisherToken, body: { previewRevision: ctx.previewRevision } },
+    );
+    assert.equal(first.response.status, 200);
+    assert.equal(first.body.task.autoPublish.status, "succeeded");
+
+    // 同一个包再提交一次（revision 未变，所以先过 revision 校验，再撞频率闸门）。
+    const second = await jsonFetch(
+      ctx.fixture.baseUrl,
+      `/api/publishing/tasks/${ctx.taskId}/auto-publish`,
+      { method: "POST", token: ctx.fixture.publisherToken, body: { previewRevision: ctx.previewRevision } },
+    );
+
+    assert.equal(second.response.status, 422);
+    assert.equal(second.body.code, "publish_xhs_daily_limit");
+    // 执行器只被调用过一次 —— 第二次连执行器都不该碰。
+    assert.equal(runner.calls.length, 1);
+  } finally {
+    await ctx.fixture.close();
+  }
+});
+
+test("小红书图文：执行器抛错 → 记 failed（**不是 500、也不卡在 running**）", async () => {
+  const runner = fakeXhsRunner({ throwWith: new Error("launchPersistentContext: EPERM") });
+  const ctx = await xhsNoteFixture({ runner });
+  try {
+    const published = await jsonFetch(
+      ctx.fixture.baseUrl,
+      `/api/publishing/tasks/${ctx.taskId}/auto-publish`,
+      { method: "POST", token: ctx.fixture.publisherToken, body: { previewRevision: ctx.previewRevision } },
+    );
+
+    assert.equal(published.response.status, 200, "执行器异常必须落成记录，不能变成 500");
+    assert.equal(published.body.task.autoPublish.status, "failed");
+    assert.match(String(published.body.task.autoPublish.message), /EPERM/u);
+    assert.equal(published.body.task.autoPublish.finishedAt !== undefined, true, "必须收尾，不能停在 running");
+  } finally {
+    await ctx.fixture.close();
+  }
+});
+
+test("小红书图文：执行器报「没填成」→ 记录 failed，且任务状态不变", async () => {
+  const runner = fakeXhsRunner({
+    result: { ok: false, submitted: false, message: "没找到声明下拉：本次没有提交任何内容。" },
+  });
+  const ctx = await xhsNoteFixture({ runner });
+  try {
+    const published = await jsonFetch(
+      ctx.fixture.baseUrl,
+      `/api/publishing/tasks/${ctx.taskId}/auto-publish`,
+      { method: "POST", token: ctx.fixture.publisherToken, body: { previewRevision: ctx.previewRevision } },
+    );
+
+    assert.equal(published.response.status, 200);
+    assert.equal(published.body.task.autoPublish.status, "failed");
+    assert.equal(published.body.task.status, "ready");
+    assert.match(String(published.body.task.autoPublish.message), /没有提交任何内容/u);
+  } finally {
+    await ctx.fixture.close();
+  }
+});
+
+// ─── ⑤ Task 7 尾巴：图片张数的小红书口径（服务端闸门 + 预览下发的上限） ────────
+
+/** 上传 N 张素材库图片，返回它们的 id（顺序 = 上传顺序）。 */
+async function uploadLibraryImages(baseUrl: string, count: number): Promise<string[]> {
+  const response = await uploadAssets(
+    baseUrl,
+    "images",
+    Array.from({ length: count }, (_unused, index) => ({
+      name: `素材-${index + 1}.png`,
+      data: assetPngBytes(1080, 1920),
+      type: "image/png",
+    })),
+  );
+  assert.equal(response.status, 201);
+  const body = (await response.json()) as { assets: Array<{ id: string }> };
+  assert.equal(body.assets.length, count);
+  return body.assets.map((asset) => asset.id);
+}
+
+test("小红书图文：19 张图片在**提交**时被拦下（422），且不产生记录、不惊动执行器", async () => {
+  const runner = fakeXhsRunner();
+  const base = await publishingApiFixture({ xhsRunner: runner.runner as never });
+  try {
+    // 19 张直接传到夹具自己的 storage 上（它的 baseUrl 就是那个 app）。
+    const assetIds = await uploadLibraryImages(base.baseUrl, 19);
+
+    const preview = await jsonFetch(base.baseUrl, `/api/jobs/${base.jobId}/publishing/preview`, {
+      method: "POST",
+      token: base.publisherToken,
+      body: { platforms: ["xiaohongshu"], contentType: "note", imageSource: "library", imageAssetIds: assetIds },
+    });
+    assert.equal(preview.response.status, 200);
+    // ⚠️ 预览下发的上限必须是**小红书那一个**（18），不是打包层的 35 —— 否则界面会放用户选到 19 张。
+    assert.equal((preview.body.preview as Record<string, any>).imageLimit, 18);
+
+    // 创建仍然成功（打包层上限是 35）——「能不能建包」与「能不能发到小红书」是两件事。
+    const created = await jsonFetch(base.baseUrl, "/api/publishing/packages", {
+      method: "POST",
+      token: base.publisherToken,
+      body: {
+        ...noteCreateBody(
+          (preview.body.preview as Record<string, any>).previewRevision,
+          { title: "小红书标题", description: "正文", hashtags: [] },
+          ["xiaohongshu"],
+        ),
+        imageSource: "library",
+        imageAssetIds: assetIds,
+        xhsOptions: { aiDeclaration: true, submit: false },
+      },
+    });
+    assert.equal(created.response.status, 201, JSON.stringify(created.body));
+    const pkg = created.body.package.package as Record<string, any>;
+    const taskId = (created.body.package.tasks[0] as Record<string, any>).id as string;
+    assert.equal(pkg.imagePaths.length, 19);
+
+    const packagePreview = await jsonFetch(base.baseUrl, `/api/publishing/packages/${pkg.id}/preview`, {
+      token: base.publisherToken,
+    });
+    assert.equal(packagePreview.response.status, 200);
+
+    // 提交时被拦：422 + 明确原因 + **不产生记录** + 执行器一次都没被调用
+    const published = await jsonFetch(base.baseUrl, `/api/publishing/tasks/${taskId}/auto-publish`, {
+      method: "POST",
+      token: base.publisherToken,
+      body: { previewRevision: (packagePreview.body.preview as Record<string, any>).previewRevision },
+    });
+    assert.equal(published.response.status, 422);
+    assert.equal(published.body.code, "publish_xhs_too_many_images");
+    assert.deepEqual(runner.calls, []);
+
+    const detail = await jsonFetch(base.baseUrl, `/api/publishing/packages/${pkg.id}`, {
+      token: base.publisherToken,
+    });
+    const tasks = (detail.body.package as Record<string, any>).tasks as Array<Record<string, any>>;
+    assert.equal(tasks.find((item) => item.id === taskId)?.autoPublish, undefined);
+  } finally {
+    await base.close();
+  }
+});
+
+
+// ─── ⑥ 小红书登录路由与错误边界（2026-09-21 补齐；早先只做了执行器、没接路由） ──
+
+test("xhs login routes drive the runner and the verify route is side-effect free", async () => {
+  const runner = fakeXhsRunner();
+  const fixture = await publishingApiFixture({ xhsRunner: runner.runner as never });
+  try {
+    const started = await jsonFetch(fixture.baseUrl, "/api/publishing/xhs/login", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {},
+    });
+    assert.equal(started.response.status, 200, JSON.stringify(started.body));
+    assert.match(String(started.body.qrDataUrl), /^data:image\/png;base64,/u);
+
+    const polled = await jsonFetch(fixture.baseUrl, "/api/publishing/xhs/login", {
+      token: fixture.publisherToken,
+    });
+    assert.equal(polled.response.status, 200);
+    assert.equal(polled.body.status, "logged_in");
+    assert.equal(polled.body.username, "李在那");
+
+    // 零副作用自检：只判登录态 + 读昵称，**不产生任何发布记录**。
+    const before = await fixture.readPublishingBytes();
+    const verified = await jsonFetch(fixture.baseUrl, "/api/publishing/xhs/verify", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {},
+    });
+    assert.equal(verified.response.status, 200);
+    assert.equal(verified.body.loggedIn, true);
+    assert.equal(verified.body.username, "李在那");
+    assert.deepEqual(await fixture.readPublishingBytes(), before, "自检不得改动发布索引");
+
+    const cancelled = await jsonFetch(fixture.baseUrl, "/api/publishing/xhs/login", {
+      method: "DELETE",
+      token: fixture.publisherToken,
+    });
+    assert.equal(cancelled.response.status, 200);
+    assert.deepEqual(runner.loginCalls, ["startLogin", "pollLogin", "checkLogin", "cancelLogin"]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("小红书 runner errors surface with their own status, code and guidance", async () => {
+  // 小红书这一族错误**必须原样透出**：漏登记进错误边界的后果不是「状态码不准」，
+  // 而是**指引整条丢掉** —— 界面只剩一句「发布服务暂时不可用，请稍后重试」（头条那轮的真实事故）。
+  const guidance = "未找到可用于小红书发布的浏览器。可照抄：npm run prepare:package:mac 或 npx playwright install chromium";
+  const runner = fakeXhsRunner({
+    loginFailWith: {
+      method: "startLogin",
+      error: new XhsRunnerError("xhs_browser_unavailable", guidance),
+    },
+  });
+  const fixture = await publishingApiFixture({ xhsRunner: runner.runner as never });
+  try {
+    const response = await jsonFetch(fixture.baseUrl, "/api/publishing/xhs/login", {
+      method: "POST",
+      token: fixture.publisherToken,
+      body: {},
+    });
+
+    assert.equal(response.response.status, 422, JSON.stringify(response.body));
+    assert.equal(response.body.code, "xhs_browser_unavailable");
+    // 指引必须原样到达界面，否则用户没有任何可照抄的动作。
+    assert.match(String(response.body.message), /npm run prepare:package:mac/u);
+    assert.equal(String(response.body.message).includes("发布服务暂时不可用"), false);
   } finally {
     await fixture.close();
   }

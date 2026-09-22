@@ -1,49 +1,189 @@
 @import "tailwindcss";
 
+/*
+ * 抖创工坊 · 设计令牌（方向「剪辑台」）
+ *
+ * 设计锚点是这个产品自己的世界：竖屏 9:16 流水线（分镜、时间轴、监视器）。
+ * 所以底色取「监视器黑」家族——近黑但不是纯黑，并留出 4 级明度分层；
+ * 强调色取抖音品牌红 #FE2C55（来自产品身份，而不是任意一个高饱和色）。
+ *
+ * ⚠️ 这是令牌的唯一真源。tailwind.config.js 在 Tailwind v4 下**不会加载**
+ *   （全仓无 `@config` 指令），本次改造已删除它。不要再建第二份。
+ *
+ * 所有文字色与控件边界的对比度都经脚本实算后锁定（51 项全通过）。改动前请重跑校验：
+ *   正文/次要/三级 ≥4.5、状态文字压自身 soft 底 ≥4.5、
+ *   可交互控件边界 ≥3（WCAG 1.4.11）、装饰线不承载信息故不设门槛。
+ */
 @theme {
-  --color-brand-blue: #2563EB;
-  --color-brand-blue-dark: #1E40AF;
-  --color-brand-violet: #7C3AED;
-  --color-canvas: #F6F8FB;
-  --color-surface: #FFFFFF;
-  --color-border: #DCE3EC;
-  --color-text-primary: #172033;
-  --color-text-secondary: #667085;
+  /* ---- 分层底：监视器黑家族，4 级明度 ---- */
+  --color-canvas: #0d0f12; /* 应用底 */
+  --color-panel: #14171c; /* 面板 / 卡片 */
+  --color-elevated: #1b1f26; /* 悬浮 / 选中 / hover */
+  --color-well: #090b0e; /* 凹陷：输入框、代码块、预览区 */
 
-  --color-tech-blue: #2563EB;
-  --color-tech-blue-light: #3B82F6;
-  --color-tech-blue-dark: #1E40AF;
-  --color-tech-purple: #7C3AED;
-  --color-tech-purple-light: #A78BFA;
-  --color-tech-purple-dark: #5B21B6;
-  --color-tech-cyan: #0891B2;
-  --color-tech-bg: #F6F8FB;
-  --color-tech-surface: #FFFFFF;
-  --color-tech-border: #DCE3EC;
-  --color-tech-text: #172033;
-  --color-tech-muted: #667085;
+  /* ---- 线 ---- */
+  --color-line: #232931; /* 装饰性分隔与卡片轮廓（刻意低对比、不承载信息） */
+  --color-line-strong: #2f3742; /* 需要更明确的分组边界 */
+  --color-line-ui: #606e82; /* 可交互控件边界，≥3:1（WCAG 1.4.11） */
+
+  /* ---- 文字 ---- */
+  --color-ink: #e6eaf0; /* 主文字 15.9:1 @canvas */
+  --color-ink-muted: #98a2b3; /* 次要 7.45:1 @canvas */
+  --color-ink-subtle: #848e9c; /* 三级 4.98:1 @elevated（最亮底） */
+  --color-on-accent: #0d0f12; /* 强调色上的字：近黑 5.21:1（白字只有 3.68，不达标） */
+
+  /* ---- 强调（抖音品牌红）---- */
+  --color-accent: #fe2c55; /* 图标/指示/焦点环/进度：4.88:1 @panel */
+  --color-accent-hover: #ff4d6d;
+  --color-accent-soft: #33131c;
+  --color-accent-line: #7a2436;
+
+  /* ---- 语义状态 ---- */
+  --color-success: #3dd68c;
+  --color-success-soft: #16352a;
+  --color-success-line: #39785a;
+
+  --color-warning: #f5a524;
+  --color-warning-soft: #3a2e19;
+  --color-warning-line: #87682a;
+
+  --color-danger: #ff6166;
+  --color-danger-soft: #402126;
+  --color-danger-line: #9e444b;
+
+  --color-info: #5aa9ff;
+  --color-info-soft: #1a2e44;
+  --color-info-line: #366090;
+
+  --color-running: #4cd4e0; /* 进行中：与抖音的撞色语汇呼应 */
+  --color-running-soft: #12302f;
+  --color-running-line: #2a6b6e;
+
+  --color-ai: #a78bfa; /* AI 洗稿 / Skill 相关 */
+  --color-ai-soft: #2a2452;
+  --color-ai-line: #66579f;
+
+  /* ---- 字体角色 ---- */
+  /* body：中文界面就该用系统中文黑体，而不是笼统的 system-ui */
+  --font-sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+  /* display：中文衬线做标题，是这界面最容易识别的性格来源（仅用于 ≥20px） */
+  --font-display: "Songti SC", "Source Han Serif SC", "Noto Serif CJK SC",
+    "SimSun", serif;
+  /* utility：时间码 / jobId / 字数计数 */
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, ui-monospace, monospace;
+
+  /* ---- 微交互时长（清单要求 80–150ms 反馈 / 150–300ms 微交互）---- */
+  --duration-press: 90ms;
+  --duration-ui: 160ms;
 }
 
-:root {
-  color: #172033;
-  background: #F6F8FB;
-  font-synthesis: none;
+@layer base {
+  :root {
+    font-synthesis: none;
+  }
+
+  /* 明确声明只做深色：让原生控件（video controls / select / 滚动条 / 选区）
+     跟随页面，消除「白卡片 + 黑控件」的割裂。 */
+  html {
+    color-scheme: dark;
+    background: var(--color-canvas);
+  }
+
+  * {
+    box-sizing: border-box;
+    letter-spacing: 0;
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  button,
+  summary {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /*
+   * Tailwind v4 的 preflight 不再给 button 设 pointer，浏览器默认是箭头光标。
+   * 改造前实测：7 个页面里 **148 个 <button> 没有一个**是手型。这里一次兜住。
+   */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  label[for] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+  }
+
+  /* 按压反馈基线：改造前全仓 0 处 active: 变体，点击毫无手感。 */
+  button:not(:disabled):active,
+  [role="button"]:not([aria-disabled="true"]):active {
+    transform: translateY(1px);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+  }
+
+  /* 深色下的滚动条（原先未声明 color-scheme，浅色滚动条会刺眼） */
+  * {
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-line-ui);
+  }
 }
 
-* { box-sizing: border-box; letter-spacing: 0; }
-html { background: #F6F8FB; }
-body {
-  min-width: 320px;
-  min-height: 100vh;
-  margin: 0;
-  background: #F6F8FB;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+/*
+ * 改造前 ActiveJobStrip 引用了 animate-[indeterminate_...]，
+ * 但全仓**没有任何 @keyframes** ⇒ 浏览器直接忽略整条动画，那条「不确定进度条」
+ * 其实是个静止色块（而测试只断言「不出现百分比」，所以一直是绿的）。
+ */
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
 }
-button, input, textarea, select { font: inherit; }
-button, summary { -webkit-tap-highlight-color: transparent; }
-:focus-visible { outline: 2px solid #2563EB; outline-offset: 2px; }
 
 /* Safe area utilities for notched devices */
 .safe-bottom {
@@ -53,8 +193,15 @@ button, summary { -webkit-tap-highlight-color: transparent; }
   padding-top: env(safe-area-inset-top, 0px);
 }
 
+/* 数据要能竖着扫（剪辑台语汇）：时间码 / 计数 / ID */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;

@@ -25,6 +25,10 @@ import {
 import { PublishingError } from "./publishing-store.js";
 import { SauRunnerError } from "./sau-runner.js";
 import { ToutiaoArticleError } from "./toutiao-article.js";
+// 小红书那一族错误类（**新增时同样必须加进下面那支**）。
+import { XhsBrowserError } from "./xhs-browser.js";
+import { XhsPageError } from "./xhs-page.js";
+import { XhsRunnerError } from "./xhs-runner.js";
 import { ToutiaoBrowserError } from "./toutiao-browser.js";
 import { ToutiaoMediaError } from "./toutiao-media.js";
 import { ToutiaoPageError } from "./toutiao-page.js";
@@ -54,6 +58,12 @@ export type PublishingRouteService = PublishingService & {
   readPackageImage(packageId: string, index: number): Promise<{ bytes: Buffer; extension: string } | null>;
   /** 文章包的 `article.html`（降级通路：交给用户粘贴进编辑器）。 */
   readPackageArticleHtml(packageId: string): Promise<{ bytes: Buffer; htmlSha256: string } | null>;
+  /** 小红书：扫码登录会话、窗口扫码与零副作用自检（与头条同一套形状）。 */
+  startXhsLogin(): Promise<{ qrDataUrl: string; startedAt: string; expiresAt: string }>;
+  pollXhsLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; username?: string }>;
+  cancelXhsLogin(): Promise<void>;
+  loginXhsInWindow(): Promise<{ loggedIn: boolean; username?: string; message: string }>;
+  verifyXhsLogin(): Promise<{ loggedIn: boolean; username?: string; message: string }>;
   /** 今日头条：扫码登录会话与零副作用自检。 */
   startToutiaoLogin(): Promise<{ qrDataUrl: string; startedAt: string; expiresAt: string }>;
   pollToutiaoLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; username?: string }>;
@@ -61,7 +71,7 @@ export type PublishingRouteService = PublishingService & {
   /** 打开浏览器窗口扫码登录（同步等待扫码结果）。 */
   loginToutiaoInWindow(): Promise<{ loggedIn: boolean; username?: string; message: string }>;
   verifyToutiaoLogin(): Promise<{ loggedIn: boolean; username?: string; message: string }>;
-  autoPublish(taskId: string, input: { previewRevision: string }, actor: ActorSnapshot): Promise<PublishTask>;
+  autoPublish(taskId: string, input: { previewRevision: string; dryRun?: boolean }, actor: ActorSnapshot): Promise<PublishTask>;
   submitAutoPublishCode(taskId: string, code: string, actor: ActorSnapshot): Promise<PublishTask>;
   list(filters: PublishingListFilters): Promise<PublishingPackageDetail[]>;
   getPackage(packageId: string): Promise<PublishingPackageDetail | null>;
@@ -194,6 +204,30 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
     res.json(await deps.publishing.verifyToutiaoLogin());
   }));
 
+  // 小红书：与头条那五条一一对应（同样的交互、同样的错误边界登记）。
+  // ⚠️ 这条通路**只做登录**：不读笔记、不搜索、不互动（spec §12）。
+  router.post("/publishing/xhs/login", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.startXhsLogin());
+  }));
+
+  router.get("/publishing/xhs/login", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.pollXhsLogin());
+  }));
+
+  router.delete("/publishing/xhs/login", authenticated, route(async (_req, res) => {
+    await deps.publishing.cancelXhsLogin();
+    res.json({ ok: true });
+  }));
+
+  // 打开**有头浏览器窗口**扫码（打包的 chrome-headless-shell 开不了窗口，所以这条链单独解析）。
+  router.post("/publishing/xhs/login/window", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.loginXhsInWindow());
+  }));
+
+  router.post("/publishing/xhs/verify", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.verifyXhsLogin());
+  }));
+
   router.post("/publishing/due/check", writable, route(async (req, res) => {
     const input = requestBody(req);
     if (Object.keys(input).length > 0) invalid("到期检查不接受操作者或状态参数");
@@ -249,8 +283,16 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
   router.post("/publishing/tasks/:id/auto-publish", authenticated, writable, route(async (req, res) => {
     const input = requestBody(req);
     const previewRevision = requiredPreviewRevision(input.previewRevision);
+    // `dryRun`：小红书专用（只填到草稿、绝不点发布）。非布尔一律拒（别让 "true"/1 混进来）。
+    if (input.dryRun !== undefined && typeof input.dryRun !== "boolean") {
+      invalid("dryRun 必须是布尔值");
+    }
     res.json({
-      task: await deps.publishing.autoPublish(requiredId(req.params.id), { previewRevision }, getActor(req)),
+      task: await deps.publishing.autoPublish(
+        requiredId(req.params.id),
+        { previewRevision, ...(input.dryRun === true ? { dryRun: true } : {}) },
+        getActor(req),
+      ),
     });
   }));
 
@@ -343,6 +385,21 @@ function rejectServerFields(value: unknown): void {
   }
 }
 
+/**
+ * 小红书发布选项的请求体形状。
+ *
+ * 两个字段都**必须是布尔**：`aiDeclaration` 缺失或非真值一律拒（合规红线，见 spec §11），
+ * `submit` 缺省 `false`（姿态乙 —— 只填到草稿，真人点最后一下）。
+ */
+function xhsNoteOptions(value: unknown): { aiDeclaration: boolean; submit: boolean } {
+  const record = object(value);
+  if (typeof record.aiDeclaration !== "boolean") invalid("xhsOptions.aiDeclaration 必须是布尔值");
+  if (record.submit !== undefined && typeof record.submit !== "boolean") {
+    invalid("xhsOptions.submit 必须是布尔值");
+  }
+  return { aiDeclaration: record.aiDeclaration, submit: record.submit === true };
+}
+
 function createPackageInput(input: Record<string, unknown>): CreatePublishingPackageInput {
   if (!Array.isArray(input.platforms)) invalid("发布平台不能为空");
   const resolvedContentType = contentType(input.contentType);
@@ -360,6 +417,9 @@ function createPackageInput(input: Record<string, unknown>): CreatePublishingPac
       contentType: "note",
       noteCopy,
       ...noteImageSelection(input),
+      ...(input.xhsOptions === undefined
+        ? {}
+        : { xhsOptions: xhsNoteOptions(input.xhsOptions) }),
       platforms: input.platforms.map((item) => ({
         platform: platform(object(item).platform),
         copy: noteCopy,
@@ -638,6 +698,18 @@ function publishingErrorMapper(error: unknown, req: Request, res: Response, next
     || error instanceof ToutiaoPageError
     || error instanceof ToutiaoArticleError
     || error instanceof ToutiaoMediaError
+  ) {
+    res.status(error.status).json({ code: error.code, message: error.message });
+    return;
+  }
+  // 小红书那一族同理（同一条纪律：**漏登记的后果是指引整条丢掉**，不是状态码不准）。
+  // 其中 `XhsRunnerError` 已经把 `XhsBrowserError` 收敛进来（见 `xhs-runner.ts` 的 `safeResolve`），
+  // 但这里仍把两个都登记上：将来若有人绕过 `safeResolve` 直接抛浏览器错误，也不该掉进兜底 500。
+  // 用例：`xhs runner errors surface with their own status, code and guidance`。
+  if (
+    error instanceof XhsRunnerError
+    || error instanceof XhsBrowserError
+    || error instanceof XhsPageError
   ) {
     res.status(error.status).json({ code: error.code, message: error.message });
     return;

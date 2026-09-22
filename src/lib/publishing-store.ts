@@ -446,7 +446,7 @@ export class PublishingStore {
    */
   async updateAutoPublish(
     taskId: string,
-    patch: { status: PublishAutoPublishStatus; message?: string; finishedAt?: string },
+    patch: { status: PublishAutoPublishStatus; message?: string; finishedAt?: string; draftOnly?: boolean },
     actor: ActorSnapshot
   ): Promise<PublishTask> {
     return this.mutate((draft) => {
@@ -465,6 +465,8 @@ export class PublishingStore {
         attemptId: record.attemptId,
         ...(patch.message === undefined ? {} : { message: patch.message }),
         ...(finished === undefined ? {} : { finishedAt: finished }),
+        // 「只填到草稿」必须**显式**记下来：界面据此说「已填写到草稿箱」而不是「已提交」。
+        ...(patch.draftOnly === undefined ? {} : { draftOnly: patch.draftOnly }),
       };
       task.updatedAt = this.timestamp();
       draft.audit.push(this.auditEvent(task.packageId, `task.auto_publish_${patch.status}`, actor, {
@@ -1046,6 +1048,13 @@ export function packagePreviewRevision(
     hash.update(`noteTitle:${packageRecord.noteCopy?.title ?? ""}\0`);
     hash.update(`noteBody:${packageRecord.noteCopy?.description ?? ""}\0`);
     hash.update(`noteTags:${(packageRecord.noteCopy?.hashtags ?? []).join(",")}\0`);
+    // ⚠️ **只在存在时参与哈希**：无条件追加（哪怕只多一个 `\0` 参数）会改掉**所有既有抖音
+    // 图文包**的 `previewRevision` —— 于是「预览过、还没提交」的包会突然全部 409。
+    // 那种红是「指纹口径被悄悄改了」，不是「功能坏了」，所以有用例把改动前的哈希写死当 baseline。
+    if (packageRecord.xhsOptions !== undefined) {
+      hash.update(`xhsAiDeclaration:${packageRecord.xhsOptions.aiDeclaration ? 1 : 0}\0`);
+      hash.update(`xhsSubmit:${packageRecord.xhsOptions.submit ? 1 : 0}\0`);
+    }
   } else if (contentType === "article") {
     // 文章包的内容凭据是**正文 HTML 的哈希**，不是成片哈希；封面与头条选项同样决定
     // 「发出去的是什么」，所以一并进指纹（spec §6.3：这三样少一个，预览就能被绕过）。
@@ -1158,6 +1167,7 @@ function isDeliveryPackage(value: unknown, key: string): value is DeliveryPackag
     (value.noteCopy === undefined || isPlatformCopyShape(value.noteCopy)) &&
     (value.articleCopy === undefined || isWechatArticleCopyShape(value.articleCopy))
     && (value.toutiaoOptions === undefined || isToutiaoOptionsShape(value.toutiaoOptions))
+    && (value.xhsOptions === undefined || isXhsNoteOptionsShape(value.xhsOptions))
   );
 }
 
@@ -1186,6 +1196,18 @@ function isToutiaoOptionsShape(value: unknown): boolean {
     && typeof value.crossPostWeitoutiao === "boolean"
     && Array.isArray(value.declarations)
     && value.declarations.every(isString);
+}
+
+/**
+ * 小红书图文发布选项的存档形状。
+ *
+ * 与头条那份同一条理由：畸形值（比如 `aiDeclaration` 是字符串）会让指纹计算与提交前的
+ * 合规校验拿到意料之外的类型；正确行为是「索引损坏」这条既定口径，而不是静默把字段丢掉
+ *（丢掉字段会让「本该声明 AI」的包变成「没声明」）。
+ */
+function isXhsNoteOptionsShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.aiDeclaration === "boolean" && typeof value.submit === "boolean";
 }
 
 function isWechatArticleCopyShape(value: unknown): boolean {
@@ -1227,7 +1249,9 @@ function isAutoPublish(value: unknown): value is PublishAutoPublish {
     isString(value.startedAt) &&
     isString(value.attemptId) &&
     (value.finishedAt === undefined || isString(value.finishedAt)) &&
-    (value.message === undefined || isString(value.message))
+    (value.message === undefined || isString(value.message)) &&
+    // 「只填到草稿」的标记：老记录没有这个字段（缺省 = 不是草稿通路），所以是可选的。
+    (value.draftOnly === undefined || typeof value.draftOnly === "boolean")
   );
 }
 

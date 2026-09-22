@@ -20,9 +20,12 @@ import {
   X,
   XCircle,
 } from 'lucide-react';
+import { Button } from '../components/ui/Button';
 import { Layout } from '../components/Layout';
+import { PageHeader } from '../components/ui/PageHeader';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { ToutiaoLoginPanel } from '../components/ToutiaoLoginPanel';
+import { XhsLoginPanel } from '../components/XhsLoginPanel';
 import { apiClient } from '../services/api';
 import { parseOutputLimit, toOutputLimitForm, type OutputLimitMode } from '../utils/ai-output-limit';
 import { settingsSections } from '../utils/settingsSections';
@@ -77,6 +80,7 @@ const settingsSectionIcons: Record<SettingsSection, typeof KeyRound> = {
   models: KeyRound,
   douyin: QrCode,
   toutiao: QrCode,
+  xhs: QrCode,
   asr: Mic,
   storage: HardDrive,
   advanced: SlidersHorizontal,
@@ -287,17 +291,17 @@ export function SettingsPage() {
 
   return (
     <Layout>
-      <div className="mb-8">
-        <h2 className="text-2xl font-semibold text-tech-text">设置</h2>
-        <p className="mt-1 text-sm text-tech-muted">配置 AI 模型、抖音登录、语音转录和本地创作资产。</p>
-      </div>
+      <PageHeader
+        title="设置"
+        description="配置 AI 模型、抖音登录、语音转录和本地创作资产。"
+      />
 
       {/* 移动端：水平下拉选择 */}
       <div className="mb-6 lg:hidden">
         <select
           value={activeSection}
           onChange={(e) => setActiveSection(e.target.value as SettingsSection)}
-          className="w-full rounded-lg border border-tech-border bg-tech-surface px-4 py-3 text-sm font-medium text-tech-text outline-none focus:border-tech-blue focus:ring-1 focus:ring-tech-blue"
+          className="w-full rounded-lg border border-line-ui bg-well px-4 py-3 text-sm font-medium text-ink outline-none focus:border-accent-line focus:ring-1 focus:ring-accent"
         >
           {settingsSections.map((s) => (
             <option key={s.id} value={s.id}>{s.label} — {s.description}</option>
@@ -306,7 +310,7 @@ export function SettingsPage() {
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="hidden lg:block rounded-lg border border-tech-border bg-tech-surface p-2">
+        <aside className="hidden lg:block rounded-lg border border-line bg-panel p-2">
           {settingsSections.map((section) => {
             const Icon = settingsSectionIcons[section.id];
             const active = activeSection === section.id;
@@ -316,7 +320,7 @@ export function SettingsPage() {
                 type="button"
                 onClick={() => setActiveSection(section.id)}
                 className={`mb-1 flex w-full items-start gap-3 rounded-lg px-3 py-3 text-left transition-all ${
-                  active ? 'bg-blue-50 text-tech-blue' : 'text-tech-muted hover:bg-tech-bg hover:text-tech-text'
+                  active ? 'bg-accent-soft text-accent' : 'text-ink-muted hover:bg-elevated hover:text-ink'
                 }`}
               >
                 <Icon size={18} className="mt-0.5 shrink-0" />
@@ -357,6 +361,7 @@ export function SettingsPage() {
           )}
           {activeSection === 'douyin' && <DouyinSection />}
           {activeSection === 'toutiao' && <ToutiaoSection />}
+          {activeSection === 'xhs' && <XhsSection />}
           {activeSection === 'asr' && <AsrSection />}
           {activeSection === 'storage' && <StorageSection />}
           {activeSection === 'advanced' && <AdvancedSection />}
@@ -374,7 +379,7 @@ export function SettingsPage() {
       />
 
       {keyActionError && (
-        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg">
+        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger shadow-lg">
           {keyActionError}
           <button className="ml-3 font-medium underline" onClick={() => setKeyActionError(null)}>
             关闭
@@ -437,24 +442,23 @@ function ModelsSection({
         title="AI 模型与密钥"
         description="管理 AI 洗稿使用的模型密钥。"
         action={
-          <button
-            onClick={onStartAdd}
-            className="inline-flex items-center gap-2 rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition-all hover:bg-tech-blue-dark"
-          >
-            <Plus size={16} />
+          /* 次要权重：同一屏里的主行动是空态里的「立即添加」。两个实心红按钮做同一件事
+             等于没有主次（改造前两者都是 bg-accent）。 */
+          <Button variant="outline" onClick={onStartAdd}>
+            <Plus size={16} aria-hidden="true" />
             添加密钥
-          </button>
+          </Button>
         }
       />
 
       {apiKeys.length === 0 && !isAdding ? (
-        <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface py-16 text-center">
-          <KeyRound className="mx-auto mb-4 h-11 w-11 text-tech-purple" />
-          <h3 className="text-lg font-semibold text-tech-text">还没有 API 密钥</h3>
-          <p className="mt-2 text-tech-muted">添加第一个密钥后即可创建视频作品。</p>
+        <div className="rounded-lg border border-dashed border-line bg-panel py-16 text-center">
+          <KeyRound className="mx-auto mb-4 h-11 w-11 text-ai" />
+          <h3 className="text-lg font-semibold text-ink">还没有 API 密钥</h3>
+          <p className="mt-2 text-ink-muted">添加第一个密钥后即可创建视频作品。</p>
           <button
             onClick={onStartAdd}
-            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-tech-blue px-5 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark"
+            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-accent px-5 py-2.5 font-medium text-on-accent transition-all hover:bg-accent-hover"
           >
             <Plus size={17} />
             立即添加
@@ -465,35 +469,35 @@ function ModelsSection({
           {apiKeys.map((key) => (
             <div
               key={key.id}
-              className={`rounded-lg border bg-tech-surface p-5 transition-all ${
-                key.isActive ? 'border-tech-blue shadow-sm' : 'border-tech-border'
+              className={`rounded-lg border bg-panel p-5 transition-all ${
+                key.isActive ? 'border-accent-line shadow-sm' : 'border-line'
               }`}
             >
               <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                 <div className="min-w-0">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
-                    <h3 className="font-semibold text-tech-text">{key.name}</h3>
+                    <h3 className="font-semibold text-ink">{key.name}</h3>
                     {key.isActive && (
-                      <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700">
+                      <span className="inline-flex items-center gap-1 rounded bg-success-soft px-2 py-1 text-xs font-medium text-success">
                         <CheckCircle2 size={13} />
                         当前使用
                       </span>
                     )}
-                    <span className="rounded bg-tech-bg px-2 py-1 text-xs text-tech-muted">
+                    <span className="rounded bg-canvas px-2 py-1 text-xs text-ink-muted">
                       {getProviderLabel(key.provider)}
                     </span>
                   </div>
-                  <p className="text-sm text-tech-muted">
-                    模型：<code className="rounded bg-tech-bg px-2 py-0.5 text-tech-text">{key.model}</code>
+                  <p className="text-sm text-ink-muted">
+                    模型：<code className="rounded bg-canvas px-2 py-0.5 text-ink">{key.model}</code>
                   </p>
-                  <p className="mt-1 text-xs text-tech-muted">
+                  <p className="mt-1 text-xs text-ink-muted">
                     输出上限：{key.maxOutputTokens === undefined ? '自动' : `${key.maxOutputTokens.toLocaleString('zh-CN')} Tokens`}
                   </p>
-                  {key.baseURL && <p className="mt-1 break-all font-mono text-xs text-tech-muted">{key.baseURL}</p>}
-                  <p className="mt-1 font-mono text-xs text-tech-muted">
+                  {key.baseURL && <p className="mt-1 break-all font-mono text-xs text-ink-muted">{key.baseURL}</p>}
+                  <p className="mt-1 font-mono text-xs text-ink-muted">
                     密钥：{key.apiKey.slice(0, 8)}...{key.apiKey.slice(-4)}
                   </p>
-                  <p className={`mt-2 text-xs ${key.isValid === true ? 'text-emerald-600' : key.isValid === false ? 'text-red-600' : 'text-tech-muted'}`}>
+                  <p className={`mt-2 text-xs ${key.isValid === true ? 'text-success' : key.isValid === false ? 'text-danger' : 'text-ink-muted'}`}>
                     {key.isValid === true ? '连接有效' : key.isValid === false ? '连接失效' : '尚未重新测试'}
                     {key.lastTested ? ` · ${new Date(key.lastTested).toLocaleString('zh-CN')}` : ''}
                   </p>
@@ -502,14 +506,14 @@ function ModelsSection({
                   <button
                     onClick={() => onRetest(key.id)}
                     disabled={testingKeyId === key.id}
-                    className="inline-flex items-center gap-1 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text transition-all hover:border-tech-blue hover:text-tech-blue disabled:opacity-50"
+                    className="inline-flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-sm font-medium text-ink transition-all hover:border-accent-line hover:text-accent disabled:opacity-50"
                   >
                     <RefreshCw size={15} className={testingKeyId === key.id ? 'animate-spin' : ''} />
                     重新测试
                   </button>
                   <button
                     onClick={() => onEdit(key)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text transition-all hover:border-tech-blue hover:text-tech-blue"
+                    className="inline-flex items-center gap-1 rounded-lg border border-line px-3 py-2 text-sm font-medium text-ink transition-all hover:border-accent-line hover:text-accent"
                   >
                     <Pencil size={15} />
                     编辑
@@ -518,14 +522,14 @@ function ModelsSection({
                     <button
                       onClick={() => onSetActive(key.id)}
                       disabled={testingKeyId === key.id}
-                      className="rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-text transition-all hover:border-tech-blue hover:text-tech-blue"
+                      className="rounded-lg border border-line px-3 py-2 text-sm font-medium text-ink transition-all hover:border-accent-line hover:text-accent"
                     >
                       设为当前
                     </button>
                   )}
                   <button
                     onClick={() => setRemoveKeyTarget(key.id)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition-all hover:bg-red-50"
+                    className="inline-flex items-center gap-1 rounded-lg border border-danger-line px-3 py-2 text-sm font-medium text-danger transition-all hover:bg-danger-soft"
                   >
                     <Trash2 size={15} />
                     删除
@@ -546,12 +550,12 @@ function ModelsSection({
       )}
 
       {isAdding && (
-        <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
+        <div className="rounded-lg border border-line bg-panel p-6">
           <div className="mb-6 flex items-center justify-between">
-            <h3 className="text-lg font-semibold text-tech-text">{editingKeyId ? '编辑 AI 配置' : '添加新密钥'}</h3>
+            <h3 className="text-lg font-semibold text-ink">{editingKeyId ? '编辑 AI 配置' : '添加新密钥'}</h3>
             <button
               onClick={onCloseForm}
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-tech-muted transition-all hover:bg-tech-bg hover:text-tech-text"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-muted transition-all hover:bg-elevated hover:text-ink"
               aria-label="关闭添加密钥"
             >
               <X size={18} />
@@ -570,7 +574,7 @@ function ModelsSection({
             </FormField>
 
             <div>
-              <label className="mb-3 block text-sm font-medium text-tech-text">服务商</label>
+              <label className="mb-3 block text-sm font-medium text-ink">服务商</label>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {(['deepseek', 'openai', 'custom'] as const).map((provider) => (
                   <button
@@ -579,8 +583,8 @@ function ModelsSection({
                     onClick={() => onProviderChange(provider)}
                     className={`rounded-lg border px-4 py-3 text-sm font-medium transition-all ${
                       newKey.provider === provider
-                        ? 'border-tech-purple bg-purple-50 text-tech-purple'
-                        : 'border-tech-border text-tech-muted hover:border-tech-blue'
+                        ? 'border-ai-line bg-ai-soft text-ai'
+                        : 'border-line text-ink-muted hover:border-accent-line'
                     }`}
                   >
                     {getProviderLabel(provider)}
@@ -631,15 +635,15 @@ function ModelsSection({
             </FormField>
 
             <FormField label="创作输出 Token 上限">
-              <div className="inline-flex rounded-lg border border-tech-border bg-tech-bg p-1">
+              <div className="inline-flex rounded-lg border border-line bg-canvas p-1">
                 {(['automatic', 'custom'] as const).map((mode) => (
                   <button
                     key={mode}
                     type="button"
                     onClick={() => setNewKey({ ...newKey, maxOutputMode: mode })}
                     className={mode === newKey.maxOutputMode
-                      ? 'rounded-md bg-tech-surface px-3 py-2 text-sm font-medium text-tech-text shadow-sm'
-                      : 'rounded-md px-3 py-2 text-sm font-medium text-tech-muted transition-colors hover:text-tech-text'}
+                      ? 'rounded-md bg-panel px-3 py-2 text-sm font-medium text-ink shadow-sm'
+                      : 'rounded-md px-3 py-2 text-sm font-medium text-ink-muted transition-colors hover:text-ink'}
                   >
                     {mode === 'automatic' ? '自动' : '自定义'}
                   </button>
@@ -655,7 +659,7 @@ function ModelsSection({
                   className={`${inputClassName} mt-3`}
                 />
               )}
-              <p className="mt-2 text-xs leading-5 text-tech-muted">
+              <p className="mt-2 text-xs leading-5 text-ink-muted">
                 仅用于 AI 洗稿和生成分镜。自动模式不由应用限制；自定义值最终仍受模型和中转服务限制。
               </p>
             </FormField>
@@ -669,7 +673,7 @@ function ModelsSection({
                 <button
                   onClick={onTest}
                   disabled={isTesting || !newKey.apiKey}
-                  className="rounded-lg border border-tech-border px-5 py-2.5 font-medium text-tech-text transition-all hover:bg-tech-bg disabled:opacity-50"
+                  className="rounded-lg border border-line px-5 py-2.5 font-medium text-ink transition-all hover:bg-elevated disabled:opacity-50"
                 >
                   {isTesting ? '测试中...' : '测试连接'}
                 </button>
@@ -677,7 +681,7 @@ function ModelsSection({
               <button
                 onClick={editingKeyId ? onUpdate : onAdd}
                 disabled={isSaving || (!editingKeyId && !testResult?.valid)}
-                className="rounded-lg bg-tech-blue px-5 py-2.5 font-medium text-white transition-all hover:bg-tech-blue-dark disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg bg-accent px-5 py-2.5 font-medium text-on-accent transition-all hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {isSaving ? '测试并保存中...' : editingKeyId ? '测试并保存' : '保存密钥'}
               </button>
@@ -698,9 +702,9 @@ function AsrSection() {
         description="视频转录由软件内置 Whisper 本地完成。"
       />
 
-      <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
+      <div className="rounded-lg border border-line bg-panel p-6">
         <div className="space-y-4">
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700">
+          <div className="rounded-lg border border-success-line bg-success-soft p-4 text-sm text-success">
             <div className="flex items-start gap-3">
               <AlertCircle size={18} className="mt-0.5 shrink-0" />
               <div>
@@ -731,7 +735,7 @@ function StorageSection() {
         title="存储位置"
         description="本地作品、素材和输出文件会保存到用户文档目录。"
       />
-      <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
+      <div className="rounded-lg border border-line bg-panel p-6">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <StorageCard title="原始素材" value="~/Documents/抖音AI视频/raw" />
           <StorageCard title="处理产物" value="~/Documents/抖音AI视频/processed" />
@@ -765,42 +769,42 @@ function AdvancedSection() {
       </div>
 
       {/* 危险区域：数据恢复与重置 */}
-      <div className="rounded-lg border border-red-200 bg-red-50 p-6">
+      <div className="rounded-lg border border-danger-line bg-danger-soft p-6">
         <div className="flex items-start gap-3 mb-4">
-          <AlertTriangle size={20} className="text-red-600 shrink-0 mt-0.5" />
+          <AlertTriangle size={20} className="text-danger shrink-0 mt-0.5" />
           <div>
-            <h3 className="text-lg font-semibold text-red-700">恢复与重置</h3>
-            <p className="mt-1 text-sm text-red-600">
+            <h3 className="text-lg font-semibold text-danger">恢复与重置</h3>
+            <p className="mt-1 text-sm text-danger">
               以下操作不可撤销，请在执行前确认已备份重要数据。
             </p>
           </div>
         </div>
         <div className="space-y-3">
-          <div className="rounded-lg border border-red-200 bg-white p-4 flex items-center justify-between">
+          <div className="rounded-lg border border-danger-line bg-panel p-4 flex items-center justify-between">
             <div>
-              <p className="font-medium text-tech-text">重置所有本地数据</p>
-              <p className="text-xs text-tech-muted mt-0.5">清除所有任务、合集、发布包和 Skill，保留 API Key 和配置</p>
+              <p className="font-medium text-ink">重置所有本地数据</p>
+              <p className="text-xs text-ink-muted mt-0.5">清除所有任务、合集、发布包和 Skill，保留 API Key 和配置</p>
             </div>
             <button
               type="button"
               disabled
               title="此功能将在后续版本中提供"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 px-3 py-2 text-sm font-medium text-red-400 cursor-not-allowed transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-danger-line px-3 py-2 text-sm font-medium text-danger cursor-not-allowed transition-colors"
             >
               <Trash2 size={14} />
               暂不可用
             </button>
           </div>
-          <div className="rounded-lg border border-red-200 bg-white p-4 flex items-center justify-between">
+          <div className="rounded-lg border border-danger-line bg-panel p-4 flex items-center justify-between">
             <div>
-              <p className="font-medium text-tech-text">清除缓存和临时文件</p>
-              <p className="text-xs text-tech-muted mt-0.5">清除下载缓存、临时处理文件和日志</p>
+              <p className="font-medium text-ink">清除缓存和临时文件</p>
+              <p className="text-xs text-ink-muted mt-0.5">清除下载缓存、临时处理文件和日志</p>
             </div>
             <button
               type="button"
               disabled
               title="此功能将在后续版本中提供"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-tech-border px-3 py-2 text-sm font-medium text-tech-muted cursor-not-allowed transition-colors"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-2 text-sm font-medium text-ink-muted cursor-not-allowed transition-colors"
             >
               <RefreshCw size={14} />
               暂不可用
@@ -824,14 +828,14 @@ function SectionHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-4 rounded-lg border border-tech-border bg-tech-surface p-5 md:flex-row md:items-center md:justify-between">
+    <div className="flex flex-col gap-4 rounded-lg border border-line bg-panel p-5 md:flex-row md:items-center md:justify-between">
       <div className="flex items-start gap-3">
-        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-purple-50 text-tech-purple">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-ai-soft text-ai">
           <Icon size={20} />
         </span>
         <div>
-          <h3 className="text-lg font-semibold text-tech-text">{title}</h3>
-          <p className="mt-1 text-sm text-tech-muted">{description}</p>
+          <h3 className="text-lg font-semibold text-ink">{title}</h3>
+          <p className="mt-1 text-sm text-ink-muted">{description}</p>
         </div>
       </div>
       {action}
@@ -840,21 +844,34 @@ function SectionHeader({
 }
 
 function FormField({ label, required, hint, children }: { label: string; required?: boolean; hint?: string; children: ReactNode }) {
+  /*
+   * 改造前 `<label>` 与控件是**兄弟节点**且没有 `htmlFor`，于是四个输入框
+   * （接口地址 / API Key / 模型名 / 存储位置）都**没有可访问名** —— 读屏只念「编辑框」，
+   * 点标签文字也不会聚焦到输入框。
+   * 现在用**包裹式 label**（隐式关联，不必给每个调用点补 id）；
+   * hint 留在 label 之外，避免被算进可访问名里变成一长串。
+   */
   return (
     <div>
-      <label className="mb-2 block text-sm font-medium text-tech-text">
-        {label} {required && <span className="text-red-500">*</span>}
+      <label className="block">
+        <span className="mb-2 block text-sm font-medium text-ink">
+          {label} {required && <span className="text-danger">*</span>}
+        </span>
+        {children}
       </label>
-      {children}
-      {hint && <p className="mt-1 text-xs text-tech-muted">{hint}</p>}
+      {hint && <p className="mt-1 text-xs text-ink-muted">{hint}</p>}
     </div>
   );
 }
 
 function ResultBanner({ valid, message }: { valid: boolean; message: string }) {
+  /* 保存在/测试结果是异步出现的：成功走 status（礼貌播报），失败走 alert（立即播报）。 */
   return (
-    <div className={`flex items-center gap-2 rounded-lg border p-3 text-sm ${valid ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
-      {valid ? <CheckCircle2 size={17} /> : <XCircle size={17} />}
+    <div
+      role={valid ? 'status' : 'alert'}
+      className={`flex items-center gap-2 rounded-lg border p-3 text-sm ${valid ? 'border-success-line bg-success-soft text-success' : 'border-danger-line bg-danger-soft text-danger'}`}
+    >
+      {valid ? <CheckCircle2 size={17} aria-hidden="true" /> : <XCircle size={17} aria-hidden="true" />}
       {message}
     </div>
   );
@@ -862,19 +879,19 @@ function ResultBanner({ valid, message }: { valid: boolean; message: string }) {
 
 function StorageCard({ title, value }: { title: string; value: string }) {
   return (
-    <div className="rounded-lg bg-tech-bg p-4">
-      <p className="text-sm font-semibold text-tech-text">{title}</p>
-      <p className="mt-2 break-all font-mono text-xs text-tech-muted">{value}</p>
+    <div className="rounded-lg bg-canvas p-4">
+      <p className="text-sm font-semibold text-ink">{title}</p>
+      <p className="mt-2 break-all font-mono text-xs text-ink-muted">{value}</p>
     </div>
   );
 }
 
 function InfoCard({ icon: Icon, title, description }: { icon: typeof ShieldCheck; title: string; description: string }) {
   return (
-    <div className="rounded-lg border border-tech-border bg-tech-surface p-5">
-      <Icon className="mb-4 h-8 w-8 text-tech-purple" />
-      <h3 className="font-semibold text-tech-text">{title}</h3>
-      <p className="mt-2 text-sm leading-6 text-tech-muted">{description}</p>
+    <div className="rounded-lg border border-line bg-panel p-5">
+      <Icon className="mb-4 h-8 w-8 text-ai" />
+      <h3 className="font-semibold text-ink">{title}</h3>
+      <p className="mt-2 text-sm leading-6 text-ink-muted">{description}</p>
     </div>
   );
 }
@@ -915,18 +932,18 @@ function ManualCookieInput({ onSaved, disabled }: { onSaved: () => void; disable
         placeholder="sessionid=xxx; sid_guard=xxx; passport_csrf_token=xxx; ..."
         disabled={disabled || saving}
         rows={3}
-        className="w-full rounded-lg border border-tech-border bg-tech-bg px-4 py-3 text-sm font-mono text-tech-text placeholder-tech-muted outline-none transition-all focus:border-tech-blue focus:ring-2 focus:ring-blue-100 resize-y"
+        className="w-full rounded-lg border border-line-ui bg-well px-4 py-3 text-sm font-mono text-ink placeholder-ink-muted outline-none transition-all focus:border-accent-line focus:ring-2 focus:ring-accent resize-y"
       />
       <div className="flex items-center gap-3">
         <button
           onClick={handleSave}
           disabled={disabled || saving || !cookie.trim()}
-          className="rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white transition-all hover:bg-blue-600 disabled:opacity-50"
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent transition-all hover:bg-info disabled:opacity-50"
         >
           {saving ? "保存中..." : "保存 Cookie"}
         </button>
         {msg && (
-          <span className={`text-sm ${msg.ok ? "text-emerald-600" : "text-red-500"}`}>{msg.text}</span>
+          <span className={`text-sm ${msg.ok ? "text-success" : "text-danger"}`}>{msg.text}</span>
         )}
       </div>
     </div>
@@ -949,8 +966,29 @@ function ToutiaoSection() {
         title="今日头条"
         description="头条号登录态保存在本机，用今日头条 App 扫码一次即可（不需要重启应用）。"
       />
-      <div className="rounded-xl border border-tech-border bg-white p-4">
+      <div className="rounded-xl border border-line bg-panel p-4">
         <ToutiaoLoginPanel />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 小红书登录区。
+ *
+ * 与抖音/头条同一条交互（应用内扫码 + 打开浏览器窗口扫码 + 零副作用自检）。
+ * ⚠️ 这里**只有登录**：本工具不读取笔记、不搜索、不评论、不点赞收藏（spec §12）。
+ */
+function XhsSection() {
+  return (
+    <div className="space-y-4">
+      <SectionHeader
+        icon={QrCode}
+        title="小红书"
+        description="登录态保存在本机，用小红书 App 扫码一次即可（不需要重启应用）。"
+      />
+      <div className="rounded-xl border border-line bg-panel p-4">
+        <XhsLoginPanel />
       </div>
     </div>
   );
@@ -993,10 +1031,10 @@ function DouyinSection() {
 
   const statusDisplay = status
     ? status.status === 'authenticated'
-      ? { icon: CheckCircle2, color: 'text-emerald-600 bg-emerald-50 border-emerald-200', text: '已登录', desc: 'Cookie 包含登录态，API 调用可用' }
+      ? { icon: CheckCircle2, color: 'text-success bg-success-soft border-success-line', text: '已登录', desc: 'Cookie 包含登录态，API 调用可用' }
       : status.status === 'no_auth'
-      ? { icon: AlertCircle, color: 'text-amber-600 bg-amber-50 border-amber-200', text: '未登录', desc: 'Cookie 存在但无登录态，需扫码登录' }
-      : { icon: XCircle, color: 'text-red-600 bg-red-50 border-red-200', text: '无 Cookie', desc: '尚未获取任何 Cookie' }
+      ? { icon: AlertCircle, color: 'text-warning bg-warning-soft border-warning-line', text: '未登录', desc: 'Cookie 存在但无登录态，需扫码登录' }
+      : { icon: XCircle, color: 'text-danger bg-danger-soft border-danger-line', text: '无 Cookie', desc: '尚未获取任何 Cookie' }
     : null;
 
   return (
@@ -1026,21 +1064,21 @@ function DouyinSection() {
       )}
 
       {/* Login button */}
-      <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
-        <h3 className="text-lg font-semibold text-tech-text mb-4">扫码登录</h3>
-        <p className="text-sm text-tech-muted mb-6 leading-relaxed">
+      <div className="rounded-lg border border-line bg-panel p-6">
+        <h3 className="text-lg font-semibold text-ink mb-4">扫码登录</h3>
+        <p className="text-sm text-ink-muted mb-6 leading-relaxed">
           点击下方按钮后，系统会自动打开浏览器窗口并导航至抖音首页。
           请在浏览器中<strong>使用抖音 App 扫描二维码</strong>完成登录。
           登录成功后浏览器会自动关闭，Cookie 将保存到本地供后续使用。
         </p>
-        <p className="text-sm text-tech-muted mb-6">
+        <p className="text-sm text-ink-muted mb-6">
           此操作只需执行一次，后续所有 API 调用将自动使用持久化的登录态。
         </p>
 
         <button
           onClick={handleQrLogin}
           disabled={isLoggingIn}
-          className="inline-flex items-center gap-3 rounded-lg bg-tech-purple px-6 py-4 text-base font-semibold text-white transition-all hover:bg-purple-700 disabled:opacity-50 disabled:cursor-wait shadow-sm"
+          className="inline-flex items-center gap-3 rounded-lg bg-ai px-6 py-4 text-base font-semibold text-on-accent transition-all hover:bg-ai disabled:opacity-50 disabled:cursor-wait shadow-sm"
         >
           {isLoggingIn ? (
             <>
@@ -1056,7 +1094,7 @@ function DouyinSection() {
         </button>
 
         {isLoggingIn && (
-          <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700">
+          <div className="mt-4 rounded-lg border border-info-line bg-info-soft p-4 text-sm text-info">
             <div className="flex items-start gap-3">
               <AlertCircle size={18} className="shrink-0 mt-0.5" />
               <div>
@@ -1074,8 +1112,8 @@ function DouyinSection() {
         {loginResult && (
           <div className={`mt-4 rounded-lg border p-4 text-sm ${
             loginResult.success
-              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-              : 'border-red-200 bg-red-50 text-red-700'
+              ? 'border-success-line bg-success-soft text-success'
+              : 'border-danger-line bg-danger-soft text-danger'
           }`}>
             <div className="flex items-center gap-2">
               {loginResult.success ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
@@ -1086,10 +1124,10 @@ function DouyinSection() {
       </div>
 
       {/* Manual cookie input */}
-      <div className="rounded-lg border border-tech-border bg-tech-surface p-6">
-        <h3 className="text-sm font-semibold text-tech-text mb-3">手动粘贴 Cookie</h3>
-        <p className="text-sm text-tech-muted leading-relaxed mb-3">
-          在 Chrome 中打开抖音并登录，然后按 <kbd className="px-1.5 py-0.5 rounded bg-tech-bg text-xs">F12</kbd> 打开 DevTools，
+      <div className="rounded-lg border border-line bg-panel p-6">
+        <h3 className="text-sm font-semibold text-ink mb-3">手动粘贴 Cookie</h3>
+        <p className="text-sm text-ink-muted leading-relaxed mb-3">
+          在 Chrome 中打开抖音并登录，然后按 <kbd className="px-1.5 py-0.5 rounded bg-canvas text-xs">F12</kbd> 打开 DevTools，
           进入 <strong>Application</strong> → <strong>Cookies</strong> → <strong>douyin.com</strong>，
           将下方格式的 Cookie 字符串粘贴到输入框中保存。
         </p>
@@ -1097,8 +1135,8 @@ function DouyinSection() {
           onSaved={() => loadStatus()}
           disabled={isLoggingIn}
         />
-        <p className="mt-3 text-sm text-tech-muted">
-          保存位置：<code className="bg-tech-bg px-2 py-0.5 rounded text-xs select-all">{status?.path || '~/.douyin-ai-video/douyin-cookie.txt'}</code>
+        <p className="mt-3 text-sm text-ink-muted">
+          保存位置：<code className="bg-canvas px-2 py-0.5 rounded text-xs select-all">{status?.path || '~/.douyin-ai-video/douyin-cookie.txt'}</code>
         </p>
       </div>
     </section>
@@ -1106,4 +1144,4 @@ function DouyinSection() {
 }
 
 const inputClassName =
-  'w-full rounded-lg border border-tech-border bg-tech-surface px-4 py-3 text-tech-text placeholder-tech-muted outline-none transition-all focus:border-tech-blue focus:ring-2 focus:ring-blue-100';
+  'w-full rounded-lg border border-line-ui bg-well px-4 py-3 text-ink placeholder-ink-muted outline-none transition-all focus:border-accent-line focus:ring-2 focus:ring-accent';

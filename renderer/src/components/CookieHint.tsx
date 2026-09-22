@@ -40,7 +40,7 @@ export function CookieHint({ compact }: CookieHintProps) {
   if (status === 'logged-in') {
     if (compact) return null; // don't clutter when everything is fine in compact mode
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+      <div className="flex items-center gap-2 rounded-lg border border-success-line bg-success-soft px-3 py-2 text-sm text-success">
         <CheckCircle2 size={16} className="shrink-0" />
         <span>已登录抖音，可下载无水印视频</span>
       </div>
@@ -48,7 +48,7 @@ export function CookieHint({ compact }: CookieHintProps) {
   }
 
   return (
-    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+    <div className="rounded-lg border border-warning-line bg-warning-soft px-3 py-2 text-sm text-warning">
       <div className="flex items-center gap-2">
         {status === 'no-auth' ? (
           <AlertCircle size={16} className="shrink-0" />
@@ -64,11 +64,11 @@ export function CookieHint({ compact }: CookieHintProps) {
       <div className="mt-2 flex items-center gap-2 text-xs">
         <Link
           to="/settings"
-          className="inline-flex items-center gap-1 text-tech-blue hover:underline"
+          className="inline-flex items-center gap-1 text-accent hover:underline"
         >
           前往设置
         </Link>
-        <span className="text-amber-400">·</span>
+        <span className="text-warning">·</span>
         <span>扫码登录或手动粘贴 Cookie 后可下载无水印视频</span>
       </div>
     </div>

@@ -20,8 +20,8 @@ export function ApiKeyStatusIndicator({ compact }: { compact?: boolean }) {
   if (hasKey === null) {
     return (
       <div className="flex items-center gap-2">
-        <span className="w-2 h-2 bg-gray-400 rounded-full animate-pulse" />
-        <span className="text-sm text-tech-muted">{compact ? '检查中...' : '检查中...'}</span>
+        <span className="w-2 h-2 bg-ink-subtle rounded-full animate-pulse" />
+        <span className="text-sm text-ink-muted">{compact ? '检查中...' : '检查中...'}</span>
       </div>
     );
   }
@@ -30,8 +30,8 @@ export function ApiKeyStatusIndicator({ compact }: { compact?: boolean }) {
   if (hasKey) {
     return (
       <div className="flex items-center gap-2">
-        <span className="w-2 h-2 bg-green-500 rounded-full" />
-        <span className={`text-sm text-tech-muted ${compact ? 'text-xs' : ''}`}>{compact ? 'AI 已连接' : 'API 已配置'}</span>
+        <span className="w-2 h-2 bg-success rounded-full" />
+        <span className={`text-sm text-ink-muted ${compact ? 'text-xs' : ''}`}>{compact ? 'AI 已连接' : 'API 已配置'}</span>
       </div>
     );
   }
@@ -39,13 +39,13 @@ export function ApiKeyStatusIndicator({ compact }: { compact?: boolean }) {
   // 未配置
   return (
     <div className="flex items-center gap-3">
-      <span className="w-2 h-2 bg-orange-500 rounded-full" />
-      <span className={`${compact ? 'text-xs' : 'text-sm'} text-orange-600`}>
+      <span className="w-2 h-2 bg-warning rounded-full" />
+      <span className={`${compact ? 'text-xs' : 'text-sm'} text-warning`}>
         {compact ? '未配置 AI' : '未配置 AI'}
       </span>
       <Link
         to="/settings"
-        className="text-sm text-tech-blue hover:underline"
+        className="text-sm text-accent hover:underline"
       >
         前往设置
       </Link>

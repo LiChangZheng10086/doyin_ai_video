@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { apiClient } from '../services/api.js';
 import type { PlatformCopy, PublishAssetHealth, PublishingPackagePreview } from '../types/index.js';
+import { Modal } from './ui/Modal.js';
+import { Button } from './ui/Button.js';
 
 /**
  * 发布前预览弹窗（spec §14）。
@@ -37,10 +39,10 @@ const HEALTH_TEXT: Record<PublishAssetHealth, string> = {
 };
 
 const HEALTH_CLASS: Record<PublishAssetHealth, string> = {
-  healthy: 'bg-emerald-50 text-emerald-700',
-  missing_cover: 'bg-amber-50 text-amber-700',
-  broken_video: 'bg-red-50 text-red-700',
-  missing_images: 'bg-red-50 text-red-700',
+  healthy: 'bg-success-soft text-success',
+  missing_cover: 'bg-warning-soft text-warning',
+  broken_video: 'bg-danger-soft text-danger',
+  missing_images: 'bg-danger-soft text-danger',
 };
 
 function isBlocking(health: PublishAssetHealth): boolean {
@@ -52,7 +54,7 @@ function CountedField({ name, value }: { name: string; value: PublishingPackageP
   return (
     <span
       data-over={value.over ? 'true' : 'false'}
-      className={value.over ? 'text-xs font-medium text-red-600' : 'text-xs text-tech-muted'}
+      className={value.over ? 'text-xs font-medium text-danger' : 'text-xs text-ink-muted'}
     >
       {name} {value.actual}/{value.limit}
     </span>
@@ -73,9 +75,9 @@ function SubmitProgress() {
     return () => clearInterval(timer);
   }, []);
   return (
-    <p className="text-xs text-tech-muted" role="status">
+    <p className="text-xs text-ink-muted" role="status">
       正在提交…已用 {seconds} 秒。校验登录态与上传通常需要 1–3 分钟，
-      请<strong className="font-medium text-tech-text">不要关闭窗口</strong>，也别重复点击。
+      请<strong className="font-medium text-ink">不要关闭窗口</strong>，也别重复点击。
     </p>
   );
 }
@@ -104,10 +106,10 @@ function copyForCheck(
  */
 function CopyBody({ check, copy }: { check: PublishPreviewCopyCheck; copy: PlatformCopy | undefined }) {
   const row = 'flex gap-2';
-  const label = 'w-10 shrink-0 text-tech-muted';
-  const overText = (over: boolean) => (over ? 'font-medium text-red-600' : 'text-tech-text');
+  const label = 'w-10 shrink-0 text-ink-muted';
+  const overText = (over: boolean) => (over ? 'font-medium text-danger' : 'text-ink');
   return (
-    <dl className="mt-3 space-y-2 border-t border-tech-border pt-3 text-sm">
+    <dl className="mt-3 space-y-2 border-t border-line pt-3 text-sm">
       <div className={row}>
         <dt className={label}>标题</dt>
         <dd className={overText(check.title.over)}>{copy?.title || '（空）'}</dd>
@@ -120,7 +122,7 @@ function CopyBody({ check, copy }: { check: PublishPreviewCopyCheck; copy: Platf
       </div>
       <div className={row}>
         <dt className={label}>话题</dt>
-        <dd className="text-tech-purple">
+        <dd className="text-ai">
           {copy?.hashtags.length ? copy.hashtags.map((tag) => `#${tag}`).join(' ') : '（无）'}
         </dd>
       </div>
@@ -152,10 +154,18 @@ function PreviewImage({ packageId, index, total }: { packageId: string; index: n
   }, [packageId, index]);
 
   return (
-    <span className="flex h-64 w-36 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-tech-border bg-tech-bg">
+    /*
+     * ⚠️ 尺寸必须与**后端实际裁剪出来的比例**一致。
+     * 配图在后端被统一裁成 3:4（1080×1440，见 src/lib/note-media.ts），
+     * 而这里原本是 `h-64 w-36` = 144×256 = **9:16**，再配 `object-cover`
+     * ⇒ 横向被裁掉约 25%。用户是**看着这张图批准 previewRevision** 的，
+     * 而 previewRevision 是「我确认过这个包」的服务端凭据 —— 预览显示的
+     * 必须是真会发出去的那张画面。w-48 = 192×256 = 3:4。
+     */
+    <span className="flex h-64 w-48 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-line bg-well">
       {url
         ? <img src={url} alt={`第 ${index + 1} 张，共 ${total} 张`} className="h-full w-full object-cover" />
-        : <span className="px-2 text-center text-xs text-tech-muted">第 {index + 1} / {total} 张</span>}
+        : <span className="px-2 text-center text-xs text-ink-muted">第 {index + 1} / {total} 张</span>}
     </span>
   );
 }
@@ -178,6 +188,29 @@ export function PublishPreviewDialog({
   // 对任何「同一个子槽位在两次渲染里换成另一种节点」的写法都会报。
   // 实测：图文包预览（`PreviewImage` 的 span → img）与文章包预览（封面 p → img）**都会报**，
   // 与本次头条改动无关、也不影响功能（弹窗内容全部正确渲染，2026-09-18 真浏览器核对）。
+  /*
+   * ⚠️ 这个 hook 必须在早退**之前**调用。
+   *
+   * 改造前它的位置在 `if (!open || !preview) return null;` 之后，而父组件是**常驻挂载**
+   * 这个弹窗（`open` 从 false 变 true），初始态是 `open=false / preview=null`
+   * ⇒ 首次渲染 0 个 hook、打开后 2 个 hook。
+   *
+   * 2026-09-21 实测：这在当前 React 19 下**不会崩** —— React 选择 dispatcher 时会看
+   * 上一次渲染有没有 hook（`current.memoizedState === null` 就走 mount 分支），
+   * 于是「0 → N」被当作重新挂载、静默通过（探针：无 pageerror，弹窗正常渲染）。
+   * 但代价是 hook 状态被**静默重新初始化**，而且只要有人在早退之上再加一个 hook，
+   * 计数就变成 1 → 3，那时 dispatcher 走 update 分支，会直接抛
+   * 「Rendered more hooks than during the previous render」。
+   *
+   * 顺带说明为什么现有测试抓不到：它们全部用 `renderToStaticMarkup`，不跑更新阶段的
+   * dispatcher，因此对「hook 顺序随渲染变化」完全不敏感。
+   */
+  const [bodyView, setBodyView] = React.useState<'plain' | 'typeset'>('plain');
+  const articleCover = useArticleCover(
+    preview?.package.id ?? '',
+    open && Boolean(preview) && preview?.package.contentType === 'article' && Boolean(preview?.articleCopy),
+  );
+
   if (!open || !preview) return null;
 
   const { package: pkg } = preview;
@@ -186,30 +219,49 @@ export function PublishPreviewDialog({
   const images = preview.imagePaths ?? [];
   const imageCount = images.length;
   const isArticle = pkg.contentType === 'article';
-  const articleCover = useArticleCover(pkg.id, isArticle && Boolean(preview.articleCopy));
 
   return (
-    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-xl">
-        <header className="flex items-start justify-between gap-4 border-b border-tech-border px-5 py-4">
-          <div className="min-w-0">
-            <h2 className="truncate text-base font-medium text-tech-text">发布前预览 · {pkg.title}</h2>
-            <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-tech-muted">
-              <span>v{pkg.version}</span>
-              <span>{pkg.contentType === 'note' ? '图文' : pkg.contentType === 'article' ? '文章' : '视频'}</span>
-              <span>{pkg.createdBy.displayName}</span>
-              <span>{new Date(pkg.createdAt).toLocaleString('zh-CN')}</span>
-              <span className="truncate">{pkg.packagePath}</span>
-            </p>
-          </div>
-          <span className={`shrink-0 rounded-full px-2 py-1 text-xs ${HEALTH_CLASS[pkg.assetHealth]}`}>
-            {HEALTH_TEXT[pkg.assetHealth]}
-          </span>
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+    <Modal
+      open
+      onClose={onClose}
+      size="lg"
+      busy={busy}
+      title={`发布前预览 · ${pkg.title}`}
+      subtitle={
+        <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-muted">
+          <span>v{pkg.version}</span>
+          <span>{pkg.contentType === 'note' ? '图文' : pkg.contentType === 'article' ? '文章' : '视频'}</span>
+          <span>{pkg.createdBy.displayName}</span>
+          <span className="tabular">{new Date(pkg.createdAt).toLocaleString('zh-CN')}</span>
+          <span className="truncate">{pkg.packagePath}</span>
+        </p>
+      }
+      headerAside={
+        <span className={`shrink-0 rounded-full px-2 py-1 text-xs ${HEALTH_CLASS[pkg.assetHealth]}`}>
+          {HEALTH_TEXT[pkg.assetHealth]}
+        </span>
+      }
+      footer={
+        <>
+          {busy && <span className="mr-auto"><SubmitProgress /></span>}
+          <Button variant="ghost" onClick={onClose}>
+            关闭
+          </Button>
+          {onConfirm && (
+            <Button
+              variant="primary"
+              onClick={onConfirm}
+              disabled={busy || blocking || hasViolations}
+            >
+              {confirmLabel}
+            </Button>
+          )}
+        </>
+      }
+    >
+      <>
           {blocking && (
-            <p className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+            <p className="mb-3 rounded-lg bg-danger-soft px-3 py-2 text-sm font-medium text-danger">
               资产{HEALTH_TEXT[pkg.assetHealth]}，请先修复后再发布。
             </p>
           )}
@@ -220,17 +272,17 @@ export function PublishPreviewDialog({
                 <img
                   src={articleCover.url}
                   alt="文章封面"
-                  className="w-full max-w-md rounded-lg border border-tech-border"
+                  className="w-full max-w-md rounded-lg border border-line"
                   data-testid="article-cover"
                 />
               ) : (
-                <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                <p className="rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning">
                   这个文章包没有可显示的封面。今日头条要求文章必须有封面，请重新创建文章包并选择封面。
                 </p>
               )}
               <div className="space-y-1">
-                <p className="text-sm font-medium text-tech-text">标题</p>
-                <p className="text-sm text-tech-text" data-testid="article-title">
+                <p className="text-sm font-medium text-ink">标题</p>
+                <p className="text-sm text-ink" data-testid="article-title">
                   {preview.articleCopy?.title ?? pkg.title}
                 </p>
                 {preview.articleLimits ? (
@@ -246,17 +298,51 @@ export function PublishPreviewDialog({
                 ) : null}
               </div>
               <div className="space-y-1">
-                <p className="text-sm font-medium text-tech-text">正文</p>
-                <pre
-                  className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-tech-bg p-3 text-sm leading-relaxed text-tech-text"
-                  data-testid="article-body"
-                >
-                  {preview.articleCopy?.body ?? ''}
-                </pre>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-medium text-ink">正文</p>
+                  {/*
+                    双视图。默认「纯文本 · 所见即所发」是**刻意的保真**：抖音图文与小红书笔记的
+                    正文是纯文本，平台不解析 Markdown —— 若这里把 `**粗体**` 渲染成真粗体，
+                    等于骗用户（提交过去的是字面星号）。但文章包的正文以 `## ` 标记往返
+                    （`articleHtmlToBodyText`），只给纯文本会很难读，所以提供一个**排版预览**，
+                    并明确标注「提交的仍是纯文本」。
+                  */}
+                  <div role="group" aria-label="正文视图" className="flex gap-1 rounded-md border border-line bg-well p-0.5">
+                    {([['plain', '纯文本 · 所见即所发'], ['typeset', '排版预览']] as const).map(([id, label]) => (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-pressed={bodyView === id}
+                        onClick={() => setBodyView(id)}
+                        className={`rounded px-2 py-0.5 text-xs font-medium ${
+                          bodyView === id ? 'bg-elevated text-ink ring-1 ring-inset ring-line-strong' : 'text-ink-muted hover:text-ink'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {bodyView === 'plain' ? (
+                  <pre
+                    className="max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-line bg-well p-3 text-sm leading-relaxed text-ink"
+                    data-testid="article-body"
+                  >
+                    {preview.articleCopy?.body ?? ''}
+                  </pre>
+                ) : (
+                  <div className="max-h-64 overflow-auto rounded-lg border border-line bg-well p-3" data-testid="article-body-typeset">
+                    <TypesetBody body={preview.articleCopy?.body ?? ''} />
+                    <p className="mt-3 border-t border-line pt-2 text-xs text-ink-subtle">
+                      仅预览排版。提交给头条的仍然是纯文本，编辑器会把 <code className="font-mono">## </code>
+                      开头的行当成小标题。
+                    </p>
+                  </div>
+                )}
               </div>
               <div className="space-y-1">
-                <p className="text-sm font-medium text-tech-text">发布选项</p>
-                <ul className="list-disc space-y-1 pl-5 text-sm text-tech-muted">
+                <p className="text-sm font-medium text-ink">发布选项</p>
+                <ul className="list-disc space-y-1 pl-5 text-sm text-ink-muted">
                   <li>头条首发：{preview.toutiaoOptions?.firstPublish ? '是' : '否'}</li>
                   <li>
                     作品声明：
@@ -272,7 +358,7 @@ export function PublishPreviewDialog({
           ) : pkg.contentType === 'note' ? (
             <section>
               {imageCount === 0 ? (
-                <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">包内没有图片</p>
+                <p className="rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning">包内没有图片</p>
               ) : (
                 <>
                   <div className="flex gap-3 overflow-x-auto pb-2">
@@ -285,14 +371,14 @@ export function PublishPreviewDialog({
                       />
                     ))}
                   </div>
-                  <p className="text-xs text-tech-muted">{`1/${imageCount}`} 起，按发布顺序排列</p>
+                  <p className="text-xs text-ink-muted">{`1/${imageCount}`} 起，按发布顺序排列</p>
                 </>
               )}
             </section>
           ) : (
             <section>
               <video controls src={videoUrl} className="max-h-[60vh] w-full rounded-lg bg-black" />
-              <p className="mt-2 text-xs text-tech-muted">
+              <p className="mt-2 text-xs text-ink-muted">
                 {preview.video?.hasCover ? '包含封面' : '没有封面'}
               </p>
             </section>
@@ -302,10 +388,10 @@ export function PublishPreviewDialog({
             {preview.copyChecks.map((check) => (
               <article
                 key={`${check.scope}-${check.taskId ?? 'package'}-${check.platform}`}
-                className="rounded-lg border border-tech-border p-3"
+                className="rounded-lg border border-line p-3"
               >
                 <div className="flex flex-wrap items-center gap-3">
-                  <h3 className="text-sm font-medium text-tech-text">
+                  <h3 className="text-sm font-medium text-ink">
                     {check.label}
                     {check.scope === 'package' ? '（包级文案）' : ''}
                   </h3>
@@ -317,7 +403,7 @@ export function PublishPreviewDialog({
                 {check.violations.length > 0 && (
                   <ul className="mt-2 space-y-1">
                     {check.violations.map((violation) => (
-                      <li key={`${violation.field}-${violation.limit}`} className="text-xs font-medium text-red-600">
+                      <li key={`${violation.field}-${violation.limit}`} className="text-xs font-medium text-danger">
                         {violation.message}
                       </li>
                     ))}
@@ -326,26 +412,8 @@ export function PublishPreviewDialog({
               </article>
             ))}
           </section>
-        </div>
-
-        <footer className="flex items-center justify-between gap-3 border-t border-tech-border px-5 py-3">
-          {busy ? <SubmitProgress /> : <span />}
-          <button type="button" onClick={onClose} className="rounded-lg px-3 py-2 text-sm text-tech-muted hover:bg-tech-bg">
-            关闭
-          </button>
-          {onConfirm && (
-            <button
-              type="button"
-              onClick={onConfirm}
-              disabled={busy || blocking || hasViolations}
-              className="rounded-lg bg-tech-blue px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {confirmLabel}
-            </button>
-          )}
-        </footer>
-      </div>
-    </div>
+      </>
+    </Modal>
   );
 }
 
@@ -377,4 +445,63 @@ function useArticleCover(packageId: string, enabled: boolean): { url: string } {
   }, [packageId, enabled]);
 
   return { url };
+}
+
+/**
+ * 文章正文的「排版预览」。
+ *
+ * ⚠️ 它**只**用于预览，渲染出来的小标题与粗体**不会**出现在提交内容里 ——
+ * 提交给头条的是包内 `articleCopy.body` 那段纯文本（`## ` 开头的行由编辑器识别成小标题）。
+ * 所以调用方必须在同一屏里写明这件事，别让用户以为能带格式。
+ *
+ * 限定 `max-w-[72ch]`：改造前弹窗宽 896px + 14px 字号 ≈ 每行 120 字符，回行容易串行。
+ */
+function TypesetBody({ body }: { body: string }) {
+  const lines = body.split('\n');
+  return (
+    <div className="max-w-[72ch] space-y-2.5 text-sm leading-7 text-ink">
+      {lines.map((raw, index) => {
+        const line = raw.trim();
+        if (!line) return null;
+        const heading = line.match(/^#{2,4}\s+(.*)$/);
+        if (heading) {
+          return (
+            <h3 key={index} className="mt-3 font-display text-base font-semibold text-ink first:mt-0">
+              {inlineFormat(heading[1]!)}
+            </h3>
+          );
+        }
+        const bullet = line.match(/^[-*]\s+(.*)$/);
+        if (bullet) {
+          return (
+            <p key={index} className="flex gap-2 pl-1">
+              <span aria-hidden="true" className="text-ink-subtle">·</span>
+              <span className="min-w-0">{inlineFormat(bullet[1]!)}</span>
+            </p>
+          );
+        }
+        const ordered = line.match(/^(\d+)[.、]\s*(.*)$/);
+        if (ordered) {
+          return (
+            <p key={index} className="flex gap-2 pl-1">
+              <span className="tabular shrink-0 text-ink-subtle">{ordered[1]}.</span>
+              <span className="min-w-0">{inlineFormat(ordered[2]!)}</span>
+            </p>
+          );
+        }
+        return <p key={index}>{inlineFormat(line)}</p>;
+      })}
+    </div>
+  );
+}
+
+/** 只处理行内加粗（`**…**`）。渲染结果仅用于预览。 */
+function inlineFormat(text: string): React.ReactNode {
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, index) =>
+    part.startsWith('**') && part.endsWith('**') && part.length > 4 ? (
+      <strong key={index} className="font-semibold text-ink">{part.slice(2, -2)}</strong>
+    ) : (
+      <React.Fragment key={index}>{part}</React.Fragment>
+    ),
+  );
 }

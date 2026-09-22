@@ -152,3 +152,31 @@ test('a genuine 401 is surfaced instead of being retried forever', async () => {
   });
   assert.equal(calls, 1, '非会话失效的 401 不应被重放');
 });
+
+test('批量执行合集步骤必须关掉客户端超时（否则长批次会被误报为失败）', async () => {
+  /*
+   * 后端批量接口是「逐个子任务串行 await、全部跑完才响应」，
+   * 而全局默认超时是 16 分钟 —— 100 条视频的批量转录轻易超过它。
+   * 一旦这里恢复成默认超时，界面就会在**后端仍在运行**时报「批量执行失败」，
+   * 用户会去重试、同一批任务被重复触发。这条用例是那个不变式的守门人。
+   */
+  const client = new ApiClient();
+  const calls: Array<{ url: string; config: unknown }> = [];
+  const mockClient = {
+    post: async (url: string, _body: unknown, config: unknown) => {
+      calls.push({ url, config });
+      return { data: { message: 'ok', results: [] } };
+    },
+  } as unknown as Awaited<ReturnType<ApiClient['getClient']>>;
+  (client as any).getClient = async () => mockClient;
+
+  await client.batchRunCollectionStep('collection-1', 'transcribe');
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0]!.url, /\/api\/collections\/collection-1\/steps\/transcribe$/);
+  assert.equal(
+    (calls[0]!.config as { timeout?: number } | undefined)?.timeout,
+    0,
+    '批量路由必须显式传 timeout: 0（不限时），否则会被 16 分钟的全局超时误判为失败',
+  );
+});

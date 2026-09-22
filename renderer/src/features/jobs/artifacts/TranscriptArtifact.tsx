@@ -36,8 +36,8 @@ function TranscriptContent({ transcriptData, source }: { transcriptData: RawTran
 
   return (
     <div>
-      <h3 className="text-lg font-semibold text-tech-text">{source}</h3>
-      <p className="mt-1 text-xs text-tech-muted">
+      <h3 className="text-lg font-semibold text-ink">{source}</h3>
+      <p className="mt-1 text-xs text-ink-muted">
         {source === '视频音频转录'
           ? '这是从视频音频提取并转录的真实内容'
           : '这是从分享文本解析的内容，非实际音频转录'}
@@ -49,17 +49,17 @@ function TranscriptContent({ transcriptData, source }: { transcriptData: RawTran
           {transcriptData.duration && <Metric label="时长" value={formatSeconds(transcriptData.duration)} />}
         </div>
       )}
-      <div className="mt-4 rounded-lg bg-gray-50 p-4">
-        <p className="whitespace-pre-wrap leading-relaxed text-tech-text">{transcriptData.transcript}</p>
+      <div className="mt-4 rounded-lg bg-elevated p-4">
+        <p className="whitespace-pre-wrap leading-relaxed text-ink">{transcriptData.transcript}</p>
       </div>
       {segments.length > 0 && (
         <div className="mt-5">
-          <h4 className="mb-3 text-base font-semibold text-tech-text">转录分段</h4>
+          <h4 className="mb-3 text-base font-semibold text-ink">转录分段</h4>
           <div className="space-y-2">
             {segments.map((segment, index) => (
-              <div key={index} className="rounded-lg border border-tech-border bg-gray-50 p-3">
-                <p className="mb-1 font-mono text-xs text-tech-muted">{formatRange(segment.start, segment.end)}</p>
-                <p className="text-sm leading-relaxed text-tech-text">{segment.text}</p>
+              <div key={index} className="rounded-lg border border-line bg-elevated p-3">
+                <p className="mb-1 font-mono text-xs text-ink-muted">{formatRange(segment.start, segment.end)}</p>
+                <p className="text-sm leading-relaxed text-ink">{segment.text}</p>
               </div>
             ))}
           </div>
@@ -71,18 +71,18 @@ function TranscriptContent({ transcriptData, source }: { transcriptData: RawTran
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg bg-gray-50 px-4 py-3">
-      <label className="mb-1 block text-xs text-tech-muted">{label}</label>
-      <p className="text-sm text-tech-text">{value}</p>
+    <div className="rounded-lg bg-elevated px-4 py-3">
+      <label className="mb-1 block text-xs text-ink-muted">{label}</label>
+      <p className="text-sm text-ink">{value}</p>
     </div>
   );
 }
 
 function Notice({ tone, title, children }: { tone: 'info' | 'warning' | 'danger'; title: string; children: React.ReactNode }) {
   const config = {
-    info: 'border-blue-200 bg-blue-50 text-blue-700',
-    warning: 'border-amber-200 bg-amber-50 text-amber-700',
-    danger: 'border-red-200 bg-red-50 text-red-700',
+    info: 'border-info-line bg-info-soft text-info',
+    warning: 'border-warning-line bg-warning-soft text-warning',
+    danger: 'border-danger-line bg-danger-soft text-danger',
   }[tone];
   return (
     <div className={`rounded-lg border p-4 ${config}`}>
@@ -94,10 +94,10 @@ function Notice({ tone, title, children }: { tone: 'info' | 'warning' | 'danger'
 
 function EmptyContent({ title, description }: { title: string; description: string }) {
   return (
-    <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
-      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-4 text-tech-muted"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      <h3 className="font-semibold text-tech-text">{title}</h3>
-      <p className="mt-2 text-sm text-tech-muted">{description}</p>
+    <div className="rounded-lg border border-dashed border-line bg-elevated py-14 text-center">
+      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-4 text-ink-muted"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <h3 className="font-semibold text-ink">{title}</h3>
+      <p className="mt-2 text-sm text-ink-muted">{description}</p>
     </div>
   );
 }

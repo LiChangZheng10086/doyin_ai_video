@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { Modal } from './ui/Modal';
+import { Button } from './ui/Button';
 import { FileText } from 'lucide-react';
 import { apiClient, parseApiError } from '../services/api';
 import type {
@@ -54,17 +55,13 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
   const [error, setError] = useState('');
   const [created, setCreated] = useState<{ id: string; version: number } | undefined>(undefined);
   const copyTouched = useRef(false);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    dialogRef.current?.focus();
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
-
+  /*
+   * 焦点、Esc、滚动锁、#root inert 全部交给共享 `Modal`。
+   * 改造前这里是自研的：只有 `dialogRef.current?.focus()`（**打开时把焦点放到容器上**，
+   * 而不是第一个可聚焦控件）、没有 inert、也没有关闭后的焦点归位 ——
+   * 关掉弹窗后键盘用户会失去位置（焦点落回 body）。
+   */
   // 素材库图片（封面候选）：与图文向导同一套做法 —— 带会话取 blob 再转成绝对 URL。
   useEffect(() => {
     let cancelled = false;
@@ -151,32 +148,37 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
     }
   };
 
-  if (typeof document === 'undefined') return null;
-
-  const dialog = (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="创建头条文章包"
-      ref={dialogRef}
-      tabIndex={-1}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="lg"
+      busy={busy}
+      title="创建头条文章包"
+      subtitle={
+        <p className="text-xs text-ink-muted">
+          AI 会把这条作品的转录与洗稿结果写成一篇头条文章。今日头条要求必须有封面（会裁成 16:9）。
+        </p>
+      }
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose}>{created ? '关闭' : '取消'}</Button>
+          {!created && (
+            <Button variant="ai" onClick={() => void create()} disabled={!canCreate}>
+              <FileText size={16} aria-hidden="true" />
+              创建文章包
+            </Button>
+          )}
+        </>
+      }
     >
-      <div className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white shadow-xl">
-        <header className="border-b border-tech-border px-5 py-4">
-          <h2 className="text-base font-medium text-tech-text">创建头条文章包</h2>
-          <p className="mt-1 text-xs text-tech-muted">
-            AI 会把这条作品的转录与洗稿结果写成一篇头条文章。今日头条要求**必须有封面**（会裁成 16:9）。
-          </p>
-        </header>
-
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-4">
+      <div className="space-y-5">
           {created ? (
             <div className="space-y-2">
-              <p className="text-sm text-emerald-700">
+              <p className="text-sm text-success">
                 已创建头条文章包 v{created.version}（封面 16:9、正文已渲染）。
               </p>
-              <p className="text-sm text-tech-muted">
+              <p className="text-sm text-ink-muted">
                 接下来到「发布中心」预览这篇文章，确认后再点「提交到头条号」。
               </p>
             </div>
@@ -184,7 +186,7 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
             <>
               {/* 封面（单选，必填） */}
               <section className="space-y-2">
-                <p className="text-sm font-medium text-tech-text">封面（必填，单图）</p>
+                <p className="text-sm font-medium text-ink">封面（必填，单图）</p>
                 <div className="flex flex-wrap gap-4 text-sm">
                   <label className="flex items-center gap-2">
                     <input
@@ -210,11 +212,11 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                 </div>
 
                 {source === 'frames' ? (
-                  <p className="text-xs text-tech-muted">
+                  <p className="text-xs text-ink-muted">
                     使用该作品生成视频时的第一张场景静帧（1080×1920），服务端会裁成 16:9。
                   </p>
                 ) : libraryImages.length === 0 ? (
-                  <p className="text-xs text-tech-muted">
+                  <p className="text-xs text-ink-muted">
                     素材库里还没有图片，请先到左侧「素材」页上传（jpg/png/webp，单张 ≤20MB）。
                   </p>
                 ) : (
@@ -226,37 +228,37 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                         aria-pressed={selectedCoverId === image.id}
                         aria-label={selectedCoverId === image.id ? `已选封面：${image.originalName}` : `选择封面 ${image.originalName}`}
                         onClick={() => setSelectedCoverId(selectedCoverId === image.id ? '' : image.id)}
-                        className={`overflow-hidden rounded-lg border ${selectedCoverId === image.id ? 'border-tech-blue ring-2 ring-tech-blue' : 'border-tech-border'}`}
+                        className={`overflow-hidden rounded-lg border ${selectedCoverId === image.id ? 'border-accent-line ring-2 ring-accent' : 'border-line'}`}
                       >
                         {libraryUrls[image.id] ? (
                           <img src={libraryUrls[image.id]} alt={image.originalName} className="h-20 w-full object-cover" />
                         ) : (
-                          <span className="block h-20 w-full bg-tech-bg" />
+                          <span className="block h-20 w-full bg-canvas" />
                         )}
                       </button>
                     ))}
                   </div>
                 )}
-                {libraryError ? <p className="text-xs text-red-600">{libraryError}</p> : null}
+                {libraryError ? <p className="text-xs text-danger">{libraryError}</p> : null}
                 {coverBlocker ? (
-                  <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">{coverBlocker}</p>
+                  <p className="rounded-lg bg-warning-soft px-3 py-2 text-xs text-warning">{coverBlocker}</p>
                 ) : null}
               </section>
 
               {/* AI 成文结果 */}
               <section className="space-y-2">
-                <p className="text-sm font-medium text-tech-text">文章</p>
-                {previewing ? <p className="text-xs text-tech-muted">正在生成文章…</p> : null}
+                <p className="text-sm font-medium text-ink">文章</p>
+                {previewing ? <p className="text-xs text-ink-muted">正在生成文章…</p> : null}
                 {previewError ? (
-                  <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{previewError}</p>
+                  <p className="rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">{previewError}</p>
                 ) : null}
                 {/* AI 走兜底时必须显眼：否则用户会以为这是模型写的（绝不静默）。 */}
                 {preview?.articleFallback ? (
-                  <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800" role="status">
+                  <p className="rounded-lg bg-warning-soft px-3 py-2 text-xs text-warning" role="status">
                     {preview.articleFallback.message}
                   </p>
                 ) : null}
-                <label className="block text-xs text-tech-muted">
+                <label className="block text-xs text-ink-muted">
                   标题{limits ? `（${[...articleTitle].length}/${limits.titleMax}，至少 ${limits.titleMin}）` : ''}
                   <input
                     value={articleTitle}
@@ -264,10 +266,10 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                       copyTouched.current = true;
                       setArticleTitle(event.target.value);
                     }}
-                    className="mt-1 w-full rounded-lg border border-tech-border px-3 py-2 text-sm text-tech-text"
+                    className="mt-1 w-full rounded-lg border border-line px-3 py-2 text-sm text-ink"
                   />
                 </label>
-                <label className="block text-xs text-tech-muted">
+                <label className="block text-xs text-ink-muted">
                   正文（`## ` 开头的行会渲染成小标题）
                   <textarea
                     value={articleBody}
@@ -276,11 +278,11 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                       setArticleBody(event.target.value);
                     }}
                     rows={12}
-                    className="mt-1 w-full rounded-lg border border-tech-border px-3 py-2 font-mono text-sm text-tech-text"
+                    className="mt-1 w-full rounded-lg border border-line px-3 py-2 font-mono text-sm text-ink"
                   />
                 </label>
                 {fieldErrors.length > 0 ? (
-                  <ul className="list-disc space-y-1 pl-5 text-xs text-red-600">
+                  <ul className="list-disc space-y-1 pl-5 text-xs text-danger">
                     {fieldErrors.map((message) => <li key={message}>{message}</li>)}
                   </ul>
                 ) : null}
@@ -288,8 +290,8 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
 
               {/* 发布选项 */}
               <section className="space-y-2">
-                <p className="text-sm font-medium text-tech-text">发布选项</p>
-                <label className="flex items-center gap-2 text-sm text-tech-text">
+                <p className="text-sm font-medium text-ink">发布选项</p>
+                <label className="flex items-center gap-2 text-sm text-ink">
                   <input
                     type="checkbox"
                     checked={options.firstPublish}
@@ -297,16 +299,16 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                   />
                   勾选「头条首发」
                 </label>
-                <label className="flex items-center gap-2 text-sm text-tech-text">
+                <label className="flex items-center gap-2 text-sm text-ink">
                   <input
                     type="checkbox"
                     checked={options.crossPostWeitoutiao}
                     onChange={(event) => setOptions({ ...options, crossPostWeitoutiao: event.target.checked })}
                   />
-                  同时发布微头条（**默认不勾**：头条发布页默认是勾上的，我们会在发布前显式取消并校验）
+                  同时发布微头条（默认不勾：头条发布页默认是勾上的，我们会在发布前显式取消并校验）
                 </label>
                 <div className="space-y-1">
-                  <p className="text-xs text-tech-muted">作品声明（可多选，不选即不声明）</p>
+                  <p className="text-xs text-ink-muted">作品声明（可多选，不选即不声明）</p>
                   <div className="flex flex-wrap gap-2">
                     {TOUTIAO_DECLARATIONS.map((item) => {
                       const active = options.declarations.includes(item.value);
@@ -316,7 +318,7 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                           type="button"
                           aria-pressed={active}
                           onClick={() => setOptions({ ...options, declarations: toggleDeclaration(options.declarations, item.value) })}
-                          className={`rounded-full border px-3 py-1 text-xs ${active ? 'border-tech-blue bg-blue-50 text-tech-blue' : 'border-tech-border text-tech-muted'}`}
+                          className={`rounded-full border px-3 py-1 text-xs ${active ? 'border-accent-line bg-accent-soft text-accent' : 'border-line text-ink-muted'}`}
                         >
                           {item.label}
                         </button>
@@ -326,36 +328,12 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                 </div>
               </section>
 
-              {error ? <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
+              {error ? <p className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p> : null}
             </>
           )}
-        </div>
-
-        <footer className="flex items-center justify-end gap-2 border-t border-tech-border px-5 py-4">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-tech-border px-4 py-2 text-sm text-tech-muted"
-          >
-            {created ? '关闭' : '取消'}
-          </button>
-          {!created ? (
-            <button
-              type="button"
-              onClick={() => void create()}
-              disabled={!canCreate}
-              className="inline-flex items-center gap-2 rounded-lg bg-tech-purple px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <FileText size={16} />
-              创建文章包
-            </button>
-          ) : null}
-        </footer>
       </div>
-    </div>
+    </Modal>
   );
-
-  return createPortal(dialog, document.body);
 }
 
 /** 供组件用例复用的纯净展示壳（避免为了渲染而真的去打接口）。 */
@@ -389,21 +367,21 @@ export function ToutiaoArticleFormView({
   const blocked = Boolean(coverBlocker) || fieldErrors.length > 0;
   return (
     <div role="dialog" aria-label="创建头条文章包" className="space-y-4">
-      <h2 className="text-base font-medium text-tech-text">创建头条文章包</h2>
+      <h2 className="text-base font-medium text-ink">创建头条文章包</h2>
       {created ? (
-        <p className="text-sm text-emerald-700">已创建头条文章包 v{created.version}</p>
+        <p className="text-sm text-success">已创建头条文章包 v{created.version}</p>
       ) : null}
-      <p className="text-sm text-tech-muted">封面来源：{source === 'frames' ? '场景静帧' : '素材库'}</p>
-      {fallbackMessage ? <p role="status" className="text-xs text-amber-800">{fallbackMessage}</p> : null}
-      <p className="text-sm text-tech-text">标题：{articleTitle}{limits ? `（${[...articleTitle].length}/${limits.titleMax}）` : ''}</p>
-      <pre className="whitespace-pre-wrap text-sm text-tech-text">{articleBody}</pre>
-      <p className="text-sm text-tech-muted">
+      <p className="text-sm text-ink-muted">封面来源：{source === 'frames' ? '场景静帧' : '素材库'}</p>
+      {fallbackMessage ? <p role="status" className="text-xs text-warning">{fallbackMessage}</p> : null}
+      <p className="text-sm text-ink">标题：{articleTitle}{limits ? `（${[...articleTitle].length}/${limits.titleMax}）` : ''}</p>
+      <pre className="whitespace-pre-wrap text-sm text-ink">{articleBody}</pre>
+      <p className="text-sm text-ink-muted">
         头条首发：{options.firstPublish ? '是' : '否'} · 同时发布微头条：{options.crossPostWeitoutiao ? '是' : '否'}
         {' · '}
         声明：{options.declarations.length > 0 ? options.declarations.join('、') : '（无）'}
       </p>
-      {coverBlocker ? <p className="text-xs text-amber-800">{coverBlocker}</p> : null}
-      {fieldErrors.length > 0 ? <p className="text-xs text-red-600">{fieldErrors.join('；')}</p> : null}
+      {coverBlocker ? <p className="text-xs text-warning">{coverBlocker}</p> : null}
+      {fieldErrors.length > 0 ? <p className="text-xs text-danger">{fieldErrors.join('；')}</p> : null}
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onClose}>{created ? '关闭' : '取消'}</button>
         {!created ? (

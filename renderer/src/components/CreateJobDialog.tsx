@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, FileText, Link as LinkIcon, Users } from 'lucide-react';
 import { apiClient } from '../services/api';
 import { useAppStore } from '../store';
+import { Modal } from './ui/Modal';
 
 interface CreateJobDialogProps {
   isOpen: boolean;
@@ -108,22 +109,30 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-tech-surface rounded-xl shadow-2xl w-full max-w-2xl mx-4 border border-tech-border">
-        {/* Header */}
-        <div className="border-b border-tech-border px-6 py-4">
-          <h2 className="text-xl font-semibold text-tech-text">
-            创建新任务
-          </h2>
-          <p className="text-sm text-tech-muted mt-1">
-            {inputMode === 'user-page'
-              ? '输入抖音用户主页链接，批量采集该用户全部作品'
-              : '输入抖音视频链接或分享文本开始处理'}
-          </p>
-        </div>
-
-        {/* Content */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+    /*
+     * 改造前这里是一个裸 div：`bg-black bg-opacity-50` + **没有** role="dialog"、
+     * 没有 Esc、没有焦点移入与陷阱、背景没有 inert。
+     * 而且 `bg-opacity-*` 在 Tailwind v4 里**已被移除**（实测：该 class 不产出任何规则），
+     * 所以遮罩实际是 `bg-black` 全不透明 —— 整个应用入口背后是一片纯黑，
+     * 后面的 `backdrop-blur-sm` 也就白写了。
+     * 现在换成共享 Modal：portal + role/aria-modal/aria-labelledby + Esc + 焦点陷阱
+     * + #root inert + 55% 遮罩。
+     */
+    <Modal
+      open
+      onClose={onClose}
+      busy={isSubmitting}
+      size="md"
+      title="创建新任务"
+      subtitle={
+        <p className="text-sm text-ink-muted">
+          {inputMode === 'user-page'
+            ? '输入抖音用户主页链接，批量采集该用户全部作品'
+            : '输入抖音视频链接或分享文本开始处理'}
+        </p>
+      }
+    >
+        <form onSubmit={handleSubmit} className="space-y-5">
           {/* 输入模式切换 */}
           <div className="flex gap-2">
             <button
@@ -131,8 +140,8 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
               onClick={() => setInputMode('url')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 inputMode === 'url'
-                  ? 'bg-tech-blue text-white shadow-sm inline-flex items-center gap-2'
-                  : 'bg-tech-bg text-tech-muted hover:bg-tech-border inline-flex items-center gap-2'
+                  ? 'bg-accent text-on-accent shadow-sm inline-flex items-center gap-2'
+                  : 'bg-canvas text-ink-muted hover:bg-elevated inline-flex items-center gap-2'
               }`}
             >
               <LinkIcon size={16} />
@@ -143,8 +152,8 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
               onClick={() => setInputMode('text')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 inputMode === 'text'
-                  ? 'bg-tech-blue text-white shadow-sm inline-flex items-center gap-2'
-                  : 'bg-tech-bg text-tech-muted hover:bg-tech-border inline-flex items-center gap-2'
+                  ? 'bg-accent text-on-accent shadow-sm inline-flex items-center gap-2'
+                  : 'bg-canvas text-ink-muted hover:bg-elevated inline-flex items-center gap-2'
               }`}
             >
               <FileText size={16} />
@@ -155,8 +164,8 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
               onClick={() => setInputMode('user-page')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
                 inputMode === 'user-page'
-                  ? 'bg-tech-purple text-white shadow-sm inline-flex items-center gap-2'
-                  : 'bg-tech-bg text-tech-muted hover:bg-tech-border inline-flex items-center gap-2'
+                  ? 'bg-ai text-on-accent shadow-sm inline-flex items-center gap-2'
+                  : 'bg-canvas text-ink-muted hover:bg-elevated inline-flex items-center gap-2'
               }`}
             >
               <Users size={16} />
@@ -167,7 +176,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
           {/* URL 输入 */}
           {inputMode === 'url' && (
             <div>
-              <label className="block text-sm font-medium text-tech-text mb-2">
+              <label className="block text-sm font-medium text-ink mb-2">
                 抖音视频链接
               </label>
               <input
@@ -175,7 +184,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
                 value={sourceUrl}
                 onChange={(e) => setSourceUrl(e.target.value)}
                 placeholder="https://www.douyin.com/video/..."
-                className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all"
+                className="w-full px-4 py-3 rounded-lg border border-line-ui bg-well text-ink placeholder-ink-muted focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
               />
             </div>
           )}
@@ -183,7 +192,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
           {/* 分享文本输入 */}
           {inputMode === 'text' && (
             <div>
-              <label className="block text-sm font-medium text-tech-text mb-2">
+              <label className="block text-sm font-medium text-ink mb-2">
                 分享文本
               </label>
               <textarea
@@ -191,7 +200,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
                 onChange={(e) => setShareText(e.target.value)}
                 placeholder="粘贴抖音分享文本..."
                 rows={4}
-                className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent resize-none transition-all"
+                className="w-full px-4 py-3 rounded-lg border border-line-ui bg-well text-ink placeholder-ink-muted focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent resize-none transition-all"
               />
             </div>
           )}
@@ -200,7 +209,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
           {inputMode === 'user-page' && (
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-tech-text mb-2">
+                <label className="block text-sm font-medium text-ink mb-2">
                   抖音用户主页链接
                 </label>
                 <input
@@ -208,16 +217,16 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
                   value={userPageUrl}
                   onChange={(e) => setUserPageUrl(e.target.value)}
                   placeholder="https://www.douyin.com/user/xxxxxxxxx"
-                  className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-purple focus:border-transparent transition-all"
+                  className="w-full px-4 py-3 rounded-lg border border-line-ui bg-well text-ink placeholder-ink-muted focus:outline-none focus:ring-2 focus:ring-ai focus:border-transparent transition-all"
                 />
-                <p className="mt-1 text-xs text-tech-muted">
+                <p className="mt-1 text-xs text-ink-muted">
                   例如：https://www.douyin.com/user/MS4wLjABAAAA...
                 </p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-tech-text mb-2">
+                <label className="block text-sm font-medium text-ink mb-2">
                   最大采集数量
-                  <span className="text-tech-muted font-normal ml-1">(1-500)</span>
+                  <span className="text-ink-muted font-normal ml-1">(1-500)</span>
                 </label>
                 <input
                   type="number"
@@ -225,10 +234,10 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
                   onChange={(e) => setMaxItems(Math.min(500, Math.max(1, Number(e.target.value) || 1)))}
                   min={1}
                   max={500}
-                  className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-purple focus:border-transparent transition-all"
+                  className="w-full px-4 py-3 rounded-lg border border-line-ui bg-well text-ink placeholder-ink-muted focus:outline-none focus:ring-2 focus:ring-ai focus:border-transparent transition-all"
                 />
               </div>
-              <div className="rounded-lg border border-purple-200 bg-purple-50 p-3 text-sm text-purple-700">
+              <div className="rounded-lg border border-ai-line bg-ai-soft p-3 text-sm text-ai">
                 <p>系统将自动获取该用户的主页信息及全部视频作品，您可以在合集详情页选择需要处理的视频。</p>
               </div>
             </div>
@@ -236,21 +245,21 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
 
           {/* 主题（可选）— 主页模式也支持 */}
           <div>
-            <label className="block text-sm font-medium text-tech-text mb-2">
-              {inputMode === 'user-page' ? '合集名称' : '主题'} <span className="text-tech-muted font-normal">(可选)</span>
+            <label className="block text-sm font-medium text-ink mb-2">
+              {inputMode === 'user-page' ? '合集名称' : '主题'} <span className="text-ink-muted font-normal">(可选)</span>
             </label>
             <input
               type="text"
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               placeholder={inputMode === 'user-page' ? '例如：某某博主的作品合集' : '例如：科技、美食、旅游...'}
-              className="w-full px-4 py-3 rounded-lg border border-tech-border bg-tech-surface text-tech-text placeholder-tech-muted focus:outline-none focus:ring-2 focus:ring-tech-blue focus:border-transparent transition-all"
+              className="w-full px-4 py-3 rounded-lg border border-line-ui bg-well text-ink placeholder-ink-muted focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
             />
           </div>
 
           {/* 错误信息 */}
           {error && (
-            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm flex items-start gap-2">
+            <div className="bg-danger-soft border border-danger-line text-danger px-4 py-3 rounded-lg text-sm flex items-start gap-2">
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
               <span>{error}</span>
             </div>
@@ -262,17 +271,17 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className="px-5 py-2.5 rounded-lg border border-tech-border text-tech-text hover:bg-tech-bg transition-all disabled:opacity-50"
+              className="px-5 py-2.5 rounded-lg border border-line text-ink hover:bg-elevated transition-all disabled:opacity-50"
             >
               取消
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className={`px-5 py-2.5 rounded-lg text-white shadow-sm hover:shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+              className={`px-5 py-2.5 rounded-lg text-on-accent shadow-sm hover:shadow transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
                 inputMode === 'user-page'
-                  ? 'bg-tech-purple hover:bg-purple-700'
-                  : 'bg-tech-blue hover:bg-tech-blue-dark'
+                  ? 'bg-ai hover:bg-ai'
+                  : 'bg-accent hover:bg-accent-hover'
               }`}
             >
               {isSubmitting
@@ -285,7 +294,6 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   );
 }

@@ -314,12 +314,52 @@ export class ApiClient {
     });
   }
 
+  // ── 小红书：与头条那五条一一对应（同一套形状，端点换成 /publishing/xhs/*）──
+
+  async startXhsLogin(): Promise<{ qrDataUrl: string; startedAt: string; expiresAt: string }> {
+    return this.publishingRequest<{ qrDataUrl: string; startedAt: string; expiresAt: string }>({
+      method: 'POST',
+      url: '/api/publishing/xhs/login',
+    });
+  }
+
+  async pollXhsLogin(): Promise<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; username?: string }> {
+    return this.publishingRequest<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; username?: string }>({
+      method: 'GET',
+      url: '/api/publishing/xhs/login',
+    });
+  }
+
+  async cancelXhsLogin(): Promise<void> {
+    await this.publishingRequest<{ ok: boolean }>({ method: 'DELETE', url: '/api/publishing/xhs/login' });
+  }
+
+  async loginXhsInWindow(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
+    return this.publishingRequest<{ loggedIn: boolean; username?: string; message: string }>({
+      method: 'POST',
+      url: '/api/publishing/xhs/login/window',
+    });
+  }
+
+  async verifyXhsLogin(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
+    return this.publishingRequest<{ loggedIn: boolean; username?: string; message: string }>({
+      method: 'POST',
+      url: '/api/publishing/xhs/verify',
+    });
+  }
+
   /** 提交抖音图文。必须带上预览拿到的 `previewRevision`，缺/过期都会被服务端拒绝。 */
-  async autoPublishPublishingTask(taskId: string, previewRevision: string): Promise<PublishTask> {
+  async autoPublishPublishingTask(
+    taskId: string,
+    previewRevision: string,
+    options: { dryRun?: boolean } = {},
+  ): Promise<PublishTask> {
     const response = await this.publishingRequest<{ task: PublishTask }>({
       method: 'POST',
       url: `/api/publishing/tasks/${taskId}/auto-publish`,
-      data: { previewRevision },
+      // `dryRun` 只对小红书有意义（服务端会拒绝其它通路用它）：它只能把「点发布」降级成
+      // 「不点」，绝不会让一个声明了「只填草稿」的包真的发出去。
+      data: { previewRevision, ...(options.dryRun ? { dryRun: true } : {}) },
     });
     return response.task;
   }
@@ -779,7 +819,24 @@ export class ApiClient {
       generate_video_prompts: 'generate_video_prompts',
       generate_video: 'generate_video',
     };
-    const response = await client.post(`/api/collections/${collectionId}/steps/${routeMap[step]}`);
+    /*
+     * ⚠️ 这条必须**关掉客户端超时**（`timeout: 0` = 不限时）。
+     *
+     * 后端的批量接口是「逐个子任务**串行** await、全部跑完才响应」（src/app.ts：
+     * `for (const jobId of collection.childJobIds) await jobs.runStep(...)`）。
+     * 而全局默认超时是 960000ms（16 分钟）—— 一个 100 条视频的合集做批量转录
+     * 轻易超过 16 分钟，于是 axios 抛超时、界面显示「批量执行失败」，
+     * **而后端还在继续跑**。用户看到失败就会重试，同一批任务被重复触发
+     * （与「重复发布是本功能最大的风险」同源）。
+     *
+     * 客户端超时既不会取消后端工作、也不代表任务失败，所以唯一正确的做法是不设超时；
+     * 进度与「不要重复点击」由界面负责（`runningStep` 期间全部批量按钮互斥 + 显示已用时长）。
+     */
+    const response = await client.post(
+      `/api/collections/${collectionId}/steps/${routeMap[step]}`,
+      undefined,
+      { timeout: 0 },
+    );
     return response.data;
   }
 

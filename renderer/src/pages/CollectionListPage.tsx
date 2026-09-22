@@ -12,6 +12,8 @@ import {
   Users,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { PageHeader } from '../components/ui/PageHeader';
+import { Button } from '../components/ui/Button';
 import { CreateJobDialog } from '../components/CreateJobDialog';
 import { ApiKeyWarning } from '../components/ApiKeyWarning';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
@@ -90,8 +92,8 @@ export function CollectionListPage() {
       <Layout>
         <div className="flex items-center justify-center min-h-[420px]">
           <div className="text-center">
-            <Loader2 className="mx-auto h-12 w-12 animate-spin text-tech-purple" />
-            <p className="mt-4 text-tech-muted">正在载入合集...</p>
+            <Loader2 className="mx-auto h-12 w-12 animate-spin text-ai" />
+            <p className="mt-4 text-ink-muted">正在载入合集...</p>
           </div>
         </div>
       </Layout>
@@ -100,9 +102,12 @@ export function CollectionListPage() {
 
   return (
     <Layout>
-      {/* 静默刷新失败提示 */}
-      {refreshError && (
-        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 flex items-center justify-between">
+      {/*
+        静默刷新失败的提示**只在已有数据时**成立 —— 一份都没加载出来时说
+        「当前显示上次数据」是假话，那时应该走下面的错误态。
+      */}
+      {refreshError && collections.length > 0 && (
+        <div className="mb-4 rounded-lg border border-warning-line bg-warning-soft px-4 py-3 text-sm text-warning flex items-center justify-between">
           <span className="flex items-center gap-2">
             <AlertCircle size={16} />
             刷新失败，当前显示上次数据
@@ -115,34 +120,29 @@ export function CollectionListPage() {
           </button>
         </div>
       )}
-      <div className="mb-8 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold text-tech-text">作品合集</h2>
-          <p className="mt-1 text-sm text-tech-muted">
-            从抖音用户主页批量采集视频，统一管理、处理和生成
-          </p>
-        </div>
-        <button
-          onClick={handleCreateClick}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-purple px-5 py-3 font-medium text-white shadow-sm transition-all hover:bg-purple-700 hover:shadow disabled:opacity-50"
-        >
-          <Plus size={18} />
-          新建合集
-        </button>
-      </div>
+      <PageHeader
+        title="作品合集"
+        description="从抖音用户主页批量采集视频，统一管理、处理和生成"
+        actions={
+          <Button variant="ai" size="lg" onClick={handleCreateClick}>
+            <Plus size={18} aria-hidden="true" />
+            新建合集
+          </Button>
+        }
+      />
 
       {collections.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface px-6 py-20 text-center">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-lg border border-tech-border bg-tech-bg text-tech-muted">
+        <div className="rounded-lg border border-dashed border-line bg-panel px-6 py-20 text-center">
+          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-lg border border-line bg-canvas text-ink-muted">
             <Users size={34} />
           </div>
-          <h3 className="text-xl font-semibold text-tech-text">还没有合集</h3>
-          <p className="mx-auto mt-2 max-w-md text-tech-muted">
+          <h3 className="text-xl font-semibold text-ink">还没有合集</h3>
+          <p className="mx-auto mt-2 max-w-md text-ink-muted">
             输入抖音用户主页链接，系统自动采集该用户全部视频作品，批量创建处理任务。
           </p>
           <button
             onClick={handleCreateClick}
-            className="mt-8 inline-flex items-center justify-center gap-2 rounded-lg bg-tech-purple px-6 py-3 font-medium text-white shadow-sm transition-all hover:bg-purple-700 hover:shadow"
+            className="mt-8 inline-flex items-center justify-center gap-2 rounded-lg bg-ai px-6 py-3 font-medium text-on-accent shadow-sm transition-all hover:bg-ai hover:shadow"
           >
             <Plus size={18} />
             创建第一个合集
@@ -185,7 +185,7 @@ export function CollectionListPage() {
       />
 
       {deleteError && (
-        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg">
+        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger shadow-lg">
           {deleteError}
           <button className="ml-3 font-medium underline" onClick={() => setDeleteError(null)}>关闭</button>
         </div>
@@ -224,11 +224,11 @@ function CollectionCard({
   return (
     <div
       onClick={onOpen}
-      className="cursor-pointer overflow-hidden rounded-lg border border-tech-border bg-tech-surface transition-all hover:border-tech-purple/40 hover:shadow-md"
+      className="cursor-pointer overflow-hidden rounded-lg border border-line bg-panel transition-all hover:border-ai-line/40 hover:shadow-md"
     >
       {/* 身份区：博主头像 + 名称 */}
       <div className="flex items-center gap-4 p-5">
-        <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full bg-tech-bg ring-2 ring-tech-purple/20">
+        <div className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full bg-canvas ring-2 ring-ai/20">
           {showAvatar ? (
             <img
               src={collection.avatarUrl}
@@ -239,33 +239,33 @@ function CollectionCard({
               onError={() => setAvatarFailed(true)}
             />
           ) : (
-            <span className="absolute inset-0 flex items-center justify-center text-xl font-bold text-tech-purple">
+            <span className="absolute inset-0 flex items-center justify-center text-xl font-bold text-ai">
               {displayNickname(collection.nickname).charAt(0)}
             </span>
           )}
         </div>
         <div className="min-w-0 flex-1">
-          <h3 className="truncate text-lg font-semibold text-tech-text">
+          <h3 className="truncate text-lg font-semibold text-ink">
             {displayNickname(collection.nickname)}
           </h3>
-          <p className="mt-0.5 text-sm text-tech-muted">
+          <p className="mt-0.5 text-sm text-ink-muted">
             {collection.crawlResult.totalCollected} 个作品 · {progress.total > 0 ? `${progress.rendered} 部成片` : '待处理'}
           </p>
         </div>
       </div>
 
       {/* 内容库摘要 */}
-      <div className="border-t border-tech-border px-5 py-3">
+      <div className="border-t border-line px-5 py-3">
         {/* 进度条 */}
         {progress.total > 0 ? (
           <>
-            <div className="flex items-center justify-between mb-2 text-xs text-tech-muted">
+            <div className="flex items-center justify-between mb-2 text-xs text-ink-muted">
               <span className="font-medium">处理进度</span>
               <span>{overallPercent}%</span>
             </div>
-            <div className="h-2 rounded-full bg-tech-bg overflow-hidden">
+            <div className="h-2 rounded-full bg-canvas overflow-hidden">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-tech-purple to-tech-blue transition-all"
+                className="h-full rounded-full bg-gradient-to-r from-ai to-accent transition-all"
                 style={{ width: `${overallPercent}%` }}
               />
             </div>
@@ -275,7 +275,7 @@ function CollectionCard({
               <ProgressChip label="分镜" count={progress.scripted} total={progress.total} />
               <ProgressChip label="成片" count={progress.rendered} total={progress.total} />
               {progress.failed > 0 && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 font-medium text-red-600">
+                <span className="inline-flex items-center gap-1 rounded-full bg-danger-soft px-2 py-0.5 font-medium text-danger">
                   <AlertCircle size={10} />
                   {progress.failed} 失败
                 </span>
@@ -283,7 +283,7 @@ function CollectionCard({
             </div>
           </>
         ) : (
-          <div className="flex items-center gap-2 text-sm text-tech-muted">
+          <div className="flex items-center gap-2 text-sm text-ink-muted">
             <AlertCircle size={14} />
             <span>尚未创建子任务</span>
           </div>
@@ -291,10 +291,10 @@ function CollectionCard({
       </div>
 
       {/* 底部操作 */}
-      <div className="flex items-center justify-between border-t border-tech-border px-5 py-3">
-        <span className="text-xs text-tech-muted">
+      <div className="flex items-center justify-between border-t border-line px-5 py-3">
+        <span className="text-xs text-ink-muted">
           {collection.skillName ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-purple-50 px-2 py-0.5 text-xs font-medium text-tech-purple">
+            <span className="inline-flex items-center gap-1 rounded-full bg-ai-soft px-2 py-0.5 text-xs font-medium text-ai">
               <Sparkles size={10} />
               {collection.skillName}
             </span>
@@ -312,7 +312,7 @@ function CollectionCard({
               event.stopPropagation();
               onToggleMenu();
             }}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-tech-border text-tech-muted transition-all hover:bg-tech-bg disabled:opacity-50"
+            className="flex h-8 w-8 items-center justify-center rounded-lg border border-line text-ink-muted transition-all hover:bg-elevated disabled:opacity-50"
             aria-label="更多操作"
           >
             <MoreHorizontal size={15} />
@@ -320,7 +320,7 @@ function CollectionCard({
           {expandedMenu && (
             <>
               <div className="fixed inset-0 z-10" onClick={(e) => { e.stopPropagation(); onToggleMenu(); }} />
-              <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border border-tech-border bg-white shadow-lg py-1 min-w-[120px]">
+              <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border border-line bg-panel shadow-lg py-1 min-w-[120px]">
                 <button
                   type="button"
                   disabled={deleting}
@@ -329,7 +329,7 @@ function CollectionCard({
                     onToggleMenu();
                     onDelete();
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-sm text-danger hover:bg-danger-soft disabled:opacity-50"
                 >
                   <Trash2 size={14} />
                   删除合集
@@ -348,7 +348,7 @@ function ProgressChip({ label, count, total }: { label: string; count: number; t
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-medium ${
-        done ? 'bg-emerald-50 text-emerald-700' : 'bg-tech-bg text-tech-muted'
+        done ? 'bg-success-soft text-success' : 'bg-canvas text-ink-muted'
       }`}
     >
       {done ? <CheckCircle2 size={10} /> : <Clock size={10} />}

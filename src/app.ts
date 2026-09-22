@@ -23,9 +23,10 @@ import { resolveJobVideo, resolveSourceVideo, VideoOutputError, type ResolvedVid
 import { PublishingStore } from "./lib/publishing-store.js";
 import { SauRunner } from "./lib/sau-runner.js";
 import { ToutiaoRunner } from "./lib/toutiao-runner.js";
+import { XhsRunner } from "./lib/xhs-runner.js";
 import { ToutiaoMediaService } from "./lib/toutiao-media.js";
 import { planToutiaoArticle } from "./lib/toutiao-article.js";
-import type { ArticlePlanner, ToutiaoCoverPreparer } from "./lib/publishing-service.js";
+import type { ArticlePlanner, NoteImagePreparer, ToutiaoCoverPreparer } from "./lib/publishing-service.js";
 import { PublishingCopyService } from "./lib/publishing-copy.js";
 import { PublishingAssetService } from "./lib/publishing-assets.js";
 import { PublishingService } from "./lib/publishing-service.js";
@@ -56,13 +57,20 @@ export interface ServerConfig {
   sauRunner?: SauRunner;
   /** 今日头条浏览器的显式路径（env: `TOUTIAO_BROWSER_BINARY`）；省略时按解析链找。 */
   toutiaoBrowserBinary?: string;
+  /** 小红书执行器的浏览器与登录态目录（缺省按解析链找 / `storage/xhs/profile`）。 */
+  xhsBrowserBinary?: string;
+  xhsProfileDir?: string;
+  xhsAllowSystemChrome?: boolean;
   /** 头条浏览器会话目录覆盖（env: `TOUTIAO_PROFILE_DIR`）；必须落在 storage 内。 */
   toutiaoProfileDir?: string;
   /** 是否允许退回系统 Chrome（默认不允许，见 `toutiao-browser.ts`）。 */
   toutiaoAllowSystemChrome?: boolean;
   /** 直接注入头条执行器与封面处理（测试用）。 */
   toutiaoRunner?: ToutiaoRunner;
+  xhsRunner?: XhsRunner;
   toutiaoMedia?: ToutiaoCoverPreparer;
+  /** 直接注入图文配图预处理（测试用）；省略时用真 ffmpeg。 */
+  noteMedia?: NoteImagePreparer;
   /** 直接注入文章成文（测试用）；省略时用真实 AI 配置 + 本地兜底。 */
   planArticle?: ArticlePlanner;
   runtimeBinDir?: string;
@@ -194,6 +202,15 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   });
   // 退出时尽力关掉头条登录会话用的浏览器（spec §4.3；避免留下持有 profile 的孤儿进程）。
   toutiaoRunner.installExitCleanup();
+  // 小红书执行器同样「未配置也构造」：缺浏览器/缺登录态的报错发生在它自己的通路上，
+  // 不影响其余平台的交付与另两条自动发布通路。
+  const xhsRunner = config.xhsRunner ?? new XhsRunner({
+    storageRoot: config.storagePath,
+    ...(config.xhsBrowserBinary ? { browserBinary: config.xhsBrowserBinary } : {}),
+    ...(config.xhsProfileDir ? { profileDir: config.xhsProfileDir } : {}),
+    ...(config.xhsAllowSystemChrome === undefined ? {} : { allowSystemChrome: config.xhsAllowSystemChrome }),
+  });
+  xhsRunner.installExitCleanup();
   const publishingService = new PublishingService({
     storageRoot: config.storagePath,
     jobs,
@@ -203,12 +220,16 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     library: assetStore,
     sau: sauRunner,
     toutiao: toutiaoRunner,
+    xhs: xhsRunner,
     // 封面裁剪用的 ffmpeg 必须走**配置里的那个**：打包后它是 `resources/bin/ffmpeg`
     // （不在 PATH 上），直接用默认的 `"ffmpeg"` 会在安装包里失败、而开发机上是好的
     // —— 正是 AGENTS.md 里那类「两套产物/两种环境」的事故。
     toutiaoMedia: config.toutiaoMedia ?? new ToutiaoMediaService(
       config.ffmpegBinary ? { ffmpegBinary: config.ffmpegBinary } : {},
     ),
+    // 图文配图裁成 3:4（方案甲）：同样必须走**配置里的 ffmpeg**，理由与上面头条封面一致。
+    ...(config.ffmpegBinary ? { ffmpegBinary: config.ffmpegBinary } : {}),
+    ...(config.noteMedia ? { noteMedia: config.noteMedia } : {}),
     // 文章成文：与文案服务共用同一份 AI 配置解析；失败时 `planToutiaoArticle` 内部走本地兜底。
     planArticle: config.planArticle
       ?? ((context) => planToutiaoArticle(context, { resolveAiConfig: resolvePublishingAiConfig })),

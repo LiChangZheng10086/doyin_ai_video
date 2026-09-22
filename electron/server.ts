@@ -70,6 +70,9 @@ export async function startServer(): Promise<number> {
         // 今日头条同样走 env（与 SAU_* 一套契约）；浏览器缺省复用打包进来的 headless shell。
         toutiaoBrowserBinary: process.env.TOUTIAO_BROWSER_BINARY,
         toutiaoProfileDir: process.env.TOUTIAO_PROFILE_DIR,
+        // 小红书同样走 env（与 SAU_* / TOUTIAO_* 一套契约）。
+        xhsBrowserBinary: process.env.XHS_BROWSER_BINARY,
+        xhsProfileDir: process.env.XHS_PROFILE_DIR,
       });
 
       const PORT = 0; // 使用随机端口

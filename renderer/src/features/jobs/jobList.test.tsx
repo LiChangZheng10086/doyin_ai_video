@@ -74,7 +74,7 @@ test('ContentPreview placeholder never paints the cover box purple', () => {
   for (const props of cases) {
     const markup = renderToStaticMarkup(React.createElement(ContentPreview, props));
     assert.doesNotMatch(markup, /purple/i, `封面容器不该出现紫色：${JSON.stringify(props)}`);
-    assert.match(markup, /bg-tech-bg/, '封面占位应使用中性表面色 token');
+    assert.match(markup, /bg-canvas/, '封面占位应使用中性表面色 token');
   }
 });
 

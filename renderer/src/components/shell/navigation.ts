@@ -58,7 +58,7 @@ export function getPageContext(pathname: string): { title: string; subtitle: str
   if (pathname === '/collections') return { title: '合集', subtitle: '创作者内容库' };
   if (pathname === '/skills') return { title: 'Skills', subtitle: '知识资产' };
   if (pathname === '/assets') return { title: '素材', subtitle: '图片与音频素材库' };
-  if (pathname === '/publishing') return { title: '发布工作台', subtitle: '人工交付队列' };
+  if (pathname === '/publishing') return { title: '发布工作台', subtitle: '按渠道提交与跟踪' };
   if (pathname === '/settings') return { title: '设置', subtitle: '连接与本地环境' };
   if (pathname === '/trash') return { title: '垃圾桶', subtitle: '恢复已删除作品' };
   return { title: '创作中心', subtitle: '从视频到文稿、分镜与成片' };

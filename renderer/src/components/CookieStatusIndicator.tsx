@@ -38,8 +38,8 @@ export function CookieStatusIndicator({ compact }: { compact?: boolean }) {
   if (!info || info.status === 'loading') {
     return (
       <div className="flex items-center gap-2">
-        <span className="w-2 h-2 bg-gray-400 rounded-full animate-pulse" />
-        <span className="text-sm text-tech-muted">Cookie...</span>
+        <span className="w-2 h-2 bg-ink-subtle rounded-full animate-pulse" />
+        <span className="text-sm text-ink-muted">检查登录态…</span>
       </div>
     );
   }
@@ -48,8 +48,8 @@ export function CookieStatusIndicator({ compact }: { compact?: boolean }) {
   if (info.status === 'logged-in') {
     return (
       <div className="flex items-center gap-2">
-        <span className="w-2 h-2 bg-green-500 rounded-full" />
-        <span className={`text-sm text-tech-muted ${compact ? 'text-xs' : ''}`}>{compact ? '抖音已登录' : '抖音已登录'}</span>
+        <span className="w-2 h-2 bg-success rounded-full" />
+        <span className={`text-sm text-ink-muted ${compact ? 'text-xs' : ''}`}>{compact ? '抖音已登录' : '抖音已登录'}</span>
       </div>
     );
   }
@@ -57,13 +57,13 @@ export function CookieStatusIndicator({ compact }: { compact?: boolean }) {
   // 未登录（有 Cookie 但无登录态）
   return (
     <div className="flex items-center gap-3">
-      <span className="w-2 h-2 bg-orange-500 rounded-full" />
-      <span className={`${compact ? 'text-xs' : 'text-sm'} text-orange-600`}>
+      <span className="w-2 h-2 bg-warning rounded-full" />
+      <span className={`${compact ? 'text-xs' : 'text-sm'} text-warning`}>
         {info.status === 'no-cookie' ? '未配置抖音 Cookie' : 'Cookie 已过期'}
       </span>
       <Link
         to="/settings"
-        className="text-sm text-tech-blue hover:underline"
+        className="text-sm text-accent hover:underline"
       >
         前往设置
       </Link>

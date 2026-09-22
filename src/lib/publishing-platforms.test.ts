@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { APPROVED_PLATFORMS } from "./publishing-assets.js";
 import {
   AUTO_PUBLISH_ROUTES,
+  PUBLISH_NOTE_POLICIES,
   PUBLISH_PLATFORMS,
   resolveAutoPublishEngine,
   buildPublishText,
@@ -109,11 +110,12 @@ test("存档校验 isPlatform 接受每一个在册平台（否则读回索引�
   assert.equal(isPlatform("weibo"), false);
 });
 
-test("NOTE_PLATFORMS 是严格子集且不含微信公众号（两条通路的闸门不能混用）", () => {
-  // 图文（note）通路目前只接通抖音（上游只有 `sau douyin upload-note`）；
-  // 公众号走 article 通路，**不得**被塞进这个闸门，否则会以「图文口径」去校验文章。
-  assert.deepEqual([...NOTE_PLATFORMS], ["douyin"]);
+test("NOTE_PLATFORMS 是严格子集且不含文章通路（两条通路的闸门不能混用）", () => {
+  // 图文（note）通路上现在有**两个**平台：抖音（外部 sau）与小红书（自研执行器）。
+  // 公众号 / 头条走 article 通路，**不得**被塞进这个闸门，否则会拿「图文口径」去校验文章。
+  assert.deepEqual([...NOTE_PLATFORMS].sort(), ["douyin", "xiaohongshu"]);
   assert.equal(NOTE_PLATFORMS.has("wechat_mp"), false);
+  assert.equal(NOTE_PLATFORMS.has("toutiao"), false);
   for (const platform of NOTE_PLATFORMS) {
     assert.equal(platform in PUBLISH_PLATFORMS, true, `NOTE_PLATFORMS 含未知平台 ${platform}`);
   }
@@ -322,22 +324,66 @@ test("头条的标题下限在文章校验里管，平台表只管上限（两�
 
 // ─── 自动发布通路表（(内容类型 × 平台) → 引擎）────────────────────────────────
 
-test("通路表：图文只走抖音（sau），文章只走头条（自研 runner）", () => {
+test("通路表：图文走抖音（sau）与小红书（xhs），文章走头条（自研 runner）", () => {
   assert.deepEqual(
     AUTO_PUBLISH_ROUTES.map((route) => `${route.contentType}:${route.platform}=${route.engine}`).sort(),
-    ["article:toutiao=toutiao", "note:douyin=sau"],
+    ["article:toutiao=toutiao", "note:douyin=sau", "note:xiaohongshu=xhs"],
   );
 
   assert.equal(resolveAutoPublishEngine("note", "douyin"), "sau");
+  assert.equal(resolveAutoPublishEngine("note", "xiaohongshu"), "xhs");
   assert.equal(resolveAutoPublishEngine("article", "toutiao"), "toutiao");
 
   // 未登记的组合一律 null：视频包仍是人工交付；图文不许发给头条（上游没有这条通路）；
-  // 文章不许发给抖音（我们的文章渲染是头条/公众号口径，抖音图文走 note）。
+  // 文章不许发给抖音或小红书；公众号通路尚未接通。
   assert.equal(resolveAutoPublishEngine("video", "douyin"), null);
   assert.equal(resolveAutoPublishEngine("video", "toutiao"), null);
+  assert.equal(resolveAutoPublishEngine("video", "xiaohongshu"), null, "视频包仍是人工交付");
   assert.equal(resolveAutoPublishEngine("note", "toutiao"), null);
   assert.equal(resolveAutoPublishEngine("article", "douyin"), null);
+  assert.equal(resolveAutoPublishEngine("article", "xiaohongshu"), null, "小红书只做图文，不做文章");
   assert.equal(resolveAutoPublishEngine("article", "wechat_mp"), null, "公众号通路尚未接通");
+});
+
+test("小红书图文口径：标题 20 / 正文 1000，且是**独立的一份政策**", () => {
+  const policy = PUBLISH_NOTE_POLICIES.xiaohongshu;
+  assert.ok(policy, "小红书必须有自己的图文政策条目");
+  assert.equal(policy.titleMax, 20);
+  assert.equal(policy.descriptionMax, 1000);
+  assert.equal(policy.creatorUrl, "https://creator.xiaohongshu.com/publish/publish");
+
+  const errors = validateNoteCopy("xiaohongshu", {
+    title: "这是一段超过二十个字符因而必须被拦下的小红书图文标题",
+    description: "正".repeat(1200),
+    hashtags: [],
+  });
+  assert.equal(errors.some((error) => error.field === "title"), true, "21+ 字标题必须报错");
+  assert.equal(errors.some((error) => error.field === "description"), true, "1200 字正文必须报错");
+  assert.match(errors.find((error) => error.field === "title")?.message ?? "", /小红书标题当前 \d+ 字，最多 20 字/u);
+
+  // 边界：正好 20 字 / 1000 字合法。
+  // ⚠️ 用 repeat 构造而不是手写汉字 —— 第一版手写的「20 字」实际是 26 字（数错了），
+  // 于是用例把「超限报错」当成了「边界合法」。数字自己会说话，别靠人眼数。
+  assert.deepEqual(
+    validateNoteCopy("xiaohongshu", { title: "字".repeat(20), description: "字".repeat(1000), hashtags: [] }),
+    [],
+  );
+
+  // 与抖音那份是**两个对象**（不是共用一份）：共用会让「改一处、另一处悄悄跟着变」。
+  assert.notEqual(PUBLISH_NOTE_POLICIES.xiaohongshu, PUBLISH_NOTE_POLICIES.douyin);
+});
+
+test("⚠️ 图文通路上两个平台的文案上限当前**必须相同**（否则 copyLimits 这个单数就站不住了）", () => {
+  // `previewNotePackage` 下发的 `copyLimits` 是**单数**的（一张表），所以只在两平台口径相同时成立。
+  // 谁要是把其中一个改宽/改窄，这条用例会先红，逼着改动者去把 `copyLimits` 改成按平台下发 ——
+  // 而不是让界面上显示「12/20」、后端却按另一套口径校验。
+  const douyin = PUBLISH_NOTE_POLICIES.douyin;
+  const xhs = PUBLISH_NOTE_POLICIES.xiaohongshu;
+  assert.ok(douyin && xhs);
+  assert.deepEqual(
+    { titleMax: xhs.titleMax, descriptionMax: xhs.descriptionMax, hashtagMax: xhs.hashtagMax },
+    { titleMax: douyin.titleMax, descriptionMax: douyin.descriptionMax, hashtagMax: douyin.hashtagMax },
+  );
 });
 
 test("通路表里的平台与内容类型都在册（不会指到不存在的枚举值）", () => {

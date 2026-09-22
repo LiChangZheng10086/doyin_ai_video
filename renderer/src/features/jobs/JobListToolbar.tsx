@@ -30,14 +30,14 @@ export function JobListToolbar({
   onViewModeChange,
 }: JobListToolbarProps) {
   return (
-    <div className="mb-5 flex flex-col gap-3 rounded-lg border border-tech-border bg-white p-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="mb-5 flex flex-col gap-3 rounded-lg border border-line bg-panel p-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="relative flex-1">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-tech-muted" />
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
         <input
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
           placeholder="搜索标题、来源或摘要"
-          className="h-10 w-full rounded-lg border border-tech-border bg-white pl-10 pr-4 text-sm text-tech-text outline-none placeholder:text-tech-muted focus:border-tech-blue focus:ring-2 focus:ring-blue-100"
+          className="h-10 w-full rounded-lg border border-line-ui bg-panel pl-10 pr-4 text-sm text-ink outline-none placeholder:text-ink-muted focus:border-accent-line focus:ring-2 focus:ring-accent"
         />
       </div>
       <div className="flex items-center gap-2">
@@ -49,22 +49,22 @@ export function JobListToolbar({
               onClick={() => onFilterChange(item.id)}
               className={`h-8 rounded-lg px-3 text-xs font-medium transition-colors ${
                 filter === item.id
-                  ? 'bg-tech-text text-white'
-                  : 'bg-gray-100 text-tech-muted hover:bg-gray-200'
+                  ? 'bg-accent text-on-accent'
+                  : 'bg-elevated text-ink-muted hover:bg-line-strong'
               }`}
             >
               {item.label}
             </button>
           ))}
         </div>
-        <div className="flex h-8 shrink-0 rounded-lg border border-tech-border bg-gray-100 p-0.5">
+        <div className="flex h-8 shrink-0 rounded-lg border border-line bg-elevated p-0.5">
           <button
             type="button"
             aria-label="列表视图"
             aria-pressed={viewMode === 'list'}
             onClick={() => onViewModeChange('list')}
             className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-              viewMode === 'list' ? 'bg-white text-tech-blue shadow-sm' : 'text-tech-muted'
+              viewMode === 'list' ? 'bg-panel text-accent shadow-sm' : 'text-ink-muted'
             }`}
           >
             <LayoutList size={15} />
@@ -75,15 +75,15 @@ export function JobListToolbar({
             aria-pressed={viewMode === 'card'}
             onClick={() => onViewModeChange('card')}
             className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-              viewMode === 'card' ? 'bg-white text-tech-blue shadow-sm' : 'text-tech-muted'
+              viewMode === 'card' ? 'bg-panel text-accent shadow-sm' : 'text-ink-muted'
             }`}
           >
             <Grid3X3 size={15} />
           </button>
         </div>
         {polling && (
-          <span className="hidden sm:inline-flex items-center gap-1.5 text-xs text-tech-muted">
-            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+          <span className="hidden sm:inline-flex items-center gap-1.5 text-xs text-ink-muted">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
             同步中
           </span>
         )}

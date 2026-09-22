@@ -90,6 +90,20 @@ export interface PlatformCopy {
   hashtags: string[];
 }
 
+/**
+ * 小红书图文（note）的发布选项。
+ *
+ * `aiDeclaration`：平台 2026-02-12 公告要求 AI 生成合成内容**在发布环节主动标识**，
+ * 未标识会被限制分发。我们的内容整条由 AI 生成，所以这是**合规开关**，默认 `true`。
+ *
+ * `submit`：最后一步的开关。`false` = 只填到草稿（平台会自动存草稿，由真人在 App 里点发布）；
+ * `true` = 由程序点「发布」。默认 `false`（见 spec §10）。
+ */
+export interface XhsNoteOptions {
+  aiDeclaration: boolean;
+  submit: boolean;
+}
+
 export interface DeliveryPackage {
   id: string;
   sourceJobId: string;
@@ -118,6 +132,15 @@ export interface DeliveryPackage {
    * 不进指纹就会出现「预览后改了选项却照样提交」。
    */
   toutiaoOptions?: ToutiaoPublishOptions;
+  /**
+   * 仅图文包（小红书）：发布选项。
+   *
+   * **必须参与 `previewRevision`** —— 它们改变「要发出去的是什么 / 会不会真的发出去」，
+   * 不进指纹就会出现「预览时没声明 AI、提交时声明了」与「预览时只填草稿、提交时真发布」。
+   * ⚠️ 但**只在存在时**参与哈希（见 `packagePreviewRevision`）：抖音图文包没有这个字段，
+   * 无条件追加会改掉它们的既有 revision。
+   */
+  xhsOptions?: XhsNoteOptions;
   createdBy: ActorSnapshot;
   createdAt: string;
   updatedAt: string;
@@ -158,6 +181,15 @@ export interface PublishAutoPublish {
   message?: string;
   /** 单次尝试的唯一 id。 */
   attemptId: string;
+  /**
+   * **只填到草稿**（小红书「填写到小红书（不提交）」这条通路）：`true` = 本次**没有点发布**，
+   * 内容只落在平台的**草稿箱**里。
+   *
+   * 为什么要有这个字段（2026-09-21 用户实测）：界面此前没有它，只能按 `status === "succeeded"`
+   * 说「**已提交**，请到后台确认」—— 用户照着去小红书找，**根本找不到**（内容在草稿箱，
+   * 压根没发布）。靠 `message` 里有没有「草稿」字样来猜更糟（那是会漂移的第二真源）。
+   */
+  draftOnly?: boolean;
 }
 
 export interface PublishAuditEvent {
@@ -369,6 +401,11 @@ export interface CreatePublishingPackageInput {
   articleCopy?: { title: string; body: string };
   /** 仅文章包：今日头条发布选项；缺省全关。 */
   toutiaoOptions?: ToutiaoPublishOptions;
+  /**
+   * 仅图文包（小红书）：AI 标识声明与「是否真点发布」。
+   * 与 `toutiaoOptions` 同一纪律：**它们改变"要发出去的是什么/会不会真发出去"，所以必须进 `previewRevision`**。
+   */
+  xhsOptions?: XhsNoteOptions;
   platforms: Array<{
     platform: PublishPlatform;
     copy: PlatformCopy;

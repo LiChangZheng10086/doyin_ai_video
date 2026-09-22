@@ -3,6 +3,7 @@ import { Trash2, Wand2 } from 'lucide-react';
 import type { JobOverview } from '../../types/index';
 import { getJobVisualState } from './jobPresentation';
 import { ContentPreview } from './ContentPreview';
+import { ProgressRail, railSegmentsFromSteps } from '../../components/ui/ProgressRail';
 
 export interface JobCardViewProps {
   jobs: JobOverview[];
@@ -18,31 +19,33 @@ export function JobCardView({ jobs, deletingId, onOpen, onRequestDelete }: JobCa
         <div
           key={job.id}
           onClick={() => onOpen(job.id)}
-          className="cursor-pointer overflow-hidden rounded-lg border border-tech-border bg-white transition-all hover:border-tech-blue hover:shadow-lg"
+          className="cursor-pointer overflow-hidden rounded-lg border border-line bg-panel transition-all hover:border-accent-line hover:shadow-lg"
         >
           <ContentPreview title={job.preview.coverTitle || job.preview.displayTitle} imageUrl={job.preview.coverUrl} />
           <div className="p-4">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div className="min-w-0">
-                <h3 className="line-clamp-1 font-semibold text-tech-text">{job.preview.displayTitle}</h3>
-                <p className="mt-1 line-clamp-1 text-sm text-tech-muted">
+                <h3 className="line-clamp-1 font-semibold text-ink">{job.preview.displayTitle}</h3>
+                <p className="mt-1 line-clamp-1 text-sm text-ink-muted">
                   {job.preview.sourcePlatform} · {job.preview.subtitle}
                 </p>
               </div>
               <JobCardStatus job={job} />
             </div>
             {job.preview.summary && (
-              <p className="mb-4 line-clamp-2 text-sm leading-6 text-tech-muted">{job.preview.summary}</p>
+              <p className="mb-4 line-clamp-2 text-sm leading-6 text-ink-muted">{job.preview.summary}</p>
             )}
-            <div className="mb-4 flex flex-wrap gap-2">
-              <ArtifactPill ready={job.preview.hasTranscript} label="转录" />
-              <ArtifactPill ready={job.preview.hasRewrite} label="洗稿" />
-              <ArtifactPill ready={job.preview.hasVideoPrompts} label="分镜" />
-              <ArtifactPill ready={job.preview.hasVideo} label="成片" />
+            {/*
+              改造前这里是 4 个「转录 / 洗稿 / 分镜 / 成片」胶囊，只表达「有 / 没有」。
+              换成链路轨后：① 一次读完全链路；② 能区分「进行中 / 失败 / 待执行」，
+              而那三种状态在旧胶囊里都只会显示成灰色。
+            */}
+            <div className="mb-4">
+              <ProgressRail segments={railSegmentsFromSteps(job.steps)} />
             </div>
-            <div className="flex items-center justify-between gap-3 border-t border-tech-border pt-3">
-              <span className="inline-flex items-center gap-2 text-sm font-medium text-tech-text">
-                <Wand2 size={15} className="text-tech-purple" />
+            <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
+              <span className="inline-flex items-center gap-2 text-sm font-medium text-ink">
+                <Wand2 size={15} className="text-ai" />
                 {job.preview.nextActionLabel}
               </span>
               {!job.deletedAt && (
@@ -53,7 +56,7 @@ export function JobCardView({ jobs, deletingId, onOpen, onRequestDelete }: JobCa
                     event.stopPropagation();
                     onRequestDelete(job.id);
                   }}
-                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-600 transition-all hover:bg-red-50 disabled:opacity-50"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg border border-danger-line text-danger transition-all hover:bg-danger-soft disabled:opacity-50"
                   aria-label="删除作品"
                 >
                   <Trash2 size={15} />
@@ -70,10 +73,10 @@ export function JobCardView({ jobs, deletingId, onOpen, onRequestDelete }: JobCa
 function JobCardStatus({ job }: { job: JobOverview }) {
   const state = getJobVisualState(job);
   const toneClasses: Record<string, string> = {
-    info: 'border-blue-200 bg-blue-50 text-blue-700',
-    processing: 'border-cyan-200 bg-cyan-50 text-cyan-700',
-    success: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-    danger: 'border-red-200 bg-red-50 text-red-700',
+    info: 'border-info-line bg-info-soft text-info',
+    processing: 'border-running-line bg-running-soft text-running',
+    success: 'border-success-line bg-success-soft text-success',
+    danger: 'border-danger-line bg-danger-soft text-danger',
   };
   return (
     <span className={`inline-flex w-fit items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-medium shrink-0 ${toneClasses[state.tone]}`}>
@@ -81,23 +84,11 @@ function JobCardStatus({ job }: { job: JobOverview }) {
       {!state.busy && (
         <span
           className={`inline-block h-1.5 w-1.5 rounded-full ${
-            state.tone === 'success' ? 'bg-emerald-500' : state.tone === 'danger' ? 'bg-red-500' : state.tone === 'processing' ? 'bg-cyan-500' : 'bg-blue-500'
+            state.tone === 'success' ? 'bg-success' : state.tone === 'danger' ? 'bg-danger' : state.tone === 'processing' ? 'bg-running' : 'bg-info'
           }`}
         />
       )}
       {state.label}
-    </span>
-  );
-}
-
-function ArtifactPill({ ready, label }: { ready: boolean; label: string }) {
-  return (
-    <span
-      className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-        ready ? 'bg-purple-50 text-tech-purple' : 'bg-gray-100 text-tech-muted'
-      }`}
-    >
-      {label}
     </span>
   );
 }

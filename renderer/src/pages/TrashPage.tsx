@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  AlertCircle,
   CheckCircle2,
   Clock,
   FileText,
@@ -13,6 +14,9 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { PageHeader } from '../components/ui/PageHeader';
+import { EmptyState } from '../components/ui/EmptyState';
+import { Button } from '../components/ui/Button';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { apiClient } from '../services/api';
 import type { Job } from '../types';
@@ -27,22 +31,26 @@ export function TrashPage() {
   const [deleteTarget, setDeleteTarget] = useState<Job | null>(null);
   const [expandedMenu, setExpandedMenu] = useState<string | null>(null);
 
-  useEffect(() => {
-    const loadTrash = async () => {
-      try {
-        setIsLoading(true);
-        setError(null);
-        const trashJobs = await apiClient.getTrashJobs();
-        setJobs(trashJobs);
-      } catch (err: any) {
-        setError(err.response?.data?.message || '加载垃圾桶失败');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    loadTrash();
+  /*
+   * 提到组件作用域：错误态里的「重新加载」需要它。
+   * 原先它定义在 `useEffect` 内部，渲染层够不到，于是错误态**没有重试入口**
+   * （只能整页刷新）。
+   */
+  const load = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      const trashJobs = await apiClient.getTrashJobs();
+      setJobs(trashJobs);
+    } catch (err: any) {
+      console.error('加载垃圾桶失败:', err);
+      setError(err.response?.data?.message || '加载垃圾桶失败');
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+
+  useEffect(() => { void load(); }, [load]);
 
   const handleRestore = async (jobId: string) => {
     try {
@@ -76,8 +84,8 @@ export function TrashPage() {
       <Layout>
         <div className="flex items-center justify-center min-h-[420px]">
           <div className="text-center">
-            <Loader2 className="mx-auto h-12 w-12 animate-spin text-tech-purple" />
-            <p className="mt-4 text-tech-muted">加载垃圾桶...</p>
+            <Loader2 className="mx-auto h-12 w-12 animate-spin text-ai" />
+            <p className="mt-4 text-ink-muted">加载垃圾桶...</p>
           </div>
         </div>
       </Layout>
@@ -86,34 +94,40 @@ export function TrashPage() {
 
   return (
     <Layout>
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h2 className="text-2xl font-semibold text-tech-text mb-1">垃圾桶</h2>
-          <p className="text-sm text-tech-muted">
-            删除的任务会保留 30 天，可恢复或永久删除
-          </p>
-        </div>
-        <button
-          onClick={() => navigate('/')}
-          className="px-4 py-2 rounded-lg border border-tech-border text-tech-text hover:bg-tech-bg transition-all"
-        >
-          返回任务列表
-        </button>
-      </div>
+      <PageHeader
+        title="垃圾桶"
+        description="删除的任务会保留 30 天，可恢复或永久删除"
+        actions={
+          <Button variant="outline" onClick={() => navigate('/')}>
+            返回任务列表
+          </Button>
+        }
+      />
 
-      {error && (
-        <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">
+      {/* ⚠️ 错误与空态互斥：改造前两者只按 `jobs.length === 0` 判断，
+          后端挂掉时会同时显示「加载失败」与「垃圾桶是空的」。 */}
+      {error && jobs.length > 0 && (
+        <div className="mb-6 bg-danger-soft border border-danger-line rounded-lg p-4 text-danger" role="alert">
           {error}
         </div>
       )}
 
       {jobs.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-tech-border bg-tech-surface px-6 py-20 text-center">
-          <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-lg bg-tech-bg border border-tech-border text-tech-muted">
-            <Trash2 size={34} />
-          </div>
-          <h3 className="text-xl font-semibold text-tech-text mb-2">垃圾桶是空的</h3>
-          <p className="text-tech-muted">删除的任务会在这里保留 30 天</p>
+        <div className="rounded-xl border border-line bg-panel">
+          {error ? (
+            <EmptyState
+              icon={AlertCircle}
+              title="垃圾桶加载失败"
+              description={error}
+              action={<Button variant="outline" onClick={() => void load()}>重新加载</Button>}
+            />
+          ) : (
+            <EmptyState
+              icon={Trash2}
+              title="垃圾桶是空的"
+              description="删除的任务会在这里保留 30 天，期间可以随时恢复。"
+            />
+          )}
         </div>
       ) : (
         <div className="space-y-4">
@@ -124,18 +138,18 @@ export function TrashPage() {
             return (
               <div
                 key={job.id}
-                className="bg-tech-surface rounded-lg border border-tech-border p-5"
+                className="bg-panel rounded-lg border border-line p-5"
               >
                 <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
                 <div className="min-w-0">
-                  <h3 className="font-medium text-tech-text mb-1 line-clamp-1">
+                  <h3 className="font-medium text-ink mb-1 line-clamp-1">
                     {job.topic || '无主题'}
                   </h3>
-                  <p className="text-xs text-tech-muted mb-2">
+                  <p className="text-xs text-ink-muted mb-2">
                     删除于 {formatDate(job.deletedAt)} · {formatRemaining(job.trashExpiresAt)}
                   </p>
                   {job.sourceUrl && (
-                    <p className="text-sm text-tech-muted line-clamp-1 break-all mb-3">
+                    <p className="text-sm text-ink-muted line-clamp-1 break-all mb-3">
                       {job.sourceUrl}
                     </p>
                   )}
@@ -173,14 +187,14 @@ export function TrashPage() {
                     type="button"
                     disabled={busy}
                     onClick={() => handleRestore(job.id)}
-                    className="px-3 py-2 rounded-lg bg-tech-blue text-white text-sm hover:bg-tech-blue-dark disabled:opacity-50 transition-all"
+                    className="px-3 py-2 rounded-lg bg-accent text-on-accent text-sm hover:bg-accent-hover disabled:opacity-50 transition-all"
                   >
                     恢复
                   </button>
                   <button
                     type="button"
                     onClick={() => navigate(`/jobs/${job.id}`)}
-                    className="px-3 py-2 rounded-lg border border-tech-border text-sm text-tech-text hover:bg-tech-bg transition-all"
+                    className="px-3 py-2 rounded-lg border border-line text-sm text-ink hover:bg-elevated transition-all"
                   >
                     查看
                   </button>
@@ -188,7 +202,7 @@ export function TrashPage() {
                     <button
                       type="button"
                       onClick={() => setExpandedMenu(expandedMenu === job.id ? null : job.id)}
-                      className="px-2 py-2 rounded-lg border border-tech-border text-sm text-tech-muted hover:bg-tech-bg transition-all"
+                      className="px-2 py-2 rounded-lg border border-line text-sm text-ink-muted hover:bg-elevated transition-all"
                       aria-label="更多操作"
                     >
                       <MoreHorizontal size={14} />
@@ -196,13 +210,13 @@ export function TrashPage() {
                     {expandedMenu === job.id && (
                       <>
                         <div className="fixed inset-0 z-10" onClick={() => setExpandedMenu(null)} />
-                        <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border border-tech-border bg-white shadow-lg py-1 min-w-[120px]">
+                        <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border border-line bg-panel shadow-lg py-1 min-w-[120px]">
                           <button
                             type="button"
                             disabled={busy || active}
                             title={active ? '处理中任务暂不能永久删除' : undefined}
                             onClick={() => { setExpandedMenu(null); setDeleteTarget(job); }}
-                            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50"
+                            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-danger hover:bg-danger-soft disabled:opacity-50"
                           >
                             <Trash2 size={14} />
                             永久删除
@@ -231,7 +245,7 @@ export function TrashPage() {
       />
 
       {actionError && (
-        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 shadow-lg">
+        <div className="fixed bottom-6 right-6 z-50 rounded-lg border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger shadow-lg">
           {actionError}
           <button className="ml-3 font-medium underline" onClick={() => setActionError(null)}>
             关闭
@@ -260,7 +274,7 @@ function formatRemaining(value?: string) {
 function StageChip({ label, done, failed, icon: Icon }: { label: string; done: boolean; failed: boolean; icon: React.ComponentType<{ size?: number }> }) {
   return (
     <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
-      done ? 'bg-emerald-50 text-emerald-700' : failed ? 'bg-red-50 text-red-600' : 'bg-gray-100 text-tech-muted'
+      done ? 'bg-success-soft text-success' : failed ? 'bg-danger-soft text-danger' : 'bg-elevated text-ink-muted'
     }`}>
       {done ? <CheckCircle2 size={10} /> : failed ? <XCircle size={10} /> : <Clock size={10} />}
       <Icon size={10} />

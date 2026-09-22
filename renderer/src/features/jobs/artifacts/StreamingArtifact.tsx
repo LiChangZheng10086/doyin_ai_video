@@ -21,22 +21,22 @@ export function StreamingArtifact({
         : '生成中，尚未保存';
 
   return (
-    <section className="rounded-lg border border-purple-200 bg-purple-50/60 p-4" aria-live="polite">
+    <section className="rounded-lg border border-ai-line bg-ai-soft/60 p-4" aria-live="polite">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          {isActive && <Loader2 size={17} className="animate-spin text-tech-purple" />}
-          <h3 className="font-semibold text-tech-text">{title}</h3>
-          <span className="rounded-md border border-purple-200 bg-white px-2 py-1 text-xs text-tech-purple">
+          {isActive && <Loader2 size={17} className="animate-spin text-ai" />}
+          <h3 className="font-semibold text-ink">{title}</h3>
+          <span className="rounded-md border border-ai-line bg-panel px-2 py-1 text-xs text-ai">
             {stateLabel}
           </span>
         </div>
-        <div className="flex gap-3 text-xs text-tech-muted">
+        <div className="flex gap-3 text-xs text-ink-muted">
           {preview.model && <span>{preview.model}</span>}
           <span>{preview.receivedLength} 个字符</span>
         </div>
       </div>
-      {preview.message && <p className="mt-3 text-sm text-amber-700">{preview.message}</p>}
-      <div className={`mt-4 max-h-80 overflow-auto rounded-lg border border-purple-100 bg-white p-4 text-sm leading-7 text-tech-text ${kind === 'shots' ? 'whitespace-pre-wrap font-mono' : 'whitespace-pre-wrap'}`}>
+      {preview.message && <p className="mt-3 text-sm text-warning">{preview.message}</p>}
+      <div className={`mt-4 max-h-80 overflow-auto rounded-lg border text-ai bg-panel p-4 text-sm leading-7 text-ink ${kind === 'shots' ? 'whitespace-pre-wrap font-mono' : 'whitespace-pre-wrap'}`}>
         {displayText || '正在等待模型返回内容...'}
       </div>
     </section>

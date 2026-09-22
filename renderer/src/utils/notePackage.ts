@@ -3,11 +3,56 @@ import type {
   NoteCopyLimits,
   NoteImageSource,
   PlatformCopy,
+  PublishPlatform,
   PublishingPreview,
 } from '../types';
 
+/** 图文通路**当前接入自动提交**的平台（与后端 `NOTE_PLATFORMS` 对齐；抖音走外部 sau、小红书走自研执行器）。 */
+export const NOTE_AUTOMATION_PLATFORMS: PublishPlatform[] = ['douyin', 'xiaohongshu'];
+
 /**
- * 图文包（抖音图文）的纯逻辑：按序多选、来源阻塞原因、请求体组装。
+ * 图文向导的标题（含平台说明）。
+ *
+ * 以前写死「加入图文发布（抖音图文）」—— 只选小红书时那句话就是**指错平台**
+ * （本项目在「文案指错动作」上吃过一次亏：头条任务曾显示「正在提交到抖音…」，见 AGENTS.md）。
+ */
+export function notePublishDialogTitle(platforms: PublishPlatform[]): string {
+  const labels = NOTE_AUTOMATION_PLATFORMS
+    .filter((platform) => platforms.includes(platform))
+    .map((platform) => (platform === 'douyin' ? '抖音' : '小红书'));
+  if (labels.length === 0) return '加入图文发布';
+  return `加入图文发布（${labels.join(' + ')}图文）`;
+}
+
+/**
+ * 切换一个平台。**不允许把最后一个取消掉** —— 一个平台都不选的包是没有意义的，
+ * 而且会让创建请求变成 400（服务端要求至少一个平台）。
+ */
+export function toggleNotePlatform(selected: PublishPlatform[], platform: PublishPlatform): PublishPlatform[] {
+  if (selected.includes(platform)) {
+    return selected.length <= 1 ? selected : selected.filter((item) => item !== platform);
+  }
+  // 保持与 `NOTE_AUTOMATION_PLATFORMS` 同一个顺序，免得请求体的平台顺序随点击顺序抖动。
+  return NOTE_AUTOMATION_PLATFORMS.filter((item) => item === platform || selected.includes(item));
+}
+
+/**
+ * 小红书合规闸门（**本地即时反馈**）：选了小红书就必须声明 AI 合成内容。
+ *
+ * 这不是「把服务端规则抄一份」—— 服务端那条闸门（`publish_xhs_ai_declaration_required`）仍然是
+ * 唯一真源、创建与提交时都会再校验；这里只是让用户在**点创建之前**就看到原因，
+ * 而不是提交后被 422 打回来。
+ */
+export function getNotePlatformBlocker(platforms: PublishPlatform[], xhsAiDeclaration: boolean): string | null {
+  if (platforms.length === 0) return '请至少选择一个发布平台';
+  if (platforms.includes('xiaohongshu') && !xhsAiDeclaration) {
+    return '小红书要求声明「笔记含AI合成内容」：未标识的 AI 内容会被平台限制分发，请勾选该声明';
+  }
+  return null;
+}
+
+/**
+ * 图文包（抖音 / 小红书图文）的纯逻辑：按序多选、来源阻塞原因、请求体组装。
  *
  * 放在 utils 里而不是组件里，是因为这些是「用户可见行为」——
  * 选择顺序、上限提示、文案字数都必须能被断言守住，组件只负责渲染。
@@ -113,6 +158,10 @@ export interface BuildNotePackageInputArgs {
   copy: PlatformCopy;
   source: NoteImageSource;
   selectedImageIds: string[];
+  /** 要建包的平台（至少一个）。 */
+  platforms: PublishPlatform[];
+  /** 小红书发布选项（**只有选了小红书才进请求体**）。 */
+  xhsOptions?: { aiDeclaration: boolean; submit: boolean };
 }
 
 /**
@@ -124,6 +173,7 @@ export function buildNotePackageInput(args: BuildNotePackageInputArgs): CreatePu
   if (!revision) throw new Error('图文预览尚未完成');
 
   const noteCopy = normalizeNoteCopyDraft(args.copy);
+  const platforms = args.platforms.length > 0 ? args.platforms : ['douyin' as PublishPlatform];
   return {
     sourceJobId: args.sourceJobId,
     previewRevision: revision,
@@ -133,6 +183,9 @@ export function buildNotePackageInput(args: BuildNotePackageInputArgs): CreatePu
     imageSource: args.source,
     // 静帧来源绝不能带素材 id（服务端会直接 400），所以这里按来源决定字段是否存在
     ...(args.source === 'library' ? { imageAssetIds: [...args.selectedImageIds] } : {}),
-    platforms: [{ platform: 'douyin', copy: noteCopy }],
+    // ⚠️ `xhsOptions` **只在选了小红书时**才带：它进 `previewRevision`，
+    // 给一个纯抖音包塞上它会让两个平台的包指纹口径不一致（而且语义上是噪音）。
+    ...(platforms.includes('xiaohongshu') && args.xhsOptions ? { xhsOptions: args.xhsOptions } : {}),
+    platforms: platforms.map((platform) => ({ platform, copy: noteCopy })),
   };
 }

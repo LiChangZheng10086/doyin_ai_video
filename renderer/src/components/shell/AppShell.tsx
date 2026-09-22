@@ -69,15 +69,15 @@ export function AppShell({ children, initialExpanded }: AppShellProps) {
           <div className="flex items-center gap-3 px-3 py-2">
             <CookieStatusIndicator />
           </div>
-          <hr className="border-tech-border" />
+          <hr className="border-line" />
           {SECONDARY_NAV_ITEMS.map((item) => (
             <button
               key={item.to}
               type="button"
               onClick={() => { navigate(item.to); setMoreOpen(false); }}
-              className="flex items-center gap-3 px-3 py-2.5 text-sm text-tech-text hover:bg-tech-bg rounded-lg"
+              className="flex items-center gap-3 px-3 py-2.5 text-sm text-ink hover:bg-elevated rounded-lg"
             >
-              <item.icon size={18} className="text-tech-muted" />
+              <item.icon size={18} className="text-ink-muted" />
               {item.label}
             </button>
           ))}

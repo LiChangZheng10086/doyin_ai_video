@@ -7,6 +7,8 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { PageHeader } from '../components/ui/PageHeader';
+import { Button } from '../components/ui/Button';
 import { CreateJobDialog } from '../components/CreateJobDialog';
 import { ApiKeyWarning } from '../components/ApiKeyWarning';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
@@ -135,8 +137,8 @@ export function JobListPage() {
       <Layout>
         <div className="flex items-center justify-center min-h-[420px]">
           <div className="text-center">
-            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-tech-blue border-t-transparent" />
-            <p className="mt-4 text-tech-muted">正在载入作品列表...</p>
+            <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-accent-line border-t-transparent" />
+            <p className="mt-4 text-ink-muted">正在载入作品列表...</p>
           </div>
         </div>
       </Layout>
@@ -145,9 +147,15 @@ export function JobListPage() {
 
   return (
     <Layout>
-      {/* Load error */}
-      {loadError && (
-        <div className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 flex items-center justify-between">
+      {/*
+        ⚠️ 错误横幅只在**已有数据**时显示。改造前它无条件渲染，而下面的空态只判断
+        `overviews.length === 0` —— 后端挂掉时界面会**同时**说「加载作品列表失败」
+        和「还没有作品」，用户会以为自己的作品没了（同一个写法在 TrashPage /
+        AssetsPage / SkillListPage / CollectionListPage 上也出现过）。
+        现在的口径：有错且无数据 → 只显示错误态（带重试）；有错但有旧数据 → 横幅提示。
+      */}
+      {loadError && overviews.length > 0 && (
+        <div className="mb-5 rounded-lg border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger flex items-center justify-between">
           <span className="flex items-center gap-2">
             <AlertCircle size={16} />
             {loadError}
@@ -163,7 +171,7 @@ export function JobListPage() {
 
       {/* Delete error */}
       {deleteError && (
-        <div className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 flex items-center justify-between">
+        <div className="mb-5 rounded-lg border border-danger-line bg-danger-soft px-4 py-3 text-sm text-danger flex items-center justify-between">
           <span className="flex items-center gap-2">
             <AlertCircle size={16} />
             {deleteError}
@@ -174,22 +182,16 @@ export function JobListPage() {
         </div>
       )}
 
-      {/* Page header */}
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h2 className="text-2xl font-semibold text-tech-text">最近作品</h2>
-          <p className="mt-1 text-sm text-tech-muted">
-            从视频链接开始，管理转录、洗稿、分镜和视频产出
-          </p>
-        </div>
-        <button
-          onClick={handleCreateClick}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-tech-blue px-5 py-2.5 text-sm font-medium text-white hover:bg-tech-blue-dark transition-colors disabled:opacity-50"
-        >
-          <Plus size={18} />
-          创建作品
-        </button>
-      </div>
+      <PageHeader
+        title="最近作品"
+        description="从视频链接开始，管理转录、洗稿、分镜和视频产出"
+        actions={
+          <Button variant="primary" size="lg" onClick={handleCreateClick}>
+            <Plus size={18} aria-hidden="true" />
+            创建作品
+          </Button>
+        }
+      />
 
       {/* Active job strip */}
       {activeJob && (
@@ -210,26 +212,48 @@ export function JobListPage() {
       />
 
       {/* Content */}
-      {overviews.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-tech-border bg-white px-6 py-20 text-center">
-          <Sparkles size={36} className="mx-auto mb-4 text-tech-muted" />
-          <h3 className="text-lg font-semibold text-tech-text">还没有作品</h3>
-          <p className="mx-auto mt-2 max-w-md text-sm text-tech-muted">
-            粘贴抖音链接或分享文本，生成转录、洗稿内容、分镜和本地成片。
-          </p>
-          <button
-            onClick={handleCreateClick}
-            className="mt-6 inline-flex items-center gap-2 rounded-lg bg-tech-blue px-5 py-2.5 text-sm font-medium text-white hover:bg-tech-blue-dark"
-          >
-            <Plus size={16} />
-            创建第一个作品
-          </button>
+      {loadError && overviews.length === 0 ? (
+        <div className="rounded-xl border border-line bg-panel">
+          <EmptyState
+            icon={AlertCircle}
+            title="作品列表加载失败"
+            description={loadError}
+            action={
+              <Button variant="outline" onClick={() => { setLoadError(null); window.location.reload(); }}>
+                重新加载
+              </Button>
+            }
+          />
+        </div>
+      ) : overviews.length === 0 ? (
+        <div className="rounded-xl border border-line bg-panel">
+          <EmptyState
+            icon={Sparkles}
+            title="还没有作品"
+            description="粘贴抖音链接或分享文本，生成转录、洗稿内容、分镜和本地成片。"
+            action={
+              <Button variant="primary" onClick={handleCreateClick}>
+                <Plus size={16} aria-hidden="true" />
+                创建第一个作品
+              </Button>
+            }
+          />
         </div>
       ) : filteredJobs.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-tech-border bg-white py-16 text-center">
-          <Search className="mx-auto mb-4 h-10 w-10 text-tech-muted" />
-          <h3 className="text-lg font-semibold text-tech-text">没有匹配的作品</h3>
-          <p className="mt-2 text-sm text-tech-muted">换个关键词或筛选条件再试试。</p>
+        <div className="rounded-xl border border-line bg-panel">
+          <EmptyState
+            icon={Search}
+            title="没有匹配的作品"
+            description="换个关键词或筛选条件再试试。"
+            action={
+              <Button
+                variant="outline"
+                onClick={() => { setQuery(''); setFilter('all'); }}
+              >
+                清空筛选条件
+              </Button>
+            }
+          />
         </div>
       ) : viewMode === 'list' ? (
         <JobListView

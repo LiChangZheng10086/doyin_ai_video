@@ -16,7 +16,7 @@ export function MobileNavigation({ onOpenMore }: MobileNavigationProps) {
   const location = useLocation();
 
   return (
-    <nav aria-label="移动导航" className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around bg-white border-t border-tech-border h-14 md:hidden safe-bottom">
+    <nav aria-label="移动导航" className="fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around bg-panel border-t border-line h-14 md:hidden safe-bottom">
       {MOBILE_NAV_ITEMS.map((item) => {
         if (isRouteItem(item)) {
           const active = isNavigationItemActive(location.pathname, item);
@@ -26,7 +26,7 @@ export function MobileNavigation({ onOpenMore }: MobileNavigationProps) {
               to={item.to}
               aria-label={item.label}
               className={`flex flex-col items-center justify-center gap-0.5 min-w-0 px-2 py-1 text-[11px] font-medium transition-colors ${
-                active ? 'text-tech-blue' : 'text-tech-muted'
+                active ? 'text-accent' : 'text-ink-muted'
               }`}
             >
               <item.icon size={20} />
@@ -40,7 +40,7 @@ export function MobileNavigation({ onOpenMore }: MobileNavigationProps) {
             type="button"
             aria-label={item.label}
             onClick={onOpenMore}
-            className="flex flex-col items-center justify-center gap-0.5 min-w-0 px-2 py-1 text-[11px] font-medium text-tech-muted"
+            className="flex flex-col items-center justify-center gap-0.5 min-w-0 px-2 py-1 text-[11px] font-medium text-ink-muted"
           >
             <MoreHorizontal size={20} />
             <span className="truncate">{item.label}</span>

@@ -21,8 +21,12 @@ import type {
   PublishTask,
   ScriptAsset,
   ToutiaoPublishOptions,
+  XhsNoteOptions,
 } from "../types.js";
 import type { AssetStore, ResolvedAssetFile } from "./assets-store.js";
+import { NoteMediaService } from "./note-media.js";
+import { XHS_MAX_IMAGES } from "./xhs-page.js";
+import type { XhsPublishInput, XhsPublishResult, XhsRunner } from "./xhs-runner.js";
 import type { PublishingCopyService } from "./publishing-copy.js";
 import {
   type BoundSourceVideo,
@@ -204,6 +208,15 @@ export interface PublishingServiceDependencies {
   sau?: AutoPublishRunner;
   /** 今日头条发布的自研执行器；未注入时按「未配置」明确报错。 */
   toutiao?: ToutiaoAutoPublishRunner;
+  /** 小红书图文发布的自研执行器；未注入时按「未配置」明确报错。 */
+  xhs?: XhsAutoPublishRunner;
+  /** 图文配图裁成 3:4（方案甲：**所有**图文包都过这一步）。缺省用真 ffmpeg；测试注入假实现。 */
+  noteMedia?: NoteImagePreparer;
+  /**
+   * ffmpeg 可执行文件（裁配图用）。打包后它在 `resources/bin`（**不在 PATH 上**），
+   * 所以必须走配置里的那个 —— 直接用默认的 `"ffmpeg"` 会在安装包里失败、而开发机上是好的。
+   */
+  ffmpegBinary?: string;
   /** 头条封面处理（16:9 裁剪）。缺省用真 ffmpeg；测试注入假实现。 */
   toutiaoMedia?: ToutiaoCoverPreparer;
   /** AI 成文（头条文章）。缺省不可用 → 走本地兜底（不阻塞建包）。 */
@@ -224,6 +237,11 @@ type ServiceErrorCode =
   | "publish_toutiao_cover_required"
   | "publish_images_unusable"
   | "publish_note_platform_unsupported"
+  | "publish_xhs_ai_declaration_required"
+  | "publish_xhs_too_many_images"
+  | "publish_xhs_images_required"
+  | "publish_xhs_daily_limit"
+  | "publish_xhs_not_configured"
   | "publish_not_a_note_package"
   | "publish_sau_not_configured"
   | "publish_cleaned_missing"
@@ -250,7 +268,15 @@ const SERVICE_ERROR_MESSAGES: Record<ServiceErrorCode, string> = {
   publish_article_unreadable: "文章包内的 article.html 缺失或已被改动，请重新创建文章包",
   publish_toutiao_cover_required: "今日头条要求文章必须有封面，请重新创建文章包并选择封面（会自动裁成 16:9）",
   publish_images_unusable: "图文包的图片素材不完整，请重新生成或选择图片后再发布",
-  publish_note_platform_unsupported: "该平台尚未接入图文发布，目前只支持抖音图文",
+  publish_note_platform_unsupported: "该平台尚未接入图文发布，目前只支持抖音图文与小红书图文",
+  publish_xhs_ai_declaration_required: "没有声明「笔记含AI合成内容」，已拒绝发布",
+  publish_xhs_too_many_images: "小红书图文最多 18 张图片",
+  publish_xhs_images_required: "小红书图文至少要有一张图片",
+  // ⚠️ 文案不许说「已经发过一篇」：这条闸门把「只填到草稿」也算在一次里
+  //（平台风控看的是自动化访问，不是提交与否），而草稿并没有发出去 ——
+  // 用户实测就是被这句误导去小红书找内容、却找不到（2026-09-21）。
+  publish_xhs_daily_limit: "今天已经用过一次小红书自动通路（本地自然日上限 1 次；只填到草稿也算），明天再试",
+  publish_xhs_not_configured: "小红书执行器未配置",
   publish_not_a_note_package: "该发布包不是图文包，无法执行抖音图文自动发布",
   publish_cleaned_missing: "未找到可用洗稿内容，请先完成 AI 洗稿",
   publish_consistency_failed: "发布索引写入失败，且发布包资产回滚失败，请重启应用执行修复",
@@ -307,7 +333,13 @@ type NoteImagePlan = {
   keys: string[];
   /** 预览要摊给操作者看的图片清单，顺序即入包顺序。 */
   images: Array<{ name: string; size: number; assetId?: string }>;
-  /** 仅素材库来源：按选择顺序解析好的绝对路径（静帧由打包层自行收集）。 */
+  /**
+   * 按入包顺序解析好的**绝对路径**（两种来源都有）。
+   *
+   * ⚠️ 原先只有素材库来源给这个字段，注释写着「静帧由打包层自行收集」。
+   * **方案甲（2026-09-20 拍板：打包时裁成 3:4）之后这条注释作废** ——
+   * 裁切必须在**打包之前**完成，所以静帧的绝对路径也得在这里带出来，不能在打包层内部才知道。
+   */
   sourceImagePaths?: string[];
 };
 
@@ -326,10 +358,51 @@ function noteImageSourceOf(selection: NoteImageSelection): NoteImageSource {
  * 表单要边打字边显示「12/20」，所以字数是**界面自己数**的；但上限必须来自服务端，
  * 否则渲染层会再写一份 20/1000/10 并与后端慢慢漂移（服务端在创建时仍会重新校验）。
  */
-function noteCopyLimits(): { titleMax: number; descriptionMax: number; hashtagMax: number } {
-  const policy = PUBLISH_NOTE_POLICIES.douyin;
+function noteCopyLimits(platform: PublishPlatform): { titleMax: number; descriptionMax: number; hashtagMax: number } {
+  // 按平台取，**不是**硬编码 `PUBLISH_NOTE_POLICIES.douyin`（那样小红书会拿到抖音的口径）。
+  // ⚠️ 返回值是**单数**的 `copyLimits`：图文通路上两个平台当前口径相同，所以成立。
+  // 一旦二者分歧，这里必须改成按平台下发（`note-policy-equal` 的用例会先红，提醒改动者）。
+  const policy = PUBLISH_NOTE_POLICIES[platform];
   if (!policy) throw new PublishingServiceError(422, "publish_note_platform_unsupported");
   return { titleMax: policy.titleMax, descriptionMax: policy.descriptionMax, hashtagMax: policy.hashtagMax };
+}
+
+/**
+ * 小红书执行器在服务层眼里只需要这两件事。
+ *
+ * 定义在这里（而不是直接吃 `XhsRunner`）是为了让服务层用例能注入**假执行器** ——
+ * 与 `AutoPublishRunner` / `ToutiaoAutoPublishRunner` 同一手法。
+ */
+/** 配图预处理的接口面（`NoteMediaService` 满足它；测试注入假实现）。 */
+export interface NoteImagePreparer {
+  prepareNoteImage(srcPath: string, outDir: string, index: number): Promise<{ path: string; bytes: number }>;
+}
+
+export type XhsAutoPublishRunner = Pick<
+  XhsRunner,
+  | "assertConfigured"
+  | "checkLogin"
+  | "startLogin"
+  | "pollLogin"
+  | "cancelLogin"
+  | "loginInWindow"
+  | "publishNote"
+>;
+
+/**
+ * 同一账号**本地自然日**最多提交几篇小红书图文。
+ *
+ * 这个数字是**风险缓解**，不是安全保证：调研里明确有「1 篇即永封」的案例
+ *（见 `docs/research/xhs-publish-projects-assessment.md` §4.3），所以产品文案不许承诺安全。
+ * **导出**是为了让用例与界面文案引用同一个真源。
+ */
+export const XHS_DAILY_PUBLISH_LIMIT = 1;
+
+/** 两个时间点是否落在**同一个本地自然日**（按运行机器的时区）。 */
+function isSameLocalDay(left: Date, right: Date): boolean {
+  return left.getFullYear() === right.getFullYear()
+    && left.getMonth() === right.getMonth()
+    && left.getDate() === right.getDate();
 }
 
 export class PublishingService {
@@ -1120,12 +1193,20 @@ export class PublishingService {
       }
 
       const plan = await this.planNoteImages(jobId, images);
-      const videoCopy = copyPreview.copies.douyin ?? { title: "", description: "", hashtags: [] };
-      const compressed = compressNoteTitle(videoCopy.title || context.cleaned.title || "", SAU_NOTE_MAX_TITLE);
+      // ⚠️ 图文包的文案是**包级单份**（所有图文平台共用同一份 noteCopy），所以「从哪份生成稿取」
+      // 必须按**实际所选平台**来。以前固定取 `copies.douyin`，而 `previewAll` 只为**所选平台**生成文案，
+      // 于是「只选小红书」时那份抖音文案根本不存在 → description 与 hashtags **静默变成空**，
+      // 而标题侥幸回退到作品标题所以看不出问题（用户 2026-09-21 实测：预览里「正文 (空) / 话题 (无)」，
+      // 包建出来之后小红书任务也就没有正文可发）。
+      // 有抖音时仍优先抖音（保持既有口径与既有用例），否则取所选平台里第一份存在的生成稿。
+      const copySource = copyPreview.copies.douyin
+        ?? selected.map((platform) => copyPreview.copies[platform]).find((copy) => copy !== undefined)
+        ?? { title: "", description: "", hashtags: [] };
+      const compressed = compressNoteTitle(copySource.title || context.cleaned.title || "", SAU_NOTE_MAX_TITLE);
       const noteCopy: PlatformCopy = {
         title: compressed.title,
-        description: videoCopy.description,
-        hashtags: [...videoCopy.hashtags],
+        description: copySource.description,
+        hashtags: [...copySource.hashtags],
       };
 
       return {
@@ -1146,8 +1227,12 @@ export class PublishingService {
         contentType: "note",
         imageSource: plan.source,
         images: plan.images,
-        imageLimit: MAX_NOTE_IMAGES,
-        copyLimits: noteCopyLimits(),
+        // 张数上限按**所选平台里最严的那个**下发：小红书 18 < 打包层 35。
+        // 界面用它渲染上限提示与禁用态；服务端创建时仍会重新校验（创建按 35、提交按 18）。
+        imageLimit: selected.includes("xiaohongshu") ? XHS_MAX_IMAGES : MAX_NOTE_IMAGES,
+        // `selected` 里可能同时有多个图文平台；当前两者口径相同，所以取第一个即可
+        //（一旦分歧，`note-policy-equal` 用例会先红，届时改成按平台下发）。
+        copyLimits: noteCopyLimits(selected.find((platform) => NOTE_PLATFORMS.has(platform)) ?? "douyin"),
         noteCopy,
         noteCopyTitleCompressed: compressed.compressed,
       };
@@ -1177,7 +1262,12 @@ export class PublishingService {
         );
       }
       const snapshots = await this.listSceneSnapshots(jobId);
-      return { source, keys: snapshots.map((snapshot) => snapshot.name), images: snapshots };
+      return {
+        source,
+        keys: snapshots.map((snapshot) => snapshot.name),
+        images: snapshots.map(({ name, size }) => ({ name, size })),
+        sourceImagePaths: snapshots.map((snapshot) => snapshot.absolutePath),
+      };
     }
 
     const assetIds = selection.imageAssetIds ?? [];
@@ -1224,13 +1314,14 @@ export class PublishingService {
   }
 
   /** 场景静帧的规范化清单（场景序），供图文预览与打包共用同一份顺序。 */
-  private async listSceneSnapshots(jobId: string): Promise<Array<{ name: string; size: number }>> {
+  /** 静帧清单：**同时**给出展示用的名字/大小与裁切要用的绝对路径（见 `NoteImagePlan` 的注释）。 */
+  private async listSceneSnapshots(jobId: string): Promise<Array<{ name: string; size: number; absolutePath: string }>> {
     const absolutePaths = await collectSceneSnapshots(this.storageRoot, jobId);
-    const snapshots: Array<{ name: string; size: number }> = [];
+    const snapshots: Array<{ name: string; size: number; absolutePath: string }> = [];
     for (const absolutePath of absolutePaths) {
       const stats = await stat(absolutePath).catch(() => undefined);
       if (!stats || !stats.isFile() || stats.size === 0) continue;
-      snapshots.push({ name: path.basename(absolutePath), size: stats.size });
+      snapshots.push({ name: path.basename(absolutePath), size: stats.size, absolutePath });
     }
     return snapshots;
   }
@@ -1352,7 +1443,7 @@ export class PublishingService {
    */
   async autoPublish(
     taskId: string,
-    input: { previewRevision: string },
+    input: { previewRevision: string; dryRun?: boolean },
     actor: ActorSnapshot,
   ): Promise<PublishTask> {
     const task = await this.requireTask(taskId);
@@ -1361,6 +1452,11 @@ export class PublishingService {
     // **先判输入类别、再判配置**：视频包不是「配置问题」，无论 sau/浏览器配没配都该报同一个明确错误。
     // 分派只问那张唯一真源的路由表（`AUTO_PUBLISH_ROUTES`），两个通路各走各的。
     const contentType = detail.package.contentType ?? "video";
+    // `dryRun` 只对小红书有意义（「只填到草稿」）。其余通路显式拒绝而不是静默忽略 ——
+    // 静默忽略会让调用方以为「只是演练」，实际却真发出去了。
+    if (input.dryRun === true && resolveAutoPublishEngine(contentType, task.platform) !== "xhs") {
+      throw new PublishingServiceError(400, "publish_validation_failed", "dryRun 只适用于小红书图文通路");
+    }
     const engine = resolveAutoPublishEngine(contentType, task.platform);
     if (engine === null) {
       throw new PublishingServiceError(
@@ -1371,10 +1467,202 @@ export class PublishingService {
         { contentType, platform: task.platform },
       );
     }
-    if (engine === "toutiao") {
-      return this.autoPublishToutiaoArticle(taskId, input, actor);
+    // ⚠️ **必须是穷尽 switch，不能留 `else` 兜底**。
+    // 原先是「engine 不是 toutiao 就 `return this.autoPublishNoteTask(...)`」—— 那是把兜底
+    // 当成「sau 通路」。新增 `"xhs"` 之后那种写法会把小红书**静默路由给外部 CLI**，
+    // 表现是「报未配置 sau」这种莫名其妙的错误（见 spec §5.1）。
+    switch (engine) {
+      case "toutiao":
+        return this.autoPublishToutiaoArticle(taskId, input, actor);
+      case "xhs":
+        return this.autoPublishXhsNote(taskId, input, actor, detail);
+      case "sau":
+        return this.autoPublishNoteTask(taskId, input, actor, detail);
+      default: {
+        // 穷尽性检查：将来再往 `AUTO_PUBLISH_ROUTES` 加引擎时，**编译器会在这里报错**，
+        // 而不是让新引擎悄悄落进某个已有分支。
+        const exhaustive: never = engine;
+        throw new PublishingServiceError(
+          500,
+          "publish_auto_publish_unsupported",
+          `未登记的自动发布引擎：${String(exhaustive)}`,
+        );
+      }
     }
-    return this.autoPublishNoteTask(taskId, input, actor, detail);
+  }
+
+  /**
+   * 小红书图文通路（自研执行器）。
+   *
+   * 与抖音通路的**根本差别**（都是实测/调研换来的，别当成风格差异）：
+   *
+   * 1. **没有「已提交」以外的读回**：执行器点完发布就断开，所以 `verification` 恒为 `unconfirmed`，
+   *    界面文案必须是「已提交，请到小红书 App 核实」，而不是「发布成功」。
+   * 2. **AI 标识是合规红线**：`aiDeclaration !== true` 直接拒（平台口径「未标识 → 限制分发」），
+   *    而且这一步在**点任何页面之前**完成。
+   * 3. **图片按小红书口径**：≤18 张（打包层允许 35，抖音那条路不受影响）。
+   * 4. **频率闸门**：本地自然日 ≤ `XHS_DAILY_PUBLISH_LIMIT` 篇。
+   * 5. ⚠️ **任何**异常都落成 `failed` 记录 —— 绝不 500、绝不让记录卡在 `running`
+   *   （头条那轮的事故：服务层只认自己的错误类，其余原样抛出 → 500 + 卡 running 到 30 分钟僵死阈值）。
+   */
+  private async autoPublishXhsNote(
+    taskId: string,
+    input: { previewRevision: string; dryRun?: boolean },
+    actor: ActorSnapshot,
+    detail: PublishingPackageDetail,
+  ): Promise<PublishTask> {
+    const task = await this.requireTask(taskId);
+    const runner = this.requireXhsRunner();
+
+    // ① 合规：**在点任何页面之前**就要拒掉没声明 AI 的情况。
+    const options = detail.package.xhsOptions;
+    if (options?.aiDeclaration !== true) {
+      throw new PublishingServiceError(422, "publish_xhs_ai_declaration_required");
+    }
+
+    // ② 图片：完好 + 张数（服务端不信界面禁用态：接口仍可被直接调用）。
+    if (await this.deps.assets.verifyPackageImages(detail.package) !== "healthy") {
+      throw new PublishingServiceError(422, "publish_images_unusable");
+    }
+    const imagePaths = await this.deps.assets.resolvePackageImages(detail.package);
+    if (imagePaths.length === 0) {
+      throw new PublishingServiceError(422, "publish_xhs_images_required");
+    }
+    if (imagePaths.length > XHS_MAX_IMAGES) {
+      throw new PublishingServiceError(422, "publish_xhs_too_many_images", undefined, {
+        actual: imagePaths.length,
+        limit: XHS_MAX_IMAGES,
+      });
+    }
+
+    // ③ 频率闸门：本地自然日 ≤ 上限。超限**不产生任何记录**（与 revision 校验同一口径）。
+    if (await this.countXhsPublishesToday() >= XHS_DAILY_PUBLISH_LIMIT) {
+      throw new PublishingServiceError(422, "publish_xhs_daily_limit", undefined, {
+        limit: XHS_DAILY_PUBLISH_LIMIT,
+      });
+    }
+
+    const attemptId = this.createId();
+    await this.storeCall(() => this.deps.store.beginAutoPublish(
+      taskId,
+      { previewRevision: input.previewRevision, attemptId },
+      actor,
+    ));
+
+    try {
+      const noteCopy = detail.package.noteCopy;
+      const result = await runner.publishNote({
+        title: noteCopy?.title ?? task.title,
+        body: noteCopy?.description ?? task.description,
+        imagePaths,
+        // 上面已校验过，这里恒为 true；传进去是为了让执行器也留下一层记录。
+        aiDeclaration: true,
+        // `dryRun`（「只填到草稿」）是**只减不增**的覆盖：它只能把「点发布」降级成「不点」，
+        // 绝不会让一个声明了 submit:false 的包真的发出去。
+        submit: options.submit === true,
+      }, input.dryRun === true ? { dryRun: true } : {});
+
+      // ⚠️ **不给执行器的文案加任何前缀**，也不改写「未确认」的表述：
+      // 头条那轮加了个「已提交，但」，真机记录里变成「已提交，但已点击发布，但…」。
+      const message = result.steps.length > 0
+        ? `${result.message}\n逐步记录：${result.steps.join(" → ")}`
+        : result.message;
+      return await this.finishAutoPublish(taskId, {
+        status: result.ok ? "succeeded" : "failed",
+        message,
+        // 「只填到草稿」必须**显式**落到记录里：界面据此说「已填写到草稿箱」而不是「已提交」。
+        // 判据用执行器回报的 `submitted`（**程序到底点没点过发布**），而**不是** `input.dryRun` ——
+        // 包自己声明 `submit:false` 时执行器同样一个提交键都不点，那条路径也属于「只填草稿」，
+        // 只看 dryRun 会漏掉它、界面继续撒谎（用户 2026-09-21 实测：显示「已提交」，去小红书找不到内容）。
+        ...(result.ok && result.submitted === false ? { draftOnly: true } : {}),
+      }, actor);
+    } catch (error) {
+      // ⚠️ **所有**异常都落 failed：浏览器起不来、Playwright 超时、元素失效……
+      // 一条都不能冒到路由层（那会变成 500 + 记录卡在 running）。
+      const detailText = error instanceof Error ? error.message : String(error);
+      return await this.finishAutoPublish(taskId, {
+        status: "failed",
+        message: `小红书发布过程中出现意外错误：${detailText}`,
+      }, actor);
+    }
+  }
+
+  /** 小红书：开始应用内扫码登录（返回二维码 data URL 与过期时间）。 */
+  async startXhsLogin(): Promise<{ qrDataUrl: string; startedAt: string; expiresAt: string }> {
+    return this.requireXhsRunner().startLogin();
+  }
+
+  /** 小红书：轮询扫码状态。 */
+  async pollXhsLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; username?: string }> {
+    return this.requireXhsRunner().pollLogin();
+  }
+
+  async cancelXhsLogin(): Promise<void> {
+    await this.requireXhsRunner().cancelLogin();
+  }
+
+  /**
+   * 小红书：登录态**零副作用**自检（只开首页判登录态 + 读昵称，不填表、不发任何内容）。
+   *
+   * 注意它沿用执行器里那条**重试后才作数**的判据（`LOGIN_CHECK_ATTEMPTS = 2`）：
+   * 只读一次就下结论会出现假阴性（真机实测过），代价是用户跑去重扫一个其实好好的码。
+   */
+  async verifyXhsLogin(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
+    const runner = this.requireXhsRunner();
+    const state = await runner.checkLogin();
+    return state.loggedIn
+      ? { loggedIn: true, ...(state.username ? { username: state.username } : {}), message: "小红书登录态有效" }
+      : {
+          loggedIn: false,
+          message:
+            "小红书登录态已失效：请到「设置 → 小红书」点「扫码登录」，用小红书 App 扫码后重试。"
+            + "（重新扫码不需要重启应用。）",
+        };
+  }
+
+  /** 小红书：打开**浏览器窗口**扫码登录（与抖音那套同一交互）。同步等到扫码成功或超时。 */
+  async loginXhsInWindow(): Promise<{ loggedIn: boolean; username?: string; message: string }> {
+    const runner = this.requireXhsRunner();
+    // 与「应用内扫码」互斥：窗口登录期间若用户又点应用内扫码，会开出第二个浏览器（同样的 profile 会打架）。
+    await runner.cancelLogin().catch(() => undefined);
+    return runner.loginInWindow();
+  }
+
+  /**
+   * 当日（**本地自然日**）已经用过**几次**小红书自动通路的唯一真源。
+   *
+   * ⚠️ 口径包含「只填到草稿」（`draftOnly`）—— 这是**刻意**的：风险来自自动化本身动了账号，
+   * 而不是内容有没有发出去（同一理由见 `getPublishingActionIds` 里 fill/submit 共用一个闸门）。
+   * 所以**不要**把它改成只数真提交，但也**不要**再用「今天已经发过一篇」这种文案去描述它。
+   */
+  private async countXhsPublishesToday(): Promise<number> {
+    const index = await this.deps.store.snapshot();
+    const today = this.now();
+    let count = 0;
+    for (const task of Object.values(index.tasks)) {
+      if (task.platform !== "xiaohongshu") continue;
+      const record = task.autoPublish;
+      if (!record || record.status !== "succeeded") continue;
+      const startedAt = new Date(record.startedAt);
+      if (!Number.isNaN(startedAt.getTime()) && isSameLocalDay(startedAt, today)) count += 1;
+    }
+    return count;
+  }
+
+  /**
+   * 未注入小红书执行器时按「未配置」明确报错（照 sau/头条同一口径）。
+   * 实际上打包资源里已带浏览器，所以这条正常情况下走不到；留着是为了注入缺失时不静默。
+   */
+  private requireXhsRunner(): XhsAutoPublishRunner {
+    const runner = this.deps.xhs;
+    if (!runner) {
+      throw new PublishingServiceError(
+        422,
+        "publish_xhs_not_configured",
+        "未配置小红书执行器（xhs）。请确认后端装配时传入了 XhsRunner —— 打包应用自带浏览器，通常重启后端即可。",
+      );
+    }
+    return runner;
   }
 
   /**
@@ -1474,7 +1762,7 @@ export class PublishingService {
 
   private async finishAutoPublish(
     taskId: string,
-    patch: { status: "awaiting_code" | "succeeded" | "failed"; message?: string },
+    patch: { status: "awaiting_code" | "succeeded" | "failed"; message?: string; draftOnly?: boolean },
     actor: ActorSnapshot,
   ): Promise<PublishTask> {
     return this.storeCall(() => this.deps.store.updateAutoPublish(taskId, patch, actor));
@@ -1589,14 +1877,58 @@ export class PublishingService {
       this.now(),
       (platform, copy) => this.copyAttestations.get(copyAttestationKey(sourceKey, platform, copy)) ?? "user_edited",
     );
-    return this.createNotePackage({
-      sourceJobId: input.sourceJobId,
-      title: requireTitle(input.title),
-      noteCopy,
-      drafts,
-      actor,
-      ...(snapshots.sourceImagePaths ? { sourceImagePaths: snapshots.sourceImagePaths } : {}),
-    });
+    // 方案甲（2026-09-20 拍板：**打包时**裁成 3:4）——
+    // 所以所有图文包（含纯抖音包）的 `images/` 都是裁好的 3:4，预览看到的就是发出去的。
+    // 裁切失败就让整个建包失败（暂存目录事务会回滚），绝不留半成品或未裁的原图。
+    const prepared = await this.prepareNoteImages(snapshots.sourceImagePaths ?? []);
+    try {
+      return await this.createNotePackage({
+        sourceJobId: input.sourceJobId,
+        title: requireTitle(input.title),
+        noteCopy,
+        drafts,
+        actor,
+        ...(prepared ? { sourceImagePaths: prepared.paths } : {}),
+        ...(input.xhsOptions ? { xhsOptions: input.xhsOptions } : {}),
+      });
+    } finally {
+      if (prepared) await prepared.cleanup();
+    }
+  }
+
+  /**
+   * 把源图裁成 3:4，放进一个临时工作目录，返回**裁好的绝对路径**与清理闭包。
+   *
+   * 为什么放在服务层而不是打包层：打包层的事务只做「复制 + 逐张 sha256 校验 + 清单哈希」，
+   * 不该在里面起 ffmpeg 子进程（那也是 `wechat-media` 那条「打包层不转码」的既有纪律）。
+   * 传 `sourceImagePaths` 显式给打包层，等于把「裁好的图」当成唯一素材来源。
+   *
+   * 空清单 → 返回 `undefined`（沿用「缺图也把包建出来、只标 `missing_images`」的既有口径）。
+   */
+  private async prepareNoteImages(sourceImagePaths: string[]): Promise<
+    { paths: string[]; cleanup: () => Promise<void> } | undefined
+  > {
+    if (sourceImagePaths.length === 0) return undefined;
+    const media = this.deps.noteMedia ?? new NoteMediaService(
+      this.deps.ffmpegBinary ? { ffmpegBinary: this.deps.ffmpegBinary } : {},
+    );
+    const workDir = path.join(this.storageRoot, "cache", "note-prepare", this.createId());
+    await mkdir(workDir, { recursive: true });
+    const cleanup = async (): Promise<void> => {
+      await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+    };
+    try {
+      const paths: string[] = [];
+      for (const [index, sourcePath] of sourceImagePaths.entries()) {
+        const prepared = await media.prepareNoteImage(sourcePath, workDir, index + 1);
+        paths.push(prepared.path);
+      }
+      return { paths, cleanup };
+    } catch (error) {
+      // 起步就失败也必须清干净，别在 cache 里留一堆半成品。
+      await cleanup();
+      throw error;
+    }
   }
 
   private async createPackage(input: {
@@ -1663,6 +1995,8 @@ export class PublishingService {
     actor: ActorSnapshot;
     /** 仅素材库来源：按选择顺序的绝对路径；省略即按场景序自动收集静帧。 */
     sourceImagePaths?: string[];
+    /** 仅小红书：AI 标识声明与「是否真点发布」（进指纹，故必须原样落进包记录）。 */
+    xhsOptions?: XhsNoteOptions;
   }): Promise<PublishingPackageDetail> {
     return this.commitNewPackage({
       sourceJobId: input.sourceJobId,
@@ -1695,6 +2029,10 @@ export class PublishingService {
             contentType: "note",
             imagePaths: [...assets.imagePaths],
             noteCopy: { ...input.noteCopy, hashtags: [...input.noteCopy.hashtags] },
+            // 只在给出时落库：`undefined` 与「压根没有这个字段」在指纹里必须完全等价（Task 3 的基线用例）。
+            ...(input.xhsOptions
+              ? { xhsOptions: { aiDeclaration: input.xhsOptions.aiDeclaration, submit: input.xhsOptions.submit } }
+              : {}),
             createdBy: structuredClone(input.actor),
             createdAt: timestamp,
             updatedAt: timestamp,
@@ -1844,13 +2182,13 @@ function sourceRevision(
 }
 
 /**
- * 图文发布目前只接通抖音（上游只有 `sau douyin upload-note`）。
+ * 图文发布接通的平台：抖音（外部 `sau douyin upload-note`）与小红书（自研执行器）。
  *
- * **这是一道「图文口径」的闸门，不含微信公众号，也不该含**：公众号走的是 article 通路
- * （标题 32 / 摘要 120 / 正文是渲染出来的 HTML），把它塞进这里会拿图文口径去校验文章。
+ * **这是一道「图文口径」的闸门，不含微信公众号、也不含头条，也不该含**：它们走的是 article 通路
+ * （标题 32 / 摘要 120 / 正文是渲染出来的 HTML 或 2 万字正文），塞进这里会拿图文口径去校验文章。
  * **导出**供守卫用例断言它是严格子集。
  */
-export const NOTE_PLATFORMS = new Set<PublishPlatform>(["douyin"]);
+export const NOTE_PLATFORMS = new Set<PublishPlatform>(["douyin", "xiaohongshu"]);
 
 /** 文章通路的封面计划：指纹键 + 预览清单 + 真实源路径。 */
 interface ArticleCoverPlan {
@@ -1965,7 +2303,7 @@ function assertNotePlatforms(platforms: PublishPlatform[]): void {
       throw new PublishingServiceError(
         422,
         "publish_note_platform_unsupported",
-        `平台 ${platform} 尚未接入图文发布，目前只支持抖音图文`,
+        `平台 ${platform} 尚未接入图文发布，目前只支持抖音图文与小红书图文`,
       );
     }
   }

@@ -43,7 +43,10 @@ const ADMIN: ActorSnapshot = {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function fixture() {
+async function fixture(options: {
+  /** 覆盖配图预处理（缺省是**直通**：把源图原样写进工作目录并记录调用）。 */
+  noteMedia?: { prepareNoteImage(srcPath: string, outDir: string, index: number): Promise<{ path: string; bytes: number }> };
+} = {}) {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "publishing-service-"));
   const storage = new LocalStorage(storageRoot);
   await storage.ensureBaseDirs();
@@ -115,6 +118,35 @@ async function fixture() {
   // 图文选图走真实 AssetStore（同一个 storage）：id → 路径的归属校验必须是真的，
   // 用假实现会让「选中的素材落在 assets/ 之外」这类问题测不出来。
   const assetStore = new AssetStore(storage);
+  /**
+   * 配图预处理（方案甲：建图文包时先把每张源图裁成 3:4）。
+   *
+   * 缺省注入**直通**实现，不是真 ffmpeg。理由：本文件的用例关心的是**服务层契约**
+   *（顺序 / 路径 / 清单哈希 / 回滚），而「裁成 1080×1440 的滤镜对不对」由
+   * `note-media.test.ts` 覆盖（那里还有一次真实 ffmpeg 实测）。
+   * 用真 ffmpeg 会把单元测试变成集成测试，还要绑本机 ffmpeg 版本。
+   *
+   * ⚠️ 直通**不等于**「这一步没被验证」：下面有一条用例用会写标记字节的实现，
+   * 证明包内图片**确实取自裁切产物**（而不是被悄悄绕过去用源图）。
+   */
+  const mediaCalls: Array<{ srcPath: string; index: number }> = [];
+  const noteMedia = options.noteMedia ?? {
+    async prepareNoteImage(srcPath: string, outDir: string, index: number) {
+      mediaCalls.push({ srcPath, index });
+      await mkdir(outDir, { recursive: true });
+      const target = path.join(outDir, `note-${String(index).padStart(2, "0")}.png`);
+      const bytes = await readFile(srcPath);
+      await writeFile(target, bytes);
+      return { path: target, bytes: bytes.length };
+    },
+  };
+  const recordingMedia = options.noteMedia ?? {
+    async prepareNoteImage(srcPath: string, outDir: string, index: number) {
+      mediaCalls.push({ srcPath, index });
+      return noteMedia.prepareNoteImage(srcPath, outDir, index);
+    },
+  };
+
   const service = new PublishingService({
     storageRoot,
     jobs: jobReader,
@@ -122,10 +154,15 @@ async function fixture() {
     assets,
     copy,
     library: assetStore,
+    noteMedia: recordingMedia,
     now: () => new Date(clock.now),
   });
 
-  return { storageRoot, storage, store, assets, copy, jobReader, service, clock, jobs, addJob, assetStore, ...primary };
+  return {
+    storageRoot, storage, store, assets, copy, jobReader, service, clock, jobs, addJob, assetStore,
+    mediaCalls,
+    ...primary,
+  };
 }
 
 async function createPackage(
@@ -810,6 +847,23 @@ async function publishingRoots(storageRoot: string): Promise<string[]> {
   return (await readdir(path.join(storageRoot, "output", "publishing")).catch(() => [])).sort();
 }
 
+/**
+ * ⚠️ 2026-09-21 用户实测发现的 bug：只选小红书建图文包时，**正文与话题静默变成空**
+ * （预览里显示「正文 (空) / 话题 (无)」，包建出来后小红书任务也就没有正文可发）。
+ * 根因：图文包文案是**包级单份**，而 `previewNotePackage` 固定取 `copies.douyin` ——
+ * `previewAll` 只为**所选平台**生成文案，只选小红书时那份抖音文案根本不存在，
+ * 于是 description/hashtags 落到兜底空对象上（标题侥幸回退到作品标题所以看不出问题）。
+ */
+test("图文预览：只选小红书时正文与话题不能是空的（不能只取抖音那份文案）", async () => {
+  const f = await fixture();
+
+  const preview = await f.service.preview("job-1", ["xiaohongshu"], "note");
+
+  assert.equal(preview.noteCopy?.title, "xiaohongshu 标题", "标题该取所选平台那份文案");
+  assert.equal(preview.noteCopy?.description, "xiaohongshu 正文", "正文不能是空字符串");
+  assert.deepEqual(preview.noteCopy?.hashtags, ["效率", "xiaohongshu"], "话题不能是空数组");
+});
+
 test("note preview lists library images in selection order and fingerprints the source", async () => {
   const f = await fixture();
   const first = await addLibraryImage(f, "素材 A.png", 1);
@@ -1017,4 +1071,75 @@ test("a frames note keeps the shipped behaviour when no snapshot exists", async 
   // ② 的口径：静帧一张都没有时包仍自包含地建出来，只是资产不健康（与素材库「一张没选」报错不同）
   assert.equal(detail.package.assetHealth, "missing_images");
   assert.deepEqual(detail.package.imagePaths, []);
+});
+
+
+test("方案甲：建图文包时**每张源图都过一遍裁切**，且包内图片确实取自裁切产物", async () => {
+  const f = await fixture({
+    // 会写「标记字节」的实现：这样就能证明打包用的是**裁切产物**，而不是把源图直接复制进包。
+    noteMedia: {
+      async prepareNoteImage(_srcPath, outDir, index) {
+        const target = path.join(outDir, `note-${String(index).padStart(2, "0")}.png`);
+        const bytes = Buffer.from(`cropped-${index}`);
+        await writeFile(target, bytes);
+        return { path: target, bytes: bytes.length };
+      },
+    },
+  });
+  const first = await addLibraryImage(f, "素材 A.png", 1);
+  const second = await addLibraryImage(f, "素材 B.png", 2);
+
+  const preview = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [second.id, first.id],
+  });
+  const detail = await f.service.create(noteCreateInput([second.id, first.id], preview.previewRevision), ACTOR);
+
+  // ① 包内图片来自裁切产物（带标记），不是源图
+  assert.equal(
+    (await readFile(path.join(detail.package.packagePath, "images", "01.png"))).toString("utf8"),
+    "cropped-1",
+  );
+  assert.equal(
+    (await readFile(path.join(detail.package.packagePath, "images", "02.png"))).toString("utf8"),
+    "cropped-2",
+  );
+  // ② 序号按**入包顺序**从 1 开始（字典序 == 场景序的前提）
+  assert.deepEqual(detail.package.imagePaths, ["images/01.png", "images/02.png"]);
+  // ③ 完整性凭据建立在**裁切后**的字节上
+  assert.equal(await f.assets.verifyPackageImages(detail.package), "healthy");
+});
+
+test("方案甲：裁切失败 → 整个建包失败，且**不留半成品**、不产生包记录", async () => {
+  const f = await fixture({
+    noteMedia: {
+      async prepareNoteImage(_srcPath, outDir, index) {
+        // 第一张成功、第二张失败：必须整体失败并回滚（暂存目录事务）。
+        const target = path.join(outDir, `note-0${index}.png`);
+        await mkdir(outDir, { recursive: true });
+        if (index === 2) throw new Error("ffmpeg 裁切失败");
+        await writeFile(target, Buffer.from("ok"));
+        return { path: target, bytes: 2 };
+      },
+    },
+  });
+  const first = await addLibraryImage(f, "素材 A.png", 1);
+  const second = await addLibraryImage(f, "素材 B.png", 2);
+  const preview = await f.service.preview("job-1", ["douyin"], "note", {
+    imageSource: "library",
+    imageAssetIds: [first.id, second.id],
+  });
+
+  await assert.rejects(
+    f.service.create(noteCreateInput([first.id, second.id], preview.previewRevision), ACTOR),
+    /ffmpeg 裁切失败/u,
+  );
+
+  // 没有包记录落库
+  const index = await f.store.snapshot();
+  assert.deepEqual(Object.keys(index.packages), []);
+  // 也没有包目录残留（回滚把 staging 目录清掉了）
+  const publishingDir = path.join(f.storageRoot, "output", "publishing", "job-1");
+  const entries = await readdir(publishingDir).catch(() => [] as string[]);
+  assert.deepEqual(entries, []);
 });

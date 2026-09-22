@@ -105,6 +105,22 @@ export const PUBLISH_NOTE_POLICIES: Partial<Record<PublishPlatform, PlatformPoli
     hashtagLengthMax: 20,
     creatorUrl: "https://creator.douyin.com/creator-micro/content/upload",
   },
+  /**
+   * 小红书图文。
+   *
+   * ⚠️ 当下与抖音**逐字相同**（20 / 1000 / 10），但这**不是**「可以共用一份」的理由：
+   * 两条通路的引擎、执行器、失败语义完全不同，共用一份的后果是「改一处、另一处悄悄跟着变」。
+   * 有用例断言二者当前相等 —— 一旦谁改了其中一个，用例会红，逼着改动者去处理
+   * 「`copyLimits` 其实是单数」这件事（见 `publishing-service.ts` 的 `noteCopyLimits`）。
+   */
+  xiaohongshu: {
+    label: "小红书",
+    titleMax: 20,
+    descriptionMax: 1000,
+    hashtagMax: 10,
+    hashtagLengthMax: 20,
+    creatorUrl: "https://creator.xiaohongshu.com/publish/publish",
+  },
 };
 
 function codePointLength(value: string): number {
@@ -240,9 +256,10 @@ export function buildPublishText(copy: PlatformCopy): string {
 export const AUTO_PUBLISH_ROUTES: ReadonlyArray<{
   contentType: PackageContentType;
   platform: PublishPlatform;
-  engine: "sau" | "toutiao";
+  engine: "sau" | "toutiao" | "xhs";
 }> = [
   { contentType: "note", platform: "douyin", engine: "sau" },
+  { contentType: "note", platform: "xiaohongshu", engine: "xhs" },
   { contentType: "article", platform: "toutiao", engine: "toutiao" },
 ];
 

@@ -29,7 +29,7 @@ function AppContent() {
   if (!initialized) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-canvas p-6">
-        <div className="w-full max-w-sm rounded-lg border border-tech-border bg-white px-5 py-4 text-sm text-tech-muted shadow-sm" role="status">
+        <div className="w-full max-w-sm rounded-lg border border-line bg-panel px-5 py-4 text-sm text-ink-muted shadow-sm" role="status">
           正在准备本机操作者...
         </div>
       </main>

@@ -1,4 +1,6 @@
-import React, { useEffect, useRef, useCallback } from 'react';
+import React from 'react';
+import { Modal } from './Modal';
+import { Button } from './Button';
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -12,6 +14,23 @@ export interface ConfirmDialogProps {
   onClose: () => void;
 }
 
+/**
+ * 二次确认弹窗。现在只是 `Modal` 的一层语义包装。
+ *
+ * 改造前它自己实现焦点管理，有两个问题：
+ *
+ * 1. **焦点陷阱会失效**：effect 的依赖数组里放了 `onClose`，而调用处传的全是**每次渲染
+ *    新建的内联箭头函数**（`onClose={() => setX(null)}`）⇒ 父组件任何重渲染都会让
+ *    effect cleanup→setup 重跑一次：`previousActiveElement` 被覆盖成弹窗内部元素、
+ *    焦点被拽回第一个按钮；而 busy 时两个按钮都 `disabled` 不可聚焦，focus() 静默失败，
+ *    Tab 陷阱的边界判断随之失效 —— **Tab 能跑出模态**。关闭时归位的焦点还可能是
+ *    已卸载的节点，于是落到 body。
+ *    修法：`Modal` 把 onClose/busy 收进 ref，effect 依赖只留 `[open]`。
+ *
+ * 2. **danger 档把 Esc 也禁掉了**（`tone !== 'danger'`）。防误触值得保留的是
+ *    「点遮罩不关闭」，而**剥夺 Esc 偏离了对话框的通行约定** —— 键盘用户的第一反应
+ *    失效，会以为界面卡死。现在：Esc 始终可用（busy 除外），遮罩对 danger 不可点。
+ */
 export function ConfirmDialog({
   open,
   title,
@@ -23,98 +42,29 @@ export function ConfirmDialog({
   onConfirm,
   onClose,
 }: ConfirmDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const previousActiveElement = useRef<HTMLElement | null>(null);
-
-  const getFocusableElements = useCallback(() => {
-    if (!dialogRef.current) return [];
-    return Array.from(
-      dialogRef.current.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      ),
-    );
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-    previousActiveElement.current = document.activeElement as HTMLElement;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    // Focus the first focusable element after a tick
-    requestAnimationFrame(() => {
-      const els = getFocusableElements();
-      els[0]?.focus();
-    });
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && tone !== 'danger') {
-        onClose();
-        return;
-      }
-      if (e.key === 'Tab') {
-        const els = getFocusableElements();
-        if (els.length === 0) return;
-        const first = els[0];
-        const last = els[els.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = prev;
-      previousActiveElement.current?.focus();
-    };
-  }, [open, onClose, tone, getFocusableElements]);
-
-  if (!open) return null;
-
-  const confirmButtonClass = tone === 'danger'
-    ? 'bg-red-600 hover:bg-red-700 text-white'
-    : tone === 'warning'
-      ? 'bg-amber-600 hover:bg-amber-700 text-white'
-      : 'bg-tech-blue hover:bg-tech-blue-dark text-white';
+  const confirmVariant = tone === 'danger' ? 'danger' : tone === 'warning' ? 'danger' : 'primary';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="fixed inset-0 bg-black/40" onClick={tone !== 'danger' ? onClose : undefined} />
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        data-tone={tone}
-        className="relative z-10 w-full max-w-sm rounded-xl bg-white p-6 shadow-lg"
-      >
-        <h3 className="text-lg font-semibold text-tech-text">{title}</h3>
-        <p className="mt-2 text-sm text-tech-muted">{description}</p>
-        <div className="mt-6 flex justify-end gap-3">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="rounded-lg border border-tech-border px-4 py-2 text-sm font-medium text-tech-text hover:bg-tech-bg disabled:opacity-50"
-          >
+    <Modal
+      open={open}
+      onClose={onClose}
+      size="sm"
+      busy={busy}
+      title={title}
+      tone={tone}
+      dismissOnBackdrop={tone !== 'danger'}
+      footer={
+        <>
+          <Button variant="outline" onClick={onClose} disabled={busy}>
             {cancelLabel}
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={busy}
-            className={`rounded-lg px-4 py-2 text-sm font-medium disabled:opacity-50 ${confirmButtonClass}`}
-          >
+          </Button>
+          <Button variant={confirmVariant} onClick={onConfirm} disabled={busy}>
             {busy ? '处理中...' : confirmLabel}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </>
+      }
+    >
+      <p className="text-sm leading-6 text-ink-muted">{description}</p>
+    </Modal>
   );
 }

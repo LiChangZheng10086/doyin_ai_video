@@ -4,13 +4,13 @@ import type { LucideIcon } from 'lucide-react';
 export type StatusTone = 'neutral' | 'info' | 'processing' | 'success' | 'warning' | 'danger' | 'ai';
 
 const toneClasses: Record<StatusTone, string> = {
-  neutral: 'border-tech-border bg-white text-tech-muted',
-  info: 'border-blue-200 bg-blue-50 text-blue-700',
-  processing: 'border-cyan-200 bg-cyan-50 text-cyan-700',
-  success: 'border-emerald-200 bg-emerald-50 text-emerald-700',
-  warning: 'border-amber-200 bg-amber-50 text-amber-700',
-  danger: 'border-red-200 bg-red-50 text-red-700',
-  ai: 'border-purple-200 bg-purple-50 text-purple-700',
+  neutral: 'border-line bg-panel text-ink-muted',
+  info: 'border-info-line bg-info-soft text-info',
+  processing: 'border-running-line bg-running-soft text-running',
+  success: 'border-success-line bg-success-soft text-success',
+  warning: 'border-warning-line bg-warning-soft text-warning',
+  danger: 'border-danger-line bg-danger-soft text-danger',
+  ai: 'border-ai-line bg-ai-soft text-ai',
 };
 
 export interface StatusIndicatorProps {

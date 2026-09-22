@@ -21,20 +21,20 @@ export function JobContextSidebar({ job }: JobContextSidebarProps) {
   return (
     <aside className="space-y-6">
       {/* Activity */}
-      <div className="rounded-lg border border-tech-border bg-white p-5">
-        <h3 className="font-semibold text-tech-text">活动记录</h3>
-        <p className="mt-1 text-sm text-tech-muted">关键步骤时间线</p>
+      <div className="rounded-lg border border-line bg-panel p-5">
+        <h3 className="font-semibold text-ink">活动记录</h3>
+        <p className="mt-1 text-sm text-ink-muted">关键步骤时间线</p>
         <div className="mt-5 space-y-4">
           {events.length === 0 ? (
-            <p className="text-sm text-tech-muted">等待第一步开始。</p>
+            <p className="text-sm text-ink-muted">等待第一步开始。</p>
           ) : events.map((event, index) => (
             <div key={`${event.label}-${index}`} className="flex gap-3">
-              <span className={`mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${event.failed ? 'bg-red-50 text-red-600' : 'bg-blue-50 text-tech-blue'}`}>
+              <span className={`mt-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${event.failed ? 'bg-danger-soft text-danger' : 'bg-accent-soft text-accent'}`}>
                 {event.failed ? <XCircle size={14} /> : <CheckCircle2 size={14} />}
               </span>
               <div>
-                <p className="text-sm font-medium text-tech-text">{event.label}</p>
-                <p className="text-xs text-tech-muted">{formatDateTime(event.time)}</p>
+                <p className="text-sm font-medium text-ink">{event.label}</p>
+                <p className="text-xs text-ink-muted">{formatDateTime(event.time)}</p>
               </div>
             </div>
           ))}
@@ -42,8 +42,8 @@ export function JobContextSidebar({ job }: JobContextSidebarProps) {
       </div>
 
       {/* 补充信息 */}
-      <details className="rounded-lg border border-tech-border bg-white p-5">
-        <summary className="cursor-pointer font-semibold text-tech-text">高级信息</summary>
+      <details className="rounded-lg border border-line bg-panel p-5">
+        <summary className="cursor-pointer font-semibold text-ink">高级信息</summary>
         <div className="mt-4 space-y-4">
           <Field label="任务 ID" value={job.id} />
           <Field label="创建时间" value={new Date(job.createdAt).toLocaleString('zh-CN')} />
@@ -54,7 +54,7 @@ export function JobContextSidebar({ job }: JobContextSidebarProps) {
           <Field label="HyperFrames 项目" value={job.videoProjectPath} />
           <Field label="存储路径" value={job.storagePath} />
           {(job.errorMessage || job.error || job.downloadErrorMessage || job.audioErrorMessage || job.transcriptErrorMessage) && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <div className="rounded-lg border border-danger-line bg-danger-soft p-3 text-sm text-danger">
               <p className="mb-2 font-semibold">错误详情</p>
               <pre className="whitespace-pre-wrap font-mono text-xs">
                 {job.errorMessage || job.error || job.downloadErrorMessage || job.audioErrorMessage || job.transcriptErrorMessage}
@@ -71,8 +71,8 @@ function Field({ label, value }: { label: string; value?: string }) {
   if (!value) return null;
   return (
     <div>
-      <label className="mb-1 block text-xs font-medium uppercase text-tech-muted">{label}</label>
-      <p className="break-all rounded bg-gray-50 px-3 py-2 font-mono text-xs text-tech-text">{value}</p>
+      <label className="mb-1 block text-xs font-medium uppercase text-ink-muted">{label}</label>
+      <p className="break-all rounded bg-elevated px-3 py-2 font-mono text-xs text-ink">{value}</p>
     </div>
   );
 }

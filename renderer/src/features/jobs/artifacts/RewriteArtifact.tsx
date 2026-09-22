@@ -11,7 +11,7 @@ export interface RewriteArtifactProps {
 export function RewriteArtifact({ cleaned, cleanedError, streamPreview }: RewriteArtifactProps) {
   if (cleanedError && !streamPreview) {
     return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
+      <div className="rounded-lg border border-danger-line bg-danger-soft p-4 text-danger">
         <p className="font-semibold">AI 洗稿失败</p>
         <p className="mt-1 text-sm">{cleanedError}</p>
       </div>
@@ -28,21 +28,21 @@ export function RewriteArtifact({ cleaned, cleanedError, streamPreview }: Rewrit
     <div className="space-y-5">
       {streamPreview && <StreamingArtifact kind="clean" preview={streamPreview} />}
       {cleanedError && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{cleanedError}</div>
+        <div className="rounded-lg border border-danger-line bg-danger-soft p-4 text-sm text-danger">{cleanedError}</div>
       )}
       {output && (output.cleanScript || output.summary) && <>
       <div>
-        <h3 className="text-lg font-semibold text-tech-text">AI 洗稿成果</h3>
-        <p className="mt-1 text-sm text-tech-muted">面向二次创作的标题、摘要、要点和成稿。</p>
+        <h3 className="text-lg font-semibold text-ink">AI 洗稿成果</h3>
+        <p className="mt-1 text-sm text-ink-muted">面向二次创作的标题、摘要、要点和成稿。</p>
       </div>
       {output.title && <ContentBlock label="标题" value={output.title} strong />}
       {output.summary && <ContentBlock label="摘要" value={output.summary} />}
       {output.keyPoints && output.keyPoints.length > 0 && (
         <div>
-          <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">核心要点</label>
+          <label className="mb-2 block text-xs font-medium uppercase text-ink-muted">核心要点</label>
           <div className="space-y-2">
             {output.keyPoints.map((point, index) => (
-              <p key={index} className="rounded-lg bg-gray-50 px-4 py-3 text-sm text-tech-text">{point}</p>
+              <p key={index} className="rounded-lg bg-elevated px-4 py-3 text-sm text-ink">{point}</p>
             ))}
           </div>
         </div>
@@ -51,7 +51,7 @@ export function RewriteArtifact({ cleaned, cleanedError, streamPreview }: Rewrit
       {output.qualityNotes && output.qualityNotes.length > 0 && (
         <div className="space-y-2">
           {output.qualityNotes.map((note, index) => (
-            <p key={index} className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">{note}</p>
+            <p key={index} className="rounded-lg border border-warning-line bg-warning-soft px-4 py-3 text-sm text-warning">{note}</p>
           ))}
         </div>
       )}
@@ -63,9 +63,9 @@ export function RewriteArtifact({ cleaned, cleanedError, streamPreview }: Rewrit
 function ContentBlock({ label, value, strong = false, multiline = false }: { label: string; value: string; strong?: boolean; multiline?: boolean }) {
   return (
     <div>
-      <label className="mb-2 block text-xs font-medium uppercase text-tech-muted">{label}</label>
-      <div className="rounded-lg bg-gray-50 px-4 py-3">
-        <p className={`${strong ? 'text-xl font-semibold' : 'text-sm'} ${multiline ? 'whitespace-pre-wrap leading-7' : ''} text-tech-text`}>
+      <label className="mb-2 block text-xs font-medium uppercase text-ink-muted">{label}</label>
+      <div className="rounded-lg bg-elevated px-4 py-3">
+        <p className={`${strong ? 'text-xl font-semibold' : 'text-sm'} ${multiline ? 'whitespace-pre-wrap leading-7' : ''} text-ink`}>
           {value}
         </p>
       </div>
@@ -75,10 +75,10 @@ function ContentBlock({ label, value, strong = false, multiline = false }: { lab
 
 function EmptyContent({ title, description }: { title: string; description: string }) {
   return (
-    <div className="rounded-lg border border-dashed border-tech-border bg-gray-50 py-14 text-center">
-      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-4 text-tech-muted"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-      <h3 className="font-semibold text-tech-text">{title}</h3>
-      <p className="mt-2 text-sm text-tech-muted">{description}</p>
+    <div className="rounded-lg border border-dashed border-line bg-elevated py-14 text-center">
+      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-4 text-ink-muted"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <h3 className="font-semibold text-ink">{title}</h3>
+      <p className="mt-2 text-sm text-ink-muted">{description}</p>
     </div>
   );
 }
