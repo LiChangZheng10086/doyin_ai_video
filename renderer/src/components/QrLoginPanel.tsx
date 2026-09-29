@@ -20,7 +20,7 @@ type LoginPhase = 'idle' | 'starting' | 'waiting' | 'window' | 'logged_in' | 'ex
 /** 面板要用的四个后端动作（各平台一套端点，形状一致）。 */
 export interface QrLoginApi {
   start(): Promise<{ qrDataUrl: string }>;
-  poll(): Promise<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; username?: string }>;
+  poll(): Promise<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; username?: string; qrDataUrl?: string }>;
   cancel(): Promise<unknown>;
   loginInWindow(): Promise<{ loggedIn: boolean; username?: string; message: string }>;
   verify(): Promise<{ loggedIn: boolean; username?: string; message: string }>;
@@ -37,6 +37,8 @@ export interface QrLoginCopy {
   qrTestId: string;
   /** 底部说明：说清登录态存在哪、以及这个平台**不做**什么。 */
   footnote: string;
+  /** 只检测到凭据、尚未验证平台有效性的平台，可覆盖成功文案。 */
+  successLabel?: string;
 }
 
 export interface QrLoginPanelProps {
@@ -87,6 +89,7 @@ export function QrLoginPanel({ api, copy, onLoggedIn }: QrLoginPanelProps) {
         setError(`二维码已过期：请点「重新获取二维码」再用${copy.appName} App 扫码。`);
         return;
       }
+      if (status.qrDataUrl) setQrDataUrl(status.qrDataUrl);
       pollTimer.current = setTimeout(() => void poll(), POLL_INTERVAL_MS);
     } catch (pollError) {
       if (stopped.current) return;
@@ -240,7 +243,7 @@ export function QrLoginPanel({ api, copy, onLoggedIn }: QrLoginPanelProps) {
           type="button"
           onClick={() => void startWindowLogin()}
           disabled={busy}
-          title="在浏览器窗口里扫码；窗口用持久化 profile，登录一次后长期有效"
+          title="在浏览器窗口里扫码登录"
           className="inline-flex items-center gap-2 rounded-lg border border-line bg-panel px-3 py-2 text-sm hover:border-accent-line disabled:opacity-60"
         >
           <ExternalLink size={16} />
@@ -280,7 +283,7 @@ export function QrLoginPanel({ api, copy, onLoggedIn }: QrLoginPanelProps) {
             data-testid={copy.qrTestId}
           />
           <p className="text-sm text-ink-muted">
-            请用「{copy.appName}」App 扫码登录。二维码约 10 分钟过期，过期后点「重新获取二维码」即可 ——
+            请用「{copy.appName}」App 扫码登录。二维码过期后点「重新获取二维码」即可 ——
             <strong>不需要重启应用</strong>。
           </p>
         </div>
@@ -296,7 +299,7 @@ export function QrLoginPanel({ api, copy, onLoggedIn }: QrLoginPanelProps) {
       {phase === 'logged_in' ? (
         <p className="flex items-center gap-2 text-sm text-success" role="status">
           <CheckCircle2 size={16} />
-          已登录{username ? `（${username}）` : ''}
+          {copy.successLabel ?? '已登录'}{username ? `（${username}）` : ''}
         </p>
       ) : null}
 

@@ -889,7 +889,36 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     });
   });
 
-  // 扫码登录 — 启动可视化浏览器等待用户扫码
+  // 应用内扫码：会话留在后台浏览器，前端只显示二维码并轮询登录态。
+  app.post("/api/douyin/login", async (_req, res) => {
+    const { startDouyinQrLogin, DouyinQrLoginError } = await import("./lib/douyin-cookie.js");
+    try {
+      res.json(await startDouyinQrLogin());
+    } catch (error) {
+      const known = error instanceof DouyinQrLoginError;
+      res.status(known ? error.status : 500).json({
+        code: known ? error.code : "douyin_login_failed",
+        message: error instanceof Error ? error.message : "获取抖音二维码失败",
+      });
+    }
+  });
+
+  app.get("/api/douyin/login", async (_req, res) => {
+    try {
+      const { pollDouyinQrLogin } = await import("./lib/douyin-cookie.js");
+      res.json(await pollDouyinQrLogin());
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "查询抖音登录状态失败" });
+    }
+  });
+
+  app.delete("/api/douyin/login", async (_req, res) => {
+    const { cancelDouyinQrLogin } = await import("./lib/douyin-cookie.js");
+    await cancelDouyinQrLogin();
+    res.json({ success: true });
+  });
+
+  // 备用入口：用户明确选择打开可视浏览器扫码。
   app.post("/api/douyin/qr-login", async (_req, res) => {
     try {
       const { extractCookiesWithQRLogin } = await import("./lib/douyin-cookie.js");

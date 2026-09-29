@@ -26,6 +26,7 @@ import { Layout } from '../components/Layout';
 import { PageHeader } from '../components/ui/PageHeader';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { ToutiaoLoginPanel } from '../components/ToutiaoLoginPanel';
+import { DouyinLoginPanel } from '../components/DouyinLoginPanel';
 import { RuntimeEnvironmentPanel } from '../components/RuntimeEnvironmentPanel';
 import { RuntimeStatusList } from '../components/RuntimeStatusList';
 import { XhsLoginPanel } from '../components/XhsLoginPanel';
@@ -921,7 +922,7 @@ function getProviderLabel(provider: AIKeyConfig['provider']) {
 
 // ─── 手动 Cookie 输入组件 ──────────────────────────────────────
 
-function ManualCookieInput({ onSaved, disabled }: { onSaved: () => void; disabled: boolean }) {
+function ManualCookieInput({ onSaved }: { onSaved: () => void }) {
   const [cookie, setCookie] = useState("");
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -947,14 +948,14 @@ function ManualCookieInput({ onSaved, disabled }: { onSaved: () => void; disable
         value={cookie}
         onChange={(e) => setCookie(e.target.value)}
         placeholder="sessionid=xxx; sid_guard=xxx; passport_csrf_token=xxx; ..."
-        disabled={disabled || saving}
+        disabled={saving}
         rows={3}
         className="w-full rounded-lg border border-line-ui bg-well px-4 py-3 text-sm font-mono text-ink placeholder-ink-muted outline-none transition-all focus:border-accent-line focus:ring-2 focus:ring-accent resize-y"
       />
       <div className="flex items-center gap-3">
         <button
           onClick={handleSave}
-          disabled={disabled || saving || !cookie.trim()}
+          disabled={saving || !cookie.trim()}
           className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-on-accent transition-all hover:bg-info disabled:opacity-50"
         >
           {saving ? "保存中..." : "保存 Cookie"}
@@ -1012,8 +1013,6 @@ function XhsSection() {
 }
 
 function DouyinSection() {
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [loginResult, setLoginResult] = useState<{ success: boolean; message: string } | null>(null);
   /*
    * 状态从**运行环境**那份模型来（同一份数据、同一个组件、只是 compact 尺寸）——
    * 决策 ⑤ 选 A 时的缓解措施：常驻状态只有一个家，这行不是「第二份实现」。
@@ -1022,23 +1021,6 @@ function DouyinSection() {
   const douyin = runtimeStatus?.channels.find((item) => item.id === 'douyin');
   /** 凭据文件的真实位置由服务端下发（`evidence.paths`），界面不自己拼路径。 */
   const credentialPath = douyin?.evidence?.paths?.find((entry) => entry.label === '凭据文件')?.value;
-
-  const handleQrLogin = async () => {
-    setIsLoggingIn(true);
-    setLoginResult(null);
-    try {
-      const result = await apiClient.startQrLogin();
-      setLoginResult({ success: result.success, message: result.message });
-      await refresh();
-    } catch (err: any) {
-      setLoginResult({
-        success: false,
-        message: err.response?.data?.message || err.message || '扫码登录失败',
-      });
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
 
   return (
     <section className="space-y-6">
@@ -1055,64 +1037,10 @@ function DouyinSection() {
         <p className="text-sm text-ink-muted">正在读取登录状态…</p>
       )}
 
-      {/* Login button */}
+      {/* 应用内二维码与可选的浏览器扫码备用入口 */}
       <div className="rounded-lg border border-line bg-panel p-6">
         <h3 className="text-lg font-semibold text-ink mb-4">扫码登录</h3>
-        <p className="text-sm text-ink-muted mb-6 leading-relaxed">
-          点击下方按钮后，系统会自动打开浏览器窗口并导航至抖音首页。
-          请在浏览器中<strong>使用抖音 App 扫描二维码</strong>完成登录。
-          登录成功后浏览器会自动关闭，Cookie 将保存到本地供后续使用。
-        </p>
-        <p className="text-sm text-ink-muted mb-6">
-          此操作只需执行一次，后续所有 API 调用将自动使用持久化的登录态。
-        </p>
-
-        <button
-          onClick={handleQrLogin}
-          disabled={isLoggingIn}
-          className="inline-flex items-center gap-3 rounded-lg bg-ai px-6 py-4 text-base font-semibold text-on-accent transition-all hover:bg-ai disabled:opacity-50 disabled:cursor-wait shadow-sm"
-        >
-          {isLoggingIn ? (
-            <>
-              <RefreshCw size={20} className="animate-spin" />
-              等待扫码中...（浏览器已打开，请用抖音 App 扫码）
-            </>
-          ) : (
-            <>
-              <QrCode size={20} />
-              打开浏览器扫码登录
-            </>
-          )}
-        </button>
-
-        {isLoggingIn && (
-          <div className="mt-4 rounded-lg border border-info-line bg-info-soft p-4 text-sm text-info">
-            <div className="flex items-start gap-3">
-              <AlertCircle size={18} className="shrink-0 mt-0.5" />
-              <div>
-                <p className="font-semibold">请查看桌面上的浏览器窗口</p>
-                <p className="mt-1">
-                  浏览器窗口正在等待您扫码登录。请在打开的 Chromium 窗口中用抖音 App 扫描二维码。
-                  检测到登录后窗口会自动关闭。
-                  <strong className="block mt-1">最长等待时间：2 分钟</strong>
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {loginResult && (
-          <div className={`mt-4 rounded-lg border p-4 text-sm ${
-            loginResult.success
-              ? 'border-success-line bg-success-soft text-success'
-              : 'border-danger-line bg-danger-soft text-danger'
-          }`}>
-            <div className="flex items-center gap-2">
-              {loginResult.success ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
-              {loginResult.message}
-            </div>
-          </div>
-        )}
+        <DouyinLoginPanel onLoggedIn={() => void refresh()} />
       </div>
 
       {/* Manual cookie input */}
@@ -1123,10 +1051,7 @@ function DouyinSection() {
           进入 <strong>Application</strong> → <strong>Cookies</strong> → <strong>douyin.com</strong>，
           将下方格式的 Cookie 字符串粘贴到输入框中保存。
         </p>
-        <ManualCookieInput
-          onSaved={() => void refresh()}
-          disabled={isLoggingIn}
-        />
+        <ManualCookieInput onSaved={() => void refresh()} />
         <p className="mt-3 text-sm text-ink-muted">
           保存位置：<code className="bg-canvas px-2 py-0.5 rounded text-xs select-all">{credentialPath || '~/.douyin-ai-video/douyin-cookie.txt'}</code>
         </p>

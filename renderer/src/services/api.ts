@@ -990,7 +990,23 @@ export class ApiClient {
     return response.data;
   }
 
-  // 扫码登录
+  // 应用内扫码登录
+  async startDouyinLogin(): Promise<{ qrDataUrl: string }> {
+    const client = await this.getClient();
+    return (await client.post('/api/douyin/login')).data;
+  }
+
+  async pollDouyinLogin(): Promise<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; qrDataUrl?: string }> {
+    const client = await this.getClient();
+    return (await client.get('/api/douyin/login')).data;
+  }
+
+  async cancelDouyinLogin(): Promise<void> {
+    const client = await this.getClient();
+    await client.delete('/api/douyin/login');
+  }
+
+  // 打开浏览器扫码登录（备用）
   async startQrLogin(): Promise<{ success: boolean; message: string; hasAuth: boolean; authInfo?: any }> {
     const client = await this.getClient();
     const response = await client.post('/api/douyin/qr-login');

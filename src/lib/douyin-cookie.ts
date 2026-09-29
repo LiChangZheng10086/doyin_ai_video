@@ -15,6 +15,7 @@ import pathModule from "node:path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { execSync } from "node:child_process";
+import type { Browser, BrowserContext, Page } from "playwright";
 
 const COOKIE_DIR = pathModule.join(homedir(), ".douyin-ai-video");
 const COOKIE_PATH = pathModule.join(COOKIE_DIR, "douyin-cookie.txt");
@@ -54,12 +55,159 @@ export function getCookiePath(): string {
   return COOKIE_PATH;
 }
 
+// ─── 应用内扫码登录 ───────────────────────────────────────────────
+
+const QR_LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+const DOUYIN_URL = "https://www.douyin.com/";
+
+type DouyinQrSession = {
+  browser: Browser;
+  context: BrowserContext;
+  page: Page;
+  expiresAt: number;
+  timer: ReturnType<typeof setTimeout>;
+  qrDataUrl: string;
+};
+
+let qrSession: DouyinQrSession | undefined;
+let qrStarting = false;
+let qrGeneration = 0;
+
+export class DouyinQrLoginError extends Error {
+  constructor(readonly status: number, readonly code: string, message: string) {
+    super(message);
+    this.name = "DouyinQrLoginError";
+  }
+}
+
+async function readDouyinQr(page: Page): Promise<string | undefined> {
+  const images = page.locator('article img[src^="data:image/"]');
+  for (let index = 0; index < await images.count(); index += 1) {
+    const image = images.nth(index);
+    const box = await image.boundingBox();
+    if (!box || box.width < 120 || box.height < 120) continue;
+    const src = await image.getAttribute("src");
+    if (src?.startsWith("data:image/") && src.length < 1_000_000) return src;
+  }
+  return undefined;
+}
+
+async function closeQrSession(): Promise<void> {
+  const current = qrSession;
+  qrSession = undefined;
+  if (!current) return;
+  clearTimeout(current.timer);
+  await current.browser.close().catch(() => undefined);
+}
+
+/** 取码时后台浏览器保留页面会话，二维码直接显示在应用内。 */
+export async function startDouyinQrLogin(): Promise<{ qrDataUrl: string; startedAt: string; expiresAt: string }> {
+  if (qrStarting || qrSession) {
+    throw new DouyinQrLoginError(409, "douyin_login_in_progress", "已有抖音扫码会话，请先取消当前二维码再重新获取。");
+  }
+  qrStarting = true;
+  const generation = ++qrGeneration;
+  let browser: Browser | undefined;
+  try {
+    const { chromium } = await import("playwright");
+    // 抖音对无头访问会返回滑块页；有头 Chrome 必须先最小化，二维码只显示在应用内。
+    browser = await chromium.launch({
+      headless: false,
+      chromiumSandbox: true,
+      ...(!existsSync(chromium.executablePath()) ? { channel: "chrome" } : {}),
+    });
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    });
+    const page = await context.newPage();
+    const cdp = await context.newCDPSession(page);
+    const { windowId } = await cdp.send("Browser.getWindowForTarget");
+    await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "minimized" } });
+    let minimized = false;
+    for (let attempt = 0; attempt < 10 && !minimized; attempt += 1) {
+      minimized = (await cdp.send("Browser.getWindowBounds", { windowId })).bounds.windowState === "minimized";
+      if (!minimized) await page.waitForTimeout(100);
+    }
+    if (!minimized) {
+      throw new DouyinQrLoginError(422, "douyin_background_unavailable", "无法隐藏抖音登录浏览器窗口，已停止取码。请使用备用的浏览器扫码入口。");
+    }
+    await page.goto(DOUYIN_URL, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    let qrDataUrl = await readDouyinQr(page);
+    if (!qrDataUrl) {
+      const qrTab = page.getByText("扫码登录", { exact: true });
+      // 首页会跳到 /jingxuan，并在加载后自动打开登录框；先等扫码页签，避免点到框内的「登录」按钮。
+      const modalOpened = await qrTab.waitFor({ state: "visible", timeout: 10_000 }).then(() => true, () => false);
+      if (!modalOpened) {
+        const login = page.getByRole("button", { name: "登录", exact: true });
+        if (await login.count()) await login.first().click({ timeout: 3_000 });
+        await qrTab.waitFor({ state: "visible", timeout: 5_000 });
+      }
+      await qrTab.first().click();
+      for (let attempt = 0; attempt < 10 && !qrDataUrl; attempt += 1) {
+        await page.waitForTimeout(500);
+        qrDataUrl = await readDouyinQr(page);
+      }
+    }
+    if (!qrDataUrl) {
+      throw new DouyinQrLoginError(422, "douyin_qr_unavailable", "抖音登录页未出现二维码（可能要求滑块验证或页面已改版）。请稍后重试，或使用手动粘贴 Cookie。");
+    }
+    if (generation !== qrGeneration) {
+      throw new DouyinQrLoginError(409, "douyin_login_cancelled", "本次扫码已取消，请重新获取二维码。");
+    }
+    const startedAt = Date.now();
+    const expiresAt = startedAt + QR_LOGIN_TIMEOUT_MS;
+    const timer = setTimeout(() => void closeQrSession(), QR_LOGIN_TIMEOUT_MS);
+    timer.unref();
+    qrSession = { browser, context, page, expiresAt, timer, qrDataUrl };
+    return { qrDataUrl, startedAt: new Date(startedAt).toISOString(), expiresAt: new Date(expiresAt).toISOString() };
+  } catch (error) {
+    if (browser) await browser.close().catch(() => undefined);
+    if (error instanceof DouyinQrLoginError) throw error;
+    throw new DouyinQrLoginError(422, "douyin_qr_unavailable", `获取抖音二维码失败：${error instanceof Error ? error.message : String(error)}。可安装 Google Chrome 或运行 npx playwright install chromium 后重试。`);
+  } finally {
+    qrStarting = false;
+  }
+}
+
+export async function pollDouyinQrLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; qrDataUrl?: string }> {
+  const current = qrSession;
+  if (!current) return { status: "idle" };
+  if (Date.now() >= current.expiresAt) {
+    await closeQrSession();
+    return { status: "expired" };
+  }
+  // 与原浏览器扫码通路相同，保存整个会话 Cookie；只取首页域名会漏掉登录子域的凭据。
+  const cookies = await current.context.cookies();
+  if (cookies.some((cookie) => cookie.name === "sessionid" && cookie.value)) {
+    const byName = new Map(cookies.filter((cookie) => cookie.value).map((cookie) => [cookie.name, cookie.value]));
+    try {
+      saveCookie([...byName].map(([name, value]) => `${name}=${value}`).join("; "));
+    } finally {
+      await closeQrSession();
+    }
+    return { status: "logged_in" };
+  }
+  const qrDataUrl = await readDouyinQr(current.page);
+  if (qrDataUrl && qrDataUrl !== current.qrDataUrl) {
+    current.qrDataUrl = qrDataUrl;
+    return { status: "waiting", qrDataUrl };
+  }
+  return { status: "waiting" };
+}
+
+export async function cancelDouyinQrLogin(): Promise<void> {
+  qrGeneration += 1;
+  await closeQrSession();
+}
+
 // ─── Playwright .mjs 脚本构建 ────────────────────────────────────
 
 function buildCookieScript(manualLogin: boolean, loginTimeout: number): string {
   const playwrightPath = pathModule.join(process.cwd(), "node_modules", "playwright", "index.js");
 
-  const scriptContent = `import pkg from ${JSON.stringify(playwrightPath)};
+  const scriptContent = `import { existsSync } from "node:fs";
+import pkg from ${JSON.stringify(playwrightPath)};
 const { chromium } = pkg;
 
 const manualLogin = ${manualLogin};
@@ -67,6 +215,7 @@ const loginTimeout = ${loginTimeout};
 
 const browser = await chromium.launch({
   headless: !manualLogin,
+  ...(!existsSync(chromium.executablePath()) ? { channel: "chrome" } : {}),
   args: ["--no-sandbox", "--disable-setuid-sandbox"],
 });
 
