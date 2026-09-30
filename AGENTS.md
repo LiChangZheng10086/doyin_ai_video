@@ -171,6 +171,7 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
   （`note×douyin` → sau；`article×toutiao` → 自研头条执行器；`note×xiaohongshu` → 自研小红书执行器）。
   **必须带 `previewRevision`**：缺失 400、不一致 409；body 可用 `dryRun: true`（**仅小红书**：只填到草稿，**服务端强制不点发布**；
   其余通路传它一律 400）。配套 `POST .../auto-publish/code`（抖音短信验证码 → `<sauBaseDir>/verify_code.txt`）。
+- **小红书图文草稿仅存于专用浏览器本地 IndexedDB，不同步到 App 或默认浏览器**。执行器必须点「暂存离开」并读回当前账号、本次时间及完整标题/正文/图片/AI 声明，成功保存才记录 `xhsDraftId`。`POST /api/publishing/xhs/drafts/window` 用同一 profile 打开有头浏览器并选择「图文笔记」；窗口留给用户，关闭后释放互斥。旧 `draftOnly` 记录不代表已核实保存，界面必须提示待核实。不要改回填完立即关窗、`openExternal` 或引导去 App 找网页草稿。
 - 登录与自检：`POST/GET/DELETE /api/publishing/toutiao/login`（应用内扫码）、
   `POST /api/publishing/toutiao/login/window`（浏览器窗口扫码，同步等 180s）、`POST /api/publishing/toutiao/verify`；
   小红书同形：`/api/publishing/xhs/login`、`/login/window`、`/verify`（**零副作用**自检）。
@@ -291,6 +292,14 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
   `decodeMultipartFilename()` 回退转换。图片尺寸与 WAV 时长由纯 Node 解析容器头得到；
   **MP3/M4A 时长为 `undefined`**（界面显示「—」），如需补全可接 `ffprobe`。
 
+### 在线音频素材（2026-09-30）
+
+- 「素材」音频区的「在线音频」支持网易云/QQ 热歌、飙升、新歌榜与主动搜索；试听后多选下载，每批 ≤20 首。仅公开音源，不读取平台 Cookie，不接入成片。
+- `online-audio-sources.ts` 固定 HTTPS 来源与媒体域名，DNS 公网检查并固定地址、禁止重定向；媒体 ≤50MB，经 FFprobe 读取音频帧验证后由同一个 AssetStore 入库。记录来源与试听片段标识；同平台曲目去重，素材索引写入串行且损坏时拒绝覆盖。
+- 榜单缓存 10 分钟、刷新至少间隔 60 秒，失败保留旧榜单。试听缓存 `cache/online-audio/media/` 与素材库分离、启动清空；导入批次只在内存保留，前端 sessionStorage 恢复最近进度，后端重启明确标中断。
+- API `/api/online-audio/catalog`、`/boards`、`/boards/refresh`、`/search`、`/preview`、`/media/:token`、`/imports`、`/imports/:id`；试听准备与下载复用本机会话，批次查询校验操作者归属。
+- `node --import tsx scripts/verify-online-audio.ts` 两家真实来源验收，全程临时存储；`--serve` 起 3100 隔离真实 API，退出删除临时目录。`scripts/verify-online-audio-ui.js` 是浏览器响应乱序回归，不写真实数据。
+
 ### 原视频播放与操作者模型
 - 「视频转录」会把原视频下到 `raw/videos/{jobId}.mp4`；详情页成果画布「视频」格子提供**原视频 / 成片**切换
   （默认：有成片看成片，否则看原视频）。没下载时显示「原视频尚未下载」并引导先转录，**不自动下载**。
@@ -365,6 +374,15 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 - `POST /api/publishing/wechat/verify`：普通稳定 token + draft/count，只证明连接/查询；不上传内容，但可能触发管理员风险确认。个人未认证订阅号不能仅凭查询成功宣称可写，认证也不保证解决权限问题。
 - `task.status` 不变；成功子记录保存 `draftOnly: true` 与 `draftMediaId`，绝不等同正式发布。草稿请求网络失败/异常响应保留 `outcomeUncertain`；成功、不确定或遗留 running 都禁止直接重发。核对后台后确需另建时人工创建新包。
 - 当前已通过模拟链路测试，真实账号仍未验收。实测必须覆盖封面+一张正文图，并由用户在后台确认。见 `docs/research/2026-09-29-wechat-draft-feasibility.md` 第 7 节。
+
+### 公众号对标与文章模板（2026-09-30）
+
+- 文章页入口 `/articles/benchmarks`：用户自选领域、读者与关键词，`cache/wechat-benchmarks.json` 原子串行保存；写入带本机会话与 version，冲突 409、损坏索引拒绝覆盖。API `/api/wechat-benchmarks` 的 GET/POST、`/:id` PATCH/DELETE、`/search` POST。
+- 搜狗公开搜索仅提供文章/来源账号线索，不带阅读量，不读取用户 Cookie、不绕验证码。固定来源、沿用网页 HTTPS/DNS 固定/15 秒/2MiB 限制；10 分钟内存缓存、至少 60 秒请求间隔。失败保留既有候选，可手动录入；昵称不自动当作已核验身份。
+- 每组 ≤10 关键词、≤100 账号，每账号 ≤20 篇样本。身份与赛道由用户核验，阅读量未知为空，数字必须有来源/观察时间；任一样本有下界时中位数保守标下界。服务端判定选中、身份/相关性确认、阅读中位数达到可调门槛（初始 1000）的有效数量；≥10 才能从对标创建文章。参考进入 requirements，不能当作事实来源。
+- 现有独立文章工作台增加写作结构与排版选择；`layoutTemplate` 默认为旧样式，切换保留正文但使旧预览失效。少量 MIT 样式在清洗后应用，图片槽位/字数检查不变，归属见 `docs/third-party/wechat-article-editor.md`。旧视频转文章向导仍使用原默认排版。
+- 对标表单 sessionStorage 保存未完成编辑和当前组；409 后先载入最新内容对照，再由使用者明确选择继续采用编辑，不能自动覆盖或强制清空。
+- `node --import tsx scripts/verify-wechat-benchmarks.ts` 以临时存储启动 3100 夹具，首次保存故意 503；另运行 `node scripts/verify-wechat-benchmarks-ui.mjs` 检查恢复/门槛/模板/窄屏。UI 脚本要求隔离标识，禁止对真实数据模拟写入。`--live [关键词]` 仅请求一次真实公开搜索，不读取账号凭据。
 
 ### 凭据扫描（提交前门禁）
 
@@ -646,6 +664,16 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 **最后更新**: 2026-09-29
 **维护者**: Codex
 **仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git
+
+### 热点到公众号文章创作（2026-09-30）
+
+- `/articles`、`/articles/:id` 独立创作，不创建视频任务；热榜和收藏「以此创作」只传服务端 sourceId/itemId，关键词也可起稿。
+- 六步：选题诊断（三个方向）→ 资料事实 → 提纲 → 初稿 → 审校 → 配图规划。人工确认资料、提纲、定稿；无可读材料不能成文，AI 不可用明确失败，不拼兜底文章。账号领域、读者、结构、字数与语气样本是写作要求，未经证实的增长算法/流量数字不可作为事实。
+- 每篇最多10份资料，网页批量最多3份、15秒（含 DNS）、2MiB、正文20000字符；粘贴30000字符。HTTPS 固定已校验公网 DNS 地址、拒绝重定向/IP/内网/凭据/非默认端口；聚合、搜索、挑战页明确需补资料，最多一层候选链接。
+- `cache/articles.json` 单份串行原子落盘，修改/生成/删除带 version，每篇运行锁；上游改变清除下游并保留上次参考，失败不丢旧稿；重启恢复中断。前端本地未保存编辑保留原版本，冲突后用户载入最新版本并核对；离开保护与保存失败保留输入。
+- `sourceKind:"article"`、`sourceArticleId` 标明独立来源；`sourceJobId:article-{uuid}` 仅发布包分组/版本键，不能调用视频任务接口。缺少 sourceKind 的存量包仍视为 job。独立新版本跳回文章工作台；源删除不影响自包含包。
+- 封面/正文图经 AssetStore 解析，预览绑定当前稿件及图片字节哈希；建包先核对并复制图片私有快照再预处理。复用微信 HTML/包事务/权限/审计/previewRevision/draftOnly/outcomeUncertain；只人工提交草稿，不正式群发。
+- `node --import tsx scripts/verify-article-writing.ts` 为3100隔离假资料/AI/媒体工作台（首个保存503），退出清理临时存储；`--live` 只读各真实榜单首条公开URL，不修改真实数据。实测热点多为聚合/受限链接，需补可访问报道或正文；真实微信账号仍需单独验收。
 
 
 ### 图片提示词与素材复用（2026-09-30）

@@ -28,6 +28,7 @@
  */
 
 import OpenAI from "openai";
+import { applyWechatLayout, wechatLayout } from './wechat-templates.js';
 import { extractAiMessageText } from "./ai-response.js";
 import { toSimplifiedChinese } from "./chinese.js";
 import {
@@ -155,6 +156,7 @@ const IMAGE_SLOT_PATTERN = /\{\{wechat-image-(\d+)\}\}/gu;
 
 export interface WechatArticleRenderOptions {
   images?: WechatArticleImage[];
+  layoutTemplate?: string;
 }
 
 export type WechatArticleField = ArticleValidationField;
@@ -487,6 +489,7 @@ export function renderWechatArticleHtml(
   draft: WechatArticleDraft,
   options: WechatArticleRenderOptions = {},
 ): string {
+  wechatLayout(options.layoutTemplate);
   const images = (options.images ?? []).filter((image) =>
     "url" in image
       ? isWechatHostedImage(image.url ?? "")
@@ -507,7 +510,7 @@ export function renderWechatArticleHtml(
     const image = images[index];
     if (image) parts.push(...renderImage(image));
 
-    const rendered = `<section style="${ROOT_STYLE}">${parts.join("\n")}</section>`;
+    const rendered = applyWechatLayout(`<section style="${ROOT_STYLE}">${parts.join("\n")}</section>`, options.layoutTemplate);
     if (codePointLength(rendered) >= WECHAT_ARTICLE_LIMITS.contentChars) {
       throw new WechatArticleError(
         "wechat_article_too_long",
@@ -522,7 +525,7 @@ export function renderWechatArticleHtml(
     parts.push(...renderImage(image));
   }
 
-  return `<section style="${ROOT_STYLE}">${parts.join("\n")}</section>`;
+  return applyWechatLayout(`<section style="${ROOT_STYLE}">${parts.join("\n")}</section>`, options.layoutTemplate);
 }
 
 // ── 公众号档案与 AI 成文 ─────────────────────────────────────────────────────

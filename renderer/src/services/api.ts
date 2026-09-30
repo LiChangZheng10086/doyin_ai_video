@@ -1,8 +1,12 @@
+import type { ArticleRecord, ArticleStep, ArticlePreview } from '../../../src/lib/article-types';
+import type { BenchmarkView, BenchmarkSearchResult } from '../../../src/lib/wechat-benchmarks';
 import axios, { AxiosInstance, type AxiosRequestConfig } from 'axios';
 import type { ImagePromptInput, ImagePromptRecord } from '../../../src/lib/image-prompts';
 import type { ImageAssetMetadata } from '../../../src/lib/assets-store';
 import type { Gallery, GalleryDraft, GalleryPreview, GallerySource } from '../../../src/lib/gallery-types';
 import type { HotspotBoard, HotspotFavorite } from '../../../src/lib/hotspots';
+import type { AudioBoard, AudioImportBatch, AudioPreview } from '../../../src/lib/online-audio';
+import type { AudioSource, AudioBoardId, OnlineTrack } from '../../../src/lib/online-audio-sources';
 import type {
   ApiResponse,
   CleanedScript,
@@ -44,6 +48,7 @@ import type {
 } from '../types';
 import { parseSkillProgressLine, type SkillProgressEvent } from '../utils/skill-progress';
 
+export const ONLINE_AUDIO_BATCH_KEY = 'douyin-ai-video.online-audio-batch';
 
 export function parseApiError(error: unknown): ParsedApiError {
   const response = (error as {
@@ -111,6 +116,46 @@ export class ApiClient {
   private localSessionToken: string | null = null;
   /** 并发的 401 只触发一次重开会话（避免惊群）。 */
   private sessionRefresh: Promise<void> | null = null;
+
+  async getOnlineAudioCatalog(): Promise<{ sources: { id: AudioSource; name: string }[]; boards: { id: AudioBoardId; name: string }[] }> {
+    return this.publishingRequest({ url: '/api/online-audio/catalog' });
+  }
+  async getOnlineAudioBoard(source: AudioSource, board: AudioBoardId, refresh = false): Promise<AudioBoard> {
+    return (await this.publishingRequest<{ board: AudioBoard }>({ url: refresh ? '/api/online-audio/boards/refresh' : '/api/online-audio/boards',
+      method: refresh ? 'POST' : 'GET', ...(refresh ? { data: { source, board } } : { params: { source, board } }) })).board;
+  }
+  async searchOnlineAudio(source: AudioSource, query: string): Promise<OnlineTrack[]> {
+    return (await this.publishingRequest<{ tracks: OnlineTrack[] }>({ url: '/api/online-audio/search', params: { source, q: query } })).tracks;
+  }
+  async previewOnlineAudio(trackKey: string): Promise<AudioPreview & { url: string }> {
+    const preview = (await this.publishingRequest<{ preview: AudioPreview }>({ url: '/api/online-audio/preview', method: 'POST', data: { trackKey }, timeout: 90_000 })).preview;
+    const client = await this.getClient();
+    return { ...preview, url: `${client.defaults.baseURL}/api/online-audio/media/${encodeURIComponent(preview.token)}` };
+  }
+  async importOnlineAudio(trackKeys: string[]): Promise<AudioImportBatch> {
+    const batch = (await this.publishingRequest<{ batch: AudioImportBatch }>({ url: '/api/online-audio/imports', method: 'POST', data: { trackKeys } })).batch;
+    // Persist before returning: the panel may have been unmounted while POST was pending.
+    try { if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(ONLINE_AUDIO_BATCH_KEY, JSON.stringify(batch)); } catch { /* Still return the accepted batch. */ }
+    return batch;
+  }
+  async getOnlineAudioImport(id: string): Promise<AudioImportBatch> {
+    return (await this.publishingRequest<{ batch: AudioImportBatch }>({ url: `/api/online-audio/imports/${encodeURIComponent(id)}` })).batch;
+  }
+
+  async getArticles(): Promise<ArticleRecord[]> { return (await this.publishingRequest<{articles:ArticleRecord[]}>({url:'/api/articles'})).articles; }
+  async getArticle(id: string): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}`})).article; }
+  async createArticle(input: {keyword?:string;hotspot?:{sourceId:string;itemId:string};benchmarkId?:string}): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:'/api/articles',method:'POST',data:input})).article; }
+  async getWechatBenchmarks(): Promise<BenchmarkView[]> {return (await this.publishingRequest<{groups:BenchmarkView[]}>({url:'/api/wechat-benchmarks'})).groups;}
+  async createWechatBenchmark(input: Record<string,unknown>): Promise<BenchmarkView> {return (await this.publishingRequest<{group:BenchmarkView}>({url:'/api/wechat-benchmarks',method:'POST',data:input})).group;}
+  async saveWechatBenchmark(id:string,input:Record<string,unknown>&{version:number}): Promise<BenchmarkView> {return (await this.publishingRequest<{group:BenchmarkView}>({url:`/api/wechat-benchmarks/${encodeURIComponent(id)}`,method:'PATCH',data:input})).group;}
+  async removeWechatBenchmark(id:string,version:number): Promise<void> {await this.publishingRequest({url:`/api/wechat-benchmarks/${encodeURIComponent(id)}`,method:'DELETE',data:{version}});}
+  async searchWechatBenchmarks(keyword:string): Promise<BenchmarkSearchResult> {return (await this.publishingRequest<{result:BenchmarkSearchResult}>({url:'/api/wechat-benchmarks/search',method:'POST',data:{keyword},timeout:25000})).result;}
+  async saveArticle(id: string, input: Record<string,unknown> & {version:number}): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}`,method:'PATCH',data:input})).article; }
+  async runArticleStep(id: string, step: ArticleStep, version: number): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}/steps/${step}`,method:'POST',data:{version},timeout:200000})).article; }
+  async readArticleSources(id: string, sourceIds: string[], version: number): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}/sources/read`,method:'POST',data:{sourceIds,version},timeout:60000})).article; }
+  async removeArticle(id: string, version: number): Promise<void> { await this.publishingRequest({url:`/api/articles/${encodeURIComponent(id)}`,method:'DELETE',data:{version}}); }
+  async previewArticle(id: string, version: number): Promise<ArticlePreview> { return (await this.publishingRequest<{preview:ArticlePreview}>({url:`/api/articles/${encodeURIComponent(id)}/publishing/preview`,method:'POST',data:{version}})).preview; }
+  async createArticlePackage(id: string, version: number, previewRevision: string): Promise<PublishingPackageDetail> { return (await this.publishingRequest<{detail:PublishingPackageDetail}>({url:`/api/articles/${encodeURIComponent(id)}/publishing/packages`,method:'POST',data:{version,previewRevision},timeout:120000})).detail; }
 
   async getHotspots(refresh = false): Promise<HotspotBoard[]> {
     return (await this.publishingRequest<{ boards: HotspotBoard[] }>({ url: refresh ? '/api/hotspots/refresh' : '/api/hotspots', method: refresh ? 'POST' : 'GET' })).boards;
@@ -442,6 +487,10 @@ export class ApiClient {
       method: 'POST',
       url: '/api/publishing/xhs/verify',
     });
+  }
+
+  async openXhsDraftWindow(): Promise<{ message: string }> {
+    return this.publishingRequest<{ message: string }>({ method: 'POST', url: '/api/publishing/xhs/drafts/window' });
   }
 
   // ── 运行环境状态一览（免费检查零副作用；深检是后台任务 + 轮询）──

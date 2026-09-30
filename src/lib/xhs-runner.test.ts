@@ -467,3 +467,35 @@ test("⚠️ 已经登录时 startLogin **不再去取码**，而是明说「无
   assert.deepEqual(page.clicks, []);
   assert.equal(page.visits.some((url) => url.includes("/login")), false, "不该再访问登录页");
 });
+
+test("打开草稿使用同一 profile 的有头窗口，保留到用户关闭，并阻止并发填稿", async () => {
+  const storageRoot = await tempDir();
+  const page = fakePage({ urls: [XHS_HOME_URL] });
+  let closed = false;
+  let opens = 0;
+  const listeners: Array<() => void> = [];
+  const runner = new XhsRunner({ storageRoot, browserBinary: process.execPath,
+    openSession: async options => {
+      opens++;
+      assert.equal(options.profileDir, runner.profileDirectory);
+      assert.equal(options.headed, true);
+      return { page, onClose: callback => { listeners.push(callback); }, close: async () => {
+        closed = true; listeners.splice(0).forEach(callback => callback());
+      } };
+    } });
+  await runner.openDraftWindow();
+  assert.equal(closed, false, "窗口必须留给用户");
+  assert.equal(page.expressions.some(expression => expression.includes('图文笔记')), true);
+  assert.equal(page.expressions.some(expression => expression.includes('onOnPublish')), false);
+  await runner.openDraftWindow();
+  assert.equal(opens, 1, "复用窗口，不能争用 profile");
+  const blocked = await runner.publishNote({ title: '标题', body: '正文', imagePaths: ['/tmp/a.png'], aiDeclaration: true, submit: false });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.code, 'xhs_login_in_progress');
+  assert.equal(opens, 1);
+  listeners.splice(0).forEach(callback => callback());
+  await runner.openDraftWindow();
+  assert.equal(opens, 2, "用户关窗后允许重新打开");
+  await runner.dispose();
+  assert.equal(closed, true);
+});

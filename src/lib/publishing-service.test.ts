@@ -1453,6 +1453,7 @@ test("⚠️ 小红书归因②：走完全程（含「只填到草稿」）→ 
       submitted: false,
       verification: "unconfirmed",
       message: "已填写到草稿箱（未点发布）。",
+      xhsDraftId: "test-draft",
       steps: [],
     })),
     runtimeVerified: verified.port,
@@ -1461,6 +1462,7 @@ test("⚠️ 小红书归因②：走完全程（含「只填到草稿」）→ 
   const task = await service.autoPublish(taskId, { previewRevision, dryRun: true }, ACTOR);
   assert.equal(task.autoPublish?.status, "succeeded");
   assert.equal(task.autoPublish?.draftOnly, true);
+  assert.equal(task.autoPublish?.xhsDraftId, "test-draft");
   assert.deepEqual(verified.records, [{ id: "xiaohongshu", state: "valid" }]);
 });
 
@@ -1529,4 +1531,16 @@ test("⚠️ 互斥按渠道：别的渠道在检测时，本渠道发布照常�
     (error: unknown) =>
       !(error instanceof PublishingServiceError && error.code === "publish_blocked_by_runtime_check"),
   );
+});
+
+test("小红书填稿返回 ok 但没有持久化证据时必须失败，不能宣称草稿成功", async () => {
+  const f = await fixture();
+  const { taskId, previewRevision } = await xhsNoteTask(f);
+  const service = serviceWith(f, {
+    xhs: fakeXhsPublishing(async () => ({ ok: true, submitted: false, verification: "unconfirmed",
+      message: "只填好表单", steps: [] })),
+  });
+  const task = await service.autoPublish(taskId, { previewRevision, dryRun: true }, ACTOR);
+  assert.equal(task.autoPublish?.status, "failed");
+  assert.match(task.autoPublish?.message ?? "", /未.*确认.*草稿/u);
 });

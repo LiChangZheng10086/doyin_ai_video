@@ -1,3 +1,4 @@
+import type { ArticlePackageInput } from './articles.js';
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -422,6 +423,7 @@ export type XhsAutoPublishRunner = Pick<
   | "cancelLogin"
   | "loginInWindow"
   | "publishNote"
+  | "openDraftWindow"
 >;
 
 /**
@@ -580,6 +582,7 @@ export class PublishingService {
     if (previous.package.state !== "active") {
       throw new PublishingServiceError(409, "publish_validation_failed", "垃圾桶中的发布包不能创建新版本");
     }
+    if (previous.package.sourceKind === "article") throw new PublishingServiceError(409,"publish_validation_failed","请从文章工作台创建新版本");
     const sourceVideo = await this.bindPackageVideo(previous.package);
     try {
       // 这与 createVersion 的输入一致性检查配套：能走到这里的包必然有可用成片
@@ -1001,6 +1004,18 @@ export class PublishingService {
     });
   }
 
+  /** 独立创作文章只消费服务内部解析的素材，沿用文章包事务。 */
+  async createIndependentArticle(input: ArticlePackageInput): Promise<PublishingPackageDetail> {
+    const { article, draft, html, cover, images, hashes, actor } = input;
+    if (!/^[a-f0-9-]{36}$/.test(article.id) || !html.trim() || validateArticleDraft(draft).length) throw new PublishingServiceError(422, "publish_validation_failed", "独立文章内容无效");
+    const drafts = validateDrafts([{ platform: "wechat_mp", copy: { title:draft.title, description:draft.digest ?? "", hashtags:[] } }],this.now(),() => "user_edited");
+    return this.createArticlePackage({ sourceJobId:`article-${article.id}`, sourceArticleId:article.id, title:draft.title, draft, html,
+      cover:{ absolutePath:cover.path } as ArticleCoverPlan, bodyImages:images, wechat:true,
+      options:normalizeToutiaoOptions(undefined), drafts, actor,
+      expectedSourceHashes: [cover,...images].map((file,i) => ({ path:file.path, hash:hashes[i]! })),
+    });
+  }
+
   /**
    * 打包文章包：封面先由 `toutiao-media` 裁成 16:9 落到**临时目录**，再交给打包层复制进包。
    *
@@ -1010,6 +1025,8 @@ export class PublishingService {
    */
   private async createArticlePackage(input: {
     sourceJobId: string;
+    sourceArticleId?: string;
+    expectedSourceHashes?: Array<{ path: string; hash: string }>;
     title: string;
     draft: ToutiaoArticleDraft;
     html: string;
@@ -1029,10 +1046,20 @@ export class PublishingService {
         const workDir = path.join(this.storageRoot, "cache", "tmp", `toutiao-cover-${packageId}`);
         try {
           const wechatMedia = this.deps.wechatMedia ?? new WechatMediaService({ ffmpegBinary: this.deps.ffmpegBinary });
-          const prepared = await (input.wechat ? wechatMedia : this.requireToutiaoMedia()).prepareCoverImage(input.cover.absolutePath, workDir);
+          const selectedPaths: string[] = [];
+          if (input.expectedSourceHashes) {
+            await mkdir(workDir,{recursive:true,mode:0o700});
+            for (const [index,source] of input.expectedSourceHashes.entries()) {
+              const bytes = await readFile(source.path);
+              if (sha256Hex(bytes) !== source.hash) throw new PublishingServiceError(409,"publish_revision_conflict","选中的图片已变化，请重新预览");
+              const snapshot = path.join(workDir,`selected-${index}${path.extname(source.path)}`);
+              await writeFile(snapshot,bytes,{flag:"wx",mode:0o600}); selectedPaths.push(snapshot);
+            }
+          }
+          const prepared = await (input.wechat ? wechatMedia : this.requireToutiaoMedia()).prepareCoverImage(selectedPaths[0] ?? input.cover.absolutePath, workDir);
           const imagePaths: string[] = [];
           for (const [index, image] of input.bodyImages.entries()) {
-            imagePaths.push((await wechatMedia.prepareContentImage(image.path, workDir, index + 1)).path);
+            imagePaths.push((await wechatMedia.prepareContentImage(selectedPaths[index+1] ?? image.path, workDir, index + 1)).path);
           }
           const articleCopy = { title: input.draft.title, ...(input.wechat ? { author: input.draft.author, digest: input.draft.digest } : {}) };
           const assets = await this.deps.assets.createArticlePackageAssets({
@@ -1051,6 +1078,7 @@ export class PublishingService {
             record: {
               id: packageId,
               sourceJobId: input.sourceJobId,
+              ...(input.sourceArticleId ? {sourceKind: "article" as const, sourceArticleId:input.sourceArticleId} : {}),
               version,
               state: "active",
               title: input.title,
@@ -1741,6 +1769,11 @@ export class PublishingService {
         submit: options.submit === true,
       }, input.dryRun === true ? { dryRun: true } : {});
 
+      if (result.ok && !result.submitted && !result.xhsDraftId?.trim()) {
+        return await this.finishAutoPublish(taskId, { status: "failed",
+          message: "未能确认完整草稿已保存；请打开小红书草稿浏览器核实，不能把填表成功当作保存成功。" }, actor);
+      }
+
       // ⚠️ **不给执行器的文案加任何前缀**，也不改写「未确认」的表述：
       // 头条那轮加了个「已提交，但」，真机记录里变成「已提交，但已点击发布，但…」。
       const message = result.steps.length > 0
@@ -1759,11 +1792,8 @@ export class PublishingService {
       return await this.finishAutoPublish(taskId, {
         status: result.ok ? "succeeded" : "failed",
         message,
-        // 「只填到草稿」必须**显式**落到记录里：界面据此说「已填写到草稿箱」而不是「已提交」。
-        // 判据用执行器回报的 `submitted`（**程序到底点没点过发布**），而**不是** `input.dryRun` ——
-        // 包自己声明 `submit:false` 时执行器同样一个提交键都不点，那条路径也属于「只填草稿」，
-        // 只看 dryRun 会漏掉它、界面继续撒谎（用户 2026-09-21 实测：显示「已提交」，去小红书找不到内容）。
-        ...(result.ok && result.submitted === false ? { draftOnly: true } : {}),
+        // 草稿只有在执行器提供完整持久化证据时才能记成功，不能由「未点发布」推断已保存。
+        ...(result.ok && result.submitted === false ? { draftOnly: true, xhsDraftId: result.xhsDraftId } : {}),
       }, actor);
     } catch (error) {
       // ⚠️ **所有**异常都落 failed：浏览器起不来、Playwright 超时、元素失效……
@@ -1791,6 +1821,10 @@ export class PublishingService {
 
   async cancelXhsLogin(): Promise<void> {
     await this.requireXhsRunner().cancelLogin();
+  }
+
+  async openXhsDraftWindow(): Promise<{ message: string }> {
+    return this.requireXhsRunner().openDraftWindow();
   }
 
   /**
@@ -1967,7 +2001,7 @@ export class PublishingService {
 
   private async finishAutoPublish(
     taskId: string,
-    patch: { status: "awaiting_code" | "succeeded" | "failed"; message?: string; draftOnly?: boolean; draftMediaId?: string; outcomeUncertain?: boolean },
+    patch: { status: "awaiting_code" | "succeeded" | "failed"; message?: string; draftOnly?: boolean; xhsDraftId?: string; draftMediaId?: string; outcomeUncertain?: boolean },
     actor: ActorSnapshot,
   ): Promise<PublishTask> {
     return this.storeCall(() => this.deps.store.updateAutoPublish(taskId, patch, actor));

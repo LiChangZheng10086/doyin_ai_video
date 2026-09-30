@@ -70,6 +70,8 @@ output/ui-audit-*/
 output/playwright/subtitle-gallery-*.png
 output/playwright/hotspots-*.png
 output/playwright/readme-*.png
+# 真实账号排障截图、临时脚本与平台下载包：仅保留在本机
+output/playwright/xhs-*
 
 # Vision Toolkit 运行期产物
 .dsh-vision-toolkit/

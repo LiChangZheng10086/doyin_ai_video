@@ -294,6 +294,9 @@ interface XhsNoteOptions {
 
 ## 10. 姿态开关（D4）
 
+> **2026-09-30 实测修正（优先于本节原结论）**：草稿仅存在同一浏览器 profile 的 `draft-database-v1/image-draft` IndexedDB 中，不同步到 App 或默认浏览器。原「填表即可保证自动保存」结论不足：用户本次草稿有标题与 10 张图片，但持久化正文为空，执行器却返回成功。`submit:false` / `dryRun:true` 现在必须点「暂存离开」，核实当前账号、本次时间及标题/正文/图片/AI 声明完整后才写成功和 `xhsDraftId`；核实失败写 failed。真人使用「打开小红书草稿浏览器」（同 profile）→「图文笔记」核对和发布。旧成功记录仅提示待核实。此核实只读本地 IndexedDB，仍不在正式点击发布后自动访问/确认笔记。
+
+
 `xhsOptions.submit` 是最后一步的开关：
 
 | | `submit: true`（姿态甲） | `submit: false`（姿态乙） |

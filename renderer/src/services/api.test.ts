@@ -2,6 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ApiClient, parseApiError, parseJobStepStreamEvent } from './api.js';
 
+test('audio import persists its accepted batch before the caller receives it, even if the panel was closed', async t => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage');
+  const saved = new Map<string, string>();
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: { setItem: (key: string, value: string) => saved.set(key, value) } });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, 'sessionStorage', previous); else delete (globalThis as any).sessionStorage; });
+  const client = new ApiClient();
+  const batch = { id: 'test-batch', items: [] };
+  client.getClient = async () => ({ request: async () => ({ data: { batch } }) }) as unknown as Awaited<ReturnType<ApiClient['getClient']>>;
+  assert.deepEqual(await client.importOnlineAudio(['netease:123']), batch);
+  assert.deepEqual(JSON.parse(saved.get('douyin-ai-video.online-audio-batch') ?? 'null'), batch);
+});
+
 test('all publishing API methods reject with one parsed error shape', async () => {
   const axiosError = {
     message: 'Request failed with status code 409',
@@ -204,4 +216,28 @@ test('image drafts and metadata writes carry explicit versions and searches pres
  assert.equal(seen[0].data.version, 3); assert.equal(seen[1].data.version, 4);
  assert.equal((await client.searchImageAssets('海边')).total, 12);
  await client.deleteImagePrompt('draft', 4); assert.equal(seen[3].data.version, 4);
+});
+
+test('independent article API transmits versions and never uses a video job endpoint',async () => {
+  const client = new ApiClient(); const seen: any[] = [];
+  (client as any).getClient = async () => ({request:async (config:any) => {seen.push(config);return {data:{article:{id:'article-id'},preview:{previewRevision:'revision'},detail:{package:{id:'package-id'}}}};}});
+  await client.saveArticle('article-id',{version:7,author:'作者'});
+  await client.runArticleStep('article-id','review',8);
+  await client.previewArticle('article-id',9);
+  await client.createArticlePackage('article-id',9,'revision');
+  assert.deepEqual(seen.map(c => c.data.version),[7,8,9,9]);
+  assert.ok(seen.every(c => c.url.startsWith('/api/articles/')));
+  assert.equal(seen[3].data.previewRevision,'revision');
+});
+
+test('打开小红书草稿调用本地会话 API，不走外部浏览器', async () => {
+  const client = new ApiClient();
+  let request: any;
+  client.getClient = async () => ({ request: async (input: unknown) => {
+    request = input; return { data: { message: '已打开本地草稿浏览器' } };
+  } }) as unknown as Awaited<ReturnType<ApiClient['getClient']>>;
+  const result = await client.openXhsDraftWindow();
+  assert.equal(request.method, 'POST');
+  assert.equal(request.url, '/api/publishing/xhs/drafts/window');
+  assert.match(result.message, /本地草稿浏览器/u);
 });

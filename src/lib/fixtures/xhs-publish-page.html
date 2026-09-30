@@ -113,6 +113,7 @@
 <script>
 (function () {
   var params = new URLSearchParams(location.search);
+  localStorage.setItem("snsWebPublishCurrentUser", "test-user");
 
   // ── 提交控件：closed shadow root ────────────────────────────────────────────
   // 内部按钮把点击写到 documentElement.dataset.lastClick，好让用例断言点中了哪一个。
@@ -135,6 +136,24 @@
       ].join("");
       root.querySelector(".save").addEventListener("click", function () {
         document.documentElement.dataset.lastClick = "save";
+        if (params.get("saveFails") === "1") return;
+        var request = indexedDB.open("draft-database-v1", 1);
+        request.onupgradeneeded = function () { request.result.createObjectStore("image-draft", { keyPath: "draftId" }); };
+        request.onsuccess = function () {
+          var db = request.result;
+          var tx = db.transaction("image-draft", "readwrite");
+          tx.objectStore("image-draft").put({
+            draftId: "test-draft", uid: params.get("saveWrongUser") === "1" ? "other-user" : "test-user",
+            timeStamp: params.get("saveOldDraft") === "1" ? 1 : Date.now(),
+            content: {
+              draftStore: { title: document.getElementById("titleInput").value,
+                descInnerHTML: params.get("saveDropsBody") === "1" ? "" : document.getElementById("editor").innerHTML,
+                imgList: Array.from({ length: uploaded }, function (_, index) { return { fileId: "test-image-" + index }; }) },
+              settingStore: { userDeclaration: { origin: 2 } }
+            }
+          });
+          tx.oncomplete = function () { db.close(); };
+        };
       });
       root.querySelector(".publish").addEventListener("click", function () {
         if (disabled) return;

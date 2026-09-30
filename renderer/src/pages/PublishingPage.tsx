@@ -14,7 +14,7 @@ import {
   Send,
   Trash2,
 } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Layout } from '../components/Layout';
 import { stripAnsi } from '../utils/display';
 import { desktop } from '../electron-bridge';
@@ -265,6 +265,11 @@ export function PublishingPage() {
       return;
     }
     if (action === 'open-platform') {
+      if ((detail.package.contentType ?? 'video') === 'note' && task.platform === 'xiaohongshu') {
+        const result = await run(() => apiClient.openXhsDraftWindow(), '');
+        if (result) setFeedback(result.message);
+        return;
+      }
       // 封面只对**视频 / 文章**包有意义；图文包的资产是图片，对它弹「缺少封面」纯属虚惊
       // （2026-09-21 顺手修：小红书图文包点「打开平台」时会先被问一句莫名其妙的封面）。
       if (!detail.package.coverPath && (detail.package.contentType ?? 'video') !== 'note') {
@@ -383,6 +388,7 @@ export function PublishingPage() {
       return;
     }
     if (action === 'create-version') {
+      if (detail.package.sourceKind === 'article') { navigate(`/articles/${detail.package.sourceArticleId}`); return; }
       const confirmed = await showDialog({ type: 'confirm', title: '创建新版本', description: '基于当前发布包创建一个独立新版本？' });
       if (!confirmed) return;
       await run(() => apiClient.createPublishingVersion(detail.package.id, {}), '新版本已创建');
@@ -429,7 +435,7 @@ export function PublishingPage() {
   ) => {
     const preview = await run(() => apiClient.getPublishingPackagePreview(packageId), '');
     if (!preview) return;
-    const videoUrl = preview.package.contentType === 'note'
+    const videoUrl = (preview.package.contentType ?? 'video') !== 'video'
       ? ''
       : await apiClient.getJobVideoStreamUrl(preview.package.sourceJobId).catch(() => '');
     setPublishPreview({ open: true, busy: false, preview, taskId, mode, videoUrl, dryRun });
@@ -445,10 +451,13 @@ export function PublishingPage() {
       ?? 'douyin';
     const task = await run(
       () => apiClient.autoPublishPublishingTask(taskId, preview.previewRevision, dryRun ? { dryRun: true } : {}),
-      dryRun
-        ? `已填写到${publishingPlatformLabel(platform)}草稿，请到 App 里核对后自行发布`
-        : `已提交，请在${publishingPlatformLabel(platform)}后台确认后点「标记已发布」`,
+      '',
     );
+    if (task) {
+      const hint = getPublishingAutoPublishHint(task) ?? `请在${publishingPlatformLabel(platform)}核对执行结果`;
+      if (task.autoPublish?.status === 'failed') setError(hint);
+      else setFeedback(hint);
+    }
     setPublishPreview({ open: false, busy: false, preview: null, taskId: '', mode: 'preview', videoUrl: '', dryRun: false });
     // 提交后落在 awaiting_code 时，直接把验证码入口摆出来（图文通路当前不触发，见 spec §7）
     if (task?.autoPublish?.status === 'awaiting_code') {
@@ -718,7 +727,7 @@ export function PublishingPage() {
 
 export function PackageRow({ detail, sourceJobId, role, expanded, busy, onToggle, onAction }: { detail: PublishingPackageDetail; sourceJobId: string; role: 'admin' | 'publisher'; expanded: boolean; busy: boolean; onToggle: () => void; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const pkg = detail.package;
-  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-elevated"><CoverThumbnail packageId={pkg.id} title={pkg.title} hasCover={Boolean(pkg.coverPath)} /><span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ai-soft text-sm font-bold text-ai">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-ink">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-elevated px-2 py-1 text-xs text-ink-muted">垃圾桶</span>}</div><p className="mt-1 text-xs text-ink-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p><p className="mt-1 text-xs font-medium text-accent">下一步：{publishingNextStep(detail)}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-line bg-canvas/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} busy={busy} onAction={onAction} />)}</div><details className="mt-4 border-t border-line pt-4"><summary className="cursor-pointer text-sm font-medium text-ink-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-ink-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-ink">{event.actor.displayName} · {event.action}{event.reason ? ` · ${stripAnsi(event.reason)}` : ''}</span></li>)}</ol></details>{sourceJobId && <p className="mt-3 text-xs text-ink-muted">源任务 {sourceJobId}</p>}</div>}</div>;
+  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-elevated"><CoverThumbnail packageId={pkg.id} title={pkg.title} hasCover={Boolean(pkg.coverPath)} /><span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ai-soft text-sm font-bold text-ai">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-ink">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-elevated px-2 py-1 text-xs text-ink-muted">垃圾桶</span>}</div><p className="mt-1 text-xs text-ink-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p><p className="mt-1 text-xs font-medium text-accent">下一步：{publishingNextStep(detail)}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-line bg-canvas/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} busy={busy} onAction={onAction} />)}</div><details className="mt-4 border-t border-line pt-4"><summary className="cursor-pointer text-sm font-medium text-ink-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-ink-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-ink">{event.actor.displayName} · {event.action}{event.reason ? ` · ${stripAnsi(event.reason)}` : ''}</span></li>)}</ol></details>{sourceJobId && <p className="mt-3 text-xs text-ink-muted">{pkg.sourceKind === 'article' ? <Link className="text-accent" to={`/articles/${pkg.sourceArticleId}`}>来源文章 · 打开工作台</Link> : <>源任务 {sourceJobId}</>}</p>}</div>}</div>;
 }
 
 function CoverThumbnail({ packageId, title, hasCover }: { packageId: string; title: string; hasCover: boolean }) {
@@ -783,7 +792,7 @@ export function AutoPublishHint({ task }: { task: PublishTask }) {
   if (!hint) return null;
   const tone = task.autoPublish?.status === 'failed'
     ? 'bg-danger-soft text-danger'
-    : task.autoPublish?.status === 'succeeded'
+    : task.autoPublish?.status === 'succeeded' && !(task.platform === 'xiaohongshu' && task.autoPublish.draftOnly && !task.autoPublish.xhsDraftId)
       ? 'bg-success-soft text-success'
       : 'bg-warning-soft text-warning';
   return <p className={`mt-2 rounded-lg px-3 py-2 text-xs ${tone}`}>{hint}</p>;

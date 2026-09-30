@@ -3,8 +3,8 @@
  *
  * 这里守的是编排层的四条纪律，每一条都对应一次真实事故或一条平台风险：
  *
- * 1. **姿态开关**：`submit: false`（默认）时**一个提交类按钮都不能被点**——平台会自己存草稿，
- *    最后一下由真人点（spec §10 方案乙，已被真机演练验证「草稿箱中有未发布的作品」）。
+ * 1. **姿态开关**：`submit: false`（默认）时必须显式暂存并核实，不能点发布；
+ *    发布由真人点（spec §10 方案乙，已被真机演练验证「草稿箱中有未发布的作品」）。
  * 2. ⚠️ **点完发布不做任何读回**（spec §9）：`xiaohongshu-mcp` #715 报「让 AI 确认发布成功了没有 →
  *    第一次警告第二次七天」。所以点完之后**不允许再碰页面** —— 本文件用「提交后的操作日志必须为空」
  *    这条反向断言把它钉死。
@@ -46,6 +46,7 @@ interface FakeState {
   titleDrop?: "never" | "first" | "always";
   /** `goto` 直接抛错（复刻浏览器层异常）。 */
   gotoFails?: boolean;
+  draftConfirms?: boolean;
 }
 
 /**
@@ -163,11 +164,11 @@ function fakePublishPage(state: FakeState = {}) {
       },
     },
     mouse: {
-      async click() {
+      async click(x) {
         note("mouse.click()");
         data.submitOpened = true;
         // 宿主 680 宽：publish 中心 0.607、save 中心 0.396。假页面按同样的偏移判断。
-        data.clicked = "publish";
+        data.clicked = x < 338 + 680 * 0.5 ? "save" : "publish";
       },
     },
     async waitForTimeout() {
@@ -175,6 +176,7 @@ function fakePublishPage(state: FakeState = {}) {
     },
     async evaluate<T>(expression: string): Promise<T> {
       note("evaluate()");
+      if (expression.includes("draft-database-v1")) return (state.draftConfirms === false ? "" : "test-draft") as T;
       if (expression.includes("上传图文")) return "ok" as unknown as T;
       return "" as unknown as T;
     },
@@ -184,9 +186,10 @@ function fakePublishPage(state: FakeState = {}) {
 }
 
 function runnerWith(page: XhsPublishPageLike, storageRoot: string) {
+  let closed = false;
   const session: XhsBrowserSession = {
     page: page as unknown as XhsPageLike,
-    close: async () => undefined,
+    close: async () => { closed = true; },
   };
   const runner = new XhsRunner({
     storageRoot,
@@ -194,7 +197,7 @@ function runnerWith(page: XhsPublishPageLike, storageRoot: string) {
     sleep: async () => undefined,
     openSession: async () => session,
   });
-  return { runner, session };
+  return { runner, session, get closed() { return closed; } };
 }
 
 const INPUT = {
@@ -205,7 +208,7 @@ const INPUT = {
   submit: false,
 };
 
-test("姿态乙（submit:false）：填完即停，**一个提交按钮都没点过**", async () => {
+test("草稿模式必须点击暂存并验证持久化，不能填完就报成功", async () => {
   const storage = await tempDir();
   const { page, data } = fakePublishPage();
   const { runner } = runnerWith(page, storage);
@@ -214,10 +217,10 @@ test("姿态乙（submit:false）：填完即停，**一个提交按钮都没点
 
   assert.equal(result.ok, true, result.message);
   assert.equal(result.submitted, false);
-  assert.equal(data.clicked, "", "姿态乙绝不能点提交控件");
+  assert.equal(data.clicked, "save", "草稿模式必须暂存，绝不能点发布");
   assert.equal(result.verification, "unconfirmed");
   assert.match(result.message, /草稿/u);
-  assert.match(result.message, /小红书 App/u, "必须告诉用户下一步去 App 里核实并点发布");
+  assert.doesNotMatch(result.message, /App/u, "浏览器本地草稿不能引导去 App 查找");
   // 步骤要按真实顺序记录（上传在前 —— 页面是分阶段渲染的）。
   assert.deepEqual(result.steps.map((step) => step.split("：")[0]), [
     "进入发布页",
@@ -225,7 +228,7 @@ test("姿态乙（submit:false）：填完即停，**一个提交按钮都没点
     "填写标题",
     "填写正文",
     "声明 AI 合成内容",
-    "停在点「发布」之前",
+    "保存并核实浏览器本地草稿",
   ]);
 });
 
@@ -262,7 +265,7 @@ test("⚠️ 点完提交之后**不允许再碰页面**（反向断言：提交
   assert.equal(data.submitOpened, true);
 });
 
-test("演练（dryRun:true）等价于姿态乙：即使调用方写了 submit:true 也不点", async () => {
+test("演练（dryRun:true）即使 submit:true 也只暂存，不点发布", async () => {
   const storage = await tempDir();
   const { page, data } = fakePublishPage();
   const { runner } = runnerWith(page, storage);
@@ -270,7 +273,7 @@ test("演练（dryRun:true）等价于姿态乙：即使调用方写了 submit:t
   const result = await runner.publishNote({ ...INPUT, submit: true }, { dryRun: true });
 
   assert.equal(result.submitted, false);
-  assert.equal(data.clicked, "");
+  assert.equal(data.clicked, "save");
   assert.match(result.steps.join("\n"), /演练/u);
 });
 
@@ -386,3 +389,16 @@ test("openSession 抛错同样收敛成 ok:false（浏览器起不来也不能 5
   assert.equal(result.ok, false, `本应失败却成功了：${result.message}`);
   assert.match(result.message, /EPERM/u);
 });
+
+ test("暂存后无法确认完整草稿时必须失败并关闭会话", async () => {
+  const storage = await tempDir();
+  const { page, data } = fakePublishPage({ draftConfirms: false });
+  const harness = runnerWith(page, storage);
+  const result = await harness.runner.publishNote(INPUT);
+  assert.equal(harness.closed, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, "xhs_page_draft_not_confirmed");
+  assert.equal(result.submitted, false);
+  assert.equal(result.xhsDraftId, undefined);
+  assert.equal(data.clicked, "save");
+ });

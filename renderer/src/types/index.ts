@@ -77,6 +77,8 @@ export interface XhsNoteOptions {
 export interface DeliveryPackage {
   id: string;
   sourceJobId: string;
+  sourceKind?: "job" | "article";
+  sourceArticleId?: string;
   version: number;
   state: PublishPackageState;
   title: string;
@@ -125,12 +127,10 @@ export interface PublishAutoPublish {
   finishedAt?: string;
   message?: string;
   attemptId: string;
-  /**
-   * 「只填到草稿」：本次**没有点发布**，内容只在平台草稿箱里。
-   * 界面必须据此说「已填写到草稿箱」而不是「已提交」（2026-09-21 用户实测：
-   * 显示「已提交」→ 去小红书找不到内容，因为它在草稿箱）。
-   */
+  /** 本次未点发布；小红书完整本地草稿另由 xhsDraftId 证明。 */
   draftOnly?: boolean;
+  /** 小红书浏览器本地图文草稿 ID；仅在完整内容持久化核实后记录。 */
+  xhsDraftId?: string;
   draftMediaId?: string;
   outcomeUncertain?: boolean;
 }
@@ -872,6 +872,9 @@ export interface AssetRecord {
   imagePromptVersion?: number;
   metadataVersion?: number;
   createdAt: string;
+  audioSource?: {
+    platform: 'netease' | 'qq'; trackId: string; title: string; artist: string; url: string; previewOnly: boolean;
+  };
 }
 
 /**

@@ -294,7 +294,7 @@ export interface NotePackageFormProps {
   /** 小红书合规开关：声明「笔记含AI合成内容」。默认开。 */
   xhsAiDeclaration: boolean;
   onXhsAiDeclarationChange: (value: boolean) => void;
-  /** 小红书最后一步：`true` = 由程序点发布；默认 `false`（只填到草稿，真人在 App 里点）。 */
+  /** 小红书最后一步：`true` = 由程序点发布；默认 `false`（只填到草稿，真人在同一浏览器中点）。 */
   xhsSubmit: boolean;
   onXhsSubmitChange: (value: boolean) => void;
   busy: boolean;
@@ -430,7 +430,7 @@ export function NotePackageForm(props: NotePackageFormProps) {
           })}
         </div>
         <p className="text-xs leading-5 text-ink-muted">
-          抖音由外部引擎提交；小红书由自研执行器填写（默认只填到草稿，由你在小红书 App 里点发布）。
+          抖音由外部引擎提交；小红书由自研执行器填写（默认保存到浏览器本地图文草稿，点「打开小红书草稿浏览器」核对并发布）。
           ⚠️ 自动化发布违反平台规则，风险由你的账号承担。
         </p>
 
@@ -460,7 +460,7 @@ export function NotePackageForm(props: NotePackageFormProps) {
               <span>
                 创建后由程序点发布
                 <span className="mt-0.5 block text-xs text-ink-muted">
-                  推荐保持关闭：只把标题、正文、图片与 AI 声明填好并存为草稿，最后一下由你在 App 里点。
+                  推荐保持关闭：只把标题、正文、图片与 AI 声明填好并存为草稿，最后一下由你在同一草稿浏览器里点；不会同步到手机。
                   打开后提交时会真的点「发布」，请自行评估账号风险。
                 </span>
               </span>

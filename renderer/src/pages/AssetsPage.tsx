@@ -8,6 +8,7 @@ import { PageHeader } from '../components/ui/PageHeader';
 import { EmptyState } from '../components/ui/EmptyState';
 import { Button } from '../components/ui/Button';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { OnlineAudioPanel } from '../components/OnlineAudioPanel';
 import { apiClient } from '../services/api';
 import type { AssetKind, AssetRecord } from '../types';
 
@@ -42,6 +43,7 @@ export function AssetsPage() {
   const [uploading, setUploading] = useState<AssetKind | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AssetRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [showOnlineAudio, setShowOnlineAudio] = useState(false);
   const [showPrompts, setShowPrompts] = useState(false);
   const [query, setQuery] = useState(''); const [imageQuery, setImageQuery] = useState('');
   const [imageTotal, setImageTotal] = useState(0); const [searching, setSearching] = useState(false);
@@ -176,7 +178,7 @@ export function AssetsPage() {
 
   return (
     <Layout>
-      <PageHeader title="素材" description="手动上传图片与音频，供后续创作选用。" />
+      <PageHeader title="素材" description="上传图片与音频，或在线发现歌曲并下载到素材库。" />
 
       <div className="mb-4 flex flex-wrap gap-2"><Button aria-expanded={showPrompts} disabled={promptGuard.busy} onClick={() => { if (!showPrompts || !promptGuard.dirty || window.confirm('提示词面板有未保存内容，放弃并关闭？')) setShowPrompts(value => !value); }}>图片提示词</Button></div>
       {showPrompts && <div className="mb-6"><ImagePromptPanel onAssetsChanged={refreshImages} onDirtyChange={promptChanged} /></div>}
@@ -303,7 +305,10 @@ export function AssetsPage() {
                 </h2>
                 <p className="mt-1 text-xs text-ink-muted">支持 mp3 / wav / m4a / aac，单个不超过 50MB。</p>
               </div>
-              {renderUploadButton('audio', '上传音频')}
+              <div className="flex gap-2">
+                <Button aria-expanded={showOnlineAudio} variant={showOnlineAudio ? 'accent' : 'outline'} onClick={() => setShowOnlineAudio(value => !value)}>在线音频</Button>
+                {renderUploadButton('audio', '上传音频')}
+              </div>
               <input
                 ref={audioInput}
                 type="file"
@@ -319,12 +324,13 @@ export function AssetsPage() {
 
             {/* 这条提示是刻意的：上传的音频目前不会混进成片 */}
             <div className="mb-4 rounded-lg border border-line bg-elevated px-4 py-3 text-sm text-ink-muted">
-              音频暂未接入成片，本轮仅支持上传与试听。
+              音频可从在线榜单获取或本地上传，入库后可以试听与管理；暂未接入成片。
             </div>
 
+            {showOnlineAudio && <OnlineAudioPanel assets={audio} onImported={refreshAudio} />}
 
             {audio.length === 0 ? (
-              renderEmpty(AudioLines, '还没有音频素材', '上传后可以在这里试听与管理。')
+              renderEmpty(AudioLines, '还没有音频素材', '点击「在线音频」发现歌曲，或上传本地音频。')
             ) : (
               <ul className="space-y-3">
                 {audio.map((record) => (
@@ -336,6 +342,7 @@ export function AssetsPage() {
                         </p>
                         <p className="mt-1 text-xs text-ink-muted">
                           {formatDuration(record.durationMs)} · {formatBytes(record.bytes)} · {formatDate(record.createdAt)}
+                          {record.audioSource && <> · {record.audioSource.platform === 'netease' ? '网易云音乐' : 'QQ音乐'}{record.audioSource.previewOnly ? ' · 试听片段' : ''}</>}
                         </p>
                       </div>
                       <button

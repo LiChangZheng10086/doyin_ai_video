@@ -58,3 +58,11 @@ test('mobile navigation exposes six slots after adding assets', () => {
   assert.equal(MOBILE_NAV_ITEMS.length, 6);
   assert.ok(MOBILE_NAV_ITEMS.some((item) => 'to' in item && item.to === '/assets'));
 });
+
+test('articles and its workbench share a navigation destination available in mobile more', () => {
+  const item = PRIMARY_NAV_ITEMS.find(i => i.to === '/articles'); assert.ok(item);
+  assert.equal(isNavigationItemActive('/articles/id',item),true);
+  assert.equal(getPageContext('/articles/id').title,'文章创作');
+  assert.ok(MOBILE_MORE_ITEMS.some(i => i.to === '/articles'));
+  assert.equal(MOBILE_NAV_ITEMS.length,6);
+});

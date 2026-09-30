@@ -209,6 +209,16 @@ test("list filters by kind and refuses to overwrite a corrupt index", async () =
   assert.equal(await readFile(path.join(root, 'cache', 'assets-index.json'), 'utf8'), '{ not json');
 });
 
+test('concurrent uploads preserve every record and online source metadata is deduplicated', async () => {
+  const { store } = await fixture();
+  await Promise.all(Array.from({ length: 12 }, (_, i) => store.add('audio', { originalName: `${i}.wav`, data: wavBytes() })));
+  assert.equal((await store.list()).length, 12);
+  const audioSource = { platform: 'netease' as const, trackId: '123', title: 'Test music', artist: 'Test artist', url: 'https://music.163.com/song?id=123', previewOnly: false };
+  const records = await Promise.all([0, 1].map(() => store.add('audio', { originalName: 'online.wav', data: wavBytes(), audioSource, durationMs: 1000 })));
+  assert.equal(records[0].id, records[1].id);
+  assert.deepEqual((await store.get(records[0].id))?.audioSource, audioSource);
+  assert.equal((await store.list()).length, 13);
+});
 
 test("resolveFile reports mime type and size, and refuses unknown ids", async () => {
   const { store } = await fixture();

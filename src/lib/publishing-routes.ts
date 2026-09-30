@@ -234,6 +234,10 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
     res.json(await deps.publishing.verifyXhsLogin());
   }));
 
+  router.post("/publishing/xhs/drafts/window", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.openXhsDraftWindow());
+  }));
+
   router.post("/publishing/due/check", writable, route(async (req, res) => {
     const input = requestBody(req);
     if (Object.keys(input).length > 0) invalid("到期检查不接受操作者或状态参数");

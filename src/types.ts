@@ -96,7 +96,7 @@ export interface PlatformCopy {
  * `aiDeclaration`：平台 2026-02-12 公告要求 AI 生成合成内容**在发布环节主动标识**，
  * 未标识会被限制分发。我们的内容整条由 AI 生成，所以这是**合规开关**，默认 `true`。
  *
- * `submit`：最后一步的开关。`false` = 只填到草稿（平台会自动存草稿，由真人在 App 里点发布）；
+ * `submit`：最后一步的开关。`false` = 暂存并核实浏览器本地草稿，由真人在同一浏览器中点发布；
  * `true` = 由程序点「发布」。默认 `false`（见 spec §10）。
  */
 export interface XhsNoteOptions {
@@ -107,6 +107,8 @@ export interface XhsNoteOptions {
 export interface DeliveryPackage {
   id: string;
   sourceJobId: string;
+  sourceKind?: "job" | "article";
+  sourceArticleId?: string;
   version: number;
   state: PublishPackageState;
   title: string;
@@ -181,15 +183,10 @@ export interface PublishAutoPublish {
   message?: string;
   /** 单次尝试的唯一 id。 */
   attemptId: string;
-  /**
-   * **只填到草稿**（小红书「填写到小红书（不提交）」这条通路）：`true` = 本次**没有点发布**，
-   * 内容只落在平台的**草稿箱**里。
-   *
-   * 为什么要有这个字段（2026-09-21 用户实测）：界面此前没有它，只能按 `status === "succeeded"`
-   * 说「**已提交**，请到后台确认」—— 用户照着去小红书找，**根本找不到**（内容在草稿箱，
-   * 压根没发布）。靠 `message` 里有没有「草稿」字样来猜更糟（那是会漂移的第二真源）。
-   */
+  /** 本次没有点发布；小红书是否完整保存另由 xhsDraftId 证明，旧记录没有保存证据。 */
   draftOnly?: boolean;
+  /** 小红书浏览器本地图文草稿 ID；仅在完整内容持久化核实后记录。 */
+  xhsDraftId?: string;
   /** 微信草稿 ID；不是正式发布 ID。 */
   draftMediaId?: string;
   /** 创建请求结果未知，必须先人工核实，不允许直接重发。 */

@@ -6,6 +6,15 @@ import { promptText, promptTags, promptVersion, type ImagePromptRecord } from '.
 
 export type AssetKind = "image" | "audio";
 
+export interface AudioAssetSource {
+  platform: 'netease' | 'qq';
+  trackId: string;
+  title: string;
+  artist: string;
+  url: string;
+  previewOnly: boolean;
+}
+
 export interface AssetRecord {
   id: string;
   kind: AssetKind;
@@ -17,6 +26,7 @@ export interface AssetRecord {
   width?: number;
   height?: number;
   durationMs?: number;
+  audioSource?: AudioAssetSource;
   description?: string;
   tags?: string[];
   generationPrompt?: string;
@@ -144,12 +154,17 @@ export class AssetStore {
     return operation;
   }
 
-  add(kind: AssetKind, input: { originalName: string; data: Buffer;
+  add(kind: AssetKind, input: { originalName: string; data: Buffer; durationMs?: number; audioSource?: AudioAssetSource;
     metadata?: ImageAssetMetadata; imagePrompt?: Pick<ImagePromptRecord, 'id' | 'version' | 'prompt'> }): Promise<AssetRecord> {
     return this.mutate(async () => {
     if (kind !== 'image' && (input.metadata !== undefined || input.imagePrompt !== undefined)) throw new AssetError('asset_metadata_invalid', 400, '音频不接受图片元数据');
     const metadata = input.metadata === undefined ? {} : validateImageMetadata(input.metadata);
       const index = await this.readIndex();
+      if (input.audioSource && kind === 'audio') {
+        const existing = Object.values(index.assets).find(record => record.kind === 'audio'
+          && record.audioSource?.platform === input.audioSource!.platform && record.audioSource.trackId === input.audioSource!.trackId);
+        if (existing && await this.resolveFile(existing.id)) return existing;
+      }
       const extension = path.extname(input.originalName).toLowerCase();
       const allowedHere = KIND_EXTENSIONS[kind].has(extension);
       const otherKind: AssetKind = kind === "image" ? "audio" : "image";
@@ -177,6 +192,8 @@ export class AssetStore {
         bytes: input.data.byteLength,
         createdAt: new Date().toISOString(),
         ...(kind === "image" ? readImageSize(input.data) : readAudioDuration(input.data)),
+        ...(kind === 'audio' && input.durationMs !== undefined ? { durationMs: input.durationMs } : {}),
+      ...(kind === 'audio' && input.audioSource ? { audioSource: input.audioSource } : {}),
       ...(kind === 'image' ? { ...metadata, metadataVersion: 1 } : {}),
       ...(input.imagePrompt ? { imagePromptId: input.imagePrompt.id, imagePromptVersion: input.imagePrompt.version, generationPrompt: input.imagePrompt.prompt } : {}),
       };

@@ -29,6 +29,7 @@ import {
   fillBody,
   fillTitle,
   selectAiDeclaration,
+  saveDraftAndConfirm,
   uploadImages,
   type XhsPublishPageLike,
 } from "./xhs-page.js";
@@ -252,6 +253,41 @@ test("提交：`save` 模式点的是「暂存离开」（姿态乙的显式存�
   await clickSubmit(page, "save");
   assert.equal(await page.evaluate<string>(`document.documentElement.dataset.lastClick || ""`), "save");
 });
+
+test("草稿必须事务提交且正文、图片和声明完整，页面重载后仍可读", { skip }, async () => {
+  const { page, raw } = await openFixture();
+  await uploadImages(page, [await makeImage("a.png")]);
+  await fillTitle(page, "草稿标题");
+  await fillBody(page, "第一段。\n第二段。");
+  await selectAiDeclaration(page);
+  const draftId = await saveDraftAndConfirm(page, { title: "草稿标题", body: "第一段。\n第二段。", imageCount: 1 });
+  assert.equal(draftId, "test-draft");
+  assert.equal(await page.evaluate<string>(`document.documentElement.dataset.lastClick`), "save");
+  await (raw as { reload(): Promise<unknown> }).reload();
+  const persisted = await page.evaluate<string>(`new Promise(resolve => {
+    const request = indexedDB.open("draft-database-v1");
+    request.onsuccess = () => {
+      const db = request.result;
+      const read = db.transaction("image-draft", "readonly").objectStore("image-draft").get("test-draft");
+      read.onsuccess = () => { resolve(read.result.content.draftStore.descInnerHTML); db.close(); };
+    };
+  })`);
+  assert.match(persisted, /第一段/u);
+  assert.match(persisted, /第二段/u);
+});
+
+for (const failure of ["saveFails", "saveDropsBody", "saveOldDraft", "saveWrongUser"]) {
+  test(`草稿保存失败或内容不完整时拒绝成功：${failure}`, { skip }, async () => {
+    const { page } = await openFixture({ [failure]: "1" });
+    await uploadImages(page, [await makeImage("a.png")]);
+    await fillTitle(page, "草稿标题");
+    await fillBody(page, "完整正文。");
+    await selectAiDeclaration(page);
+    await assert.rejects(() => saveDraftAndConfirm(page, { title: "草稿标题", body: "完整正文。", imageCount: 1 }),
+      (error: unknown) => error instanceof XhsPageError && error.code === "xhs_page_draft_not_confirmed");
+    assert.equal(await page.evaluate<string>(`document.documentElement.dataset.lastClick`), "save");
+  });
+}
 
 test("提交：按钮禁用时**不点**，并明确报错", { skip }, async () => {
   const { page } = await openFixture({ submitDisabled: "1" });

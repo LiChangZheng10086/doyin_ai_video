@@ -1,3 +1,9 @@
+import { ArticleService } from './lib/articles.js';
+import { WechatBenchmarkService } from './lib/wechat-benchmarks.js';
+import { registerWechatBenchmarkRoutes } from './lib/wechat-benchmark-routes.js';
+import { ArticleWritingService } from './lib/article-writing.js';
+import { registerArticleRoutes } from './lib/article-routes.js';
+import type { readArticleSource } from './lib/article-sources.js';
 import express, { Express, type Request, type Response } from "express";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -14,6 +20,8 @@ import { AssetStore } from "./lib/assets-store.js";
 import { registerAssetRoutes } from "./lib/assets-routes.js";
 import { ImagePromptService } from './lib/image-prompts.js';
 import { registerImagePromptRoutes } from './lib/image-prompt-routes.js';
+import { OnlineAudioService } from './lib/online-audio.js';
+import { registerOnlineAudioRoutes } from './lib/online-audio-routes.js';
 import { GalleryService } from "./lib/galleries.js";
 import { GalleryMedia } from "./lib/gallery-media.js";
 import { registerGalleryRoutes } from "./lib/gallery-routes.js";
@@ -89,6 +97,8 @@ export interface ServerConfig {
   noteMedia?: NoteImagePreparer;
   /** 直接注入文章成文（测试用）；省略时用真实 AI 配置 + 本地兜底。 */
   planArticle?: ArticlePlanner;
+  articleWriter?: Pick<ArticleWritingService, 'run'>;
+  readArticleSource?: typeof readArticleSource;
   wechatMp?: { appId?: string; appSecret?: string; author?: string };
   resolveWechatConfig?: () => Promise<{ appId?: string; appSecret?: string; author?: string }>;
   wechatClient?: WechatMpClient;
@@ -375,9 +385,21 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   registerLocalUserRoutes(app, { users: localUsers, sessions: localSessions });
   registerAssetRoutes(app, { assets: assetStore, prompts: imagePrompts, sessions: localSessions, limits: config.assetUploadLimits });
   registerImagePromptRoutes(app, { prompts: imagePrompts, sessions: localSessions });
+  registerOnlineAudioRoutes(app, { audio: new OnlineAudioService(storage, assetStore, { ffprobeBinary: config.ffprobeBinary }), sessions: localSessions });
   registerLocalUserErrorBoundary(app);
   registerPublishingRoutes(app, { publishing, sessions: localSessions });
-  registerHotspotRoutes(app, { hotspots: new HotspotService(storage), sessions: localSessions });
+  const hotspots = new HotspotService(storage);
+  registerHotspotRoutes(app, { hotspots, sessions: localSessions });
+  const wechatBenchmarks = new WechatBenchmarkService(storage);
+  registerWechatBenchmarkRoutes(app, {benchmarks:wechatBenchmarks,sessions:localSessions});
+  registerArticleRoutes(app, {sessions:localSessions, articles:new ArticleService({storage,
+    writer:config.articleWriter ?? new ArticleWritingService({resolveAiConfig:resolvePublishingAiConfig}),
+    readSource:config.readArticleSource,
+    resolveHotspot:(sourceId,itemId) => hotspots.resolveForArticle(sourceId,itemId),
+    resolveBenchmark:id => wechatBenchmarks.forArticle(id),
+    resolveAsset:id => assetStore.resolveFile(id),
+    createPackage:input => publishingService.createIndependentArticle(input),
+  })});
   registerGalleryRoutes(app, { sessions: localSessions, galleries: new GalleryService({
     storage, jobs,
     media: new GalleryMedia({ ffmpegBinary: config.ffmpegBinary, ffprobeBinary: config.ffprobeBinary }),

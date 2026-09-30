@@ -27,6 +27,7 @@ import {
   fillBody,
   fillTitle,
   selectAiDeclaration,
+  saveDraftAndConfirm,
   uploadImages,
   type XhsPublishPageLike,
 } from "./xhs-page.js";
@@ -94,6 +95,7 @@ export interface XhsPageLike {
 export interface XhsBrowserSession {
   page: XhsPageLike;
   close(): Promise<void>;
+  onClose?(callback: () => void): void;
 }
 
 export interface XhsLaunchOptions {
@@ -136,7 +138,7 @@ export interface XhsPublishInput {
    */
   aiDeclaration: boolean;
   /**
-   * 最后一步开关：`false` = 只填到草稿（平台会自动存，真人去 App 点发布）；
+   * 最后一步开关：`false` = 显式暂存并核实浏览器本地草稿（真人在同一浏览器点发布）；
    * `true` = 由程序点「发布」。默认由调用方决定，spec §10 规定**默认 false**。
    */
   submit: boolean;
@@ -150,8 +152,11 @@ export interface XhsPublishResult {
   steps: string[];
   /** 程序**是否点过**「发布」。注意它不等于「是否真的发出去了」。 */
   submitted: boolean;
+  /** 只有当前 profile 的完整草稿已持久化并读回才返回。 */
+  xhsDraftId?: string;
   /**
-   * ⚠️ **恒为 `unconfirmed`**：按设计**点完不做任何读回**（spec §9，
+   * ⚠️ 发布结果**恒为 `unconfirmed`**：点发布后不做读回，草稿保存另由 `xhsDraftId` 证明。
+   * 按设计**点完发布不做任何读回**（spec §9，
    * `xiaohongshu-mcp` #715「让 AI 确认发布成功了没有 → 第一次警告第二次七天」）。
    * 保留这个字段是为了与抖音/头条通路的形状一致，让服务层能用同一套表达。
    */
@@ -361,6 +366,8 @@ export class XhsRunner {
   private loginSession: LoginSession | undefined;
   /** 启动中的登录会话（同步置位）：没有它，两个并发请求会各开一个浏览器并互相覆盖。 */
   private loginStarting = false;
+  private profileBusy = false;
+  private draftSession: XhsBrowserSession | undefined;
   private exitCleanupInstalled = false;
 
   constructor(private readonly config: XhsRunnerConfig) {
@@ -368,7 +375,19 @@ export class XhsRunner {
     this.sleep = config.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.loginTimeoutMs = config.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS;
     this.windowLoginTimeoutMs = config.windowLoginTimeoutMs ?? DEFAULT_WINDOW_LOGIN_TIMEOUT_MS;
-    this.openSession = config.openSession ?? openXhsSession;
+    const opener = config.openSession ?? openXhsSession;
+    this.openSession = async options => {
+      if (this.profileBusy) throw new XhsRunnerError("xhs_login_in_progress",
+        "小红书浏览器正在使用中：请先关闭草稿浏览器，或等待当前登录/填稿完成后重试。");
+      this.profileBusy = true;
+      let released = false;
+      const release = () => { if (!released) { released = true; this.profileBusy = false; } };
+      try {
+        const session = await opener(options);
+        session.onClose?.(release);
+        return { ...session, close: async () => { try { await session.close(); } finally { release(); } } };
+      } catch (error) { release(); throw error; }
+    };
     try {
       this.profileDir = resolveXhsProfileDir(config.storageRoot, config.profileDir);
     } catch (error) {
@@ -392,6 +411,38 @@ export class XhsRunner {
 
   get profileDirectory(): string {
     return this.profileDir;
+  }
+
+  /** 使用填稿时的同一个 profile；窗口交给用户，直到手动关闭或应用退出。 */
+  async openDraftWindow(): Promise<{ message: string }> {
+    if (this.draftSession) return { message: "小红书草稿浏览器已打开，请在该窗口的「图文笔记」中核对。" };
+    const resolution = safeResolve(() => resolveXhsHeadedBrowser(this.config));
+    if (!resolution.target) throw new XhsRunnerError("xhs_browser_unavailable",
+      "打开本地草稿需要可显示窗口的浏览器：请安装 Google Chrome，或运行 npx playwright install chromium。"
+      + `\n逐层诊断：${describeAttempts(resolution.attempts)}`);
+    const session = await this.openSession({ profileDir: this.profileDir, target: resolution.target, headed: true });
+    try {
+      await session.page.goto(XHS_PUBLISH_URL, { waitUntil: "domcontentloaded" });
+      await settle(session.page);
+      // 只打开草稿箱并选择图文类型；不打开编辑器、不触发发布。
+      await session.page.evaluate(`(() => {
+        const clickText = (pattern) => {
+          const target = Array.from(document.querySelectorAll("span, div, button, a"))
+            .find(element => element.children.length === 0 && pattern.test((element.textContent || "").trim()));
+          if (target) target.click();
+        };
+        clickText(/^草稿箱(?:\\(\\d+\\))?$/u);
+      })()`);
+      await session.page.waitForTimeout?.(500);
+      await session.page.evaluate(`(() => {
+        const target = Array.from(document.querySelectorAll("span, div, button, a"))
+          .find(element => element.children.length === 0 && /^图文笔记\\(\\d+\\)$/u.test((element.textContent || "").trim()));
+        if (target) target.click();
+      })()`);
+      this.draftSession = session;
+      session.onClose?.(() => { if (this.draftSession === session) this.draftSession = undefined; });
+      return { message: "已打开小红书草稿浏览器。请在「图文笔记」核对；草稿仅存于这个浏览器，不会同步到手机。" };
+    } catch (error) { await closeQuietly(session); throw error; }
   }
 
   /**
@@ -561,7 +612,7 @@ export class XhsRunner {
    * 顺序不能变：页面是**分阶段渲染**的 —— 不先上传图片，标题/正文/声明/提交都**不在 DOM 里**。
    *
    * 三条纪律（详见本文件头与 spec §9/§10/§11）：
-   * · `submit: false`（默认）→ 填完即停，**一个提交按钮都不点**（平台自动存草稿，真人点最后一下）；
+   * · `submit: false`（默认）→ 暂存并核实完整本地草稿，绝不点发布；
    * · `submit: true` → 点「发布」，但**点完之后不再碰页面**，`verification` 恒为 `unconfirmed`；
    * · 任何一步失败都**停在点发布之前**，并在 message 里写明**已完成到哪一步**；
    *   任何异常都收敛成 `ok:false`，绝不抛给服务层变成 500。
@@ -629,15 +680,19 @@ export class XhsRunner {
       steps.push(`声明 AI 合成内容：${XHS_AI_DECLARATION_TEXT}`);
 
       if (!submitEnabled) {
-        current = "停在点「发布」之前";
-        steps.push(options.dryRun ? "演练：停在点「发布」之前" : "停在点「发布」之前");
+        current = "保存并核实浏览器本地草稿";
+        const xhsDraftId = await saveDraftAndConfirm(page, {
+          title: input.title, body: input.body, imageCount: input.imagePaths.length,
+        });
+        steps.push(`${current}：${xhsDraftId}${options.dryRun ? "（演练，未发布）" : ""}`);
         return {
           ok: true,
           submitted: false,
+          xhsDraftId,
           verification: "unconfirmed",
           steps,
-          message: "已把标题、正文与 AI 声明填好，内容会由小红书自动存为**草稿**（本工具**没有点「发布」**）。"
-            + "请到小红书 App 里核对内容，由你本人点发布。",
+          message: "已保存并核实小红书浏览器本地图文草稿（本工具没有点发布）。"
+            + "请点「打开小红书草稿浏览器」核对并自行发布；草稿不会同步到手机或其它浏览器。",
         };
       }
 
@@ -679,6 +734,9 @@ export class XhsRunner {
 
   async dispose(): Promise<void> {
     await this.discardSession();
+    const draft = this.draftSession;
+    this.draftSession = undefined;
+    if (draft) await closeQuietly(draft);
   }
 
   /** 退出清理：尽力关掉登录会话的浏览器，避免留下持有 profile 的孤儿进程。 */
@@ -689,6 +747,7 @@ export class XhsRunner {
       const current = this.loginSession;
       this.loginSession = undefined;
       if (current) void current.session.close().catch(() => undefined);
+      if (this.draftSession) void this.draftSession.close().catch(() => undefined);
     };
     process.once("exit", cleanup);
     process.once("SIGINT", cleanup);
@@ -770,6 +829,7 @@ export async function openXhsSession(options: XhsLaunchOptions): Promise<XhsBrow
     return {
       page: page as unknown as XhsPageLike,
       close: () => context.close().catch(() => undefined),
+      onClose: callback => { context.once("close", callback); },
     };
   } catch (error) {
     // **任意**启动异常都包成带原因 + 带动作的错误：原始异常冒到路由层会变成 500，

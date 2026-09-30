@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useBlocker, useSearchParams } from 'react-router-dom';
+import { useBlocker, useSearchParams, useNavigate } from 'react-router-dom';
 import { Bookmark, Check, ExternalLink, Flame, RefreshCw, Search, StickyNote } from 'lucide-react';
 import type { HotspotBoard, HotspotFavorite, HotspotItem } from '../../../src/lib/hotspots';
 import { Layout } from '../components/Layout';
@@ -16,9 +16,9 @@ function SourceLink({ url, children, className = '' }: { url: string; children: 
   }}>{children}</a>;
 }
 
-export function HotspotBoardCard({ board, favorites, busy, onToggle, onSelectSource, compact = false, now = Date.now() }: {
+export function HotspotBoardCard({ board, favorites, busy, onToggle, onSelectSource, compact = false, now = Date.now(), onCreate }: {
   board: HotspotBoard; favorites: HotspotFavorite[]; busy: boolean;
-  onToggle: (item: HotspotItem) => void; onSelectSource: () => void; compact?: boolean; now?: number;
+  onToggle: (item: HotspotItem) => void; onSelectSource: () => void; compact?: boolean; now?: number; onCreate?: (item: HotspotItem) => void;
 }) {
   const state = board.status === 'fresh' && board.expiresAt && now >= Date.parse(board.expiresAt) ? 'stale' : board.status;
   const status = state === 'unavailable' ? '暂不可用' : state === 'stale' ? '旧榜单' : board.delivery === 'network' ? '本次获取' : '缓存有效';
@@ -35,6 +35,7 @@ export function HotspotBoardCard({ board, favorites, busy, onToggle, onSelectSou
       return <li key={item.itemId} className="flex items-start gap-3 px-4 py-3 hover:bg-elevated/50">
         <span className={`w-6 shrink-0 pt-0.5 text-right font-mono text-sm tabular-nums ${item.rank <= 3 ? 'text-accent' : 'text-ink-subtle'}`}>{item.rank}</span>
         <div className="min-w-0 flex-1"><SourceLink url={item.url} className="break-words text-sm leading-6 text-ink hover:text-accent">{item.title}</SourceLink>
+          {onCreate && <button type="button" onClick={() => onCreate(item)} className="mt-1 block text-xs text-accent hover:underline">以此创作公众号文章</button>}
           {item.heat && <p className="mt-1 text-xs text-ink-muted">原始热度 · {item.heat}</p>}
         </div>
         <Button size="icon" variant="ghost" disabled={busy} aria-label={`${saved ? '取消收藏' : '收藏'}：${item.title}`} aria-pressed={saved} onClick={() => onToggle(item)} className={saved ? 'text-accent' : ''}><Bookmark size={16} fill={saved ? 'currentColor' : 'none'} /></Button>
@@ -48,6 +49,8 @@ export function HotspotBoardCard({ board, favorites, busy, onToggle, onSelectSou
 }
 
 export function HotspotsPage() {
+  const navigate = useNavigate();
+  const create = (item: HotspotItem) => navigate(`/articles?${new URLSearchParams({sourceId:item.sourceId,itemId:item.itemId,keyword:item.title})}`);
   const [params, setParams] = useSearchParams();
   const [boards, setBoards] = useState<HotspotBoard[]>([]);
   const [favorites, setFavorites] = useState<HotspotFavorite[]>([]);
@@ -142,10 +145,10 @@ export function HotspotsPage() {
     {notice && <p role="status" className="mb-4 text-sm text-ink-muted">{notice}</p>}
     <p className="mb-4 text-xs leading-5 text-ink-muted">按来源展示，不混算热度。默认缓存 10 分钟，刷新至少间隔 60 秒；获取时间不是事件发生时间，创作前请打开原文核实。</p>
     {loading && boards.length === 0 ? <p role="status" className="py-16 text-center text-ink-muted">正在读取平台榜单…</p> : tab === 'boards' ?
-      <div className={`gap-5 ${sourceId === 'all' ? 'columns-1 lg:columns-2 2xl:columns-3' : 'mx-auto max-w-3xl columns-1'}`}>{visibleBoards.map(board => <HotspotBoardCard key={board.source.id} board={board} favorites={favorites} busy={busy || loading || !favoritesReady} onToggle={item => void toggle(item)} onSelectSource={() => setView('source', board.source.id)} compact={sourceId === 'all' && !search.trim()} now={now} />)}</div> :
+      <div className={`gap-5 ${sourceId === 'all' ? 'columns-1 lg:columns-2 2xl:columns-3' : 'mx-auto max-w-3xl columns-1'}`}>{visibleBoards.map(board => <HotspotBoardCard key={board.source.id} board={board} favorites={favorites} busy={busy || loading || !favoritesReady} onCreate={create} onToggle={item => void toggle(item)} onSelectSource={() => setView('source', board.source.id)} compact={sourceId === 'all' && !search.trim()} now={now} />)}</div> :
       visibleFavorites.length ? <div className="grid gap-4 lg:grid-cols-2">{visibleFavorites.map(item => <article key={item.id} className="min-w-0 rounded-xl border border-line bg-panel p-5">
         <p className="mb-2 text-xs text-ink-muted">{boards.find(board => board.source.id === item.sourceId)?.source.name ?? item.sourceId} · 收藏时排名 {item.rank} · 榜单获取于 {timestamp(item.fetchedAt)}</p>
-        <SourceLink url={item.url} className="break-words font-medium leading-6 text-ink hover:text-accent">{item.title}<ExternalLink size={13} className="ml-2 inline" /></SourceLink>
+        <button type="button" onClick={() => create(item)} className="mb-2 block text-xs text-accent hover:underline">以此创作公众号文章</button><SourceLink url={item.url} className="break-words font-medium leading-6 text-ink hover:text-accent">{item.title}<ExternalLink size={13} className="ml-2 inline" /></SourceLink>
         <p className="my-3 whitespace-pre-wrap break-words text-sm leading-6 text-ink-muted">{item.note || '还没有备注。记下创作角度或需要核实的信息。'}</p>
         <div className="flex flex-wrap gap-2"><Button size="sm" disabled={busy} onClick={() => { setEditing(item); setNote(item.note); setNoteError(''); setConflict(false); }}><StickyNote size={14} />编辑备注</Button><Button size="sm" variant="ghost" disabled={busy || !favoritesReady} onClick={() => void toggle(item)}>取消收藏</Button></div>
       </article>)}</div> : <div className="rounded-xl border border-dashed border-line p-10 text-center"><Bookmark className="mx-auto mb-3 text-ink-muted" size={28} /><h2 className="font-semibold text-ink">{favorites.length ? '没有匹配的收藏' : '还没有选题收藏'}</h2><p className="mt-2 text-sm text-ink-muted">{favorites.length ? '调整来源或搜索词，查看其它收藏。' : '在平台热榜点击书签，保存感兴趣的话题；下榜后仍会保留。'}</p></div>}

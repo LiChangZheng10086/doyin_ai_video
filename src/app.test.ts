@@ -2665,6 +2665,10 @@ function fakeToutiaoRunner(options: {
       async cancelLogin() {
         loginCalls.push("cancelLogin");
       },
+      async openDraftWindow() {
+        loginCalls.push("openDraftWindow");
+        return { message: "已打开小红书草稿浏览器" };
+      },
       async loginInWindow() {
         loginCalls.push("loginInWindow");
         return { loggedIn: true, username: "头条作者", message: "登录成功：头条作者" };
@@ -3462,6 +3466,10 @@ function fakeXhsRunner(options: {
       async cancelLogin() {
         loginCalls.push("cancelLogin");
       },
+      async openDraftWindow() {
+        loginCalls.push("openDraftWindow");
+        return { message: "已打开小红书草稿浏览器" };
+      },
       async loginInWindow() {
         loginCalls.push("loginInWindow");
         maybeFail("loginInWindow");
@@ -3478,6 +3486,7 @@ function fakeXhsRunner(options: {
         return {
           ok: true,
           submitted: willSubmit,
+          ...(willSubmit ? {} : { xhsDraftId: "test-draft" }),
           verification: "unconfirmed",
           steps: willSubmit
             ? ["进入发布页", "上传图片：送入 2 张，页面读回 2 张", "填写标题：读回与目标逐字一致（6 字）", "点击发布"]
@@ -3855,3 +3864,18 @@ test("小红书 runner errors surface with their own status, code and guidance",
     await fixture.close();
   }
 });
+
+ test("小红书草稿窗口接口需要会话且调用同 profile 的执行器，不填稿不发布", async () => {
+  const runner = fakeXhsRunner();
+  const ctx = await xhsNoteFixture({ runner });
+  try {
+    const url = '/api/publishing/xhs/drafts/window';
+    const anonymous = await jsonFetch(ctx.fixture.baseUrl, url, { method: 'POST' });
+    assert.equal(anonymous.response.status, 401);
+    const opened = await jsonFetch(ctx.fixture.baseUrl, url, { method: 'POST', token: ctx.fixture.publisherToken });
+    assert.equal(opened.response.status, 200);
+    assert.match(opened.body.message, /草稿浏览器/u);
+    assert.deepEqual(runner.loginCalls, ['openDraftWindow']);
+    assert.equal(runner.calls.length, 0);
+  } finally { await ctx.fixture.close(); }
+ });

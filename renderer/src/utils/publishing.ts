@@ -273,8 +273,8 @@ export type PublishingActionId =
   | 'preview'
   | 'auto-publish'
   /**
-   * 小红书图文：**只填到草稿**（自研执行器填好标题/正文/AI 声明后停手，平台自动存草稿，
-   * 由真人在小红书 App 里点发布）。姿态乙，spec §10 的**默认姿态**。
+   * 小红书图文：**只填到草稿**（自研执行器暂存并核实本地草稿，
+   * 由真人在同一浏览器中点发布）。姿态乙，spec §10 的**默认姿态**。
    */
   | 'fill-xhs'
   /** 小红书图文：**真的点发布**（姿态甲；同一套闸门 + 频率限制，且点完不做读回）。 */
@@ -411,7 +411,7 @@ export const PUBLISH_CHANNELS: PublishChannel[] = [
     contentTypes: ['note', 'video'],
     automation: true,
     hint:
-      '图文由自研执行器填写，默认只填到草稿、由你在小红书 App 里点发布（可在建包时改成由程序提交）；'
+      '图文由自研执行器保存到专用浏览器的本地草稿，点「打开小红书草稿浏览器」核对并发布（可在建包时改成由程序提交）；'
       + '视频不会自动上传。⚠️ 这是风险最高的一条通路：平台明确点名「AI 托管代发」并封过号，风险由你的账号承担。',
     emptyHint: '还没有小红书的发布包：到作品详情页的成果画布点「创建图文包」，并勾选 AI 声明与是否由程序提交。',
   },
@@ -605,20 +605,13 @@ export function channelEmptyHint(channelId: PublishChannelId): string {
  */
 export const XHS_CREATOR_HOME_URL = 'https://creator.xiaohongshu.com/';
 
-/**
- * 「打开平台」这个按钮该开哪个地址、叫什么名字。
- *
- * - **默认**：平台表里的 `creatorUrl`（作品发布页）—— 视频人工交付就是「复制文案后去发布」；
- * - **小红书图文**：创作服务平台**首页**。图文走的是「机器只填到草稿、由人点发布」这套，
- *   那时候要去的是**草稿箱**（首页上就是），而 `creatorUrl` 指的 `publish/publish` 是
- *   「发布**新**笔记」页 —— 打开它只会让人以为要重新发一条（文案/入口指错动作，本项目的老毛病）。
- */
+/** 小红书图文的打开动作由本地草稿窗口 API 执行；其它平台沿用外部 URL。 */
 export function publishingOpenPlatformTarget(
   detail: PublishingPackageDetail,
   task: PublishTask,
 ): { url: string; label: string } {
   if ((detail.package.contentType ?? 'video') === 'note' && task.platform === 'xiaohongshu') {
-    return { url: XHS_CREATOR_HOME_URL, label: '打开小红书创作中心' };
+    return { url: XHS_CREATOR_HOME_URL, label: '打开小红书草稿浏览器' };
   }
   return {
     url: PUBLISHING_PLATFORMS.find((item) => item.id === task.platform)?.creatorUrl ?? '',
@@ -793,17 +786,16 @@ export function getPublishingAutoPublishHint(task: PublishTask): string | null {
   }
   if (record.status === 'succeeded') {
     if (task.platform === 'wechat_mp') return `公众号草稿已创建${record.draftMediaId ? `（${record.draftMediaId}）` : ''}，尚未发布。请到公众号后台检查并手动发布。`;
-    // ⚠️ **「只填到草稿」不能说「已提交」**（2026-09-21 用户实测）：那条通路按设计
-    // **没有点发布**，内容只在平台的草稿箱里；说成「已提交」会让人去平台找内容却找不到。
-    // 判据是记录里显式的 `draftOnly`（服务层按执行器回报的 `submitted === false` 写的）。
-    //
-    // 老记录（该字段出现之前落的）没有标记，而用户当时正看着的就是那一条 ——
-    // 所以**仅在字段缺失时**用执行器自己写下的文案兜底识别一次；字段一旦存在就只看字段，
-    // 不再猜文本（猜文本是会漂移的第二真源，这里只是为了不让历史记录继续撒谎）。
+    // 老记录仅用文案识别未点发布，不把它当作保存证据。
     const legacyDraftOnly = record.draftOnly === undefined
       && /没有点「发布」|停在点「发布」之前/u.test(record.message ?? '');
     if (record.draftOnly || legacyDraftOnly) {
-      return `已填写到${label}草稿箱（本工具没有点发布）：请到${label} App 或创作服务平台的草稿箱核对内容，由你自己点发布`;
+      if (task.platform === 'xiaohongshu') {
+        return record.xhsDraftId
+          ? '已保存并核实小红书浏览器本地图文草稿（本工具没有点发布）：点「打开小红书草稿浏览器」核对并发布；不会同步到手机或其它浏览器'
+          : '旧记录未确认完整草稿已保存（本工具没有点发布）：点「打开小红书草稿浏览器」检查「图文笔记」，可能缺少正文；不要直接重复提交';
+      }
+      return `已填写到${label}草稿箱（本工具没有点发布），请核对内容后自行发布`;
     }
     // 「点了发布但没拿到成功判据」必须显示出来：这是「重复发布」这个最大风险的补偿手段
     //（服务端把原话写进了 message，此前只有展开审计记录才看得到）。
@@ -851,11 +843,12 @@ function readyNextStep(detail: PublishingPackageDetail, readyTasks: PublishTask[
   if ((detail.package.contentType ?? 'video') !== 'note') return '打开平台并完成发布';
   const xhs = readyTasks.find((task) => task.platform === 'xiaohongshu');
   if (xhs) {
+    if (xhs.autoPublish?.status === 'succeeded' && xhs.autoPublish.draftOnly) return '点「打开小红书草稿浏览器」检查「图文笔记」，核对正文和图片后自行发布';
     const blocker = getPublishingAutoPublishBlocker(detail, xhs);
     if (blocker) return blocker;
     return detail.package.xhsOptions?.submit === true
       ? '点「发布到小红书」提交（点完请到小红书 App 核实），再点「标记已发布」'
-      : '本包只填到草稿：点「填写到小红书（不提交）」存进草稿箱，再到小红书 App 点发布';
+      : '本包只存浏览器本地图文草稿：点「填写到小红书（不提交）」，再点「打开小红书草稿浏览器」核对并发布';
   }
   const douyin = readyTasks.find((task) => task.platform === 'douyin');
   if (douyin) {

@@ -614,10 +614,10 @@ test('「只填到草稿」的提示不能说「已提交」（用户实测：�
   const draftOnly = notePackageDetail({
     platform: 'xiaohongshu',
     xhsOptions: { aiDeclaration: true, submit: false },
-    autoPublish: { status: 'succeeded', startedAt: new Date().toISOString(), attemptId: 'a', draftOnly: true },
+    autoPublish: { status: 'succeeded', startedAt: new Date().toISOString(), attemptId: 'a', draftOnly: true, xhsDraftId: 'test-draft' },
   });
   const hint = getPublishingAutoPublishHint(draftOnly.tasks[0]) ?? '';
-  assert.match(hint, /草稿箱/u, hint);
+  assert.match(hint, /本地图文草稿/u, hint);
   assert.equal(hint.includes('已提交'), false, '只填草稿绝不能说已提交');
   assert.match(hint, /没有点发布/u, hint);
 
@@ -634,7 +634,7 @@ test('「只填到草稿」的提示不能说「已提交」（用户实测：�
     },
   });
   const legacyHint = getPublishingAutoPublishHint(legacy.tasks[0]) ?? '';
-  assert.match(legacyHint, /草稿箱/u, legacyHint);
+  assert.match(legacyHint, /未确认完整草稿已保存/u, legacyHint);
   assert.equal(legacyHint.includes('已提交'), false, '老记录也不许说已提交');
 
   // 真提交（没有 draftOnly）仍然是「已提交」，且要求人工核实。
@@ -806,7 +806,7 @@ test('「打开平台」对小红书图文要开草稿箱所在的创作中心�
   const note = notePackageDetail({ platform: 'xiaohongshu', xhsOptions: { aiDeclaration: true, submit: false } });
   const target = publishingOpenPlatformTarget(note, note.tasks[0]);
   assert.equal(target.url, XHS_CREATOR_HOME_URL);
-  assert.match(target.label, /创作中心/u, target.label);
+  assert.match(target.label, /草稿浏览器/u, target.label);
   assert.equal(target.url.includes('publish/publish'), false, '不许开「发布新笔记」页');
 
   // 抖音图文 / 视频包仍走平台表里的作品发布页（人工交付＝复制文案后去发布）。
@@ -1188,4 +1188,12 @@ test('抖音 / 小红书渠道：文案必须写明风险自负，且小红书�
     assert.equal(channel.hint.includes('**'), false);
   }
   assert.match(xhs.hint, /草稿/u, '必须说明小红书默认只填到草稿');
+});
+
+test('小红书旧草稿记录没有保存证据时必须提示待核实，不能宣称已存入草稿箱', () => {
+  const detail = notePackageDetail({ platform: 'xiaohongshu',
+    autoPublish: { status: 'succeeded', startedAt: new Date().toISOString(), attemptId: 'old', draftOnly: true } });
+  const hint = getPublishingAutoPublishHint(detail.tasks[0])!;
+  assert.match(hint, /未.*确认.*保存/u);
+  assert.doesNotMatch(hint, /已填写到.*草稿箱|App/u);
 });

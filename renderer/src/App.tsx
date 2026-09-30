@@ -1,3 +1,6 @@
+import { ArticlesPage } from './pages/ArticlesPage';
+import { WechatBenchmarksPage } from './pages/WechatBenchmarksPage';
+import { ArticleDetailPage } from './pages/ArticleDetailPage';
 import { useEffect, useRef } from 'react';
 import { RouterProvider, Outlet } from 'react-router-dom';
 import { createAppRouter } from './utils/appRouter';
@@ -21,6 +24,9 @@ const router = createAppRouter([{
   element: <AppShell><Outlet /></AppShell>,
   children: [
     { path: '/', element: <JobListPage /> },
+    { path: '/articles', element: <ArticlesPage /> },
+    { path: '/articles/benchmarks', element: <WechatBenchmarksPage /> },
+    { path: '/articles/:id', element: <ArticleDetailPage /> },
     { path: '/hotspots', element: <HotspotsPage /> },
     { path: '/jobs/:id', element: <JobDetailPage /> },
     { path: '/galleries', element: <GalleriesPage /> },

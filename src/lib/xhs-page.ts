@@ -48,7 +48,8 @@ export type XhsPageErrorCode =
   | "xhs_page_ai_declaration_not_selected"
   | "xhs_page_submit_missing"
   | "xhs_page_submit_disabled"
-  | "xhs_page_submit_click_failed";
+  | "xhs_page_submit_click_failed"
+  | "xhs_page_draft_not_confirmed";
 
 export class XhsPageError extends Error {
   readonly status = 422;
@@ -411,4 +412,58 @@ export async function clickSubmit(
     );
   }
   return { clicked: true };
+}
+
+/** 草稿仅在当前 profile 的 IndexedDB 中；等事务提交并核对内容后才能关浏览器。 */
+export async function saveDraftAndConfirm(
+  page: XhsPublishPageLike,
+  expected: { title: string; body: string; imageCount: number },
+): Promise<string> {
+  const savedAfter = Date.now();
+  await clickSubmit(page, "save");
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await pause(page, 500);
+    const draftId = await page.evaluate<string>(`(async () => {
+      const expected = ${JSON.stringify(expected)};
+      const uid = localStorage.getItem("snsWebPublishCurrentUser");
+      if (!uid || !(await indexedDB.databases()).some(db => db.name === "draft-database-v1")) return "";
+      return new Promise((resolve, reject) => {
+        const request = indexedDB.open("draft-database-v1");
+        let db;
+        const timer = setTimeout(() => { if (db) db.close(); reject(new Error("草稿读取超时")); }, 2000);
+        const finish = (value) => { clearTimeout(timer); if (db) db.close(); resolve(value); };
+        request.onerror = () => finish("");
+        request.onsuccess = () => {
+          db = request.result;
+          if (!db.objectStoreNames.contains("image-draft")) return finish("");
+          const tx = db.transaction("image-draft", "readonly");
+          const read = tx.objectStore("image-draft").getAll();
+          let found = "";
+          const normalize = text => text.replace(/\\u200b/gu, "").replace(/\\s+/gu, " ").trim();
+          read.onsuccess = () => {
+            const match = read.result.find(record => {
+              const draft = record.content && record.content.draftStore;
+              const setting = record.content && record.content.settingStore;
+              if (!draft || record.uid !== uid || typeof record.timeStamp !== "number" || record.timeStamp < ${savedAfter}) return false;
+              const html = new DOMParser().parseFromString(draft.descInnerHTML || "", "text/html");
+              html.querySelectorAll("p, div, br, li").forEach(element => { element.prepend(" "); element.append(" "); });
+              const text = html.body.textContent || "";
+              return typeof record.draftId === "string" && record.draftId.length > 0
+                && draft.title === expected.title && normalize(text) === normalize(expected.body)
+                && Array.isArray(draft.imgList) && draft.imgList.length === expected.imageCount
+                && draft.imgList.every(image => image && typeof image.fileId === "string" && image.fileId.length > 0)
+                && setting && setting.userDeclaration && setting.userDeclaration.origin === 2;
+            });
+            if (match) found = match.draftId;
+          };
+          tx.oncomplete = () => finish(found);
+          tx.onabort = tx.onerror = () => finish("");
+        };
+      });
+    })()`).catch(() => "");
+    if (draftId) return draftId;
+  }
+  throw new XhsPageError("xhs_page_draft_not_confirmed",
+    "未能确认完整草稿已保存：浏览器本地草稿的标题、正文、图片或 AI 声明与本次内容不一致。"
+    + "本次没有点发布；请点「打开小红书草稿浏览器」检查图文草稿，勿把填表成功当作保存成功。");
 }

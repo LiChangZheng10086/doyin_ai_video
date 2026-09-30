@@ -454,7 +454,7 @@ export class PublishingStore {
    */
   async updateAutoPublish(
     taskId: string,
-    patch: { status: PublishAutoPublishStatus; message?: string; finishedAt?: string; draftOnly?: boolean; draftMediaId?: string; outcomeUncertain?: boolean },
+    patch: { status: PublishAutoPublishStatus; message?: string; finishedAt?: string; draftOnly?: boolean; xhsDraftId?: string; draftMediaId?: string; outcomeUncertain?: boolean },
     actor: ActorSnapshot
   ): Promise<PublishTask> {
     return this.mutate((draft) => {
@@ -475,6 +475,7 @@ export class PublishingStore {
         ...(finished === undefined ? {} : { finishedAt: finished }),
         // 「只填到草稿」必须**显式**记下来：界面据此说「已填写到草稿箱」而不是「已提交」。
         ...(patch.draftOnly === undefined ? {} : { draftOnly: patch.draftOnly }),
+        ...(patch.xhsDraftId === undefined ? {} : { xhsDraftId: patch.xhsDraftId }),
         ...(patch.draftMediaId === undefined ? {} : { draftMediaId: patch.draftMediaId }),
         ...(patch.outcomeUncertain === undefined ? {} : { outcomeUncertain: patch.outcomeUncertain }),
       };
@@ -1167,6 +1168,9 @@ function isDeliveryPackage(value: unknown, key: string): value is DeliveryPackag
   return (
     value.id === key &&
     isString(value.sourceJobId) &&
+    (value.sourceKind === undefined || value.sourceKind === "job" || value.sourceKind === "article") &&
+    (value.sourceKind === "article" ? typeof value.sourceArticleId === "string" && /^[a-f0-9-]{36}$/.test(value.sourceArticleId)
+      && value.sourceJobId === `article-${value.sourceArticleId}` && value.contentType === "article" : value.sourceArticleId === undefined) &&
     isPositiveInteger(value.version) &&
     (value.state === "active" || value.state === "trashed" || value.state === "purged") &&
     isString(value.title) &&
@@ -1279,6 +1283,7 @@ function isAutoPublish(value: unknown): value is PublishAutoPublish {
     (value.message === undefined || isString(value.message)) &&
     // 「只填到草稿」的标记：老记录没有这个字段（缺省 = 不是草稿通路），所以是可选的。
     (value.draftOnly === undefined || typeof value.draftOnly === "boolean") &&
+    isOptionalString(value.xhsDraftId) &&
     isOptionalString(value.draftMediaId) &&
     (value.outcomeUncertain === undefined || typeof value.outcomeUncertain === "boolean")
   );
