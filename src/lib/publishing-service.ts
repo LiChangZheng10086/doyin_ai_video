@@ -36,6 +36,7 @@ import {
   PublishingAssetError,
   PublishingAssetService,
   collectSceneSnapshots,
+  imageManifestHash,
 } from "./publishing-assets.js";
 import {
   normalizePlatformCopy,
@@ -69,6 +70,9 @@ import { ToutiaoRunner, ToutiaoRunnerError } from "./toutiao-runner.js";
 import { ToutiaoMediaService } from "./toutiao-media.js";
 import type { ArticlePlan, ArticleSourceContext } from "./article-draft.js";
 import { SYSTEM_ACTOR } from "./local-users.js";
+import { WechatMpClient } from "./wechat-mp-client.js";
+import { WechatMediaService } from "./wechat-media.js";
+import { planWechatArticle, renderWechatArticleHtml, validateArticleDraft, substituteWechatImageSlots, WECHAT_ARTICLE_LIMITS } from "./wechat-article.js";
 import { resolveJobVideo, VideoOutputError } from "./video-output.js";
 
 /** 未注入头条执行器时的提示：与 `toutiao-browser.ts` 的解析失败指引同一份文案。 */
@@ -223,6 +227,9 @@ export interface PublishingServiceDependencies {
   toutiaoMedia?: ToutiaoCoverPreparer;
   /** AI 成文（头条文章）。缺省不可用 → 走本地兜底（不阻塞建包）。 */
   planArticle?: ArticlePlanner;
+  planWechatArticle?: ArticlePlanner;
+  wechat?: () => Promise<WechatMpClient>;
+  wechatMedia?: Pick<WechatMediaService, "prepareCoverImage" | "prepareContentImage">;
   now?: () => Date;
   createId?: () => string;
   /**
@@ -352,6 +359,7 @@ type ValidatedDraft = {
 export interface NoteImageSelection {
   imageSource?: NoteImageSource;
   imageAssetIds?: string[];
+  articleImageAssetIds?: string[];
 }
 
 type NoteImagePlan = {
@@ -781,13 +789,17 @@ export class PublishingService {
     selection: NoteImageSelection,
   ): Promise<PublishingPreview> {
     assertArticlePlatforms(selected);
+    const wechat = selected[0] === "wechat_mp";
     const context = await this.readSourceContext(jobId);
     try {
       const index = await this.deps.store.snapshot();
       const nextVersion = index.nextVersionBySource[jobId] ?? 1;
 
-      const plan = await this.planArticleFor(context);
-      const html = renderArticleHtmlOrThrow(plan.draft);
+      const plan = wechat
+        ? await (this.deps.planWechatArticle ?? (source => planWechatArticle(source, { resolveAiConfig: async () => null })))(articleSourceContextOf(context))
+        : await this.planArticleFor(context);
+      const bodyImages = await this.planArticleImages(selection, wechat);
+      const html = wechat ? renderWechatArticleHtml(plan.draft, { images: bodyImages.map((_, i) => ({ slot: i + 1 })) }) : renderArticleHtmlOrThrow(plan.draft);
       const body = articleDraftToBodyText(plan.draft);
       const cover = await this.planArticleCover(jobId, selection);
       const copy: PlatformCopy = { title: plan.draft.title, description: body, hashtags: [] };
@@ -795,7 +807,7 @@ export class PublishingService {
       return {
         sourceJobId: jobId,
         nextVersion,
-        previewRevision: articleSourceRevision(jobId, context, selected, cover.key),
+        previewRevision: articleSourceRevision(jobId, context, selected, articleCoverKey(cover.key, bodyImages)),
         video: {
           filename: path.basename(context.video.path),
           size: context.video.size,
@@ -805,7 +817,7 @@ export class PublishingService {
           coverAvailable: Boolean(context.sourceCoverPath),
         },
         copies: {
-          toutiao: { ...copy, copySource: plan.copySource === "ai" ? "ai" : "cleaned_fallback" },
+          [selected[0]!]: { ...copy, description: wechat ? (plan.draft.digest ?? "") : body, copySource: plan.copySource === "ai" ? "ai" : "cleaned_fallback" },
         },
         ...(plan.warning ? { warning: { code: plan.warning.code, message: plan.warning.message } } : {}),
         expectedPackagePath: path.join(
@@ -816,17 +828,14 @@ export class PublishingService {
           `v${nextVersion}-preview`,
         ),
         contentType: "article",
-        articleCopy: { title: plan.draft.title, body },
-        articleLimits: {
-          titleMin: TOUTIAO_ARTICLE_LIMITS.titleMin,
-          titleMax: TOUTIAO_ARTICLE_LIMITS.titleMax,
-          bodyChars: TOUTIAO_ARTICLE_LIMITS.bodyChars,
-        },
+        articleCopy: { title: plan.draft.title, body, ...(wechat ? { author: plan.draft.author, digest: plan.draft.digest } : {}) },
+        articleLimits: articleLimitsFor(wechat),
+        ...(wechat ? { images: bodyImages.map(file => ({ name: file.record.originalName, size: file.size, assetId: file.record.id })) } : {}),
         // **绝不静默**：AI 成文失败必须让操作者看见（否则会以为这就是 AI 写的）。
         ...(plan.warning ? { articleFallback: { code: plan.warning.code, message: plan.warning.message } } : {}),
         articleCover: cover.preview,
         imageSource: cover.source,
-        toutiaoOptions: defaultToutiaoOptions(),
+        ...(wechat ? {} : { toutiaoOptions: defaultToutiaoOptions() }),
       };
     } finally {
       await context.video.close().catch(() => undefined);
@@ -838,6 +847,14 @@ export class PublishingService {
     const planner = this.deps.planArticle;
     if (!planner) return buildArticleFallbackPlan(articleSourceContextOf(context));
     return planner(articleSourceContextOf(context));
+  }
+
+  private async planArticleImages(selection: NoteImageSelection, wechat: boolean): Promise<ResolvedAssetFile[]> {
+    const ids = selection.articleImageAssetIds ?? [];
+    if ((!wechat && ids.length) || ids.length > MAX_NOTE_IMAGES || new Set(ids).size !== ids.length) {
+      throw new PublishingServiceError(422, "publish_validation_failed", "正文配图仅支持公众号，最多 35 张且不可重复");
+    }
+    return Promise.all(ids.map(id => this.resolveLibraryImage(id)));
   }
 
   /**
@@ -861,7 +878,7 @@ export class PublishingService {
         throw new PublishingServiceError(
           400,
           "publish_validation_failed",
-          "这个作品还没有场景静帧，无法作为头条封面（头条要求必须有封面）：请先生成视频，或改用素材库图片作为封面。",
+          "这个作品还没有场景静帧，文章必须有封面：请先生成视频，或改用素材库图片作为封面。",
         );
       }
       const first = snapshots[0]!;
@@ -886,7 +903,7 @@ export class PublishingService {
       throw new PublishingServiceError(
         400,
         "publish_validation_failed",
-        "头条封面只支持单图，请只选择一张图片",
+        "文章封面只支持单图，请只选择一张图片",
       );
     }
     const resolved = await this.resolveLibraryImage(assetIds[0]!);
@@ -905,7 +922,7 @@ export class PublishingService {
       throw new PublishingServiceError(
         400,
         "publish_validation_failed",
-        "这个作品还没有场景静帧，无法作为头条封面（头条要求必须有封面）：请先生成视频，或改用素材库图片作为封面。",
+        "这个作品还没有场景静帧，文章必须有封面：请先生成视频，或改用素材库图片作为封面。",
       );
     }
     return first;
@@ -922,6 +939,7 @@ export class PublishingService {
     actor: ActorSnapshot,
   ): Promise<PublishingPackageDetail> {
     assertArticlePlatforms(selected);
+    const wechat = selected[0] === "wechat_mp";
     if (!input.articleCopy) {
       throw new PublishingServiceError(
         400,
@@ -931,21 +949,26 @@ export class PublishingService {
     }
 
     const draft = articleBodyToDraft(input.articleCopy.title, input.articleCopy.body);
+    if (wechat) {
+      draft.author = input.articleCopy.author?.trim();
+      draft.digest = input.articleCopy.digest?.trim();
+    }
     // 空正文必须在**创建**阶段拦掉：否则包建得出来，但发布时会在页面上报
     // 「正文没有填进头条编辑器」——那是错误的诊断（真正原因是文章本身没正文）。
     if (draft.sections.every((section) => section.paragraphs.length === 0)) {
       throw new PublishingServiceError(422, "publish_validation_failed", "文章正文不能为空");
     }
-    const violations = validateToutiaoArticle(draft);
+    const violations = wechat ? validateArticleDraft(draft) : validateToutiaoArticle(draft);
     if (violations.length > 0) {
       throw new PublishingServiceError(422, "publish_validation_failed", violations[0]!.message, {
         violations,
       });
     }
-    const html = renderArticleHtmlOrThrow(draft);
+    const bodyImages = await this.planArticleImages(input, wechat);
+    const html = wechat ? renderWechatArticleHtml(draft, { images: bodyImages.map((_, i) => ({ slot: i + 1 })) }) : renderArticleHtmlOrThrow(draft);
     const cover = await this.planArticleCover(input.sourceJobId, input);
 
-    const currentRevision = articleSourceRevision(input.sourceJobId, context, selected, cover.key);
+    const currentRevision = articleSourceRevision(input.sourceJobId, context, selected, articleCoverKey(cover.key, bodyImages));
     if (currentRevision !== input.previewRevision) {
       throw new PublishingServiceError(409, "publish_revision_conflict", undefined, {
         expectedRevision: input.previewRevision,
@@ -955,7 +978,7 @@ export class PublishingService {
 
     const copy: PlatformCopy = {
       title: draft.title,
-      description: articleDraftToBodyText(draft),
+      description: wechat ? (draft.digest ?? "") : articleDraftToBodyText(draft),
       hashtags: [],
     };
     const drafts = validateDrafts(
@@ -970,6 +993,8 @@ export class PublishingService {
       draft,
       html,
       cover,
+      wechat,
+      bodyImages,
       options: normalizeToutiaoOptions(input.toutiaoOptions),
       drafts,
       actor,
@@ -989,6 +1014,8 @@ export class PublishingService {
     draft: ToutiaoArticleDraft;
     html: string;
     cover: ArticleCoverPlan;
+    wechat: boolean;
+    bodyImages: ResolvedAssetFile[];
     options: ToutiaoPublishOptions;
     drafts: ValidatedDraft[];
     actor: ActorSnapshot;
@@ -1001,14 +1028,21 @@ export class PublishingService {
       build: async ({ packageId, version, tasks, timestamp }) => {
         const workDir = path.join(this.storageRoot, "cache", "tmp", `toutiao-cover-${packageId}`);
         try {
-          const prepared = await this.requireToutiaoMedia().prepareCoverImage(input.cover.absolutePath, workDir);
+          const wechatMedia = this.deps.wechatMedia ?? new WechatMediaService({ ffmpegBinary: this.deps.ffmpegBinary });
+          const prepared = await (input.wechat ? wechatMedia : this.requireToutiaoMedia()).prepareCoverImage(input.cover.absolutePath, workDir);
+          const imagePaths: string[] = [];
+          for (const [index, image] of input.bodyImages.entries()) {
+            imagePaths.push((await wechatMedia.prepareContentImage(image.path, workDir, index + 1)).path);
+          }
+          const articleCopy = { title: input.draft.title, ...(input.wechat ? { author: input.draft.author, digest: input.draft.digest } : {}) };
           const assets = await this.deps.assets.createArticlePackageAssets({
             packageId,
             sourceJobId: input.sourceJobId,
             version,
             articleHtml: input.html,
             sourceCoverPath: prepared.path,
-            articleCopy: { title: input.draft.title },
+            articleCopy,
+            sourceImagePaths: imagePaths,
             title: input.title,
             tasks,
             actor: input.actor,
@@ -1028,8 +1062,8 @@ export class PublishingService {
               assetHealth: assets.assetHealth,
               contentType: "article",
               imagePaths: [...assets.imagePaths],
-              articleCopy: { title: input.draft.title, htmlSha256: assets.htmlSha256 },
-              toutiaoOptions: { ...input.options, declarations: [...input.options.declarations] },
+              articleCopy: { ...articleCopy, htmlSha256: assets.htmlSha256 },
+              ...(input.wechat ? {} : { toutiaoOptions: { ...input.options, declarations: [...input.options.declarations] } }),
               createdBy: structuredClone(input.actor),
               createdAt: timestamp,
               updatedAt: timestamp,
@@ -1190,6 +1224,73 @@ export class PublishingService {
       }, actor);
     } finally {
       await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  async verifyWechatAccount() {
+    const client = await this.wechatClient();
+    return client.verifyAccount();
+  }
+
+  private async wechatClient(): Promise<WechatMpClient> {
+    const client = this.deps.wechat ? await this.deps.wechat() : new WechatMpClient();
+    client.assertConfigured();
+    return client;
+  }
+
+  private async autoPublishWechatArticle(
+    taskId: string,
+    input: { previewRevision: string },
+    actor: ActorSnapshot,
+    detail: PublishingPackageDetail,
+  ): Promise<PublishTask> {
+    const pkg = detail.package;
+    const task = detail.tasks.find(item => item.id === taskId)!;
+    if (task.status === "published" || task.status === "cancelled" || task.autoPublish?.draftMediaId
+      || task.autoPublish?.outcomeUncertain || task.autoPublish?.status === "succeeded") {
+      throw new PublishingServiceError(409, "publish_validation_failed", "该任务已创建草稿或结果待核实，请先到公众号后台确认。确需另建时请人工重新建包。");
+    }
+    const client = await this.wechatClient();
+    const article = await this.readPackageArticleHtml(pkg.id);
+    if (!article || article.htmlSha256 !== pkg.articleCopy?.htmlSha256) throw new PublishingServiceError(422, "publish_article_unreadable");
+    if (await this.deps.assets.verifyPackageHealth(pkg) !== "healthy") throw new PublishingServiceError(422, "publish_images_unusable", "文章封面或正文图缺失/被修改，请重新建包");
+    const cover = await this.deps.assets.readPackageCover(pkg);
+    if (!cover) throw new PublishingServiceError(422, "publish_validation_failed", "公众号文章必须有封面");
+    const images = [];
+    for (let i = 0; i < (pkg.imagePaths?.length ?? 0); i++) {
+      const image = await this.deps.assets.readPackageImage(pkg, i);
+      if (!image) throw new PublishingServiceError(422, "publish_images_unusable");
+      images.push(image);
+    }
+    // 所有校验完成后才占用任务；版本与并发在同一份索引事务内检查。
+    await this.storeCall(() => this.deps.store.beginAutoPublish(taskId, { previewRevision: input.previewRevision, attemptId: this.createId() }, actor));
+    let creating = false;
+    let draftMediaId: string | undefined;
+    try {
+      const uploadedCover = await client.uploadCoverImage({ bytes: cover, filename: "cover.jpg", maxBytes: WECHAT_ARTICLE_LIMITS.coverBytes });
+      if (!uploadedCover.ok) return this.finishAutoPublish(taskId, { status: "failed", message: uploadedCover.message }, actor);
+      const urls = new Map<number, string>();
+      for (const [i, image] of images.entries()) {
+        const uploaded = await client.uploadContentImage({ bytes: image.bytes, filename: `${i + 1}${image.extension}`, maxBytes: WECHAT_ARTICLE_LIMITS.contentImageBytes - 1 });
+        if (!uploaded.ok) return this.finishAutoPublish(taskId, { status: "failed", message: uploaded.message }, actor);
+        urls.set(i + 1, uploaded.data!.url);
+      }
+      const content = substituteWechatImageSlots(article.bytes.toString("utf8"), urls);
+      creating = true;
+      const result = await client.createDraft({ title: pkg.articleCopy!.title, author: pkg.articleCopy!.author, digest: pkg.articleCopy!.digest, content, thumbMediaId: uploadedCover.data!.mediaId });
+      if (!result.ok) {
+        const uncertain = result.errorKind === "network" || result.errorKind === "invalid_response";
+        return await this.finishAutoPublish(taskId, { status: "failed", outcomeUncertain: uncertain,
+          message: `${result.message}${uncertain ? " 结果待核实：请先检查公众号草稿箱，禁止直接重发以免重复创建。" : ""}` }, actor);
+      }
+      draftMediaId = result.data!.mediaId;
+      return await this.finishAutoPublish(taskId, { status: "succeeded", draftOnly: true, draftMediaId,
+        message: `草稿已创建（${draftMediaId}），尚未发布。请到公众号后台检查封面、正文和图片，再由你手动发布。` }, actor);
+    } catch {
+      // 不把底层异常（可能含 secret/token）原样写入审计。已取得 ID 的结果不能改成未创建。
+      return await this.finishAutoPublish(taskId, draftMediaId
+        ? { status: "succeeded", draftOnly: true, draftMediaId, message: `草稿已创建（${draftMediaId}），请到公众号后台核实，勿重复提交。` }
+        : { status: "failed", outcomeUncertain: creating, message: creating ? "创建草稿结果待核实，请先检查公众号后台，勿重复提交。" : "素材处理或上传未完成，草稿尚未提交，请检查图片与连接后重试。" }, actor);
     }
   }
 
@@ -1411,6 +1512,7 @@ export class PublishingService {
       const platform = detail.tasks[0]?.platform ?? "douyin";
       preview.copyChecks.push(copyCheck(platform, "package", preview.noteCopy, undefined, "note"));
     } else if (contentType === "article") {
+      preview.imagePaths = [...(packageRecord.imagePaths ?? [])];
       // 文章包：正文在包内 `article.html`，这里摊成纯文本给操作者看（spec §14.1：
       // 预览的意义就是「看得见将要发出去的内容」）。封面走既有 `/cover` 路由。
       const articleCopy = packageRecord.articleCopy ?? { title: packageRecord.title, htmlSha256: "" };
@@ -1418,18 +1520,15 @@ export class PublishingService {
       // 展示**正文文本**（带 `## ` 小标题标记），与创建向导里看到的形态一致：
       // 包记录只存 title + htmlSha256，正文只能从 `article.html` 还原。
       const body = html ? articleHtmlToBodyText(html.toString("utf8")) : "";
-      preview.articleCopy = { title: articleCopy.title, body };
-      preview.articleLimits = {
-        titleMin: TOUTIAO_ARTICLE_LIMITS.titleMin,
-        titleMax: TOUTIAO_ARTICLE_LIMITS.titleMax,
-        bodyChars: TOUTIAO_ARTICLE_LIMITS.bodyChars,
-      };
-      preview.toutiaoOptions = normalizeToutiaoOptions(packageRecord.toutiaoOptions);
       const platform = detail.tasks[0]?.platform ?? "toutiao";
+      const wechat = platform === "wechat_mp";
+      preview.articleCopy = { title: articleCopy.title, body, ...(wechat ? { author: articleCopy.author, digest: articleCopy.digest } : {}) };
+      preview.articleLimits = articleLimitsFor(wechat);
+      if (!wechat) preview.toutiaoOptions = normalizeToutiaoOptions(packageRecord.toutiaoOptions);
       // 用**平台政策**（`PUBLISH_PLATFORMS.toutiao` 就是文章口径：titleMax 30 / 正文 20000），
       // 不是图文政策 —— `PUBLISH_NOTE_POLICIES` 里没有 toutiao，走图文口径会直接抛错。
       preview.copyChecks.push(
-        copyCheck(platform, "package", { title: articleCopy.title, description: body, hashtags: [] }, undefined, "platform"),
+        copyCheck(platform, "package", { title: articleCopy.title, description: wechat ? (articleCopy.digest ?? "") : body, hashtags: [] }, undefined, "platform"),
       );
     } else {
       preview.video = {
@@ -1458,7 +1557,7 @@ export class PublishingService {
     index: number,
   ): Promise<{ bytes: Buffer; extension: string } | null> {
     const detail = await this.requirePackage(packageId);
-    if ((detail.package.contentType ?? "video") !== "note") return null;
+    if (detail.package.contentType !== "note" && detail.package.contentType !== "article") return null;
     return this.deps.assets.readPackageImage(detail.package, index);
   }
 
@@ -1550,6 +1649,8 @@ export class PublishingService {
     // 当成「sau 通路」。新增 `"xhs"` 之后那种写法会把小红书**静默路由给外部 CLI**，
     // 表现是「报未配置 sau」这种莫名其妙的错误（见 spec §5.1）。
     switch (engine) {
+      case "wechat":
+        return this.autoPublishWechatArticle(taskId, input, actor, detail);
       case "toutiao":
         return this.autoPublishToutiaoArticle(taskId, input, actor);
       case "xhs":
@@ -1681,7 +1782,7 @@ export class PublishingService {
   }
 
   /** 小红书：轮询扫码状态。 */
-  async pollXhsLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; username?: string }> {
+  async pollXhsLogin(): Promise<{ status: "idle" | "waiting" | "logged_in" | "expired"; username?: string; qrDataUrl?: string }> {
     const status = await this.requireXhsRunner().pollLogin();
     // 刚刚亲眼确认过（INV-2 ③）
     if (status.status === "logged_in") await this.recordVerified("xiaohongshu", "valid");
@@ -1866,7 +1967,7 @@ export class PublishingService {
 
   private async finishAutoPublish(
     taskId: string,
-    patch: { status: "awaiting_code" | "succeeded" | "failed"; message?: string; draftOnly?: boolean },
+    patch: { status: "awaiting_code" | "succeeded" | "failed"; message?: string; draftOnly?: boolean; draftMediaId?: string; outcomeUncertain?: boolean },
     actor: ActorSnapshot,
   ): Promise<PublishTask> {
     return this.storeCall(() => this.deps.store.updateAutoPublish(taskId, patch, actor));
@@ -2099,6 +2200,7 @@ export class PublishingService {
     actor: ActorSnapshot;
     /** 仅素材库来源：按选择顺序的绝对路径；省略即按场景序自动收集静帧。 */
     sourceImagePaths?: string[];
+    expectedImageHashes?: string[];
     /** 仅小红书：AI 标识声明与「是否真点发布」（进指纹，故必须原样落进包记录）。 */
     xhsOptions?: XhsNoteOptions;
   }): Promise<PublishingPackageDetail> {
@@ -2118,6 +2220,10 @@ export class PublishingService {
           tasks,
           actor: input.actor,
         });
+        if (input.expectedImageHashes && assets.imageManifestSha256 !== imageManifestHash(input.expectedImageHashes)) {
+          await assets.rollback();
+          throw new PublishingServiceError(409, "publish_validation_failed", "图集图片已变化，请重新生成并预览");
+        }
         return {
           record: {
             id: packageId,
@@ -2144,6 +2250,24 @@ export class PublishingService {
           rollback: assets.rollback,
         };
       },
+    });
+  }
+
+  /** Internal gallery boundary: paths are resolved and hash-checked by GalleryService, never from HTTP. */
+  async createGalleryNote(input: {
+    sourceJobId: string; title: string; noteCopy: PlatformCopy; sourceImagePaths: string[]; expectedImageHashes: string[];
+  }, actor: ActorSnapshot): Promise<PublishingPackageDetail> {
+    validateSafeId(input.sourceJobId);
+    const job = await this.deps.jobs.get(input.sourceJobId);
+    if (!job || job.deletedAt) throw new PublishingServiceError(404, "publish_job_not_found");
+    const copy = normalizePlatformCopy(input.noteCopy);
+    const violations = validateNoteCopy("douyin", copy);
+    if (!copy.title.trim() || violations.length || input.sourceImagePaths.length < 1 || input.sourceImagePaths.length > MAX_NOTE_IMAGES
+      || input.expectedImageHashes.length !== input.sourceImagePaths.length) {
+      throw new PublishingServiceError(422, "publish_validation_failed", violations[0]?.message ?? "字幕图集需有效标题和图片");
+    }
+    return this.createNotePackage({ ...input, noteCopy: copy, actor,
+      drafts: validateDrafts([{ platform: "douyin", copy, copySource: "user_edited" }], this.now()),
     });
   }
 
@@ -2309,15 +2433,25 @@ interface ArticleCoverPlan {
  * 与 `assertNotePlatforms` 同一形状：说清「哪个平台不支持」，而不是让请求静默走错分支。
  */
 function assertArticlePlatforms(platforms: PublishPlatform[]): void {
+  if (platforms.length !== 1) throw new PublishingServiceError(422, "publish_article_platform_unsupported", "文章包每次只选择一个平台");
   for (const platform of platforms) {
-    if (platform !== "toutiao") {
+    if (platform !== "toutiao" && platform !== "wechat_mp") {
       throw new PublishingServiceError(
         422,
         "publish_article_platform_unsupported",
-        `平台 ${platform} 尚未接入文章发布，目前只支持今日头条`,
+        `平台 ${platform} 尚未接入文章发布，目前支持今日头条与微信公众号草稿`,
       );
     }
   }
+}
+
+function articleLimitsFor(wechat: boolean) {
+  return wechat ? { titleMin: 1, titleMax: WECHAT_ARTICLE_LIMITS.title, bodyChars: WECHAT_ARTICLE_LIMITS.contentChars - 1 }
+    : { titleMin: TOUTIAO_ARTICLE_LIMITS.titleMin, titleMax: TOUTIAO_ARTICLE_LIMITS.titleMax, bodyChars: TOUTIAO_ARTICLE_LIMITS.bodyChars };
+}
+
+function articleCoverKey(cover: string, images: ResolvedAssetFile[]): string {
+  return images.length ? JSON.stringify([cover, ...images.map(image => image.record.id)]) : cover;
 }
 
 /** 头条发布选项的默认值：**微头条同步默认关闭**（平台默认勾选，不关就会多发一条内容）。 */

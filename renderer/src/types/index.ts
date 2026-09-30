@@ -131,6 +131,8 @@ export interface PublishAutoPublish {
    * 显示「已提交」→ 去小红书找不到内容，因为它在草稿箱）。
    */
   draftOnly?: boolean;
+  draftMediaId?: string;
+  outcomeUncertain?: boolean;
 }
 
 export interface PublishTask extends PlatformCopy {
@@ -223,7 +225,7 @@ export interface PublishingPreview {
   /** 仅图文：标题是否因超过 20 字被压缩。 */
   noteCopyTitleCompressed?: boolean;
   /** 仅文章包：AI 成文结果（标题 + 正文纯文本）。 */
-  articleCopy?: { title: string; body: string };
+  articleCopy?: { title: string; body: string; author?: string; digest?: string };
   /** 仅文章包：字段限额（界面只渲染）。 */
   articleLimits?: { titleMin: number; titleMax: number; bodyChars: number };
   /** 仅文章包：AI 成文走了兜底时的提示（**必须显示**，绝不静默）。 */
@@ -282,7 +284,7 @@ export interface PublishingPackagePreview {
    * 仅文章包：将被提交的文章（标题 + **从包内 article.html 提取的正文纯文本**）。
    * 正文以纯文本下发而不是原样 HTML：预览弹窗只负责渲染文字，不做 HTML 注入。
    */
-  articleCopy?: { title: string; body: string };
+  articleCopy?: { title: string; body: string; author?: string; digest?: string };
   /** 仅文章包：本平台的字段限额（界面只渲染，不复刻数字）。 */
   articleLimits?: { titleMin: number; titleMax: number; bodyChars: number };
   /** 仅文章包：发布选项（首发 / 作品声明 / 同步微头条）—— 它们改变要发出去的内容。 */
@@ -321,7 +323,8 @@ export interface CreatePublishingPackageInput {
    * 仅文章包：文章文案（标题 + 正文纯文本，`## ` 开头的行是小标题）。
    * 与图文包同理：平台任务文案由服务端同步生成，客户端不许传两份。
    */
-  articleCopy?: { title: string; body: string };
+  articleCopy?: { title: string; body: string; author?: string; digest?: string };
+  articleImageAssetIds?: string[];
   /** 仅文章包：今日头条发布选项；缺省全关（微头条同步默认关闭）。 */
   toutiaoOptions?: ToutiaoPublishOptions;
   /** 仅图文包：素材来源；缺省 `frames`。 */

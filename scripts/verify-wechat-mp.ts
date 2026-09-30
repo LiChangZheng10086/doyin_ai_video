@@ -82,7 +82,7 @@ async function main(): Promise<number> {
   console.log("");
 
   if (report.ok) {
-    console.log("结论：三项全部通过 —— 微信公众号通路可用，可以建草稿。");
+    console.log("结论：连接预检通过；素材上传与创建草稿尚未验证，不能据此认定账号已跑通。");
     return 0;
   }
 

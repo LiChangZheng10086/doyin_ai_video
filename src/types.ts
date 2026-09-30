@@ -190,6 +190,10 @@ export interface PublishAutoPublish {
    * 压根没发布）。靠 `message` 里有没有「草稿」字样来猜更糟（那是会漂移的第二真源）。
    */
   draftOnly?: boolean;
+  /** 微信草稿 ID；不是正式发布 ID。 */
+  draftMediaId?: string;
+  /** 创建请求结果未知，必须先人工核实，不允许直接重发。 */
+  outcomeUncertain?: boolean;
 }
 
 export interface PublishAuditEvent {
@@ -283,7 +287,7 @@ export interface PublishingPreview {
    * 正文以**纯文本**往返（段落之间空行分隔），HTML 由服务端在打包时渲染 ——
    * 渲染规则留在服务端一处，客户端只负责编辑文字。
    */
-  articleCopy?: { title: string; body: string };
+  articleCopy?: { title: string; body: string; author?: string; digest?: string };
   /** 仅文章包：本平台的字段限额（界面只渲染，不复刻数字）。 */
   articleLimits?: { titleMin: number; titleMax: number; bodyChars: number };
   /** 仅文章包：AI 成文走了兜底时的提示（**绝不静默**，界面必须显示）。 */
@@ -359,7 +363,7 @@ export interface PublishingPackagePreview {
    * 仅文章包：将被提交的文章（标题 + **从包内 `article.html` 提取的正文纯文本**）。
    * 正文以纯文本下发而不是原样 HTML：预览弹窗只负责渲染文字，不做 HTML 注入。
    */
-  articleCopy?: { title: string; body: string };
+  articleCopy?: { title: string; body: string; author?: string; digest?: string };
   /** 仅文章包：本平台的字段限额（界面只渲染，不复刻数字）。 */
   articleLimits?: { titleMin: number; titleMax: number; bodyChars: number };
   /** 仅文章包：发布选项（首发 / 作品声明 / 同步微头条）—— 它们改变要发出去的内容。 */
@@ -398,7 +402,9 @@ export interface CreatePublishingPackageInput {
    * 仅文章包：文章文案（标题 + 正文纯文本）。
    * 与图文包同理：平台任务文案由服务端从它同步生成，客户端不许传两份。
    */
-  articleCopy?: { title: string; body: string };
+  articleCopy?: { title: string; body: string; author?: string; digest?: string };
+  /** 微信正文配图，独立于封面，按选择顺序。 */
+  articleImageAssetIds?: string[];
   /** 仅文章包：今日头条发布选项；缺省全关。 */
   toutiaoOptions?: ToutiaoPublishOptions;
   /**

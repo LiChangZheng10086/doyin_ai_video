@@ -10,6 +10,7 @@ declare global {
       getServerPort: () => Promise<number>;
       getConfig: () => Promise<any>;
       setConfig: (config: any) => Promise<void>;
+      saveConfig?: (config: any) => Promise<void>;
       addApiKey: (key: any) => Promise<any>;
       updateApiKey: (id: string, key: any) => Promise<any>;
       removeApiKey: (id: string) => Promise<void>;

@@ -31,6 +31,7 @@
   --color-ink-muted: #98a2b3; /* 次要 7.45:1 @canvas */
   --color-ink-subtle: #848e9c; /* 三级 4.98:1 @elevated（最亮底） */
   --color-on-accent: #0d0f12; /* 强调色上的字：近黑 5.21:1（白字只有 3.68，不达标） */
+  --color-on-media: #e6eaf0; /* 图片蒙版和视频监视器始终是深底，不随页面变深字 */
 
   /* ---- 强调（抖音品牌红）---- */
   --color-accent: #fe2c55; /* 图标/指示/焦点环/进度：4.88:1 @panel */
@@ -83,8 +84,7 @@
     font-synthesis: none;
   }
 
-  /* 明确声明只做深色：让原生控件（video controls / select / 滚动条 / 选区）
-     跟随页面，消除「白卡片 + 黑控件」的割裂。 */
+  /* 默认保持旧深色，选中浅色时由根元素覆盖原生控件与全局令牌。 */
   html {
     color-scheme: dark;
     background: var(--color-canvas);
@@ -169,6 +169,44 @@
   ::-webkit-scrollbar-thumb:hover {
     background: var(--color-line-ui);
   }
+}
+
+/* 浅色「日间剪辑台」：同一套语义令牌，不逐页维护第二套类名。 */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-canvas: #f2f4f8;
+  --color-panel: #ffffff;
+  --color-elevated: #e6eaf0;
+  --color-well: #f7f9fc;
+  --color-line: #d5dce6;
+  --color-line-strong: #afbac9;
+  --color-line-ui: #657389;
+  --color-ink: #1d2533;
+  --color-ink-muted: #4c5a6d;
+  --color-ink-subtle: #536074;
+  --color-on-accent: #ffffff;
+  --color-accent: #c91c43;
+  --color-accent-hover: #ae1437;
+  --color-accent-soft: #fdebf0;
+  --color-accent-line: #c86d84;
+  --color-success: #126b43;
+  --color-success-soft: #e7f5ec;
+  --color-success-line: #6c9b7f;
+  --color-warning: #88520a;
+  --color-warning-soft: #fff3dd;
+  --color-warning-line: #b18443;
+  --color-danger: #bd2230;
+  --color-danger-soft: #fff0f1;
+  --color-danger-line: #cb7780;
+  --color-info: #175daf;
+  --color-info-soft: #eaf2ff;
+  --color-info-line: #7597c5;
+  --color-running: #0b6870;
+  --color-running-soft: #e6f4f5;
+  --color-running-line: #6f9ba0;
+  --color-ai: #6540b5;
+  --color-ai-soft: #f1ecfc;
+  --color-ai-line: #9d83c9;
 }
 
 /*

@@ -185,7 +185,7 @@ access_token 由代码自行换取，**不需要用户手填**。
 - `README.md:359`："正式发布前需要在公众号后台配置 IP 白名单。"
 - `deployment.md:19-24`："服务器/Docker 有固定公网 IP：可以直连微信；Cloudflare 没有固定出口 IP：建议部署 `weixin-relay` 到固定 IP 机器。"
 
-**【事实·官方文档】** 现行文档（`developers.weixin.qq.com/doc/service/guide/dev/api/`）原文：
+**【事实·官方文档】** 现行文档（`developers.weixin.qq.com/doc/subscription/guide/dev/api/`）原文：
 
 > "IP 白名单：即白名单内的 IP 才可以调用获取接口调用凭据接口 或 获取稳定版接口调用凭据接口，否则会提示 **61004** 错误"
 
@@ -222,7 +222,7 @@ if (this.accessToken && this.accessToken.expiresAt > new Date(Date.now() + 60000
 
 **【事实】** 用的是老的 `/cgi-bin/token`，**没有使用**官方推荐的稳定版 `/cgi-bin/stable_token`。
 
-**【事实·官方约束】** `developers.weixin.qq.com/doc/service/guide/dev/api/` 原文：
+**【事实·官方约束】** `developers.weixin.qq.com/doc/subscription/guide/dev/api/` 原文：
 
 > "access_token 的有效期目前为2个小时，需定时刷新，**重复获取将导致上次获取的 access_token 失效**。建议服务号开发者使用中控服务器统一获取和刷新 access_token"
 
@@ -340,13 +340,17 @@ export const WEIXIN_TEMPLATE_REGISTRY: Record<string, string> = {
 - 服务号：`/doc/service/api/draftbox/draftmanage/api_draft_add`
 - 订阅号：`/doc/subscription/en/api/draftbox/draftmanage/api_draft_add.html`
 
-草稿箱指南页原文："**服务号**可以通过服务端接口，对草稿和商品卡片进行管理"。
+草稿箱指南页原文（⚠️ **注意这句是「服务号」那一页的措辞**）："**服务号**可以通过服务端接口，对草稿和商品卡片进行管理"。
 
-**【推断·必须由我们自己承担的风险】** 官方文档同时存在于订阅号目录下，说明**认证订阅号**理论上
-也能调用草稿箱接口；但**未认证/个人订阅号没有 AppSecret 和这套服务端 API 权限**。
+> **2026-09-23 补充（核对过两侧页面）**：订阅号目录下同名页面的同一句写的是「**公众号**可以通过服务端接口…」
+> （新命名空间里「公众号」= **原订阅号**），且 `draft/add` 的**适用范围表明文 `公众号 ✔ / 服务号 ✔`**。
+> ⇒ 原附表里「草稿箱能力归属服务号」的结论**由这一句误推而来**，已更正（见文末更正记录）。
+
+**【推断·必须由我们自己承担的风险】** 官方文档同时存在于订阅号目录下，说明订阅号理论上也能调用草稿箱接口；
+**但「认证 / 未认证」这一维官方适用范围表并不区分**，而个人主体未认证账号恰是我们的目标账号
+⇒ **这一点无法靠读本项目源码确认，必须用真实账号实测**。
 项目对这一点零防护——它假设使用者已经有合规账号。**我们必须在 UI 上做前置校验与明确文案**，
 否则用户会拿到 `48001 api unauthorized` 之类的错误却不知道原因。
-**这一点无法靠读本项目源码确认，必须用真实账号实测。**
 
 ### 3.9 草稿箱 vs 群发 vs 发布
 
@@ -599,11 +603,29 @@ sell copies of the Software"，**唯一条件**是保留版权声明与许可声
 | 只建草稿 | `src/integrations/publish/providers/weixin-publisher.ts:272-294` |
 | 硬编码封面 media_id | `src/features/weixin-article/services/article-cover.service.ts:19-20` |
 | IP 白名单只匹配 40164 | `weixin-publisher.ts:301-311` |
-| 官方 IP 白名单错误码为 61004 | https://developers.weixin.qq.com/doc/service/guide/dev/api/ |
-| `draft/add` 参数、thumb_media_id 必填、外链图被过滤、<2万字符/<1M | https://developers.weixin.qq.com/doc/service/api/draftbox/draftmanage/api_draft_add |
-| 草稿箱能力归属服务号 | https://developers.weixin.qq.com/doc/service/guide/product/draft.html |
+| 官方 IP 白名单错误码为 61004 | https://developers.weixin.qq.com/doc/subscription/guide/dev/api/ |
+| `draft/add` 参数、thumb_media_id 必填、外链图被过滤、<2万字符/<1M | https://developers.weixin.qq.com/doc/subscription/api/draftbox/draftmanage/api_draft_add |
+| ~~草稿箱能力归属服务号~~ → **草稿箱接口订阅号与服务号都可调**（`draft/add` 适用范围表：公众号 ✔ / 服务号 ✔） | https://developers.weixin.qq.com/doc/subscription/api/draftbox/draftmanage/api_draft_add §7 |
 | rel 固定 IP 中转设计 | `src/apps/weixin-relay/server.ts`、README:483-496 |
 | MIT 许可 | GitHub API `license.spdx_id` + `LICENSE` 文件 |
 | 模板全内联样式 | `grep -rn "<style" src/features/weixin-article/rendering/templates/` 无匹配 |
 | 模板为纯数据 | `src/features/weixin-article/rendering/template-registry.ts` |
 | OpenAI 兼容 | `src/integrations/llm/providers/openai-compatible-llm.ts:119` |
+
+---
+
+## 更正记录（2026-09-23，核对官方文档后回填）
+
+1. **「草稿箱能力归属服务号」是错的**（原附表中该行）。官方文档现已按账号类型拆成
+   `developers.weixin.qq.com/doc/subscription/…`（**公众号 = 原订阅号**）与 `/doc/service/…`（服务号）两套，
+   页面原文：「原公众号文档（包含订阅号与服务号）已升级为公众号（原订阅号）与服务号文档」。
+   而草稿箱整节（`draft/add`、`draft/count`、`draft/batchget`…）**就在订阅号文档里**，
+   且 `draft/add` 的**适用范围表**明文 `公众号 ✔ / 服务号 ✔`。
+   ⇒ 当日「`/doc/service/…` 下有草稿箱页」这个观察本身没错，**错在由它推出「归属服务号」**。
+2. **文档 URL 已按新命名空间改写**（`/doc/service/…` → `/doc/subscription/…`）：本文件 §3.4 与 §3.5 的两处引用、
+   以及附表的三行。订阅号命名空间下这些页均已确认存在（可在任一副栏目导航中看到）。
+3. **§1.4 那个未知数缩小但未消灭**：新证据（发布能力页才有回收说明 + `draft/add` 适用范围含公众号）
+   进一步支持「未认证订阅号仍可建草稿」，但**适用范围表不区分认证/未认证** ⇒
+   仍须真机探针（`scripts/verify-wechat-mp.ts`）给出结论。
+4. 本轮的四个新参考项目评估见同目录 **`wechat-mp-publisher-projects-assessment.md`**（含 `newspic` 图片消息、
+   `cover_info.crop_percent_list`、`draft/switch` 已废弃等新核实事实）。

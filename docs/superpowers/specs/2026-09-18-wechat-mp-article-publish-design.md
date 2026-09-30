@@ -1,10 +1,14 @@
 # 抖创工坊 微信公众号 AI 文章发布 设计规格
 
-**状态：** DRAFT（待用户评审）
+**状态：** 草稿箱通路已接通；真实账号未验收（2026-09-29，见可行性文档第 7 节）
 **日期：** 2026-09-18
 **产品：** 抖创工坊
 **范围：** 把已完成的任务产物（转录 + AI 洗稿）生成一篇公众号文章，渲染成微信兼容 HTML，提交到**微信公众号草稿箱**，最终发布仍由人工在公众号后台完成
 **实施边界：** 只新增 `wechat_mp` 一条平台通路与一套文章渲染；不动视频/图文发布、不动 `PublishTaskStatus`、不内置外部依赖、不引入浏览器自动化
+
+> **2026-09-29 复核：** 用户仍为个人订阅号，未认证或审核中；本轮只分析和更新文档、不开发。
+> 当前代码清单、已发现缺口及验收门槛见[可行性与剩余实施范围](../../research/2026-09-29-wechat-draft-feasibility.md)。
+> 下文早期结构描述须结合现有头条、小红书通路使用，不能重做已有文章模块。
 
 ---
 
@@ -34,7 +38,7 @@
 
 1. **硬编码的封面 media_id**：`article-cover.service.ts:19-20` 有 `DEFAULT_COVER_MEDIA_ID = "SwCSRjrdGJNaWioRQUHzgF68BHFkSlb_f5xlTquvsOSA6Yy0ZRjFo0aW9eS3JJu_"`（作者自己账号的），且封面失败时静默回退到它。`media_id` 与账号绑定，照抄必然 `40007 invalid media_id`。**我们必须自己出封面图。**
 2. **IP 白名单相关错误码只认了一个**：它只认 `40164`（`weixin-publisher.ts:306`），`classifyWeixinError` 的 auth 列表是 `[40001, 40013, 40125, 40164, 48001]`。**微信官方文档在这里自相矛盾**（两处都是官方页面）：
-   - [获取接口调用凭据](https://developers.weixin.qq.com/doc/service/api/base/api_getaccesstoken.html) 的错误码表：**`40164` = 调用接口的 IP 地址不在白名单中**
+   - [获取接口调用凭据](https://developers.weixin.qq.com/doc/subscription/api/base/api_getaccesstoken.html) 的错误码表：**`40164` = 调用接口的 IP 地址不在白名单中**
    - [服务端 API 调用说明](https://developers.weixin.qq.com/doc/subscription/guide/dev/api/) 的「IP 白名单」一节：**「否则会提示 `61004` 错误」**
 
    我们**两个码都必须识别并归为同一类「IP 白名单」**，且给出同一段指引。**只认一个就等于把用户的明确错误报成未知错误。**
@@ -43,14 +47,14 @@
 
 | 事实 | 出处 |
 | --- | --- |
-| `draft/add`：`title` **必填 ≤32 字**、`author` ≤16 字、`digest` ≤120 字（不填则默认抓正文前 54 字）；`content` **必填，必须 <2 万字符且 <1M**；`thumb_media_id` 对图文消息（news）**必填**，且**必须是永久素材 MediaID** | [新增草稿](https://developers.weixin.qq.com/doc/service/api/draftbox/draftmanage/api_draft_add.html) |
+| `draft/add`：`title` **必填 ≤32 字**、`author` ≤16 字、`digest` ≤120 字（不填则默认抓正文前 54 字）；`content` **必填，必须 <2 万字符且 <1M**；`thumb_media_id` 对图文消息（news）**必填**，且**必须是永久素材 MediaID** | [新增草稿](https://developers.weixin.qq.com/doc/subscription/api/draftbox/draftmanage/api_draft_add.html) |
 | `content` 原文：**「涉及图片 url 必须来源『上传图文消息内的图片获取 URL』接口获取。外部图片 url 将被过滤。」** | 同上 |
-| 永久素材图片 ≤10MB，支持 bmp/png/jpeg/jpg/gif；返回 `media_id` + `url` | [上传永久素材](https://developers.weixin.qq.com/doc/service/api/material/permanent/api_addmaterial.html) |
+| 永久素材图片 ≤10MB，支持 bmp/png/jpeg/jpg/gif；返回 `media_id` + `url` | [上传永久素材](https://developers.weixin.qq.com/doc/subscription/api/material/permanent/api_addmaterial.html) |
 | `uploadimg` 正文图：**仅支持 jpg/png，大小必须 <1MB**，不占用素材库 10 万张限额 | 同上（注意事项第 5 条） |
-| `access_token` 有效期 7200s；**40164 = 调用接口的 IP 地址不在白名单**；40001/40013/40125 = 凭据错 | [获取接口调用凭据](https://developers.weixin.qq.com/doc/service/api/base/api_getaccesstoken.html) |
-| **稳定版凭据契约（已核实）**：`POST /cgi-bin/stable_token`，JSON body `{grant_type:"client_credential", appid, secret, force_refresh?:false}`；普通模式下**有效期内重复调用不会更新 token**，且**平台会提前 5 分钟更新** —— 因此**返回的 `expires_in` 可能远小于 7200（如 345），缓存必须用返回的 `expires_in`，绝不能硬编码 7200**；该接口与 `/cgi-bin/token` 的凭据**互相隔离**；强制刷新每天限 20 次且需间隔 30 秒（**我们不用**） | [获取稳定版接口调用凭据](https://developers.weixin.qq.com/doc/service/api/base/api_getstableaccesstoken.html) |
+| `access_token` 有效期 7200s；**40164 = 调用接口的 IP 地址不在白名单**；40001/40013/40125 = 凭据错 | [获取接口调用凭据](https://developers.weixin.qq.com/doc/subscription/api/base/api_getaccesstoken.html) |
+| **稳定版凭据契约（已核实）**：`POST /cgi-bin/stable_token`，JSON body `{grant_type:"client_credential", appid, secret, force_refresh?:false}`；普通模式下**有效期内重复调用不会更新 token**，且**平台会提前 5 分钟更新** —— 因此**返回的 `expires_in` 可能远小于 7200（如 345），缓存必须用返回的 `expires_in`，绝不能硬编码 7200**；该接口与 `/cgi-bin/token` 的凭据**互相隔离**；强制刷新每天限 20 次且需间隔 30 秒（**我们不用**） | [获取稳定版接口调用凭据](https://developers.weixin.qq.com/doc/subscription/api/base/api_getstableaccesstoken.html) |
 | 官方**推荐**用稳定版凭据 `/cgi-bin/stable_token`（避免「重复获取导致上次 token 失效」的互斥问题） | 同上 |
-| **IP 白名单是「换取凭据」这一步的门槛**，且**存在第二道闸（三个码）**：`89503` = **此次调用需要管理员确认，请耐心等候**；`89506` = 该 IP 已被管理员**拒绝**，请 **24 小时**后再试；`89507` = 被拒绝，请 **1 小时**后再试 | [获取稳定版接口调用凭据](https://developers.weixin.qq.com/doc/service/api/base/api_getstableaccesstoken.html) 的错误码表；机制说明见[服务端 API 调用说明](https://developers.weixin.qq.com/doc/subscription/guide/dev/api/) |
+| **IP 白名单是「换取凭据」这一步的门槛**，且**存在第二道闸（三个码）**：`89503` = **此次调用需要管理员确认，请耐心等候**；`89506` = 该 IP 已被管理员**拒绝**，请 **24 小时**后再试；`89507` = 被拒绝，请 **1 小时**后再试 | [获取稳定版接口调用凭据](https://developers.weixin.qq.com/doc/subscription/api/base/api_getstableaccesstoken.html) 的错误码表；机制说明见[服务端 API 调用说明](https://developers.weixin.qq.com/doc/subscription/guide/dev/api/) |
 | 配额要区分**日限**与**分钟限**：`45009` = **reach max api daily quota limit**（日额度用完，可调 `clear_quota` 恢复）；`45011` = **api minute-quota reach limit**（调用太频繁，稍后重试）。两者文案与用户动作完全不同 | 同上 |
 | 另有 `41002`（缺 appid）、`41004`（缺 secret）、`43002`（需 POST）、`40002`（grant_type 非法）—— 归为配置/凭据类，给可执行文案 | 同上 |
 | AppSecret 可被**冻结**（此时换取 token 返回 **`40243`**，解冻需 10 分钟生效）—— 报错文案要能区分「secret 写错了」与「secret 被冻结了」 | 同上 |
@@ -58,18 +62,62 @@
 | 刷新凭据时有 5 分钟**新老 token 并存**窗口（平台保证），因此提前刷新是安全的 | 同上 |
 | **发布能力接口（`freepublish/*`）自 2025 年 7 月起，对「个人主体账号、企业主体未认证账号及不支持认证的账号」回收权限** | [发布能力](https://developers.weixin.qq.com/doc/subscription/guide/product/publish.html) |
 | **草稿箱那一页没有这句回收说明**，且配额表把「草稿箱 - 新建草稿 1000/日」与「发布能力 - 发布接口 100/日」**分开列**（access_token 2000/日） | [草稿箱](https://developers.weixin.qq.com/doc/subscription/guide/product/draft.html)、[接口调用额度说明](https://developers.weixin.qq.com/doc/subscription/guide/dev/api/limit.html) |
-| 封面裁剪比例：图文消息（news）仅支持 `2.35_1` 与 `1_1` | [新增草稿](https://developers.weixin.qq.com/doc/service/api/draftbox/draftmanage/api_draft_add.html) |
+| 封面裁剪比例：图文消息（news）仅支持 `2.35_1` 与 `1_1` | [新增草稿](https://developers.weixin.qq.com/doc/subscription/api/draftbox/draftmanage/api_draft_add.html) |
+| **文档命名空间已拆分**：`/doc/subscription/…` = **公众号（原订阅号）**，`/doc/service/…` = **服务号**。原文「原公众号文档（包含订阅号与服务号）已升级为公众号（原订阅号）与服务号文档」⇒ 我们的目标账号（订阅号）应引用 `subscription` 那一套（**本节链接已按此校正**） | 官方文档站顶部说明（2026-09-23 核对） |
+| **`draft/add` 适用范围表明文：`公众号 ✔ / 服务号 ✔`** —— 这是「订阅号可建草稿」的**直接文档依据** | [新增草稿](https://developers.weixin.qq.com/doc/subscription/api/draftbox/draftmanage/api_draft_add.html) §7 适用范围 |
+| **`cover_info.crop_percent_list` 精确 schema**：`ratio` + 归一化（0..1）`x1/y1/x2/y2`，**可同时声明多个比例**（官方示例同给 `2.35_1` 与 `1_1`）。news 仅 `2.35_1`/`1_1`；newspic 另支持 `16_9` | 同上 §2 `Body.articles(Array).cover_info` |
+| **`article_type` 除 `news` 外还有 `newspic`（图片消息）**：用 `image_info.image_list`，**≤20 张**、`image_media_id` 必须是**永久素材 MediaID**、**首张即封面**；`content` 仅支持纯文本与部分特殊标签（商品 ≤50）。**本轮不做**，见 §11 | 同上 §2 |
+| 我们**目前未发**的三个字段：`content_source_url`（≤1kb，「阅读原文」URL）、`need_open_comment`、`only_fans_can_comment` | 同上 §2 |
+| **`digest ≤120` 是 2026-07-14 才对齐的**（变更日志原文「api摘要长度限制对齐mp端120字」）⇒ 我们编码的 120 正确；**第三方项目里的摘要数字可能不同，不可照抄** | 同上「接口变更日志」 |
+| ⚠️ **`/cgi-bin/draft/switch` 已废弃**（原文「该接口已废弃。草稿箱和发布功能已经全量开放，无需再设置或查询开关状态」）⇒ **不要拿它当账号自检**，`draft/count` 才是 | [草稿箱开关设置](https://developers.weixin.qq.com/doc/subscription/api/draftbox/draftmanage/api_draft_switch.html) |
+| ⚠️ **官方文档自相矛盾一处**：`content` 同时写「大小不可超过 **2kb**」与「必须少于 **2万字符**、小于 **1M**」。我们按后者实现 ⇒ **真机验证时顺手确认** | 同上 §2 `content` 字段说明 |
 
 ### 1.4 本功能最大的未知数（必须在 Task 1 用真实账号消灭）
+
+> **2026-09-23 更新：证据变强了，但未知数没有被消灭。** 新证据见 §1.3 的三行
+> （发布能力页才有回收说明 / `draft/add` 适用范围含公众号 / 草稿箱与发布配额分列），
+> 以及下面新增的第 5 条 —— 但**适用范围表不区分「认证 / 未认证」**，
+> 而本节描述的用户账号恰恰是**个人主体未认证**。⇒ **真机探针不可替代，且至今未执行。**
+>
+> **2026-09-23 账号状态**：用户**已提交个人认证，等待反馈（预计 1–3 个工作日）**。
+> **2026-09-29 用户再次确认：个人订阅号，未认证或仍在审核。** 无需等待认证才能做连接预检，
+> 但官方未按主体/认证细分草稿授权，**不能承诺认证只增权限或必然解决权限问题**。
+> ⚠️ 另记一条**待观察**：官方那句把「**个人主体账号**」与「企业主体未认证账号」**并列为两个类别**
+> （未对个人主体加「未认证」限定）⇒ **个人主体即使认证成功，也可能仍拿不到 `freepublish`**。
+> 这不影响本轮（我们不做真发布），但**别默认「认证过了就能自动群发」**。
 
 用户账号是**个人订阅号（未认证）**。已知：
 
 - 官方文档只在**发布能力**页写了权限回收，**草稿箱页没有**，且配额表把两者分开 —— 据此**推断**草稿箱仍可用；
 - 现行官方文档**没有**按「未认证/认证」细分草稿箱接口的适用范围（只说「公众号 ✔ 服务号 ✔」）；
 - 网上流传的《微信公众号接口权限说明》对照表**是 2016 年的旧表**（当时草稿箱接口还不存在），其「素材管理：未认证订阅号无」的结论**不能用于判断 2025 年后的草稿箱权限**；
-- 有 2026 年的第三方实践文章标题即为「个人订阅号零成本方案」并涉及 40164 白名单配置，**指向**个人订阅号可建草稿，但这是二手证据。
+- 有 2026 年的第三方实践文章标题即为「个人订阅号零成本方案」并涉及 40164 白名单配置，**指向**个人订阅号可建草稿，但这是二手证据；
+- **（新增 2026-09-23）四个第三方参考项目无一能回答这个问题**（详见 §1.5 与
+  `docs/research/wechat-mp-publisher-projects-assessment.md` §2.2）：两家零记载、
+  一家只有散文级说法、另一家（16Miku）明确**拥有**该权限但弃用理由与我们无关（运营可见性），**不构成证据**。
 
-**因此本设计的 Task 1 就是一个「账号自检探针」**：用真实 AppID/AppSecret 打一次 `draft/count`（最便宜、**零副作用**的草稿箱接口），把「凭据是否有效 / IP 是否在白名单 / 草稿箱权限是否可用」三件事一次性问清楚。**这一步决定 §15 降级通路是否成为主通路。**
+**Task 1 仅为连接预检**：换取 token 后调用 `GET draft/count`，验证当前连接和草稿数量查询权限，**不证明封面上传、正文图上传或 `draft/add` 可用**。预检不写内容，但取 token 可能触发管理员风险确认。最终须经一篇带封面和正文图的真实草稿验收；本轮不执行。接口权限不足时保留 §15 人工交付，不能只凭查询结果宣告整条通路已跑通。
+
+### 1.5 第三方参考项目评估结论（2026-09-23）
+
+调研了四个新项目（`jiji262/wechat-publisher`、`majiabin2020/…auto-publisher`、
+`16Miku/wechat-auto-publishing`、`chendi126/Weichat_Auto`），加上 2026-09-18 已评估的
+`liyown/ai-trend-publish`，共五家。完整评估见
+**`docs/research/wechat-mp-publisher-projects-assessment.md`**。三条结论：
+
+1. **不做任何移植**：五家清一色是「内容工厂」（选题→写稿→配图→发布），**没有一家提供我们真正缺的
+   「发布执行层」**（服务编排 + 路由 + UI）。⇒ 继续以我们自己的 `wechat-mp-client.ts` +
+   `wechat-article.ts` 为**唯一真源**，不换架构、不引依赖。
+2. **两个是反面教材**：`majiabin2020` 与 `16Miku` **真的会调 `freepublish/submit`**
+   （16Miku 的文档承诺「可选/默认只到草稿」，代码里却**无条件**调用，还把 `success: true` 硬编码写盘）
+   ⇒ 正好印证 §2「只建草稿」与既有通路「机器只记已提交」这条不变式的必要性。
+3. **可吸收项留待后续**（**本轮均未实施**）：反 AI 味评分器、主题样式数据与两条排版规则
+   （丢弃首个 h1 / 相邻 h2 插分节符）、正文图去重上传、`crop_percent_list` 双比例、套话黑名单与质量检查。
+   ⚠️ 四个项目里**三个没有 LICENSE** ⇒ 上述只能**搬数值/规则并自行实现**，不可逐行复制。
+
+同时**核实并更正**了两处我们自己的过时结论：① 文档命名空间已拆分，
+「草稿箱归属服务号」的说法**是错的**（见 §1.3 与已回填的 research 更正记录）；
+② `/cgi-bin/draft/switch` **已废弃**，不可用作自检。
 
 ---
 
@@ -78,7 +126,7 @@
 | 决策 | 结果 |
 | --- | --- |
 | 接入方式 | **官方 API 直连**（`api.weixin.qq.com`），**不做浏览器自动化** |
-| 产品边界 | **只建草稿**。`freepublish/submit`（真发布/群发）**不做** —— 官方已对个人主体回收该权限，且我们不做不可逆动作 |
+| 产品边界 | **只建草稿**。不调用 `freepublish/*`（正式发布）或 `message/mass/*`（群发）；两者是不同能力，也不通过浏览器代点发布 |
 | 平台建模 | `PublishPlatform` 新增 `wechat_mp`，复用既有交付包/任务/审计/预览/垃圾桶 |
 | 包内容类型 | `PackageContentType` 新增 `"article"`（第三种），`imagePaths`/`coverPath` 复用，新增 `articleCopy` + 包内 `article.html` |
 | 文章内容来源 | 复用**已完成任务**的转录 + AI 洗稿产物，**新增一步 AI 成文**（不是把口播稿当正文） |
@@ -192,14 +240,14 @@ interface WechatMpConfig {
 
 ### 6.2 账号自检（Task 1，可行性判据）
 
-新增 `POST /api/publishing/wechat/verify`，**零副作用**（不建草稿、不上传任何素材），逐项返回：
+新增 `POST /api/publishing/wechat/verify`，**不写内容**（不建草稿、不上传素材；取 token 可能触发管理员确认），逐项返回连接预检结果：
 
 ```
 POST /cgi-bin/stable_token      → 凭据是否有效：40001 / 40013（AppID 错）/ 40125（secret 错）/ 40243（secret 被冻结，需解冻且 10 分钟生效）/ 41002 / 41004 / 43002
                                 → IP 门槛：40164 与 61004（两个官方页面各说一个）→ 归为「IP 白名单」，
                                   把微信回显的 IP 原样展示；89503 → 「待管理员确认」；
                                   89506 → 「已被管理员拒绝，24 小时后再试」；89507 → 「已被拒绝，1 小时后再试」
-POST /cgi-bin/draft/count       → 草稿箱权限是否可用：48001（api unauthorized）→ 「该公众号没有草稿箱接口权限」
+GET /cgi-bin/draft/count        → 草稿数量查询权限；成功不代表素材上传或新建草稿已获授权
 ```
 
 **七个错误码的文案必须彼此可区分**，因为它们对应**七种完全不同的用户动作**（改 AppID / 改 secret / 解冻 secret / 加 IP 白名单 / 等管理员确认 / 等拒绝冷却 / 该账号没权限）。把它们混成一句「微信接口调用失败」，用户就没有任何可执行的动作 —— 本项目在抖音通路上已经吃过一次「失败原因被截断丢掉」的亏（见 worklog 2026-09-17）。
@@ -221,6 +269,15 @@ POST /cgi-bin/draft/count       → 草稿箱权限是否可用：48001（api un
 
 ## 7. 执行器：`src/lib/wechat-mp-client.ts`
 
+> **实施状态（2026-09-23）**：**四个接口全部已实现并有用例**（`wechat-mp-client.test.ts` 共 35 项）：
+> `getDraftCount` / `verifyAccount`（账号自检，Task 1）、`uploadCoverImage` / `uploadContentImage` /
+> `createDraft`（三个写接口，**2026-09-23 补齐** —— 原 Task 1 只做到 token + 自检，Task 6 的 Files 清单还漏了这个文件，
+> 照原计划执行会漏掉「真正把草稿建出来」的那半条链）。
+> 三条实现口径记在这里，免得后人当成松散实现去「修」：
+> ① **输入错误先于配置错误**（格式/大小不合规时**连 token 都不换**）——沿用抖音通路那条教训；
+> ② **错误分类/脱敏/`errcode` 判定走同一份 `send()`**，multipart 与 JSON 请求共用，不让上传通路长出第二套文案；
+> ③ **不给的键不出现在 payload 里**（不塞 `undefined`/空串），评论字段与 `cover_info` 本轮不发。
+
 与既有 `sau-runner.ts` 同模式（可注入 `fetchImpl` 以便测试，**测试全程假 HTTP，绝不联网**）：
 
 ```ts
@@ -229,31 +286,55 @@ interface WechatMpResult<T> {
   data?: T;
   errorCode?: number;      // 微信 errcode
   errorKind?: "auth" | "secret_frozen" | "ip_whitelist" | "risk_pending" | "risk_rejected"
-            | "permission" | "rate_limit" | "quota" | "invalid_response" | "network";
+            | "permission" | "rate_limit" | "quota" | "invalid_response" | "network" | "unknown";
   message: string;         // 已脱敏、可直接展示
 }
 
+// 输入不合规时**抛** WechatMpError（与 assertConfigured 同一口径），不返回 ok:false：
+//   wechat_mp_not_configured（未配置凭据）/ wechat_mp_invalid_upload（空文件·格式·超限）
+//   / wechat_mp_invalid_draft（title·content·thumb_media_id 缺失）
+// ⚠️ Task 6 必须把 WechatMpError 登记进 publishing-routes 的错误边界（否则 422 + 可照抄指引会全落进兜底 500，
+//    见 AGENTS.md 里头条错误类漏登记那次事故）。
+
 verifyAccount(): Promise<WechatVerifyReport>
-uploadCoverImage(bytes, filename): Promise<WechatMpResult<{ mediaId: string }>>
-uploadContentImage(bytes, filename): Promise<WechatMpResult<{ url: string }>>
-createDraft(article): Promise<WechatMpResult<{ mediaId: string }>>
+uploadCoverImage(image: WechatImageUpload): Promise<WechatMpResult<{ mediaId: string }>>
+uploadContentImage(image: WechatImageUpload): Promise<WechatMpResult<{ url: string }>>
+createDraft(article: WechatDraftArticle): Promise<WechatMpResult<{ mediaId: string }>>
+
+interface WechatImageUpload {
+  bytes: Uint8Array;      // Buffer 可直接传
+  filename: string;       // ⚠️ 微信按**扩展名**判格式，必须与内容一致（扩展名说谎会报 40113）
+  maxBytes?: number;      // 由调用方给（限额真源在 wechat-article.ts），给了就上传前先拦
+}
+
+interface WechatDraftArticle {
+  title: string;          // 必填 ≤32
+  content: string;        // 必填，内联样式 HTML；图片必须是 uploadimg 返回的 mmbiz URL
+  thumbMediaId: string;   // 必填，**必须是永久素材 MediaID**（uploadimg 的 URL 不能当封面）
+  author?: string;        // ≤16
+  digest?: string;        // ≤120
+  contentSourceUrl?: string; // ≤1kb，阅读原文
+}
 ```
 
 编排放在 `PublishingService`（不放进路由处理器 —— 本项目所有路由都是「校验 + 转调 service」的薄层，与抖音通路同一条架构不变式）：
 
 ```
 POST /api/publishing/tasks/:id/auto-publish   ← 复用既有路由，不新增
-  → 按 task 所属包的 contentType 分派：
-      article   → 微信草稿通路（本节）
-      note      → 既有 sau 通路（一行不改）
+  → 按 contentType × task.platform 分派：
+      article × wechat_mp    → 微信草稿通路（本节，待接入）
+      article × toutiao      → 既有头条执行器
+      note × douyin          → 既有 sau 通路
+      note × xiaohongshu     → 既有小红书执行器
   分派之后才做该通路自己的检查
   → 校验（平台为 wechat_mp / 包为 article）
   → 核对 previewRevision（缺失 400 / 不一致 409，不产生记录）
   → 互斥检查（同一任务运行中 409）
   → 上传封面 → 逐张上传正文图并替换 HTML 内 src
-  → 断言最终 HTML <20000 字符、无外链图
+  → 断言最终 HTML <20000 字符且 UTF-8 <1M、无外链图或未替换占位符
   → draft/add
-  → 回写 autoPublish（succeeded 的语义 = 草稿已创建）
+  → 立即保存草稿 media_id，回写 autoPublish（succeeded 的语义 = 草稿已创建）
+  → 人工后台验收；网络超时结果不确定时不自动重试创建
 ```
 
 **「先判内容类型、再判配置」是硬要求**：抖音通路的 Task 4 已经被测试抓到过一次这个错序
@@ -370,8 +451,8 @@ autoPublish: {
                  或先与管理员沟通确认。」
 40243         → 「AppSecret 已被冻结，请到 开发密钥 里解冻（约 10 分钟后生效）。」
 40125 / 40013 → 「AppID 或 AppSecret 不正确，请检查是否有多余空格、大小写是否正确。」
-48001         → 「该公众号没有草稿箱接口权限（通常需要微信认证）。
-                 你仍可使用「下载文章 HTML」把文章粘贴到公众号编辑器。」
+48001         → 「当前账号没有本次调用接口的权限（显示具体接口）。请核对后台权限或咨询微信官方。
+                 可下载文章与图片手工编辑；认证不保证解决该权限问题。」
 ```
 
 最后一条是**降级通路的入口**：权限不足时，界面不能只给一个错误就结束（§15）。
@@ -380,7 +461,11 @@ autoPublish: {
 
 ## 11. 明确不做
 
-- **`freepublish/submit` 真发布 / 群发**（官方已对个人主体回收权限，且我们不做不可逆动作）
+- **`freepublish/submit` 真发布 / 群发**（官方已对个人主体回收权限，且我们不做不可逆动作）——
+  **2026-09-23 经第三方项目评估后再次确认保持**（见 §1.5）
+- **`article_type: "newspic"`（图片消息）** —— 官方确实支持（≤20 张、`image_media_id` 必须永久素材
+  MediaID、首张即封面，见 §1.3），产品上也能对应我们已有的「图文包」形态，但**本轮不做**：
+  先把文章通路补齐（范围可控）。**这是一个显式的将来选项，不是遗漏。**
 - 定时到点自动建草稿
 - 多公众号矩阵（`accounts` 表）
 - AI 配图生成（DashScope/MiniMax 那一套）—— 直接用现成的场景静帧与素材库图片
@@ -400,13 +485,13 @@ autoPublish: {
 | 渲染 | 纯函数用例：`<style>/<script>/<svg>` 被去掉、`class/id/data-*/on*` 被去掉、`div→section`、列表改写、图片样式注入、**外链图被拒**、渲染结果 <20000 字符断言、超限给出段号 |
 | 图片 | **全程用假 ffmpeg（stub 脚本）与最小 JPEG 字节**：webp 被转 jpg、>1MB 被压到 <1MB、封面被裁成 900×383、源文件未被修改（前后 sha256 一致） |
 | 客户端 | **注入假 `fetchImpl`，绝不联网**：40164 与 61004 → `ip_whitelist`；89503 → `risk_confirm`；40243 → `secret_frozen`；48001 → `permission`；40001/40013/40125 → `auth`；45009 → `rate_limit`；非 JSON 响应 → `invalid_response`；**每个码的文案断言互不相同**（防止又混成一句兜底文案）；**token 落盘缓存 + 提前 5 分钟过期 + 单飞锁**；日志/审计里**不出现 AppSecret 与 access_token** |
-| 路由 | 复用 `auto-publish` 后**按 `contentType` 分派**：article 包只走微信通路（**断言不触碰 sau**）、note 包只走 sau 通路（**断言不触碰微信客户端**）；**未配置微信凭据时，对 note/video 包仍返回该通路原本的错误**（分派顺序用例）；article 包不带 `previewRevision` → 400 且不产生记录；过期 revision → 409 且不产生记录；未配置凭据 → 明确错误且不写记录；运行中重复触发 → 409 |
+| 路由 | 复用 `auto-publish` 后按**内容类型 × 平台**分派（§7），四条通路互不串线；未配置微信凭据不影响头条/抖音/小红书；公众号 article 缺 `previewRevision` → 400，过期 → 409，均不产生记录；未配置凭据 → 明确错误且不写记录；运行中重复触发 → 409 |
 | 不变式 | 退出/成功只写 `autoPublish.status = succeeded`，**`task.status` 仍为 `ready`**（最关键的一条断言） |
 | 平台枚举 | §8 那 7 个静默点各有一条断言（`wechat_mp` 在清单里，且既有 4 个平台一个没少） |
 | 存量兼容 | `contentType` 缺省仍为 `video`；既有 publishing 用例（store/assets/service/routes）**全部保持通过**，其中 `previewRevision` 的精确哈希断言**逐字节不变** |
 
 **验证命令**：`npm run check`（双端）、`npm test`、`npm run build:backend`。
-**基线**：`npm test` 全量 509 项 / 507 通过 / 1 跳过 / **1 既有失败**（`src/lib/publishing-service.test.ts` → `startup recovery reports asset phases before due handling and purge`），见 `docs/worklog.md`。
+**最近全量记录**：此前抖音登录修复验证为 978 项 / 977 通过 / 1 跳过 / 0 失败；2026-09-29 本轮仅重跑公众号专项 **99/99 通过**。旧版 509 项、1 个既有失败已不是当前基线；恢复开发时重新跑全量，不豁免历史失败。
 **生效条件**：后端改动需 `npm run build:backend` 并重启；Electron 需 `npm run build:electron` 后整个重启（两套产物互不覆盖，见 `AGENTS.md`）。
 
 ---
@@ -415,7 +500,7 @@ autoPublish: {
 
 | 风险 | 说明与处理 |
 | --- | --- |
-| **🔴 账号权限（最大未知数）** | 个人订阅号能否调 `draft/add` **无法从文档确证**（§1.4）。**处理**：Task 1 就是零副作用自检探针（`draft/count`），先问清楚再往下做；权限不可用时走 §15 降级通路，功能仍有价值 |
+| **🔴 账号权限（最大未知数）** | 个人订阅号能否完成所有写接口**无法从文档确证**（§1.4）；先连接预检，再经真实素材上传和草稿验收。`draft/count` 成功不等于可创建草稿；无权限时走 §15 人工交付 |
 | **🔴 IP 白名单（两道闸）** | 桌面端跑在用户自己机器上，公网 IP 随网络变化（家里/公司/热点），换网就要去后台改；**且新 IP 首次调用可能触发 `89503` 风险确认，需管理员在微信里点确认**。**处理**：自检把 IP 原样回显 + 给出正确路径（微信开发者平台）；文案明确「换网络后可能需要在后台重新加 IP」「可能出现待管理员确认」；**不做固定 IP 中转**（桌面端本机即出口） |
 | **🟠 access_token 互斥** | 官方「重复获取将导致上次获取的失效」，与用户其它工具会互相顶掉 → 随机 40001。**处理**：主用官方推荐的 `/cgi-bin/stable_token`，配合落盘缓存 + 单飞锁 |
 | **🟠 正文图被静默过滤** | 外链图片会被微信过滤 → 全裂图，且**草稿看得到裂图但接口不报错**。**处理**：渲染后**断言 HTML 里所有 `img[src]` 都是 `mmbiz.qpic.cn`**，不满足即失败 |
@@ -465,8 +550,8 @@ GET /api/publishing/packages/:id/article       → 下载/预览 article.html（
 
 **理由：**
 
-1. 个人订阅号的草稿箱权限**在 Task 1 之前无法确证**（§1.4）。若不可用，整条链路不应变成废码。
-2. **渲染层的价值独立于发布层**：用户把 HTML 复制进公众号编辑器，同样省掉了「AI 成文 + 排版」的全部人工。
+1. 个人订阅号的完整草稿写入能力**须经真实草稿验收**（§1.4），Task 1 的数量查询不是充分证明。
+2. **渲染层的价值独立于发布层**：HTML 可辅助文字与排版，但包内图片可能仍是 `{{wechat-image-N}}` 占位符；封面和正文图需要人工上传，不能保证复制即可完整复原。
 3. 它让功能在**零凭据**状态下也可用 —— 与项目既有「未配置外部依赖时不静默失败、给出明确指引」的口径一致。
 
 对应地，§10 的「下载文章 HTML」是**与任务状态无关的只读动作**（垃圾桶里不给），而「提交到公众号草稿箱」在自检未通过时给出**指向这条通路的**禁用原因。

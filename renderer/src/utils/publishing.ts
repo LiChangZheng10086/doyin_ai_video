@@ -430,10 +430,10 @@ export const PUBLISH_CHANNELS: PublishChannel[] = [
     label: '微信公众号',
     platforms: ['wechat_mp'],
     contentTypes: ['article', 'video'],
-    // 尚未接入自动发布：用户要求先把位置划分好（2026-09-21）。
-    automation: false,
-    hint: '尚未接入：这个页签先把位置占好。公众号目前只能人工交付 —— 包里的 article.html 与 cover.jpg 可直接粘进公众号后台。',
-    emptyHint: '微信公众号尚未接入自动发布，也还没有创建公众号发布包的入口：这里暂时是空的。要发公众号请用文章包的人工交付通路（下载 article.html 后粘进公众号后台）。',
+    // 官方 API 只保存文章草稿，视频仍是人工交付。
+    automation: true,
+    hint: '文章仅通过官方 API 保存到草稿箱，不会正式发布或群发。先到「设置 → 微信公众号」配置并校验连接，最终由你在公众号后台检查和发布；视频不会自动上传。',
+    emptyHint: '到作品详情页的成果画布点「创建公众号文章包」，选封面并编辑文章，再回这里预览并提交到草稿箱。',
   },
   {
     id: 'other',
@@ -720,11 +720,15 @@ export function getPublishingAutoPublishBlocker(
   if (detail.package.state !== 'active') return '发布包已清理，无法发布';
   const contentType = detail.package.contentType ?? 'video';
   if (contentType === 'article') {
-    // 文章通路目前只接入今日头条（服务端是同一张 (内容类型 × 平台) 路由表）。
-    if (task.platform !== 'toutiao') return '文章发布目前只支持今日头条';
+    // 与服务端文章通路对应：头条提交，公众号只存草稿。
+    if (task.platform !== 'toutiao' && task.platform !== 'wechat_mp') return '该平台尚未接入文章提交';
+    if (task.platform === 'wechat_mp' && (task.autoPublish?.draftMediaId || task.autoPublish?.outcomeUncertain
+      || task.autoPublish?.status === 'succeeded' || task.autoPublish?.status === 'running')) {
+      return '草稿已创建、正在创建或结果待核实，请先到公众号后台检查；确需另建时请人工重新建包';
+    }
     // 头条封面必填：缺封面时在这里就说清楚，而不是等提交时才失败。
     if (detail.package.assetHealth === 'missing_cover') {
-      return '缺少封面：今日头条要求文章必须有封面，请重新创建文章包并选择封面';
+      return `缺少封面：${publishingPlatformLabel(task.platform)}要求文章必须有封面，请重新创建文章包并选择封面`;
     }
     if (detail.package.assetHealth !== 'healthy') return '文章包资产异常，请先修复后再发布';
     if (autoPublishInFlight(task)) return '自动发布正在进行中，请等本次结束后再试';
@@ -775,6 +779,7 @@ export function publishingPlatformLabel(platform: PublishPlatform): string {
 
 /** 自动发布的确认按钮文案（按平台取，不再写死「抖音」）。 */
 export function getAutoPublishConfirmLabel(platform: PublishPlatform): string {
+  if (platform === 'wechat_mp') return '确认提交到微信公众号草稿箱';
   return `确认发布到${publishingPlatformLabel(platform)}`;
 }
 
@@ -787,6 +792,7 @@ export function getPublishingAutoPublishHint(task: PublishTask): string | null {
     return '等待短信验证码：请点「提交验证码」填入手机收到的验证码';
   }
   if (record.status === 'succeeded') {
+    if (task.platform === 'wechat_mp') return `公众号草稿已创建${record.draftMediaId ? `（${record.draftMediaId}）` : ''}，尚未发布。请到公众号后台检查并手动发布。`;
     // ⚠️ **「只填到草稿」不能说「已提交」**（2026-09-21 用户实测）：那条通路按设计
     // **没有点发布**，内容只在平台的草稿箱里；说成「已提交」会让人去平台找内容却找不到。
     // 判据是记录里显式的 `draftOnly`（服务层按执行器回报的 `submitted === false` 写的）。

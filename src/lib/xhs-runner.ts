@@ -237,7 +237,8 @@ export async function hasLoginBlocker(page: XhsPageLike): Promise<boolean> {
       }
       return hits;
     })()`)
-    .catch(() => 0);
+    // 页面跳转中读不到 DOM 不代表没有阻断；继续等待，避免提前关闭登录会话。
+    .catch(() => 1);
   return result > 0;
 }
 
@@ -399,6 +400,20 @@ export class XhsRunner {
    * ⚠️ 判据是 **「已离开登录页 ∧ 无登录阻断信号」**，**不要求发布页 DOM 出现**（见文件头 ②）。
    */
   async checkLogin(): Promise<XhsLoginState> {
+    if (this.loginStarting) {
+      throw new XhsRunnerError("xhs_login_in_progress", "正在获取小红书登录二维码，请稍后校验。");
+    }
+    const active = this.loginSession;
+    if (active && this.now() < active.expiresAt) {
+      // 校验只观察正在扫码的页面，不能另开浏览器争用同一个 profile。
+      const state = await this.readLoginState(active.session.page);
+      if (!state.loggedIn) {
+        throw new XhsRunnerError("xhs_login_in_progress", "正在等待小红书扫码确认，请在 App 中确认登录；当前二维码会继续等待，不需要重扫。");
+      }
+      await this.discardSession();
+      return state;
+    }
+    if (active) await this.discardSession();
     const session = await this.openSessionFor(false);
     try {
       let url = XHS_HOME_URL;
@@ -441,7 +456,9 @@ export class XhsRunner {
       // ⚠️ **先判登录态**（2026-09-21 真机实测的坑）：账号已经登录时访问登录页会被**重定向走**，
       // 页面上根本没有二维码 —— 原先那条路会一路走到取码失败，报出
       // 「页面结构可能已改版」这种**误诊**（把「你不需要扫码」说成「页面坏了」）。
-      const already = await this.readLoginState(session.page).catch(() => undefined);
+      await session.page.goto(XHS_HOME_URL, { waitUntil: "domcontentloaded" });
+      await settle(session.page);
+      const already = await this.readLoginState(session.page);
       if (already?.loggedIn) {
         throw new XhsRunnerError(
           "xhs_already_logged_in",
@@ -484,7 +501,7 @@ export class XhsRunner {
   }
 
   /** 轮询登录状态；二维码过期或被取消时回到 `idle`。 */
-  async pollLogin(): Promise<{ status: XhsLoginStatus; username?: string }> {
+  async pollLogin(): Promise<{ status: XhsLoginStatus; username?: string; qrDataUrl?: string }> {
     const current = this.loginSession;
     if (!current) return { status: "idle" };
     if (this.now() >= current.expiresAt) {
@@ -493,7 +510,11 @@ export class XhsRunner {
     }
 
     const state = await this.readLoginState(current.session.page);
-    if (!state.loggedIn) return { status: "waiting" };
+    if (!state.loggedIn) {
+      // 平台会静默换码；同步页面当前二维码，而不是让用户一直扫旧图片。
+      const qrDataUrl = await readXhsQrDataUrl(current.session.page).catch(() => null);
+      return { status: "waiting", ...(qrDataUrl ? { qrDataUrl } : {}) };
+    }
     await this.discardSession();
     return state.username === undefined ? { status: "logged_in" } : { status: "logged_in", username: state.username };
   }
@@ -674,11 +695,9 @@ export class XhsRunner {
     process.once("SIGTERM", cleanup);
   }
 
-  /** 首页/发布页二选一地判登录态（**不做任何写入**）。 */
+  /** 只观察当前页面：轮询/窗口扫码绝不能导航，否则会销毁二维码及手机确认中的会话。 */
   private async readLoginState(page: XhsPageLike): Promise<XhsLoginState> {
     try {
-      await page.goto(XHS_HOME_URL, { waitUntil: "domcontentloaded" });
-      await settle(page);
       const url = page.url();
       if (isXhsLoginUrl(url)) return { loggedIn: false, url };
       if (await hasLoginBlocker(page)) return { loggedIn: false, url };

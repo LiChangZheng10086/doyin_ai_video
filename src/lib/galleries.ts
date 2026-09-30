@@ -1,0 +1,267 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { pipeline } from 'node:stream/promises';
+import type { Stats } from 'node:fs';
+import path from 'node:path';
+import type { ActorSnapshot, JobRecord, PublishingPackageDetail } from '../types.js';
+import { LocalStorage } from './storage.js';
+import { resolveSourceVideo } from './video-output.js';
+import { GalleryError, GalleryMedia, validateGalleryImage } from './gallery-media.js';
+import type { Gallery, GalleryDraft, GalleryPreview, GallerySource } from './gallery-types.js';
+import { SAU_NOTE_MAX_IMAGES } from './sau-runner.js';
+import { PUBLISH_NOTE_POLICIES, validateNoteCopy } from './publishing-platforms.js';
+
+const INDEX = 'cache/galleries.json';
+const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+const imageHash = (g: GalleryDraft) => hash(JSON.stringify(g.images));
+const sourceHash = (file: string, stat: Stats) => hash(JSON.stringify([file, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs]));
+const safeId = (id: string) => {
+  if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new GalleryError(400, '图集或作品标识不合法');
+};
+
+type Deps = {
+  storage: LocalStorage;
+  jobs: { get(id: string): Promise<JobRecord | null> };
+  media?: Pick<GalleryMedia, 'probe' | 'frame' | 'render'>;
+  createPackage?: (gallery: Gallery, paths: string[], actor: ActorSnapshot) => Promise<PublishingPackageDetail>;
+};
+
+export class GalleryService {
+  private readonly media: Pick<GalleryMedia, 'probe' | 'frame' | 'render'>;
+  private loaded?: Promise<Record<string, Gallery>>;
+  private tail: Promise<unknown> = Promise.resolve();
+  // ponytail: one local render at a time; use a bounded queue if parallel production is needed.
+  private rendering = false;
+
+  constructor(private readonly deps: Deps) { this.media = deps.media ?? new GalleryMedia(); }
+
+  private async index(): Promise<Record<string, Gallery>> {
+    return this.loaded ??= (async () => {
+      let records: Record<string, Gallery>;
+      try { records = await this.deps.storage.readJson(INDEX); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        records = {};
+      }
+      let recovered = false;
+      for (const record of Object.values(records)) {
+        if (record.status === 'running') {
+          record.status = 'failed'; record.error = '上次生成被中断，请重新生成'; record.version++; recovered = true;
+        }
+      }
+      if (recovered) await this.deps.storage.writeJsonAtomic(INDEX, records);
+      return records;
+    })();
+  }
+
+  private serial<T>(action: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(action);
+    this.tail = result.catch(() => undefined);
+    return result;
+  }
+
+  private async record(id: string): Promise<Gallery> {
+    safeId(id);
+    const records = await this.index();
+    const record = Object.hasOwn(records, id) ? records[id] : undefined;
+    if (!record) throw new GalleryError(404, '图集不存在或已删除', 'gallery_not_found');
+    return record;
+  }
+
+  private async persist(record: Gallery): Promise<Gallery> {
+    const records = await this.index();
+    const next = { ...records, [record.id]: record };
+    await this.deps.storage.writeJsonAtomic(INDEX, next);
+    this.loaded = Promise.resolve(next);
+    return structuredClone(record);
+  }
+
+  private editable(record: Gallery, version: number): void {
+    if (record.status === 'running') throw new GalleryError(409, '图集生成中，请等待完成');
+    if (!Number.isInteger(version) || record.version !== version) throw new GalleryError(409, '图集版本已变化，请刷新后重试');
+  }
+
+  private async openSource(jobId: string) {
+    safeId(jobId);
+    const job = await this.deps.jobs.get(jobId);
+    if (!job || job.deletedAt) throw new GalleryError(404, '来源作品不存在或已删除');
+    return resolveSourceVideo(this.deps.storage.resolve(), job);
+  }
+
+  private async sourceFingerprint(jobId: string): Promise<string> {
+    const video = await this.openSource(jobId);
+    try { return sourceHash(video.path, await video.handle.stat()); }
+    finally { await video.close(); }
+  }
+
+  private async withSource<T>(jobId: string, action: (source: { path: string; fingerprint: string; info: GallerySource }) => Promise<T>): Promise<T> {
+    const video = await this.openSource(jobId);
+    let dir = '';
+    try {
+      const fingerprint = sourceHash(video.path, await video.handle.stat());
+      // ponytail: a private disk snapshot keeps FFmpeg bound to the verified inode; fd-aware spawning if copy cost matters.
+      dir = await mkdtemp(path.join(tmpdir(), 'gallery-source-'));
+      const snapshot = path.join(dir, 'source.mp4');
+      await pipeline(video.handle.createReadStream({ autoClose: false }), createWriteStream(snapshot, { flags: 'wx', mode: 0o600 }));
+      if (sourceHash(video.path, await video.handle.stat()) !== fingerprint) throw new GalleryError(409, '原视频在读取期间发生变化，请重试');
+      return await action({ path: snapshot, fingerprint, info: await this.media.probe(snapshot) });
+    } finally { await video.close(); if (dir) await rm(dir, { recursive: true, force: true }); }
+  }
+
+  private normalize(input: GalleryDraft, duration: number): GalleryDraft {
+    if (!input || typeof input.title !== 'string' || !input.title.trim() || input.title.length > 200
+      || typeof input.description !== 'string' || input.description.length > 20_000
+      || !Array.isArray(input.hashtags) || input.hashtags.length > 50
+      || !input.hashtags.every(t => typeof t === 'string' && t.length <= 200)
+      || !Array.isArray(input.images) || input.images.length < 1 || input.images.length > SAU_NOTE_MAX_IMAGES) {
+      throw new GalleryError(422, `标题、文案或图片数量不合法（图集需 1～${SAU_NOTE_MAX_IMAGES} 张）`);
+    }
+    const images = input.images.map(image => {
+      validateGalleryImage(image, duration);
+      return { mainTime: image.mainTime, times: [...image.times], bandTop: image.bandTop, bandBottom: image.bandBottom, mainFraction: image.mainFraction,
+        ...(image.mainCrop ? { mainCrop: { left: image.mainCrop.left, right: image.mainCrop.right, top: image.mainCrop.top, bottom: image.mainCrop.bottom } } : {}) };
+    });
+    return { title: input.title.trim(), description: input.description, hashtags: input.hashtags.map(t => t.trim().replace(/^#+/, '')).filter(Boolean), images };
+  }
+
+  async list(): Promise<Gallery[]> {
+    return this.serial(async () => structuredClone(Object.values(await this.index()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))));
+  }
+
+  async get(id: string): Promise<Gallery> { return this.serial(async () => structuredClone(await this.record(id))); }
+
+  async create(sourceJobId: string): Promise<Gallery> {
+    return this.serial(async () => {
+      return this.withSource(sourceJobId, async source => {
+      const job = await this.deps.jobs.get(sourceJobId);
+      const now = new Date().toISOString();
+      return this.persist({ id: randomUUID(), sourceJobId, title: (job?.topic || '字幕图集').slice(0, 20), description: '', hashtags: [],
+        images: [{ mainTime: source.info.duration / 5, times: [1, 2, 3, 4].map(i => source.info.duration * i / 5), bandTop: 0.78, bandBottom: 0.96, mainFraction: 0.7 }],
+        version: 1, status: 'draft', createdAt: now, updatedAt: now });
+      });
+    });
+  }
+
+  async update(id: string, input: GalleryDraft & { version: number }): Promise<Gallery> {
+    return this.serial(async () => {
+      const current = await this.record(id); this.editable(current, input?.version);
+      return this.withSource(current.sourceJobId, async source => {
+      const draft = this.normalize(input, source.info.duration);
+      const ready = current.generated?.draftHash === imageHash(draft) && current.generated.sourceFingerprint === source.fingerprint;
+      return this.persist({ ...current, ...draft, version: current.version + 1, status: ready ? 'ready' : 'draft', error: undefined, updatedAt: new Date().toISOString() });
+      });
+    });
+  }
+
+  async remove(id: string, version: number): Promise<void> {
+    return this.serial(async () => {
+      const current = await this.record(id); this.editable(current, version);
+      const records = { ...await this.index() }; delete records[id];
+      await this.deps.storage.writeJsonAtomic(INDEX, records); this.loaded = Promise.resolve(records);
+      // Generated directories use server UUIDs only; removing a draft never removes copied publish assets.
+      const root = await this.outputRoot();
+      await rm(path.join(root, id), { recursive: true, force: true });
+    });
+  }
+
+  async inspectSource(id: string): Promise<GallerySource> {
+    const gallery = await this.get(id); return this.withSource(gallery.sourceJobId, async source => ({ ...source.info, imageLimit: SAU_NOTE_MAX_IMAGES }));
+  }
+
+  async frame(id: string, time: number): Promise<Buffer> {
+    const gallery = await this.get(id);
+    return this.withSource(gallery.sourceJobId, source => this.media.frame(source.path, time));
+  }
+
+  private async outputRoot(): Promise<string> {
+    const dir = this.deps.storage.resolve('output/galleries');
+    await mkdir(dir, { recursive: true });
+    const [root, target] = await Promise.all([realpath(this.deps.storage.resolve()), realpath(dir)]);
+    if (!target.startsWith(root + path.sep)) throw new GalleryError(422, '图集目录越出本地存储范围');
+    return target;
+  }
+
+  async render(id: string, version: number): Promise<Gallery> {
+    let generationDir = '';
+    const current = await this.serial(async () => {
+      const g = await this.record(id); this.editable(g, version);
+      if (this.rendering) throw new GalleryError(409, '其它图集生成中，请稍后重试');
+      await this.withSource(g.sourceJobId, async source => { this.normalize(g, source.info.duration); });
+      this.rendering = true;
+      try { return await this.persist({ ...g, status: 'running', error: undefined, version: g.version + 1 }); }
+      catch (error) { this.rendering = false; throw error; }
+    });
+    try {
+      return await this.withSource(current.sourceJobId, async source => {
+      const generation = randomUUID();
+      generationDir = path.join(await this.outputRoot(), current.id, generation);
+      await mkdir(generationDir, { recursive: true });
+      if (!(await realpath(generationDir)).startsWith((await this.outputRoot()) + path.sep)) throw new GalleryError(422, '图集目录不安全');
+      const hashes: string[] = [];
+      for (const [i, image] of current.images.entries()) {
+        const file = path.join(generationDir, `${i}.png`);
+        await this.media.render(source.path, image, file);
+        hashes.push(hash(await readFile(file)));
+      }
+      if (await this.sourceFingerprint(current.sourceJobId) !== source.fingerprint) throw new GalleryError(409, '原视频在生成期间发生变化，请重新生成');
+      const ready = await this.serial(() => this.persist({ ...current, status: 'ready', version: current.version + 1,
+        generated: { id: generation, draftHash: imageHash(current), sourceFingerprint: source.fingerprint, hashes }, updatedAt: new Date().toISOString() }));
+      if (current.generated) await rm(path.join(await this.outputRoot(), current.id, current.generated.id), { recursive: true, force: true }).catch(() => undefined);
+      return ready;
+      });
+    } catch (error) {
+      await this.serial(() => this.persist({ ...current, status: 'failed', version: current.version + 1, error: error instanceof Error ? error.message : '图集生成失败' }));
+      if (generationDir) await rm(generationDir, { recursive: true, force: true });
+      throw error;
+    } finally { this.rendering = false; }
+  }
+
+  private async readImage(g: Gallery, index: number): Promise<{ bytes: Buffer; file: string }> {
+    if (!Number.isInteger(index) || index < 0 || !g.generated || index >= g.generated.hashes.length) throw new GalleryError(404, '图片不存在');
+    safeId(g.generated.id);
+    const root = await this.outputRoot();
+    const file = path.join(root, g.id, g.generated.id, `${index}.png`);
+    try {
+      const canonical = await realpath(file);
+      if (!canonical.startsWith(root + path.sep)) throw new Error('outside root');
+      const bytes = await readFile(canonical);
+      if (!bytes.length || bytes.length > 20 * 1024 * 1024 || hash(bytes) !== g.generated.hashes[index]) throw new Error('hash mismatch');
+      return { file: canonical, bytes };
+    } catch { throw new GalleryError(422, '图集图片丢失或被修改，请重新生成'); }
+  }
+
+  async image(id: string, index: number, generation?: string): Promise<Buffer> {
+    const g = await this.get(id);
+    if (generation !== undefined && generation !== g.generated?.id) throw new GalleryError(409, '图集图片版本已变化，请刷新');
+    return (await this.readImage(g, index)).bytes;
+  }
+
+  private async checked(g: Gallery): Promise<{ preview: GalleryPreview; paths: string[] }> {
+    if (g.status !== 'ready' || !g.generated || g.generated.draftHash !== imageHash(g)) throw new GalleryError(409, '请先保存并重新生成整套图集');
+    if (g.generated.sourceFingerprint !== await this.sourceFingerprint(g.sourceJobId)) throw new GalleryError(409, '原视频已变化，请重新生成图集');
+    const paths: string[] = [];
+    for (let i = 0; i < g.images.length; i++) paths.push((await this.readImage(g, i)).file);
+    const policy = PUBLISH_NOTE_POLICIES.douyin!;
+    const copy = { title: g.title, description: g.description, hashtags: g.hashtags };
+    return { paths, preview: { previewRevision: hash(JSON.stringify([g.id, g.version, g.generated, copy, 'douyin'])), imageCount: paths.length,
+      violations: validateNoteCopy('douyin', copy), copyLimits: { titleMax: policy.titleMax, descriptionMax: policy.descriptionMax, hashtagMax: policy.hashtagMax } } };
+  }
+
+  async preview(id: string, version: number): Promise<GalleryPreview> {
+    return this.serial(async () => { const g = await this.record(id); this.editable(g, version); return (await this.checked(g)).preview; });
+  }
+
+  async createPackage(id: string, revision: string, rightsConfirmed: boolean, actor: ActorSnapshot): Promise<PublishingPackageDetail> {
+    return this.serial(async () => {
+      const g = await this.record(id);
+      if (rightsConfirmed !== true) throw new GalleryError(422, '请先核对原生字幕并确认素材发布使用权');
+      const { preview, paths } = await this.checked(g);
+      if (typeof revision !== 'string' || revision !== preview.previewRevision) throw new GalleryError(409, '图集预览版本已变化，请重新预览');
+      if (preview.violations.length) throw new GalleryError(422, preview.violations[0]!.message);
+      if (!this.deps.createPackage) throw new GalleryError(503, '图集发布服务未就绪');
+      return this.deps.createPackage(structuredClone(g), paths, actor);
+    });
+  }
+}

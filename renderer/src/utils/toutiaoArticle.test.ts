@@ -18,6 +18,18 @@ import {
 
 const LIMITS = { titleMin: 2, titleMax: 30, bodyChars: 20_000 };
 
+test('公众号文章组装保留作者摘要和配图顺序，绝不携带头条发布选项', () => {
+  const result = buildToutiaoArticleInput({ sourceJobId: 'job-1', title: '作品', preview: preview(),
+    articleTitle: '文章', articleBody: '正文', options: defaultToutiaoOptions(), source: 'library', coverAssetId: 'cover',
+    platform: 'wechat_mp', author: '作者', digest: '摘要', articleImageAssetIds: ['b', 'a'],
+  });
+  assert.equal(result.platforms[0]?.platform, 'wechat_mp');
+  assert.equal(result.toutiaoOptions, undefined);
+  assert.deepEqual(result.articleCopy, { title: '文章', body: '正文', author: '作者', digest: '摘要' });
+  assert.deepEqual(result.articleImageAssetIds, ['b', 'a']);
+  assert.equal(result.platforms[0]?.copy.description, '摘要');
+});
+
 function preview(overrides: Partial<PublishingPreview> = {}): PublishingPreview {
   return {
     sourceJobId: 'job-1',

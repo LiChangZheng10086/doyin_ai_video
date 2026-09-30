@@ -2,7 +2,8 @@ import { AddressInfo } from 'net';
 import path from 'path';
 import { app as electronApp } from 'electron';
 import { getBinaryPaths } from './utils/binary-paths';
-import { loadConfig } from './handlers/config-handler';
+import { loadConfig, saveConfig } from './handlers/config-handler';
+import { resolveSauConfig, rememberSauConfig } from './utils/sau-config';
 
 let serverInstance: any = null;
 
@@ -14,6 +15,8 @@ export async function startServer(): Promise<number> {
 
       // 加载配置
       const config = await loadConfig();
+      const sauConfig = resolveSauConfig(config, process.env);
+      if (!await rememberSauConfig(config, sauConfig, saveConfig)) console.warn('[Main] sau paths are available for this run but could not be saved; retry configuration before the next launch.');
 
       // 获取当前活跃的 API Key
       const activeKey = config.aiKeys.find(key => key.isActive);
@@ -65,14 +68,21 @@ export async function startServer(): Promise<number> {
         hyperframesUseElectronAsNode: electronApp.isPackaged,
         hyperframesBrowserPath: binaryPaths.hyperframesBrowser,
         // 与独立后端同一套 env 契约（见 src/server.ts 与 AGENTS.md 的 SAU_* 说明）
-        sauBinary: process.env.SAU_BINARY,
-        sauBaseDir: process.env.SAU_BASE_DIR,
+        ...sauConfig,
         // 今日头条同样走 env（与 SAU_* 一套契约）；浏览器缺省复用打包进来的 headless shell。
         toutiaoBrowserBinary: process.env.TOUTIAO_BROWSER_BINARY,
         toutiaoProfileDir: process.env.TOUTIAO_PROFILE_DIR,
         // 小红书同样走 env（与 SAU_* / TOUTIAO_* 一套契约）。
         xhsBrowserBinary: process.env.XHS_BROWSER_BINARY,
         xhsProfileDir: process.env.XHS_PROFILE_DIR,
+        resolveWechatConfig: async () => {
+          const latest = await loadConfig();
+          return latest.wechatMp?.appId ? latest.wechatMp : {
+            appId: process.env.WECHAT_MP_APP_ID,
+            appSecret: process.env.WECHAT_MP_APP_SECRET,
+            author: process.env.WECHAT_MP_AUTHOR,
+          };
+        },
       });
 
       const PORT = 0; // 使用随机端口

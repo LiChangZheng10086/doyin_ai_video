@@ -44,6 +44,7 @@ const app = await createExpressApp({
   sauBaseDir: process.env.SAU_BASE_DIR,
   // 今日头条：浏览器路径与会话目录（与 SAU_* 同一套 env 契约）
   toutiaoBrowserBinary: process.env.TOUTIAO_BROWSER_BINARY,
+  wechatMp: { appId: process.env.WECHAT_MP_APP_ID, appSecret: process.env.WECHAT_MP_APP_SECRET, author: process.env.WECHAT_MP_AUTHOR },
   toutiaoProfileDir: process.env.TOUTIAO_PROFILE_DIR,
   // 小红书：同一套 env 契约（浏览器解析链缺省就能找到打包进来的 headless shell）
   xhsBrowserBinary: process.env.XHS_BROWSER_BINARY,

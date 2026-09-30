@@ -256,11 +256,12 @@ export function buildPublishText(copy: PlatformCopy): string {
 export const AUTO_PUBLISH_ROUTES: ReadonlyArray<{
   contentType: PackageContentType;
   platform: PublishPlatform;
-  engine: "sau" | "toutiao" | "xhs";
+  engine: "sau" | "toutiao" | "xhs" | "wechat";
 }> = [
   { contentType: "note", platform: "douyin", engine: "sau" },
   { contentType: "note", platform: "xiaohongshu", engine: "xhs" },
   { contentType: "article", platform: "toutiao", engine: "toutiao" },
+  { contentType: "article", platform: "wechat_mp", engine: "wechat" },
 ];
 
 export type AutoPublishEngine = (typeof AUTO_PUBLISH_ROUTES)[number]["engine"];

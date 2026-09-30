@@ -30,22 +30,22 @@ export function ContentPreview({ title, imageUrl, compact = false }: ContentPrev
         />
       )}
       <div
-        className={`relative z-10 ${showImage ? 'bg-gradient-to-t from-black/75 via-black/20 to-transparent' : ''} ${
+        className={`relative z-10 ${showImage ? 'bg-black/70' : ''} ${
           compact ? 'flex h-full w-full items-center p-1.5' : 'w-full p-4'
         }`}
       >
         <p
           /*
-           * ⚠️ 有图时文字必须**浅色**：它压在 `from-black/75` 的深色蒙版上。
+           * 有图时标题区整体用 70% 黑蒙版，连白图上的紧凑标题也保持 AA。
            *
            * 这里原本是 `text-white`，在「品牌色底上的白字统一换成近黑字」那次批量替换里
            * 被改成了 `text-on-accent`（#0D0F12 近黑）—— 但这一处的底是**图片 + 黑色蒙版**，
            * 不是饱和色填充。结果作品列表里每个封面的标题都成了**黑字压黑底**：
            * 真机实测对比度 **1:1**，完全看不见（只有在真实数据下才暴露）。
            *
-           * 用 `text-ink`（浅色主文字令牌）而不是 raw `text-white`：语义正确，也不引入原生调色板。
+           * 用固定浅色 `text-on-media`：浅色主题也不能让蒙版上的标题变成深字。
            */
-          className={`line-clamp-2 font-semibold leading-tight ${showImage ? 'text-ink' : 'text-ink-muted'} ${
+          className={`line-clamp-2 font-semibold leading-tight ${showImage ? 'text-on-media' : 'text-ink-muted'} ${
             compact ? 'text-[10px]' : 'text-sm'
           }`}
         >

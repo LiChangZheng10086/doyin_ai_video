@@ -54,6 +54,7 @@ interface FakePageOptions {
 }
 
 interface FakePage extends XhsPageLike {
+  setUrl(url: string): void;
   readonly visits: string[];
   readonly clicks: string[];
   readonly expressions: string[];
@@ -72,6 +73,7 @@ function fakePage(options: FakePageOptions): FakePage {
     visits,
     clicks,
     expressions,
+    setUrl(nextUrl: string) { url = nextUrl; },
     async goto(target: string) {
       visits.push(target);
       url = options.urls[Math.min(gotoCount, options.urls.length - 1)] ?? target;
@@ -276,9 +278,9 @@ test("pollLogin：没有会话时 idle；过期后 expired", async () => {
 
 test("pollLogin：登录成功后回 logged_in 并带回昵称", async () => {
   const storage = await tempDir();
-  // 同一个页面对象走完「取码 → 扫码后落到首页」：`goto` 按序返回 login → home。
+  // 扫码后由平台自行跳转，不应靠轮询重新导航才模拟成功。
   const page = fakePage({
-    urls: [XHS_LOGIN_URL, XHS_HOME_URL],
+    urls: [XHS_LOGIN_URL],
     qr: "data:image/png;base64,REAL",
     blockers: 0,
     username: "李在那",
@@ -286,10 +288,66 @@ test("pollLogin：登录成功后回 logged_in 并带回昵称", async () => {
   const { runner } = runnerWith({ page, storageRoot: storage });
 
   await runner.startLogin();
+  page.setUrl("https://creator.xiaohongshu.com/new/home");
   const state = await runner.pollLogin();
   assert.equal(state.status, "logged_in");
   assert.equal(state.username, "李在那");
   await runner.dispose();
+});
+
+test("扫码轮询不导航打断二维码，平台换码后回传当前码，扫码后关闭会话保存登录态", async () => {
+  const options = { urls: [XHS_LOGIN_URL], qr: "data:image/png;base64,OLD" };
+  const page = fakePage(options);
+  const { runner, session } = runnerWith({ page, storageRoot: await tempDir() });
+  try {
+    await runner.startLogin();
+    const visits = [...page.visits];
+    options.qr = "data:image/png;base64,NEW";
+    assert.deepEqual(await runner.pollLogin(), { status: "waiting", qrDataUrl: "data:image/png;base64,NEW" });
+    assert.deepEqual(page.visits, visits, "轮询不能刷新登录页，否则用户扫的是已被作废的旧码");
+    assert.equal(session.closed, false);
+    page.setUrl("https://creator.xiaohongshu.com/new/home");
+    assert.deepEqual(await runner.pollLogin(), { status: "logged_in" });
+    assert.equal(session.closed, true);
+    assert.deepEqual(page.visits, visits);
+  } finally {
+    await runner.dispose();
+  }
+});
+
+test("扫码期间校验复用活跃页面，未确认时保留二维码，不另开持有相同 profile 的浏览器", async () => {
+  const page = fakePage({ urls: [XHS_LOGIN_URL], qr: "data:image/png;base64,REAL", username: "测试用户" });
+  const fixture = runnerWith({ page, storageRoot: await tempDir() });
+  try {
+    await fixture.runner.startLogin();
+    const visits = [...page.visits];
+    await assert.rejects(() => fixture.runner.checkLogin(), (error: unknown) =>
+      error instanceof XhsRunnerError && error.code === "xhs_login_in_progress");
+    assert.equal(fixture.calls, 1);
+    assert.equal(fixture.session.closed, false);
+    page.setUrl("https://creator.xiaohongshu.com/new/home");
+    assert.equal((await fixture.runner.checkLogin()).loggedIn, true);
+    assert.equal(fixture.session.closed, true, "校验成功必须落盘并释放 profile，不能依赖用户继续停留等下一次轮询");
+    assert.equal(fixture.calls, 1);
+    assert.deepEqual(page.visits, visits);
+    assert.equal((await fixture.runner.pollLogin()).status, "idle");
+  } finally {
+    await fixture.runner.dispose();
+  }
+});
+
+test("扫码后跳转尚未稳定、页面读取异常时继续等待，不能误报成功并关闭登录会话", async () => {
+  const page = fakePage({ urls: [XHS_LOGIN_URL], qr: "data:image/png;base64,REAL" });
+  const { runner, session } = runnerWith({ page, storageRoot: await tempDir() });
+  try {
+    await runner.startLogin();
+    page.setUrl("https://creator.xiaohongshu.com/new/home");
+    page.evaluate = async () => { throw new Error("Execution context was destroyed"); };
+    assert.deepEqual(await runner.pollLogin(), { status: "waiting" });
+    assert.equal(session.closed, false);
+  } finally {
+    await runner.dispose();
+  }
 });
 
 test("本机没有可显示窗口的浏览器时，loginInWindow 指向「应用内扫码」", async () => {

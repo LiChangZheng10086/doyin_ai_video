@@ -514,7 +514,7 @@ export function PublishingPage() {
         title="发布中心"
         description={
           <>
-            按渠道整理交付包。抖音图文、小红书图文与头条文章可自动提交，提交前必经预览；视频与其它平台只准备交付包，由你手动发布。
+            按渠道整理交付包。抖音图文、小红书图文与头条文章可自动提交，公众号文章仅存草稿；提交前必经预览。视频与其它平台由你手动发布。
           </>
         }
         actions={
@@ -744,7 +744,7 @@ function CoverThumbnail({ packageId, title, hasCover }: { packageId: string; tit
 export function TaskRow({ detail, task, role, busy, onAction }: { detail: PublishingPackageDetail; task: PublishTask; role: 'admin' | 'publisher'; busy: boolean; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const policy = PUBLISHING_PLATFORMS.find((item) => item.id === task.platform)!;
   const actions = getPublishingActionIds(detail, task, role);
-  const labels: Record<string, string> = { 'copy-title': '复制标题', 'copy-description': '复制正文', 'copy-hashtags': '复制标签', 'copy-full': '复制全部', 'show-in-finder': 'Finder', 'open-platform': publishingOpenPlatformTarget(detail, task).label, 'edit-content': '编辑文案', schedule: '修改排期', 'mark-published': '标记已发布', 'record-failure': '记录失败', cancel: '取消任务', restore: '恢复任务', 'create-version': '创建新版本', withdraw: '撤回本地状态', 'trash-package': '删除发布包', 'restore-package': '恢复发布包', 'auto-publish': task.platform === 'toutiao' ? '提交到头条号' : '发布图文到抖音', 'submit-code': '提交验证码', preview: '预览', 'download-article': '下载文章 HTML', 'fill-xhs': '填写到小红书（不提交）', 'submit-xhs': '发布到小红书' };
+  const labels: Record<string, string> = { 'copy-title': '复制标题', 'copy-description': '复制正文', 'copy-hashtags': '复制标签', 'copy-full': '复制全部', 'show-in-finder': 'Finder', 'open-platform': publishingOpenPlatformTarget(detail, task).label, 'edit-content': '编辑文案', schedule: '修改排期', 'mark-published': '标记已发布', 'record-failure': '记录失败', cancel: '取消任务', restore: '恢复任务', 'create-version': '创建新版本', withdraw: '撤回本地状态', 'trash-package': '删除发布包', 'restore-package': '恢复发布包', 'auto-publish': task.platform === 'wechat_mp' ? '提交到公众号草稿箱' : task.platform === 'toutiao' ? '提交到头条号' : '发布图文到抖音', 'submit-code': '提交验证码', preview: '预览', 'download-article': '下载文章 HTML', 'fill-xhs': '填写到小红书（不提交）', 'submit-xhs': '发布到小红书' };
   return <div className="rounded-lg border border-line bg-panel p-4"><div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><PlatformLogo platform={task.platform} size="sm" /><span className="font-semibold text-ink">{policy.label}</span><StatusBadge task={task} /><span className="text-xs text-ink-muted">版本 {task.contentRevision} · {task.copySource === 'user_edited' ? '已编辑' : task.copySource === 'ai' ? 'AI' : '洗稿回退'}</span></div><p className="mt-2 font-medium text-ink">{task.title}</p><p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-ink-muted">{task.description}</p><p className="mt-2 text-sm text-ai">{formatPublishingCopy(task).hashtags}</p>{task.scheduledAt && <p className="mt-2 text-xs text-ink-muted">计划 {new Date(task.scheduledAt).toLocaleString('zh-CN')}</p>}{task.publishedAt && <p className="mt-1 text-xs text-success">发布于 {new Date(task.publishedAt).toLocaleString('zh-CN')}</p>}{task.lastError && <p className="mt-2 text-sm text-danger">{task.lastError}</p>}<AutoPublishHint task={task} /></div><div className="flex max-w-md flex-wrap gap-1.5 lg:justify-end">{actions.map((action) => {
     /*
      * 改用 Button 原语。改造前这里是 148 个手写 button 中的一处，且：

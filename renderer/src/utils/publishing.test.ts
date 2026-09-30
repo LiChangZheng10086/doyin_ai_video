@@ -48,6 +48,20 @@ const publisher: ActorSnapshot = {
   role: 'publisher',
 };
 
+test('公众号仅提供草稿动作和后台提示，成功或待核实后阻止直接重发', () => {
+  const detail = packageDetail('wechat', 1, 'ready', { contentType: 'article' });
+  const task = detail.tasks[0]!;
+  task.platform = 'wechat_mp';
+  assert.equal(getPublishingAutoPublishBlocker(detail, task), null);
+  assert.equal(getAutoPublishConfirmLabel('wechat_mp'), '确认提交到微信公众号草稿箱');
+  task.autoPublish = { status: 'succeeded', startedAt: '2026-09-29', attemptId: 'test-attempt', draftOnly: true, draftMediaId: 'fake-draft' };
+  assert.match(getPublishingAutoPublishHint(task)!, /公众号后台/);
+  assert.doesNotMatch(getPublishingAutoPublishHint(task)!, /小红书|App 或/);
+  assert.ok(getPublishingAutoPublishBlocker(detail, task));
+  task.autoPublish = { status: 'failed', startedAt: '2026-09-29', attemptId: 'test-attempt', outcomeUncertain: true };
+  assert.ok(getPublishingAutoPublishBlocker(detail, task));
+});
+
 function packageDetail(
   sourceJobId: string,
   version: number,
@@ -805,10 +819,10 @@ test('「打开平台」对小红书图文要开草稿箱所在的创作中心�
   assert.equal(publishingOpenPlatformTarget(video, video.tasks[0]).label, '打开平台');
 });
 
-test('文章包 + 非头条任务：明确报「只支持今日头条」而不是静默走错通路', () => {
+test('文章包 + 不支持的平台任务：明确报错而不是静默走错通路', () => {
   const detail = articlePackageDetail();
   const task = { ...detail.tasks[0]!, platform: 'douyin' as const };
-  assert.match(getPublishingAutoPublishBlocker(detail, task) ?? '', /只支持今日头条/u);
+  assert.match(getPublishingAutoPublishBlocker(detail, task) ?? '', /尚未接入文章/u);
 });
 
 /** 文章包夹具（内容类型 article + 头条任务）。 */
@@ -908,13 +922,13 @@ test('渠道清单固定五个，且每个渠道都有可照抄的空态入口',
   assert.match(channelEmptyHint('toutiao'), /创建头条文章包/u);
   assert.match(channelEmptyHint('other'), /加入发布中心/u);
   // 未接入的渠道必须**明说**，不能让人以为它已经在自动发布。
-  assert.match(channelEmptyHint('wechat-mp'), /尚未接入/u);
+  assert.match(channelEmptyHint('wechat-mp'), /创建公众号文章包/u);
   assert.match(
     PUBLISH_CHANNELS.find((channel) => channel.id === 'other')!.hint,
     /不会自动上传/u,
   );
-  // 微信公众号是**用户要求先划分好**的占位页签：`automation: false` 必须是真的。
-  assert.equal(PUBLISH_CHANNELS.find((channel) => channel.id === 'wechat-mp')!.automation, false);
+  assert.equal(PUBLISH_CHANNELS.find((channel) => channel.id === 'wechat-mp')!.automation, true);
+  assert.match(PUBLISH_CHANNELS.find((channel) => channel.id === 'wechat-mp')!.hint, /不会正式发布或群发/);
 });
 
 test('每一种可创建的「内容类型 × 平台」组合都唯一落在某个渠道里', () => {

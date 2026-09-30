@@ -43,6 +43,21 @@ const ADMIN: ActorSnapshot = {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
+test('gallery packaging rejects changed ordered image bytes and rolls back staged files', async () => {
+  const f = await fixture();
+  try {
+    const file = path.join(f.storageRoot, 'gallery.png');
+    await writeFile(file, 'changed-image');
+    await mkdir(path.join(f.storageRoot, 'output/publishing/job-1'), { recursive: true });
+    const before = await readdir(path.join(f.storageRoot, 'output/publishing/job-1'));
+    await assert.rejects(f.service.createGalleryNote({ sourceJobId: 'job-1', title: '字幕图集',
+      noteCopy: { title: '字幕图集', description: '', hashtags: [] }, sourceImagePaths: [file],
+      expectedImageHashes: [createHash('sha256').update('previewed-image').digest('hex')],
+    }, ACTOR), /图片已变化/);
+    assert.deepEqual(await readdir(path.join(f.storageRoot, 'output/publishing/job-1')), before);
+  } finally { await rm(f.storageRoot, { recursive: true, force: true }); }
+});
+
 async function fixture(options: {
   /** 覆盖配图预处理（缺省是**直通**：把源图原样写进工作目录并记录调用）。 */
   noteMedia?: { prepareNoteImage(srcPath: string, outDir: string, index: number): Promise<{ path: string; bytes: number }> };

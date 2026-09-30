@@ -3,7 +3,7 @@ import { PrimaryRail } from './PrimaryRail';
 import { MobileNavigation } from './MobileNavigation';
 import { UtilityBar, UtilityBarDesktop } from './UtilityBar';
 import { BottomSheet } from '../ui/BottomSheet';
-import { SECONDARY_NAV_ITEMS } from './navigation';
+import { MOBILE_MORE_ITEMS } from './navigation';
 import { ApiKeyStatusIndicator } from '../ApiKeyStatusIndicator';
 import { CookieStatusIndicator } from '../CookieStatusIndicator';
 import { useNavigate } from 'react-router-dom';
@@ -70,7 +70,7 @@ export function AppShell({ children, initialExpanded }: AppShellProps) {
             <CookieStatusIndicator />
           </div>
           <hr className="border-line" />
-          {SECONDARY_NAV_ITEMS.map((item) => (
+          {MOBILE_MORE_ITEMS.map((item) => (
             <button
               key={item.to}
               type="button"

@@ -91,7 +91,7 @@ function copyForCheck(
     // 文章包的包级文案在 `articleCopy` 里：此前只取 noteCopy，于是卡片旁边字数是对的（12/30、300/20000）
     // 而标题/正文显示为空，看起来像内容丢了。
     if (preview.articleCopy) {
-      return { title: preview.articleCopy.title, description: preview.articleCopy.body, hashtags: [] };
+      return { title: preview.articleCopy.title, description: check.platform === 'wechat_mp' ? (preview.articleCopy.digest ?? '') : preview.articleCopy.body, hashtags: [] };
     }
     return preview.noteCopy;
   }
@@ -115,7 +115,7 @@ function CopyBody({ check, copy }: { check: PublishPreviewCopyCheck; copy: Platf
         <dd className={overText(check.title.over)}>{copy?.title || '（空）'}</dd>
       </div>
       <div className={row}>
-        <dt className={label}>正文</dt>
+        <dt className={label}>{check.platform === 'wechat_mp' && check.scope === 'package' ? '摘要' : '正文'}</dt>
         <dd className={`whitespace-pre-wrap leading-6 ${overText(check.description.over)}`}>
           {copy?.description || '（空）'}
         </dd>
@@ -219,6 +219,7 @@ export function PublishPreviewDialog({
   const images = preview.imagePaths ?? [];
   const imageCount = images.length;
   const isArticle = pkg.contentType === 'article';
+  const isWechatArticle = isArticle && preview.tasks.some(task => task.platform === 'wechat_mp');
 
   return (
     <Modal
@@ -277,7 +278,7 @@ export function PublishPreviewDialog({
                 />
               ) : (
                 <p className="rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning">
-                  这个文章包没有可显示的封面。今日头条要求文章必须有封面，请重新创建文章包并选择封面。
+                  这个文章包没有可显示的封面。文章必须有封面，请重新创建文章包并选择封面。
                 </p>
               )}
               <div className="space-y-1">
@@ -308,7 +309,7 @@ export function PublishPreviewDialog({
                     并明确标注「提交的仍是纯文本」。
                   */}
                   <div role="group" aria-label="正文视图" className="flex gap-1 rounded-md border border-line bg-well p-0.5">
-                    {([['plain', '纯文本 · 所见即所发'], ['typeset', '排版预览']] as const).map(([id, label]) => (
+                    {([['plain', isWechatArticle ? '正文文本' : '纯文本 · 所见即所发'], ['typeset', '排版预览']] as const).map(([id, label]) => (
                       <button
                         key={id}
                         type="button"
@@ -334,13 +335,17 @@ export function PublishPreviewDialog({
                   <div className="max-h-64 overflow-auto rounded-lg border border-line bg-well p-3" data-testid="article-body-typeset">
                     <TypesetBody body={preview.articleCopy?.body ?? ''} />
                     <p className="mt-3 border-t border-line pt-2 text-xs text-ink-subtle">
-                      仅预览排版。提交给头条的仍然是纯文本，编辑器会把 <code className="font-mono">## </code>
-                      开头的行当成小标题。
+                      仅预览排版。公众号提交微信兼容 HTML；头条由编辑器排版，小标题和段落以最终平台草稿为准。
                     </p>
                   </div>
                 )}
               </div>
-              <div className="space-y-1">
+              {isWechatArticle ? <div className="space-y-2 text-sm text-ink-muted">
+                <p>作者：{preview.articleCopy?.author || '（未填写）'}</p>
+                <p>摘要：{preview.articleCopy?.digest || '（由微信从正文提取）'}</p>
+                <p>仅创建公众号草稿，不会正式发布或群发。请在公众号后台检查排版后手动发布。</p>
+                <div className="flex gap-3 overflow-x-auto">{images.map((imagePath, index) => <PreviewImage key={imagePath} packageId={pkg.id} index={index} total={imageCount} />)}</div>
+              </div> : <div className="space-y-1">
                 <p className="text-sm font-medium text-ink">发布选项</p>
                 <ul className="list-disc space-y-1 pl-5 text-sm text-ink-muted">
                   <li>头条首发：{preview.toutiaoOptions?.firstPublish ? '是' : '否'}</li>
@@ -353,7 +358,7 @@ export function PublishPreviewDialog({
                   {/* 平台默认会勾上这一项：把真实取值摊出来，避免「多发了一条微头条」才知道 */}
                   <li>同时发布微头条：{preview.toutiaoOptions?.crossPostWeitoutiao ? '是' : '否'}</li>
                 </ul>
-              </div>
+              </div>}
             </section>
           ) : pkg.contentType === 'note' ? (
             <section>
@@ -396,7 +401,7 @@ export function PublishPreviewDialog({
                     {check.scope === 'package' ? '（包级文案）' : ''}
                   </h3>
                   <CountedField name="标题" value={check.title} />
-                  <CountedField name="正文" value={check.description} />
+                  <CountedField name={check.platform === 'wechat_mp' && check.scope === 'package' ? '摘要' : '正文'} value={check.description} />
                   <CountedField name="话题" value={check.hashtags} />
                 </div>
                 <CopyBody check={check} copy={copyForCheck(preview, check)} />

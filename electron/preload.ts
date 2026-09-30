@@ -59,6 +59,9 @@ export interface AIKeyTestResult {
 }
 
 export interface AppConfig {
+  sauBinary?: string;
+  sauBaseDir?: string;
+  wechatMp?: { appId?: string; appSecret?: string; author?: string; hasSecret?: boolean };
   storagePath: string;
   aiKeys: AIKeyConfig[]; // 支持多个 API Key
   asrProvider?: string;
@@ -68,6 +71,7 @@ export interface AppConfig {
   app: {
     firstRun: boolean;
     theme: 'light' | 'dark' | 'system';
+    themeConfigured?: boolean;
   };
 }
 

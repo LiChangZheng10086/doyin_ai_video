@@ -52,6 +52,8 @@ interface RecordedCall {
   url: string;
   method: string;
   body: string | undefined;
+  /** multipart 上传的字段（三个写接口用）；非 multipart 请求为 undefined。 */
+  form?: FormData;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -74,6 +76,8 @@ function scriptedFetch(
       url,
       method: init?.method ?? "GET",
       body: typeof init?.body === "string" ? init.body : undefined,
+      // 上传走 multipart：body 是 FormData 而不是字符串，只有记下它才能断言字段名/文件名。
+      form: init?.body instanceof FormData ? init.body : undefined,
     });
     return await handler(url, calls.length);
   };
@@ -115,6 +119,44 @@ function client(overrides: Partial<WechatMpConfig> = {}): WechatMpClient {
 }
 
 // ── 配置 ──────────────────────────────────────────────────────────────────────
+
+test("草稿数量响应缺失、非整数或非法 JSON 结构不能让预检假成功", async () => {
+  for (const body of [{}, { total_count: -1 }, { total_count: "3" }, { total_count: 0.5 }, null, []]) {
+    const c = client({ fetchImpl: async (url) => isTokenRequest(url)
+      ? jsonResponse({ access_token: ACCESS_TOKEN, expires_in: 7200 }) : jsonResponse(body) });
+    const report = await c.verifyAccount();
+    assert.equal(report.ok, false, JSON.stringify(body));
+    assert.equal(report.draftPermission.errorKind, "invalid_response");
+  }
+});
+
+test("显式连接预检重新检查稳定凭据，不把缓存当成当前 secret 和 IP 证明", async () => {
+  let rejected = false;
+  const c = client({ fetchImpl: async (url) => isTokenRequest(url)
+    ? jsonResponse(rejected ? { errcode: 40125, errmsg: "invalid secret" } : { access_token: ACCESS_TOKEN, expires_in: 7200 })
+    : jsonResponse({ total_count: 0 }) });
+  assert.equal((await c.getAccessToken()).ok, true);
+  rejected = true;
+  assert.equal((await c.verifyAccount()).credentials.ok, false);
+});
+
+test("请求和响应体读取均受 timeoutMs 限制", async () => {
+  for (const phase of ["fetch", "body"]) {
+    let aborted = 0;
+    const c = client({ timeoutMs: 10, fetchImpl: async (_url, init) => {
+      if (!init?.signal) throw new Error("missing signal");
+      const pending = () => new Promise<never>((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => { aborted++; reject(new Error("aborted")); }, { once: true });
+      });
+      if (phase === "fetch") return pending();
+      return { ok: true, text: pending } as unknown as Response;
+    } });
+    const result = await c.getAccessToken();
+    assert.equal(result.ok, false);
+    assert.equal(result.errorKind, "network");
+    assert.ok(aborted > 0, "超时必须实际取消请求或响应体读取");
+  }
+});
 
 test("未配置 AppID/AppSecret 时 assertConfigured 抛明确错误，且含可执行的配置路径", () => {
   assert.throws(
@@ -457,4 +499,312 @@ test("凭据就换取失败时，不假装后面的检查通过", async () => {
   assert.equal(report.ipWhitelist.ip, "1.2.3.4");
   // 拿不到 token 就不该再去打 draft/count（那是必然失败的噪声）。
   assert.equal(calls.some((call) => call.url.includes("/cgi-bin/draft/count")), false);
+});
+
+// ── 三个写接口：封面 / 正文图 / 草稿 ──────────────────────────────────────────
+//
+// 依据官方文档（2026-09-23 逐条核对，见 spec §1.3）：
+// - 封面：`POST /cgi-bin/material/add_material?type=image`，form-data 字段名 `media`，返回 `media_id`（永久素材）；
+// - 正文图：`POST /cgi-bin/media/uploadimg`，字段名同为 `media`，返回 `url`（微信托管，**不是 media_id**），
+//   且**仅收 jpg/png 且 <1MB** —— 正文里写外链图会被官方过滤，所以这一步不可省；
+// - 草稿：`POST /cgi-bin/draft/add`，JSON body `{articles:[{article_type:"news", title, content, thumb_media_id, …}]}`，
+//   `thumb_media_id` 对 news **必填且必须是永久素材 MediaID**。
+
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+
+/** token 由这里统一应答，其余 URL 交给 `byPath`。 */
+function writeHandler(byPath: (url: string) => Response): (url: string) => Response {
+  return (url: string) => {
+    if (isTokenRequest(url)) return jsonResponse({ access_token: ACCESS_TOKEN, expires_in: 7200 });
+    return byPath(url);
+  };
+}
+
+/** 只看真正的业务调用（排除换取凭据）。 */
+function writeCalls(calls: RecordedCall[]): RecordedCall[] {
+  return calls.filter((call) => !isTokenRequest(call.url));
+}
+
+/**
+ * multipart 里那个文件字段。
+ *
+ * ⚠️ 必须**投影成普通对象**再断言：Node 的 `File` 把 `name`/`type`/`size` 放在原型上，
+ * `assert.deepEqual` 只比较自有可枚举属性，直接比会拿一个满是 `Symbol(...)` 的 File 去比。
+ */
+function mediaPart(call: RecordedCall | undefined): { name: string; type: string; size: number } {
+  const part = call?.form?.get("media");
+  assert.ok(part, "multipart 里必须有 media 字段");
+  const file = part as unknown as { name?: string; type?: string; size: number };
+  return { name: file.name ?? "", type: file.type ?? "", size: file.size };
+}
+
+test("封面走永久素材接口（type=image），multipart 字段名是 media 且保留文件名", async () => {
+  const { impl, calls } = scriptedFetch(
+    writeHandler(() => jsonResponse({ media_id: "cover-media-id", url: "https://mmbiz.qpic.cn/x" })),
+  );
+  const result = await client({ fetchImpl: impl }).uploadCoverImage({
+    bytes: JPEG_BYTES,
+    filename: "cover.jpg",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data?.mediaId, "cover-media-id");
+  const call = writeCalls(calls)[0];
+  assert.equal(call.method, "POST");
+  assert.match(call.url, /\/cgi-bin\/material\/add_material\?/u);
+  assert.match(call.url, /type=image/u);
+  assert.match(call.url, /access_token=/u);
+  // 微信按**文件名扩展名**判格式（40113 就是「扩展名说谎」），所以名字必须原样送达。
+  assert.deepEqual(mediaPart(call), { name: "cover.jpg", type: "image/jpeg", size: JPEG_BYTES.byteLength });
+});
+
+test("正文图走 media/uploadimg，返回微信托管 URL（不是 media_id）", async () => {
+  const hosted = "https://mmbiz.qpic.cn/mmbiz_jpg/abc/0?wx_fmt=jpeg";
+  const { impl, calls } = scriptedFetch(writeHandler(() => jsonResponse({ url: hosted })));
+  const result = await client({ fetchImpl: impl }).uploadContentImage({
+    bytes: PNG_BYTES,
+    filename: "body.png",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data?.url, hosted);
+  assert.deepEqual(Object.keys(result.data ?? {}), ["url"]);
+  const call = writeCalls(calls)[0];
+  assert.match(call.url, /\/cgi-bin\/media\/uploadimg\?/u);
+  // uploadimg 没有 type 参数（那是 add_material 的）。
+  assert.doesNotMatch(call.url, /type=image/u);
+  assert.equal(mediaPart(call).name, "body.png");
+  assert.equal(mediaPart(call).type, "image/png");
+});
+
+test("正文图只收 jpg/png：webp 在上传前就被拒，一个请求都不发", async () => {
+  const { impl, calls } = scriptedFetch(() => {
+    throw new Error("格式不合规时不该发出任何请求（连 token 也不该换）");
+  });
+
+  await assert.rejects(
+    () => client({ fetchImpl: impl }).uploadContentImage({ bytes: JPEG_BYTES, filename: "shot.webp" }),
+    (error: unknown) => {
+      assert.ok(error instanceof WechatMpError);
+      assert.match(error.message, /jpg/iu);
+      assert.match(error.message, /png/iu);
+      // 只说「格式不对」不够：要说明**这个接口**只收什么。
+      assert.match(error.message, /uploadimg|正文图/u);
+      return true;
+    },
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("封面格式比正文图宽：bmp/gif/png/jpg 都收，webp 仍被拒，扩展名大小写不敏感", async () => {
+  for (const filename of ["cover.bmp", "cover.gif", "cover.png", "cover.JPG"]) {
+    const { impl } = scriptedFetch(writeHandler(() => jsonResponse({ media_id: "m" })));
+    const result = await client({ fetchImpl: impl }).uploadCoverImage({ bytes: JPEG_BYTES, filename });
+    assert.equal(result.ok, true, `${filename} 应被接受`);
+  }
+
+  const { impl, calls } = scriptedFetch(() => {
+    throw new Error("不该发出请求");
+  });
+  await assert.rejects(
+    () => client({ fetchImpl: impl }).uploadCoverImage({ bytes: JPEG_BYTES, filename: "cover.webp" }),
+    WechatMpError,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("空文件与没有扩展名的文件都在本地被拒（不浪费一次上传）", async () => {
+  const { impl, calls } = scriptedFetch(() => {
+    throw new Error("不该发出请求");
+  });
+  const c = client({ fetchImpl: impl });
+
+  await assert.rejects(
+    () => c.uploadCoverImage({ bytes: new Uint8Array(), filename: "cover.jpg" }),
+    /空/u,
+  );
+  await assert.rejects(() => c.uploadCoverImage({ bytes: JPEG_BYTES, filename: "cover" }), WechatMpError);
+  await assert.rejects(() => c.uploadContentImage({ bytes: JPEG_BYTES, filename: "  " }), WechatMpError);
+  assert.equal(calls.length, 0);
+});
+
+test("给了 maxBytes 就本地拦住超限图，且文案给出实际大小与上限", async () => {
+  const { impl, calls } = scriptedFetch(() => {
+    throw new Error("超限时不该发出请求");
+  });
+  const twoMb = new Uint8Array(2 * 1024 * 1024);
+
+  await assert.rejects(
+    () =>
+      client({ fetchImpl: impl }).uploadContentImage({
+        bytes: twoMb,
+        filename: "big.jpg",
+        maxBytes: 1024 * 1024,
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof WechatMpError);
+      assert.match(error.message, /2\.0\s*MB/u);
+      assert.match(error.message, /1\.0\s*MB/u);
+      return true;
+    },
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("上传接口的报错走同一套分类与文案（48001 → 权限，不是另写一份）", async () => {
+  const { impl } = scriptedFetch(
+    writeHandler(() => jsonResponse({ errcode: 48001, errmsg: "api unauthorized" })),
+  );
+  const result = await client({ fetchImpl: impl }).uploadContentImage({
+    bytes: PNG_BYTES,
+    filename: "body.png",
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, 48001);
+  assert.equal(result.errorKind, "permission");
+  assert.match(result.message, /权限/u);
+});
+
+test("上传响应缺 media_id / url 时判 invalid_response，绝不拿 undefined 冒充成功", async () => {
+  const { impl: coverImpl } = scriptedFetch(writeHandler(() => jsonResponse({ url: "https://mmbiz.qpic.cn/x" })));
+  const cover = await client({ fetchImpl: coverImpl }).uploadCoverImage({
+    bytes: JPEG_BYTES,
+    filename: "cover.jpg",
+  });
+  assert.equal(cover.ok, false);
+  assert.equal(cover.errorKind, "invalid_response");
+
+  const { impl: bodyImpl } = scriptedFetch(writeHandler(() => jsonResponse({ media_id: "m" })));
+  const body = await client({ fetchImpl: bodyImpl }).uploadContentImage({
+    bytes: PNG_BYTES,
+    filename: "body.png",
+  });
+  assert.equal(body.ok, false);
+  assert.equal(body.errorKind, "invalid_response");
+});
+
+test("createDraft 的 payload 是 articles[] + article_type=news + thumb_media_id", async () => {
+  const { impl, calls } = scriptedFetch(writeHandler(() => jsonResponse({ media_id: "draft-media-id" })));
+  const result = await client({ fetchImpl: impl }).createDraft({
+    title: "标题",
+    content: "<p>正文</p>",
+    thumbMediaId: "cover-media-id",
+    author: "作者",
+    digest: "摘要",
+    contentSourceUrl: "https://example.com/post",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.data?.mediaId, "draft-media-id");
+  const call = writeCalls(calls)[0];
+  assert.equal(call.method, "POST");
+  assert.match(call.url, /\/cgi-bin\/draft\/add\?/u);
+  assert.match(call.url, /access_token=/u);
+
+  const payload = JSON.parse(call.body ?? "{}") as { articles: Array<Record<string, unknown>> };
+  assert.equal(payload.articles.length, 1);
+  const article = payload.articles[0];
+  assert.equal(article.article_type, "news");
+  assert.equal(article.title, "标题");
+  assert.equal(article.content, "<p>正文</p>");
+  assert.equal(article.thumb_media_id, "cover-media-id");
+  assert.equal(article.author, "作者");
+  assert.equal(article.digest, "摘要");
+  assert.equal(article.content_source_url, "https://example.com/post");
+});
+
+test("createDraft 不给可选字段时，payload 里就不出现这些键（不塞 undefined/空串）", async () => {
+  const { impl, calls } = scriptedFetch(writeHandler(() => jsonResponse({ media_id: "d" })));
+  const result = await client({ fetchImpl: impl }).createDraft({
+    title: "标题",
+    content: "<p>正文</p>",
+    thumbMediaId: "cover-media-id",
+  });
+  assert.equal(result.ok, true);
+
+  const article = (JSON.parse(writeCalls(calls)[0].body ?? "{}") as {
+    articles: Array<Record<string, unknown>>;
+  }).articles[0];
+  for (const key of ["author", "digest", "content_source_url"]) {
+    assert.equal(key in article, false, `${key} 未提供时不该出现在 payload 里`);
+  }
+});
+
+test("本轮只做图文消息（news）：payload 不带 image_info，也不发评论字段", async () => {
+  // 这三条是**刻意的决定**，不是遗漏：newspic（图片消息）本轮不做（spec §11）；
+  // 评论字段我们目前不发（不填 = 平台默认：不打开评论）。别顺手加。
+  const { impl, calls } = scriptedFetch(writeHandler(() => jsonResponse({ media_id: "d" })));
+  await client({ fetchImpl: impl }).createDraft({
+    title: "标题",
+    content: "<p>正文</p>",
+    thumbMediaId: "cover-media-id",
+  });
+
+  const article = (JSON.parse(writeCalls(calls)[0].body ?? "{}") as {
+    articles: Array<Record<string, unknown>>;
+  }).articles[0];
+  assert.equal(article.article_type, "news");
+  assert.equal("image_info" in article, false, "newspic 本轮不做，不该出现 image_info");
+  assert.equal("need_open_comment" in article, false);
+  assert.equal("only_fans_can_comment" in article, false);
+});
+
+test("createDraft 的必填项为空白时在本地就拒（一个请求都不发）", async () => {
+  const { impl, calls } = scriptedFetch(() => {
+    throw new Error("不该发出请求");
+  });
+  const c = client({ fetchImpl: impl });
+  const base = { title: "标题", content: "<p>正文</p>", thumbMediaId: "cover-media-id" };
+
+  await assert.rejects(() => c.createDraft({ ...base, title: "   " }), /标题/u);
+  await assert.rejects(() => c.createDraft({ ...base, content: "  " }), /正文/u);
+  await assert.rejects(() => c.createDraft({ ...base, thumbMediaId: " " }), /封面|thumb/iu);
+  assert.equal(calls.length, 0);
+});
+
+test("三个写接口共用同一份凭据（同一实例只换一次 token）", async () => {
+  const { impl, calls } = scriptedFetch(writeHandler((url) =>
+    url.includes("/cgi-bin/draft/add")
+      ? jsonResponse({ media_id: "draft" })
+      : url.includes("/cgi-bin/media/uploadimg")
+        ? jsonResponse({ url: "https://mmbiz.qpic.cn/y" })
+        : jsonResponse({ media_id: "cover" }),
+  ));
+  const c = client({ fetchImpl: impl });
+  await c.uploadCoverImage({ bytes: JPEG_BYTES, filename: "cover.jpg" });
+  await c.uploadContentImage({ bytes: PNG_BYTES, filename: "body.png" });
+  await c.createDraft({ title: "标题", content: "<p>正文</p>", thumbMediaId: "cover" });
+
+  // 每次调用都换一次凭据会白烧 2000/日 的额度，还会与用户其它工具互相顶掉 token。
+  assert.equal(tokenCalls(calls).length, 1);
+  assert.equal(writeCalls(calls).length, 3);
+});
+
+test("写接口的失败文案里不出现 access_token（multipart 走的是同一套脱敏）", async () => {
+  const { impl } = scriptedFetch((url) => {
+    if (isTokenRequest(url)) return jsonResponse({ access_token: ACCESS_TOKEN, expires_in: 7200 });
+    throw new Error(`connect ECONNREFUSED ${url}`);
+  });
+  const c = client({ fetchImpl: impl });
+
+  const cover = await c.uploadCoverImage({ bytes: JPEG_BYTES, filename: "cover.jpg" });
+  assert.equal(cover.ok, false);
+  assert.equal(JSON.stringify(cover).includes(ACCESS_TOKEN), false, "上传失败文案泄露了 access_token");
+
+  const draft = await c.createDraft({ title: "标题", content: "<p>正文</p>", thumbMediaId: "c" });
+  assert.equal(draft.ok, false);
+  assert.equal(draft.message.includes(ACCESS_TOKEN), false);
+  assert.match(draft.message, /\*\*\*/u, "脱敏后应留下 *** 痕迹");
+});
+
+test("微信返回非字符串或空白 ID/URL 时不能当成上传或建草稿成功", async () => {
+  for (const value of [123, {}, "   "]) {
+    const { impl } = scriptedFetch(writeHandler(() => jsonResponse({ media_id: value, url: value })));
+    const c = client({ fetchImpl: impl });
+    assert.equal((await c.uploadCoverImage({ bytes: JPEG_BYTES, filename: "cover.jpg" })).errorKind, "invalid_response");
+    assert.equal((await c.uploadContentImage({ bytes: PNG_BYTES, filename: "body.png" })).errorKind, "invalid_response");
+    assert.equal((await c.createDraft({ title: "标题", content: "<p>正文</p>", thumbMediaId: "cover" })).errorKind, "invalid_response");
+  }
 });

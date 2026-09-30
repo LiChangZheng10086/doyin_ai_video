@@ -426,6 +426,13 @@ export class PublishingStore {
         });
       }
 
+      if (task.platform === "wechat_mp" && (
+        task.status === "published" || task.status === "cancelled"
+        || task.autoPublish?.status === "succeeded" || task.autoPublish?.status === "running"
+        || task.autoPublish?.outcomeUncertain || task.autoPublish?.draftMediaId
+      )) {
+        throw new PublishingError("publish_invalid_transition", { reason: "wechat_draft_requires_manual_verification" });
+      }
       const startedAt = this.timestamp();
       task.autoPublish = { status: "running", startedAt, attemptId: input.attemptId };
       task.updatedAt = startedAt;
@@ -447,7 +454,7 @@ export class PublishingStore {
    */
   async updateAutoPublish(
     taskId: string,
-    patch: { status: PublishAutoPublishStatus; message?: string; finishedAt?: string; draftOnly?: boolean },
+    patch: { status: PublishAutoPublishStatus; message?: string; finishedAt?: string; draftOnly?: boolean; draftMediaId?: string; outcomeUncertain?: boolean },
     actor: ActorSnapshot
   ): Promise<PublishTask> {
     return this.mutate((draft) => {
@@ -468,6 +475,8 @@ export class PublishingStore {
         ...(finished === undefined ? {} : { finishedAt: finished }),
         // 「只填到草稿」必须**显式**记下来：界面据此说「已填写到草稿箱」而不是「已提交」。
         ...(patch.draftOnly === undefined ? {} : { draftOnly: patch.draftOnly }),
+        ...(patch.draftMediaId === undefined ? {} : { draftMediaId: patch.draftMediaId }),
+        ...(patch.outcomeUncertain === undefined ? {} : { outcomeUncertain: patch.outcomeUncertain }),
       };
       task.updatedAt = this.timestamp();
       draft.audit.push(this.auditEvent(task.packageId, `task.auto_publish_${patch.status}`, actor, {
@@ -1076,6 +1085,8 @@ export function packagePreviewRevision(
     // 「发出去的是什么」，所以一并进指纹（spec §6.3：这三样少一个，预览就能被绕过）。
     hash.update(`articleTitle:${packageRecord.articleCopy?.title ?? ""}\0`);
     hash.update(`articleHtml:${packageRecord.articleCopy?.htmlSha256 ?? ""}\0`);
+    if (packageRecord.articleCopy?.author !== undefined) hash.update(`articleAuthor:${packageRecord.articleCopy.author}\0`);
+    if (packageRecord.articleCopy?.digest !== undefined) hash.update(`articleDigest:${packageRecord.articleCopy.digest}\0`);
     for (const imagePath of packageRecord.imagePaths ?? []) hash.update(`image:${imagePath}\0`);
     // ⚠️ **已知限制（如实记录）**：这里绑定的是封面的**存在性与声明文件名**，不是它的字节。
     // 文章包的封面固定叫 `cover.jpg`，所以「换掉包内封面文件」**不会**让 revision 失效。
@@ -1267,7 +1278,9 @@ function isAutoPublish(value: unknown): value is PublishAutoPublish {
     (value.finishedAt === undefined || isString(value.finishedAt)) &&
     (value.message === undefined || isString(value.message)) &&
     // 「只填到草稿」的标记：老记录没有这个字段（缺省 = 不是草稿通路），所以是可选的。
-    (value.draftOnly === undefined || typeof value.draftOnly === "boolean")
+    (value.draftOnly === undefined || typeof value.draftOnly === "boolean") &&
+    isOptionalString(value.draftMediaId) &&
+    (value.outcomeUncertain === undefined || typeof value.outcomeUncertain === "boolean")
   );
 }
 

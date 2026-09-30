@@ -8,7 +8,7 @@ import { QrLoginPanel, type QrLoginApi, type QrLoginCopy } from './QrLoginPanel'
  * 小红书没有可手工粘贴的凭据（登录态是浏览器 profile），所以扫码是唯一入口。
  * 两个平台特有的坑（都已写进执行器并有用例守着）：
  * ① 登录页**默认是短信登录**，必须先切到扫码模式才拿得到二维码；
- * ② 二维码**会静默轮换**，过期/换码时点「取消并重新获取二维码」即可。
+ * ② 二维码**会静默轮换**，轮询同步当前码；会话过期后可点「重新获取二维码」。
  */
 const XHS_API: QrLoginApi = {
   start: () => apiClient.startXhsLogin(),

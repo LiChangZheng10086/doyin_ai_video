@@ -12,6 +12,11 @@ import { registerLocalUserErrorBoundary, registerLocalUserRoutes } from "./lib/l
 import { LocalUserStore } from "./lib/local-users.js";
 import { AssetStore } from "./lib/assets-store.js";
 import { registerAssetRoutes } from "./lib/assets-routes.js";
+import { GalleryService } from "./lib/galleries.js";
+import { GalleryMedia } from "./lib/gallery-media.js";
+import { registerGalleryRoutes } from "./lib/gallery-routes.js";
+import { HotspotService } from "./lib/hotspots.js";
+import { registerHotspotRoutes } from "./lib/hotspot-routes.js";
 import { sendRangeResponse } from "./lib/range-response.js";
 import { JobStepError, JobStore } from "./lib/jobs.js";
 import { CollectionStore } from "./lib/collections.js";
@@ -30,6 +35,9 @@ import { ToutiaoRunner } from "./lib/toutiao-runner.js";
 import { XhsRunner } from "./lib/xhs-runner.js";
 import { ToutiaoMediaService } from "./lib/toutiao-media.js";
 import { planToutiaoArticle } from "./lib/toutiao-article.js";
+import { planWechatArticle } from "./lib/wechat-article.js";
+import { WechatMpClient } from "./lib/wechat-mp-client.js";
+import { WechatMediaService } from "./lib/wechat-media.js";
 import type { ArticlePlanner, NoteImagePreparer, ToutiaoCoverPreparer } from "./lib/publishing-service.js";
 import { PublishingCopyService } from "./lib/publishing-copy.js";
 import { PublishingAssetService } from "./lib/publishing-assets.js";
@@ -79,6 +87,10 @@ export interface ServerConfig {
   noteMedia?: NoteImagePreparer;
   /** 直接注入文章成文（测试用）；省略时用真实 AI 配置 + 本地兜底。 */
   planArticle?: ArticlePlanner;
+  wechatMp?: { appId?: string; appSecret?: string; author?: string };
+  resolveWechatConfig?: () => Promise<{ appId?: string; appSecret?: string; author?: string }>;
+  wechatClient?: WechatMpClient;
+  wechatMedia?: Pick<WechatMediaService, "prepareCoverImage" | "prepareContentImage">;
   runtimeBinDir?: string;
   hyperframesCliPath?: string;
   hyperframesNodeBinary?: string;
@@ -302,6 +314,15 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     // 文章成文：与文案服务共用同一份 AI 配置解析；失败时 `planToutiaoArticle` 内部走本地兜底。
     planArticle: config.planArticle
       ?? ((context) => planToutiaoArticle(context, { resolveAiConfig: resolvePublishingAiConfig })),
+    // token 仅在本次操作内复用，不落盘；凭据每次从最新配置读取。
+    wechat: async () => config.wechatClient ?? new WechatMpClient({ ...(config.resolveWechatConfig ? await config.resolveWechatConfig() : config.wechatMp) }),
+    wechatMedia: config.wechatMedia ?? new WechatMediaService({ ffmpegBinary: config.ffmpegBinary }),
+    planWechatArticle: async context => {
+      const plan = await planWechatArticle(context, { resolveAiConfig: resolvePublishingAiConfig });
+      const settings = config.resolveWechatConfig ? await config.resolveWechatConfig() : config.wechatMp;
+      if (settings?.author) plan.draft.author = settings.author;
+      return plan;
+    },
     resolveVideo,
   });
   const checkPublishingDue = publishingService.checkDue.bind(publishingService);
@@ -351,6 +372,17 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   registerAssetRoutes(app, { assets: assetStore, limits: config.assetUploadLimits });
   registerLocalUserErrorBoundary(app);
   registerPublishingRoutes(app, { publishing, sessions: localSessions });
+  registerHotspotRoutes(app, { hotspots: new HotspotService(storage), sessions: localSessions });
+  registerGalleryRoutes(app, { sessions: localSessions, galleries: new GalleryService({
+    storage, jobs,
+    media: new GalleryMedia({ ffmpegBinary: config.ffmpegBinary, ffprobeBinary: config.ffprobeBinary }),
+    createPackage: (gallery, paths, actor) => publishingService.createGalleryNote({
+      sourceJobId: gallery.sourceJobId, title: gallery.title,
+      noteCopy: { title: gallery.title, description: gallery.description, hashtags: gallery.hashtags },
+      sourceImagePaths: paths,
+      expectedImageHashes: gallery.generated!.hashes,
+    }, actor),
+  }) });
 
   /*
    * 运行环境状态一览（渠道 / 引擎）。

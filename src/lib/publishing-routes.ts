@@ -33,6 +33,9 @@ import { ToutiaoBrowserError } from "./toutiao-browser.js";
 import { ToutiaoMediaError } from "./toutiao-media.js";
 import { ToutiaoPageError } from "./toutiao-page.js";
 import { ToutiaoRunnerError } from "./toutiao-runner.js";
+import { WechatMpError } from "./wechat-mp-client.js";
+import { WechatArticleError } from "./wechat-article.js";
+import { WechatMediaError } from "./wechat-media.js";
 import { VideoOutputError } from "./video-output.js";
 
 /** 路由层接受的平台清单。**导出**供平台清单一致性守卫用例断言（静默点之一）。 */
@@ -202,6 +205,9 @@ export function registerPublishingRoutes(app: Express, deps: PublishingRouteDeps
 
   router.post("/publishing/toutiao/verify", authenticated, route(async (_req, res) => {
     res.json(await deps.publishing.verifyToutiaoLogin());
+  }));
+  router.post("/publishing/wechat/verify", authenticated, route(async (_req, res) => {
+    res.json(await deps.publishing.verifyWechatAccount());
   }));
 
   // 小红书：与头条那五条一一对应（同样的交互、同样的错误边界登记）。
@@ -434,6 +440,8 @@ function createPackageInput(input: Record<string, unknown>): CreatePublishingPac
     const articleCopy = {
       title: requiredNonEmptyString(article.title),
       body: requiredString(article.body),
+      ...(article.author === undefined ? {} : { author: requiredString(article.author) }),
+      ...(article.digest === undefined ? {} : { digest: requiredString(article.digest) }),
     };
     return {
       ...base,
@@ -495,6 +503,7 @@ function contentType(value: unknown): PackageContentType {
  */
 function noteImageSelection(input: Record<string, unknown>): NoteImageSelection {
   return {
+    ...(input.articleImageAssetIds === undefined ? {} : { articleImageAssetIds: nonEmptyStringArray(input.articleImageAssetIds, "articleImageAssetIds") }),
     ...(input.imageSource === undefined ? {} : { imageSource: noteImageSource(input.imageSource) }),
     ...(input.imageAssetIds === undefined
       ? {}
@@ -694,6 +703,9 @@ function publishingErrorMapper(error: unknown, req: Request, res: Response, next
   // 新增头条侧的错误类时，**必须**加进这一支（用例：`toutiao runner errors surface with…`）。
   if (
     error instanceof ToutiaoRunnerError
+    || error instanceof WechatMpError
+    || error instanceof WechatArticleError
+    || error instanceof WechatMediaError
     || error instanceof ToutiaoBrowserError
     || error instanceof ToutiaoPageError
     || error instanceof ToutiaoArticleError
@@ -728,7 +740,7 @@ function publishingErrorMapper(error: unknown, req: Request, res: Response, next
   res.status(500).json({ code: "publish_service_unavailable", message: "发布服务暂时不可用，请稍后重试" });
 }
 
-function publishingErrorStatus(code: PublishingError["code"]): number {
+export function publishingErrorStatus(code: PublishingError["code"]): number {
   if (code === "publish_package_not_found" || code === "publish_task_not_found") return 404;
   if (code === "publish_permission_denied") return 403;
   if (

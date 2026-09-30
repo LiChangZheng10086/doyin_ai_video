@@ -205,6 +205,7 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 - **抖音图文（sau）**：`SAU_BINARY`（`sau` 可执行文件，例如 `<repo-of-sau>/.venv/bin/sau`）+ `SAU_BASE_DIR`（其仓库根，含 `conf.py`；
   `cookies/` 与 `verify_code.txt` 相对它）。两条入口（独立后端与 Electron）都已透传。
   缺省时**不静默失败**：该通路 422 并给安装指引，其余功能不受影响。
+  Electron 环境变量优先，回退桌面 config.json 的 `sauBinary`/`sauBaseDir`；两项均未保存时，首次完整环境路径会通过现有配置保存机制记住。临时环境覆盖不改写已有（含部分）配置，独立后端仍只读环境变量。
 - **头条**：`TOUTIAO_BROWSER_BINARY`（缺省按解析链：显式配置 → Electron 注入 → 开发态
   `vendor/package-assets/browser/chrome-headless-shell/**` → Playwright 缓存 → 系统 Chrome）、
   `TOUTIAO_PROFILE_DIR`（**必须落在 storage 内**）。找不到浏览器时 422 + 两条可照抄的命令与逐层诊断。
@@ -300,6 +301,31 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
   不删不改任何历史用户）。**管理员 PIN 的契约没放宽**：普通 `POST /api/local-sessions` 无 PIN 仍 401，
   无 PIN 分支只存在于 `openLocalOperator()` 这一条显式路径上。发布中心的权限与审计（`requireActor`/`actor` 快照）完全保留。
 
+### 字幕图集创作（2026-09-30）
+
+- 独立导航 `/galleries` 与工作台 `/galleries/:id`；原视频区域有快捷入口。已有原视频即可创作，不要求洗稿或 HyperFrames 成片，不改变作品步骤状态。
+- 原生字幕只取画面像素；转录分段仅辅助定位。每张 1～6 条字幕，可调时间、字幕区域、主画面取景/占比；本地 FFmpeg 输出 1080×1440 PNG，保持原比例，不重绘文字。多图复制/排序、文案与草稿可恢复。
+- `GalleryService`/`GalleryMedia`/`gallery-routes` 由 `app.ts` 共用装配。索引 `cache/galleries.json`，产物 `output/galleries/{id}/{generation}/`；生成串行，失败保留旧图仅供参考，成功替换后清理上一代。原视频使用 `resolveSourceVideo` 校验后从已打开 handle 复制到私有临时快照，FFprobe/FFmpeg 不重新打开原路径；源指纹含 inode/size/mtime/ctime。
+- 保存、删除、生成带 `version`；图集发布预览也必须带当前版本。图片 URL 绑定 `generation`，源或图片变化须重生成。`createGalleryNote` 仅接受服务内部已解析路径及有序预期哈希，打包副本与预览不一致就回滚。
+- 发布复用 `note × douyin`，确认字幕与使用权后只建自包含包，再到发布中心预览并人工触发 sau。不会自动发布；修改/删除图集不影响已建包。全量回归 1004 通过、1 跳过；未调用真实抖音提交。
+
+### 热点选题（2026-09-30）
+
+- 独立 `/hotspots` 主导航（移动端在「更多」）。首版抖音、头条、百度、知乎、B站热榜；公开请求，不读取用户平台 Cookie。抖音仅用本次匿名会话 Cookie，不落盘。微博公开请求 403，首版不接入；小红书采集、X 与财经行情不在范围内。
+- `hotspot-sources.ts` 固定来源 URL，逐源解析/校验 HTTPS 来源域名，最多 100 条；请求 8s 超时、响应 ≤1MiB、禁止重定向。不混算热度，不将获取时间当事件发布时间。格式参考 MIT NewsNow，许可在 `docs/third-party/`，打包包含该目录。
+- `HotspotService` 每源 `cache/hotspots/{sourceId}.json`：10 分钟缓存、手动刷新至少间隔 60s（失败也限频），同源并发合并；失败保留旧有效榜单并明确标旧，无数据时显示不可用。服务端下发 `expiresAt`，页面每 30s 仅更新过期标签，没有后台定时抓取。
+- 收藏 `cache/hotspot-favorites.json` 只接收服务端缓存中的 sourceId/itemId，保存条目快照；下榜后保留。备注 ≤2000 字符，更新/取消收藏带 version，冲突 409；原子串行写入，不静默覆盖损坏索引。浏览器备注编辑失败保留输入，关闭/离开保护未保存编辑。
+- API：`GET /api/hotspots`、`POST /api/hotspots/refresh`、`GET/POST /api/hotspots/favorites`、`PATCH/DELETE /api/hotspots/favorites/:id`；收藏写入复用本机会话。仅选题，不创建视频任务、不生成或发布内容。
+- `node --import tsx scripts/verify-hotspots.ts --live` 只读取真实公开来源；不带参数启动 3100 隔离 UI 夹具（首个备注 PATCH 故意 503），退出清理自身临时存储。不要对真实数据跑模拟写入。
+- 共用数据路由由 `createAppRouter` 选择：开发 HTTP 使用 BrowserRouter，Electron 打包的 `file:` 使用 HashRouter；保留 `useBlocker` 未保存导航保护，避免文件路径被当作页面路由而 404。
+- 热榜采用 CSS 多列（1/2/3 列），卡片不可跨列拆分、按列阅读。不要改回同行等高 grid：知乎长标题会给其它卡片下方制造整行空白。
+
+### 外观主题（2026-09-30）
+
+- 右上角常驻 ThemeSwitcher 提供深色/浅色/跟随系统（桌面/移动端共用），立即全局生效；根元素 `data-theme` 驱动唯一 CSS 令牌表和原生 `color-scheme`，不逐页硬编码配色。用户要求直接切换，原「外观」设置分组已移除。媒体标题区使用 70% 黑遮罩与固定浅色 `on-media`，不是会随主题变色的 `ink`。
+- 桌面复用配置 `app.theme`，第一次选择后保存 `themeConfigured: true`；旧未启用 theme 字段不改变原有深色外观。浏览器开发态用 localStorage，不请求或保存平台凭据。React 挂载前初始化，跟随系统监听媒体查询；保存失败明确提示本次生效但未保存。
+- 浅色主/次/三级文字和状态文字 ≥4.5、交互边界 ≥3；对比度门禁在 `renderer/src/styles/theme.test.ts`。设置分组深链通过 `useSearchParams` 读取，兼容 Electron file/hash URL。
+
 ### 发布中心的「渠道」页签（一级 = 平台，二级 = 内容类型，2026-09-21 改版）
 
 - **一级 = 平台**（抖音 / 小红书 / 今日头条 / 微信公众号 / 其它平台＝视频号+B站）；
@@ -323,13 +349,22 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
   别用 `setParams({status})` 整体替换。换渠道时内容类型**收窄到合法范围**（没有就回「全部」），否则会出现
   一屏空列表却看不出原因。
 - 界面约定：**平台下拉已移除**（一级页签本身就是平台）；每个渠道一行说明（谁在提交、什么前置条件，
-  **视频与「其它平台」必须写明不会自动上传**）；空态给**可照抄的入口**，未接入的（微信公众号）**明说尚未接入**。
+  **视频与「其它平台」必须写明不会自动上传**）；空态给**可照抄的入口**。微信公众号文章只通过官方 API 保存草稿，视频仍是人工交付。
 - ⚠️ **渠道映射必须覆盖每一种可创建的「内容类型 × 平台」组合**：视频向导把 `PUBLISHING_PLATFORMS` **全量**列出
   （含今日头条、微信公众号），所以「头条视频」「公众号视频」这类包真的存在 —— `contentTypes` 漏一个，
   它们就在**所有**页签里都看不见（静默丢数据）。用例 `每一种可创建的「内容类型 × 平台」组合都唯一落在某个渠道里`；
   `node --import tsx scripts/verify-publishing-channels.ts` 用**真实索引**复核（只读零副作用，末尾报有无包不属于任何页签）。
 - 规格与计划：`docs/superpowers/specs/2026-09-18-publishing-channel-tabs-design.md`（含 2026-09-21 改版一节）、
   `docs/superpowers/plans/2026-09-18-publishing-channel-tabs.md`。
+
+### 微信公众号文章草稿（2026-09-29）
+
+- 仅 `article × wechat_mp`：封面永久素材 → 可选正文图 → 微信兼容 HTML → `draft/add`。不调用正式发布/群发，不使用浏览器代点发布。
+- 复用 `CreateToutiaoArticleDialog`（`platform="wechat_mp"`）、发布包与预览流程。封面单选；`articleImageAssetIds` 为独立的有序正文图片列表，选图归属沿用 AssetStore；作者/摘要与图片顺序进入对应预览指纹。
+- 设置「微信公众号」保存 AppID/AppSecret/默认作者；AppSecret 用 safeStorage 加密，不回显。加密/解密失败拒绝保存，避免明文或覆盖丢失。配置即时读取，token 仅本次操作缓存；独立入口使用 `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` / `WECHAT_MP_AUTHOR`。
+- `POST /api/publishing/wechat/verify`：普通稳定 token + draft/count，只证明连接/查询；不上传内容，但可能触发管理员风险确认。个人未认证订阅号不能仅凭查询成功宣称可写，认证也不保证解决权限问题。
+- `task.status` 不变；成功子记录保存 `draftOnly: true` 与 `draftMediaId`，绝不等同正式发布。草稿请求网络失败/异常响应保留 `outcomeUncertain`；成功、不确定或遗留 running 都禁止直接重发。核对后台后确需另建时人工创建新包。
+- 当前已通过模拟链路测试，真实账号仍未验收。实测必须覆盖封面+一张正文图，并由用户在后台确认。见 `docs/research/2026-09-29-wechat-draft-feasibility.md` 第 7 节。
 
 ### 凭据扫描（提交前门禁）
 
@@ -408,6 +443,7 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
   （以内容为准，别只匹配「已失效」文案）；判据 **「已离开登录页 ∧ 无阻断信号」**，**不要求发布页 DOM 出现**
   （扫码后落到 `/new/home`，那里发布页选择器全为 0）。**已登录时不要再去取码**（会被重定向走、没有二维码）：
   返回 `409 xhs_already_logged_in` 并写明换号动作 —— 早期版本把这种「你不需要扫码」误诊成「页面改版」。
+- **扫码等待期间禁止导航**：轮询与窗口登录只观察当前页面，不 `goto(首页)`（会销毁等待手机确认的二维码会话）。轮询同步平台当前二维码；「校验登录」复用活跃页面，不另开浏览器争用 profile。尚未确认返回 `409 xhs_login_in_progress`，不记录登录失效、不关闭扫码会话；轮询或校验成功均关闭会话落盘后记录 valid，界面校验成功停止轮询，忽略已发出的旧轮询返回。导航中 DOM 读取异常按阻断处理，不能误报成功并提前关闭。
 - **只读侦察脚本** `node --import tsx scripts/probe-xhs-publish-page.ts`：`--login` / `--tab` /
   `--upload-dummy`（**会上传一张现场生成的纯灰假图**）/ `--form` / `--dry-run`（填假文案并勾声明、**绝不点发布**）/
   `--scroll-submit` / `--shadow` / `--shot-submit` / `--frames` / `--diagnostics` / `--check-drafts`；
@@ -607,6 +643,6 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 
 ---
 
-**最后更新**: 2026-09-21
+**最后更新**: 2026-09-29
 **维护者**: Codex
 **仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git

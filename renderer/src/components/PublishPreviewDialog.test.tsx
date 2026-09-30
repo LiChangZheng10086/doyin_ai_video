@@ -258,6 +258,18 @@ function articlePreview(): PublishingPackagePreview {
   };
 }
 
+test('公众号预览的120字校验是摘要，不把正文误显示成受120字限制', () => {
+  const preview = articlePreview();
+  preview.articleCopy!.digest = '测试摘要';
+  preview.tasks = [{ id: 'wx-task', platform: 'wechat_mp', status: 'ready', contentRevision: 1, copy: { title: '测试文章', description: '测试摘要', hashtags: [] } }];
+  preview.copyChecks = [{ platform: 'wechat_mp', label: '微信公众号', scope: 'package', title: { actual: 4, limit: 32, over: false }, description: { actual: 4, limit: 120, over: false }, hashtags: { actual: 0, limit: 10, over: false }, violations: [] }];
+  const html = renderToStaticMarkup(<PublishPreviewDialog open preview={preview} onClose={noop} />);
+  assert.match(html, /摘要 4\/120/);
+  assert.doesNotMatch(html, /正文 4\/120|纯文本 · 所见即所发|头条首发/);
+  assert.match(html, /测试摘要/);
+  assert.match(html, /第一段正文/);
+});
+
 test('文章包预览摊出标题、正文纯文本与发布选项（正文不是只给字数）', () => {
   const html = renderToStaticMarkup(
     <PublishPreviewDialog open preview={articlePreview()} onClose={noop} />,

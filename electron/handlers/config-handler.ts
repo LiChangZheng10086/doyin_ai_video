@@ -4,6 +4,7 @@ import path from 'path';
 import { resolve4, resolve6 } from 'dns/promises';
 import { AppConfig, AIKeyChanges, AIKeyConfig, AIKeyInput, AIKeyTestResult, AiErrorCode } from '../preload';
 import { randomUUID } from 'crypto';
+import { mergeWechatSettings, publicWechatSettings, encryptWechatSettings, decryptWechatSettings } from '../utils/wechat-config';
 import { classifyHttpFailure, classifyNetworkFailure, mergeAiKeyChanges, normalizeBaseURL, normalizeMaxOutputTokens } from '../utils/ai-config';
 
 const CONFIG_FILE = 'config.json';
@@ -140,6 +141,10 @@ export async function loadConfig(): Promise<AppConfig> {
   try {
     const data = await fs.readFile(configPath, 'utf-8');
     const config = JSON.parse(data) as AppConfig;
+    if (config.wechatMp?.appSecret) {
+      config.wechatMp = decryptWechatSettings(config.wechatMp, safeStorage.isEncryptionAvailable(),
+        value => safeStorage.decryptString(Buffer.from(value, 'base64')));
+    }
 
     // 解密所有 API Keys
     if (config.aiKeys && Array.isArray(config.aiKeys)) {
@@ -151,8 +156,9 @@ export async function loadConfig(): Promise<AppConfig> {
 
     return config;
   } catch (error) {
-    // 配置文件不存在，返回默认配置
-    return getDefaultConfig();
+    // 只有首次启动可回退默认值；损坏/无法解密的配置不能被后续保存覆盖。
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return getDefaultConfig();
+    throw error;
   }
 }
 
@@ -168,6 +174,7 @@ export async function saveConfig(config: Partial<AppConfig>): Promise<void> {
     ...existingConfig,
     ...config,
     aiKeys: config.aiKeys || existingConfig.aiKeys,
+    wechatMp: config.wechatMp === undefined ? existingConfig.wechatMp : mergeWechatSettings(existingConfig.wechatMp, config.wechatMp),
     app: {
       ...existingConfig.app,
       ...(config.app || {}),
@@ -177,6 +184,7 @@ export async function saveConfig(config: Partial<AppConfig>): Promise<void> {
   // 加密所有 API Keys
   const configToSave = {
     ...newConfig,
+    ...(newConfig.wechatMp ? { wechatMp: encryptWechatSettings(newConfig.wechatMp, safeStorage.isEncryptionAvailable(), value => safeStorage.encryptString(value).toString('base64')) } : {}),
     aiKeys: newConfig.aiKeys.map(key => ({
       ...key,
       apiKey: encryptApiKey(key.apiKey),
@@ -273,7 +281,8 @@ async function setActiveApiKey(keyId: string): Promise<void> {
 // 注册 IPC 处理器
 export function registerConfigHandlers(): void {
   ipcMain.handle('get-config', async () => {
-    return await loadConfig();
+    const config = await loadConfig();
+    return { ...config, wechatMp: publicWechatSettings(config.wechatMp) };
   });
 
   ipcMain.handle('save-config', async (_, config: Partial<AppConfig>) => {

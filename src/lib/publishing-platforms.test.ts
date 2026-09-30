@@ -324,10 +324,10 @@ test("头条的标题下限在文章校验里管，平台表只管上限（两�
 
 // ─── 自动发布通路表（(内容类型 × 平台) → 引擎）────────────────────────────────
 
-test("通路表：图文走抖音（sau）与小红书（xhs），文章走头条（自研 runner）", () => {
+test("通路表：图文走抖音与小红书，文章走头条或微信公众号草稿", () => {
   assert.deepEqual(
     AUTO_PUBLISH_ROUTES.map((route) => `${route.contentType}:${route.platform}=${route.engine}`).sort(),
-    ["article:toutiao=toutiao", "note:douyin=sau", "note:xiaohongshu=xhs"],
+    ["article:toutiao=toutiao", "article:wechat_mp=wechat", "note:douyin=sau", "note:xiaohongshu=xhs"],
   );
 
   assert.equal(resolveAutoPublishEngine("note", "douyin"), "sau");
@@ -335,14 +335,15 @@ test("通路表：图文走抖音（sau）与小红书（xhs），文章走头�
   assert.equal(resolveAutoPublishEngine("article", "toutiao"), "toutiao");
 
   // 未登记的组合一律 null：视频包仍是人工交付；图文不许发给头条（上游没有这条通路）；
-  // 文章不许发给抖音或小红书；公众号通路尚未接通。
+  // 文章不许发给抖音或小红书；公众号只接文章草稿。
   assert.equal(resolveAutoPublishEngine("video", "douyin"), null);
   assert.equal(resolveAutoPublishEngine("video", "toutiao"), null);
   assert.equal(resolveAutoPublishEngine("video", "xiaohongshu"), null, "视频包仍是人工交付");
   assert.equal(resolveAutoPublishEngine("note", "toutiao"), null);
   assert.equal(resolveAutoPublishEngine("article", "douyin"), null);
   assert.equal(resolveAutoPublishEngine("article", "xiaohongshu"), null, "小红书只做图文，不做文章");
-  assert.equal(resolveAutoPublishEngine("article", "wechat_mp"), null, "公众号通路尚未接通");
+  assert.equal(resolveAutoPublishEngine("article", "wechat_mp"), "wechat");
+  assert.equal(resolveAutoPublishEngine("video", "wechat_mp"), null);
 });
 
 test("小红书图文口径：标题 20 / 正文 1000，且是**独立的一份政策**", () => {

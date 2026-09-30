@@ -1842,7 +1842,7 @@ function resolveDeclaredImage(packagePath: string, relativePath: string): string
 }
 
 /** 各图 sha256 有序拼接后再哈希。顺序参与哈希，因此调换顺序必然改变结果。 */
-function imageManifestHash(hashes: string[]): string {
+export function imageManifestHash(hashes: string[]): string {
   return createHash("sha256").update(hashes.join("\n")).digest("hex");
 }
 

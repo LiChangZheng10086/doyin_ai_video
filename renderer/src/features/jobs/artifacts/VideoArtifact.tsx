@@ -16,6 +16,7 @@ export interface VideoArtifactProps {
   onOpenNotePublishing: () => void;
   /** 头条文章包入口：与图文包并列，封面必填（会自动裁成 16:9）。 */
   onOpenToutiaoPublishing: () => void;
+  onOpenWechatPublishing?: () => void;
   onVideoError: () => void;
 }
 
@@ -29,6 +30,7 @@ export function VideoArtifact({
   onOpenPublishing,
   onOpenNotePublishing,
   onOpenToutiaoPublishing,
+  onOpenWechatPublishing,
   onVideoError,
 }: VideoArtifactProps) {
   return (
@@ -63,6 +65,10 @@ export function VideoArtifact({
             <FileText size={17} />
             创建头条文章包
           </button>
+          {onOpenWechatPublishing ? <button type="button" onClick={onOpenWechatPublishing}
+            className="inline-flex items-center justify-center gap-2 rounded-lg border border-line bg-panel px-4 py-2.5 font-medium text-ink hover:bg-elevated">
+            <FileText size={17} />创建公众号文章包
+          </button> : null}
           {videoUrl && (
             <a
               href={videoUrl}

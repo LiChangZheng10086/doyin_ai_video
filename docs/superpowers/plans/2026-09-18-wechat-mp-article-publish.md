@@ -1,10 +1,14 @@
 # 微信公众号 AI 文章发布 实施计划
 
+> **2026-09-29 状态：** 用户已从分析阶段转为授权实现，只保存草稿；账号仍为个人订阅号、未认证或审核中。
+> 以[可行性与剩余实施范围](../../research/2026-09-29-wechat-draft-feasibility.md)为恢复入口。
+> 后续用户已授权开发：Task 6/7 已接通，复用文章向导而非另建一套；token 仅操作内缓存，不落盘。查询预检与模拟测试不能代替真实写入验收。下文历史执行记录保留，当前实现见可行性文档第 7 节。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** 在发布中心为「文章交付包」提供「提交到公众号草稿箱」动作：把已完成任务的转录 + 洗稿产物用 AI 写成一篇公众号文章，渲染成微信兼容 HTML，上传封面与正文图，调用官方 `draft/add` 建草稿；最终发布仍由人工在公众号后台完成。无论接口是否可用，都产出可下载的 `article.html`。
 
-**Architecture:** 复用现有交付包与发布中心（版本/审计/垃圾桶/`previewRevision` 必经确认/`autoPublish` 子记录全部白拿）。给 `PackageContentType` 加第三种 `"article"`、给 `PublishPlatform` 加 `wechat_mp`；新增 `wechat-article.ts`（成文 + 纯函数渲染）、`wechat-mp-client.ts`（官方 API 客户端）、`wechat-media.ts`（ffmpeg 图片处理）三个模块。**不新增提交路由** —— 复用既有 `POST /api/publishing/tasks/:id/auto-publish`，按 `contentType` 分派。
+**Architecture:** 复用现有文章交付包与发布中心的版本、审计、垃圾桶、预览和 `autoPublish` 子记录。`article`/`wechat_mp` 类型及 `wechat-article.ts`、`wechat-mp-client.ts`、`wechat-media.ts` 已存在，不重建。复用 `POST /api/publishing/tasks/:id/auto-publish`，按**内容类型 × 平台**在既有路由表增加公众号通路，保留头条、抖音和小红书分派。
 
 **Tech Stack:** Node.js 18+ + Express 4 + TypeScript（`fetch`/`FormData`/`Blob` 原生，**零新依赖**；图片处理走项目已有的 ffmpeg）、React 19 + Tailwind（发布中心与设置页）、Node 内置 test runner（`node --import tsx --test`）。
 
@@ -13,7 +17,7 @@
 ## Global Constraints
 
 - **不新增任何 npm 依赖**：不引 `ejs`、不引 `sharp`/`jimp`（图片处理用既有 `ffmpegBinary`），HTTP 用 Node 原生 `fetch` + `FormData` + `Blob`。
-- **只建草稿**：**绝不调用 `freepublish/*`**（发布/群发接口；官方已对个人主体回收权限）。全仓库不得出现 `freepublish` 路径。
+- **只建草稿**：不调用 `freepublish/*`（正式发布）或 `message/mass/*`（群发），两者不同；测试断言无此类请求，文档和负向测试可以提及路径。也不通过浏览器代点发布。
 - **不新增 `PublishTaskStatus` 取值**：`scheduled|ready|published|failed|cancelled` 与 `PublishingListStatus`（含 `"broken"`）语义一字不改。
 - `contentType` 缺省视为 `"video"`；存量包与既有用例必须**零改动**继续通过。`publishing-service.test.ts` 里 `previewRevision` 的**精确哈希断言必须逐字节不变**（这是本次重构的回归门禁）。
 - **`autoPublish.status === "succeeded"` 只表示「草稿已创建」**，`task.status` 全程不变（仍停在 `ready`），直到人工点现有「标记已发布」。这是本设计最关键的不变式。
@@ -30,8 +34,8 @@
 ### Task 1: `wechat-mp-client.ts` + 账号自检探针（测试先行，**可行性判据**）
 
 > **这是全计划的第一优先级**：个人订阅号的草稿箱权限是唯一无法从文档确证的未知数（spec §1.4）。
-> 本任务产出一个**零副作用**探针，用户用真实凭据跑一次即可定论。**探针的结论决定 Task 8 Step 3
-> 是否把降级通路（§15）提升为主通路**，但不阻塞 Task 2–7 的实现（它们全部可用假 HTTP 测试）。
+> 本任务探针**不写内容**，但取 token 可能触发管理员确认。成功只表示凭据连接和草稿数量查询通过，
+> **不能确认封面/正文图上传或新建草稿权限**；最终还需 Task 8 的真实草稿验收。本轮不执行真实探针。
 
 **Files:**
 - Create: `src/lib/wechat-mp-client.ts`
@@ -95,8 +99,8 @@ Run（用户在自己终端）：
 ```bash
 WECHAT_MP_APP_ID=... WECHAT_MP_APP_SECRET=... npx tsx scripts/verify-wechat-mp.ts
 ```
-Expected: 三行结论。**把实际输出原样记回本 Step**（这是 spec §1.4 那个未知数的唯一答案，也是 Task 8 Step 3 的判据）。
-若报 `ip_whitelist`：按提示加白名单后重跑。若报 `permission`：草稿箱不可用 → **降级通路成为主通路**，Task 6/7 的界面文案按 `permission` 分支为准，其余任务照做。
+Expected: 三行连接预检结论。记录脱敏后的结果；成功仍标记“素材上传与新建草稿尚未验证”。
+若报 `ip_whitelist`：用户按提示配置白名单后重跑。若报 `permission`：记录具体失败接口并提供人工交付；不能将查询接口的结果外推为全部写接口权限，也不能保证认证可解决。
 
 ### Task 2: 微信兼容 HTML 渲染（测试先行，纯函数）
 
@@ -321,6 +325,8 @@ Expected: FAIL —— `planWechatArticle` 不存在。
 
 ### Task 5: 平台接入与包模型（测试先行）
 
+> **历史合并版本，已由上方 Task 5a/5b 及后续头条接入取代，不重复执行。** 下方旧复选框仅保留原计划上下文；公众号剩余平台差异在 Task 6 按现有代码处理。
+
 **Files:**
 - Modify: `src/types.ts`、`src/lib/publishing-platforms.ts`
 - Modify: `src/lib/publishing-assets.ts`（`stageArticleContent`）、`src/lib/publishing-routes.ts`、`src/lib/publishing-service.ts`、`src/lib/publishing-store.ts`
@@ -362,13 +368,25 @@ Expected: PASS，且既有视频/图文打包用例全部保持通过。
 
 ### ⚠️ 恢复本计划前必读：`article` 通路已被今日头条占用（2026-09-18）
 
+> **2026-09-23 追加三条（第三方项目评估后回填，与本计划直接相关）：**
+>
+> | 新事实 | 恢复时要怎么做 |
+> | --- | --- |
+> | **三个写接口至今一行未写**：`uploadCoverImage` / `uploadContentImage` / `createDraft` 在 spec §7 里定义了签名，但 **Task 1 的完成范围只到「token + `draft/count` 自检」**（`wechat-mp-client.ts` 现有方法只有 `getAccessToken` / `getDraftCount` / `verifyAccount`）。**本计划下面 Task 6 的 Files 清单里也没有 `wechat-mp-client.ts`** —— 照原样执行会**漏掉真正把草稿建出来的那半条链** | ✅ **2026-09-23 已补齐**（+14 条用例）；Task 6 剩下的只是编排与路由，另见下方「`WechatMpError` 必须登记进错误边界」 |
+> | **官方文档命名空间已拆分**：`/doc/subscription/…` = 公众号（原订阅号）、`/doc/service/…` = 服务号；`draft/add` 适用范围表明文 `公众号 ✔ / 服务号 ✔`。且 `/cgi-bin/draft/switch` **已废弃**（别当自检） | spec §1.3 已按新命名空间校正（7 处链接）；实现时以 `subscription` 那套为准 |
+> | **`article_type: "newspic"`（图片消息）已存在但我们本轮不做**；`content_source_url` / `need_open_comment` / `only_fans_can_comment` 我们目前**不发** | 按 **spec §11** 的显式决定执行，**不要顺手加**；`newspic` 是将来选项 |
+>
+> ⚠️ 另外：四个新参考项目（jiji262 等）**没有一家能回答「未认证订阅号能否建草稿」**，
+> 也**没有一家提供我们缺的编排层** ⇒ 不要因为它们而改架构。详见
+> `docs/research/wechat-mp-publisher-projects-assessment.md`。
+
 本计划暂停期间，「今日头条 AI 文章发布」把 **`article` 内容类型**从「只有类型和打包、没有调用方」
 做成了**一条真实通路**（见 `docs/superpowers/plans/2026-09-18-toutiao-article-publish.md`）。
 恢复公众号时，以下几点**必须知道**，否则会撞车或重复造轮子：
 
 | 已经存在的东西 | 公众号恢复时要怎么做 |
 | --- | --- |
-| `AUTO_PUBLISH_ROUTES`（`publishing-platforms.ts`）= **(内容类型 × 平台) → 引擎** 的路由表，目前只有 `note×douyin` 与 `article×toutiao` | **不要**再写 `contentType !== "note"` 这类硬判；往这张表里加 `{contentType:"article", platform:"wechat_mp", engine:"wechat"}` 即可（store 与 service 两处读的是同一张表） |
+| `AUTO_PUBLISH_ROUTES`（`publishing-platforms.ts`）= **(内容类型 × 平台) → 引擎** 的路由表，已有 `note×douyin`、`article×toutiao`、`note×xiaohongshu` | 增加 `article×wechat_mp` 并接通对应 service 分支；不要只按 `contentType` 硬判，也不能只改表而遗漏执行编排 |
 | `publishing-service.ts` 的 article 分支：`previewArticlePackage` / `createArticle` / `createArticlePackage` / `packagePreview` 的 article 分支 | 它们目前**只接受 `toutiao`**（`assertArticlePlatforms` 会拒 wechat_mp）。两者要共存：把「按平台分派渲染/限额/封面比例」抽一层，而不是复制整段编排 |
 | `article-draft.ts`（平台中立成文内核）+ `wechat-article.ts`（已改成薄封装，委托给它） | 公众号侧**已经**在共用这套内核；Task 3 无需重做，只要在档案里补你自己的限额/提示词即可 |
 | `ArticleCopy`（`types.ts`）= 标题 + 可选摘要/作者 + `htmlSha256`；`WechatArticleCopy` 是它的别名 | Task 5b 的 `articleCopy` 形状未变；**新增**了 `DeliveryPackage.toutiaoOptions` 与 article 分支的**包级指纹**（覆盖 `articleCopy.title` / `htmlSha256` / 封面 / 头条选项） |
@@ -383,16 +401,24 @@ Expected: PASS，且既有视频/图文打包用例全部保持通过。
 
 ### Task 6: 服务编排与路由（测试先行）
 
+> **2026-09-29 前置修正（未执行）：** 客户端接入请求/响应超时；校验 `draft/count` 响应（缺失数量不能算 0）；区分缓存与实时凭据预检；收窄探针成功文案；最终 HTML 严格 `<20000` 字符且 UTF-8 `<1M`。请求结果不确定时禁止自动重发 `draft/add`，拿到草稿 ID 立即保存。详见复核报告 §3；补相应最小回归用例后再编排。
+
 **Files:**
+- ~~Modify: `src/lib/wechat-mp-client.ts`~~ ✅ **2026-09-23 已完成**：`uploadCoverImage` /
+  `uploadContentImage` / `createDraft` 三个写接口已补齐（+14 条用例，该文件共 35 项；含输入先于配置的错序、
+  multipart 与 JSON 共用同一套错误分类/脱敏、不给的键不进 payload）
 - Modify: `src/lib/publishing-service.ts`（`verifyWechatAccount` / `createWechatArticlePackage` / `autoPublish` 分派）
-- Modify: `src/lib/publishing-routes.ts`（`/wechat/verify`、`/packages/:id/article`）
+- Modify: `src/lib/publishing-routes.ts`（新增 `/wechat/verify`；`/packages/:id/article` 已存在，复用并回归）
+  ⚠️ **同时必须把 `WechatMpError` 登记进错误边界** —— 否则 `wechat_mp_invalid_upload` /
+  `wechat_mp_invalid_draft` 这类 422 + 可照抄指引会全落进兜底 500（AGENTS.md 记过同一形态的事故：
+  头条错误类漏登记时，**丢的不是状态码而是整条指引**）
 - Modify: `src/app.ts`、`src/server.ts`、`electron/server.ts`（`wechatMp` 注入与 env 透传）
 - Test: `src/app.test.ts`、`src/lib/publishing-service.test.ts`
 
 **Interfaces:**
-- Consumes: Task 1 客户端、Task 3 成文、Task 4 图片、Task 5 打包
-- Produces: `POST /api/publishing/wechat/verify`、`GET /api/publishing/packages/:id/article`、
-  `autoPublish` 对 `contentType === "article"` 的分派
+- Consumes: Task 1 客户端（**含 2026-09-23 补齐的三个写接口**）、Task 3 成文、Task 4 图片、Task 5 打包
+- Produces: `POST /api/publishing/wechat/verify`、复用文章下载路由、
+  `autoPublish` 对 `article × wechat_mp` 的分派
 
 - [ ] **Step 1: 写失败用例**
 
@@ -400,13 +426,14 @@ Expected: PASS，且既有视频/图文打包用例全部保持通过。
 - `POST /wechat/verify`：未配置凭据 → 明确错误（含配置路径）；配置 + 假客户端返回各 `errorKind` → 逐项透出且**脱敏**。
 - **分派顺序**（本任务最关键的一组）：
   - **未配置微信凭据**时，对 **note** 包调用 `auto-publish` → 仍返回 note 通路原本的错误（**不是**「未配置微信公众号」）；
-  - **未配置微信凭据**时，对 article 包调用 → 明确错误，且**不产生 `autoPublish` 记录**；
-  - article 包调用时**断言不触碰 sau**（注入的假 `sauRunner` 调用次数为 0）；note 包调用时**断言不触碰微信客户端**。
+  - **未配置微信凭据**时，对公众号 article 任务调用 → 明确错误，且**不产生 `autoPublish` 记录**；头条 article 仍走头条；
+  - 公众号 article 不触碰 sau/头条/小红书执行器；其余平台不触碰微信客户端。
 - **`previewRevision` 契约**：article 包不带 → **400 且不产生记录**；带过期值 → **409 且不产生记录**；带正确值 → 走通。
 - 运行中重复触发 → **409**，且不产生第二条记录。
 - **不变式**：article 通路成功（假客户端返回 media_id）→ `autoPublish.status === "succeeded"`、
   `message` 含 draft media_id、**`task.status` 仍为 `"ready"`、`publishedAt` 为空**（本设计最关键的一条断言）。
-- **绝不调用发布接口**：断言测试期间没有任何请求打到含 `freepublish` 的路径。
+- **绝不调用发布或群发接口**：断言没有请求打到 `freepublish/*` 或 `message/mass/*`。
+- 成功后保存草稿 ID；超时/断线提示“结果待核实”，不自动再次创建；可选回读失败不抹掉已知创建成功结果。
 
 - [ ] **Step 2: 运行确认失败**
 
@@ -416,7 +443,7 @@ Expected: FAIL —— 路由与分派不存在。
 - [ ] **Step 3: 实现编排与路由**
 
 编排放 `PublishingService`（**不塞进路由处理器** —— 本项目所有路由都是「校验 + 转调 service」的薄层）。
-`autoPublish` 先按包 `contentType` 分派，**分派之后**才做该通路自己的检查与配置校验。
+`autoPublish` 先按 **contentType × platform** 分派，之后才做该通路自己的检查与配置校验。
 env 透传两条入口都要改：`src/server.ts`（`WECHAT_MP_APP_ID`/`WECHAT_MP_APP_SECRET`/`WECHAT_MP_AUTHOR`）与
 `electron/server.ts`；`src/app.ts` 加 `wechatMp` 选项（对照既有 `sauBinary`/`sauBaseDir` 的写法）。
 
@@ -444,7 +471,7 @@ Expected: PASS，`tsc` 双端退出码 0。
 - `getWechatPublishBlocker(task, pkg)` **返回原因字符串而非布尔**：非 article 包 / 缺封面 / 凭据未配置 /
   自检未通过（`permission`）/ 运行中 / 已完成各一条断言，**每条的文案互不相同**（界面必须说明禁用**为什么**）。
 - 「下载文章 HTML」动作**与任务状态无关**（只读，垃圾桶里不给）。
-- `CreateWechatArticleDialog`：未选够图时提交禁用并给出原因；标题超 32 字时禁用并显示 `32/32`；
+- `CreateWechatArticleDialog`：未选封面时提交禁用并给出原因，正文图允许 0 张；标题超 32 字时禁用并显示 `32/32`；
   字数上限**由 props 下发**（不在渲染层复刻数字）。
 
 - [ ] **Step 2: 运行确认失败**
@@ -455,9 +482,9 @@ Expected: FAIL —— 函数与组件不存在。
 - [ ] **Step 3: 实现 UI 与配置**
 
 设置页「微信公众号」区：AppID / AppSecret / 默认作者 + **「校验连接」按钮**（调 Task 6 的接口，逐项显示
-「凭据 / IP 白名单 / 草稿箱权限」三行结果，失败文案按 `errorKind` 分支，**含微信开发者平台路径**）。
+「凭据 / IP 白名单 / 草稿数量查询」三行结果，并说明写入尚待验证；失败文案按 `errorKind` 与具体端点区分，**含微信开发者平台路径**）。
 发布中心动作：「创建公众号文章包」「预览」「提交到公众号草稿箱」（先弹预览，**必经**）、「下载文章 HTML」。
-`PublishPreviewDialog` 加 `article` 分支：渲染正文 HTML 预览 + 标题/摘要字数 + 封面 + 平台禁用原因。
+`PublishPreviewDialog` 复用已有 article 分支：纯文本正文预览 + 服务端字数检查 + 封面 + 微信平台提示，不直接注入 HTML。`draftOnly` 成功文案按平台显示，不能沿用小红书专属提示。
 媒体元素沿用既有纪律：**不能用相对 URL、不能带自定义请求头**（走 `apiClient` 取 blob 或绝对 URL）。
 
 - [ ] **Step 4: 运行确认通过**
@@ -470,8 +497,8 @@ Expected: PASS，`tsc` 双端退出码 0。
 - [ ] **Step 1: 类型检查与全量测试**
 
 Run: `npm run check && npm test`
-Expected: 基线 **509 项 / 507 通过 / 1 跳过 / 1 既有失败**（`src/lib/publishing-service.test.ts` →
-`startup recovery reports asset phases before due handling and purge`）之上**只增不减**，无新增失败。
+Expected: 全量通过，无新增或豁免失败。最近全量记录为 978 项 / 977 通过 / 1 跳过 / 0 失败；
+2026-09-29 本轮仅重跑公众号专项 99/99。恢复开发时重新确定全量基线，旧 509 项记录仅为历史。
 
 - [ ] **Step 2: 编译并重启**
 

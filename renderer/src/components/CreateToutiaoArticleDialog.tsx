@@ -34,12 +34,18 @@ import {
 interface Props {
   jobId: string;
   title: string;
+  platform?: 'toutiao' | 'wechat_mp';
   onClose: () => void;
 }
 
 const EMPTY_OPTIONS: ToutiaoPublishOptions = defaultToutiaoOptions();
 
-export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
+export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = 'toutiao' }: Props) {
+  const wechat = platform === 'wechat_mp';
+  const platformName = wechat ? '公众号' : '头条';
+  const [author, setAuthor] = useState('');
+  const [digest, setDigest] = useState('');
+  const [bodyImageIds, setBodyImageIds] = useState<string[]>([]);
   const [source, setSource] = useState<NoteImageSource>('frames');
   const [libraryImages, setLibraryImages] = useState<AssetRecord[]>([]);
   const [libraryUrls, setLibraryUrls] = useState<Record<string, string>>({});
@@ -55,6 +61,7 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
   const [error, setError] = useState('');
   const [created, setCreated] = useState<{ id: string; version: number } | undefined>(undefined);
   const copyTouched = useRef(false);
+  const previewSequence = useRef(0);
 
   /*
    * 焦点、Esc、滚动锁、#root inert 全部交给共享 `Modal`。
@@ -82,33 +89,41 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
   }, []);
 
   const runPreview = useCallback(async (nextSource: NoteImageSource, coverAssetId: string) => {
+    const sequence = ++previewSequence.current;
     if (nextSource === 'library' && !coverAssetId) {
       // 素材库还没选封面：不必发一个注定被拒的请求。
       setPreview(undefined);
+      setPreviewing(false);
+      setPreviewError('');
       return;
     }
     setPreviewing(true);
+    setPreview(undefined);
     setPreviewError('');
     try {
       const result = await apiClient.previewPublishing(
         jobId,
-        ['toutiao'],
+        [platform],
         'article',
-        nextSource === 'library' ? { imageSource: nextSource, imageAssetIds: [coverAssetId] } : { imageSource: nextSource },
+        { imageSource: nextSource, ...(nextSource === 'library' ? { imageAssetIds: [coverAssetId] } : {}), ...(wechat && bodyImageIds.length ? { articleImageAssetIds: bodyImageIds } : {}) },
       );
+      if (sequence !== previewSequence.current) return;
       setPreview(result);
       // 用户改过文字后不再被预览结果覆盖（否则编辑会被悄悄吞掉）。
       if (!copyTouched.current) {
         setArticleTitle(result.articleCopy?.title ?? '');
         setArticleBody(result.articleCopy?.body ?? '');
+        setAuthor(result.articleCopy?.author ?? '');
+        setDigest(result.articleCopy?.digest ?? '');
       }
     } catch (previewFailure) {
+      if (sequence !== previewSequence.current) return;
       setPreview(undefined);
       setPreviewError(parseApiError(previewFailure).message);
     } finally {
-      setPreviewing(false);
+      if (sequence === previewSequence.current) setPreviewing(false);
     }
-  }, [jobId]);
+  }, [jobId, platform, wechat, bodyImageIds]);
 
   useEffect(() => {
     void runPreview(source, selectedCoverId);
@@ -135,6 +150,10 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
         preview,
         articleTitle,
         articleBody,
+        platform,
+        author,
+        digest,
+        articleImageAssetIds: bodyImageIds,
         options,
         source,
         ...(selectedCoverId ? { coverAssetId: selectedCoverId } : {}),
@@ -154,10 +173,10 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
       onClose={onClose}
       size="lg"
       busy={busy}
-      title="创建头条文章包"
+      title={`创建${platformName}文章包`}
       subtitle={
         <p className="text-xs text-ink-muted">
-          AI 会把这条作品的转录与洗稿结果写成一篇头条文章。今日头条要求必须有封面（会裁成 16:9）。
+          {wechat ? 'AI 成文后提交到公众号草稿箱，绝不自动发布。封面会裁成约 2.35:1，正文图按选择顺序插入各段后。' : 'AI 会把这条作品的转录与洗稿结果写成一篇头条文章。今日头条要求必须有封面（会裁成 16:9）。'}
         </p>
       }
       footer={
@@ -176,10 +195,10 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
           {created ? (
             <div className="space-y-2">
               <p className="text-sm text-success">
-                已创建头条文章包 v{created.version}（封面 16:9、正文已渲染）。
+                已创建{platformName}文章包 v{created.version}（正文已渲染）。
               </p>
               <p className="text-sm text-ink-muted">
-                接下来到「发布中心」预览这篇文章，确认后再点「提交到头条号」。
+                接下来到「发布中心」预览这篇文章，确认后再点「{wechat ? '提交到公众号草稿箱' : '提交到头条号'}」。
               </p>
             </div>
           ) : (
@@ -213,7 +232,7 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
 
                 {source === 'frames' ? (
                   <p className="text-xs text-ink-muted">
-                    使用该作品生成视频时的第一张场景静帧（1080×1920），服务端会裁成 16:9。
+                    使用第一张场景静帧，服务端会裁成{wechat ? '约 2.35:1' : '16:9'}。
                   </p>
                 ) : libraryImages.length === 0 ? (
                   <p className="text-xs text-ink-muted">
@@ -241,9 +260,22 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                 )}
                 {libraryError ? <p className="text-xs text-danger">{libraryError}</p> : null}
                 {coverBlocker ? (
-                  <p className="rounded-lg bg-warning-soft px-3 py-2 text-xs text-warning">{coverBlocker}</p>
+                  <p className="rounded-lg bg-warning-soft px-3 py-2 text-xs text-warning">{wechat ? coverBlocker.replace(/头条/g, '公众号') : coverBlocker}</p>
                 ) : null}
               </section>
+
+              {wechat ? <section className="space-y-2">
+                <p className="text-sm font-medium text-ink">正文配图（可选，按点选顺序）</p>
+                <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
+                  {libraryImages.map(image => <button key={image.id} type="button" aria-pressed={bodyImageIds.includes(image.id)}
+                    onClick={() => setBodyImageIds(ids => ids.includes(image.id) ? ids.filter(id => id !== image.id) : [...ids, image.id])}
+                    className={`rounded-lg border p-1 text-xs ${bodyImageIds.includes(image.id) ? 'border-accent-line text-accent' : 'border-line text-ink-muted'}`}>
+                    {libraryUrls[image.id] ? <img src={libraryUrls[image.id]} alt="" className="h-16 w-full object-cover" /> : null}
+                    {bodyImageIds.includes(image.id) ? `${bodyImageIds.indexOf(image.id) + 1}. ` : ''}{image.originalName}
+                  </button>)}
+                </div>
+                <p className="text-xs text-ink-muted">没有图片也可建草稿；添加图片请先上传到素材库。</p>
+              </section> : null}
 
               {/* AI 成文结果 */}
               <section className="space-y-2">
@@ -281,6 +313,10 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                     className="mt-1 w-full rounded-lg border border-line px-3 py-2 font-mono text-sm text-ink"
                   />
                 </label>
+                {wechat ? <>
+                  <label className="block text-xs text-ink-muted">作者（可选）<input value={author} onChange={event => { copyTouched.current = true; setAuthor(event.target.value); }} className="mt-1 w-full rounded border border-line p-2 text-ink" /></label>
+                  <label className="block text-xs text-ink-muted">摘要（可选，留空由微信提取）<textarea value={digest} onChange={event => { copyTouched.current = true; setDigest(event.target.value); }} className="mt-1 w-full rounded border border-line p-2 text-ink" /></label>
+                </> : null}
                 {fieldErrors.length > 0 ? (
                   <ul className="list-disc space-y-1 pl-5 text-xs text-danger">
                     {fieldErrors.map((message) => <li key={message}>{message}</li>)}
@@ -289,7 +325,7 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
               </section>
 
               {/* 发布选项 */}
-              <section className="space-y-2">
+              {!wechat ? <section className="space-y-2">
                 <p className="text-sm font-medium text-ink">发布选项</p>
                 <label className="flex items-center gap-2 text-sm text-ink">
                   <input
@@ -326,8 +362,9 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose }: Props) {
                     })}
                   </div>
                 </div>
-              </section>
+              </section> : null}
 
+              {wechat ? <p className="text-sm text-ink-muted">只保存公众号草稿，正式发布须由你在公众号后台操作。权限不足时可下载 HTML 和图片手工编辑。</p> : null}
               {error ? <p className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{error}</p> : null}
             </>
           )}

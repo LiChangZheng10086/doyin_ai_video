@@ -74,6 +74,7 @@
       "dist/**/*",
       "dist-electron/**/*",
       "dist-renderer/**/*",
+      "docs/third-party/**/*",
       "!dist/mac*/**/*",
       "!dist/win*/**/*",
       "!dist/*.dmg",
@@ -86,7 +87,6 @@
       "!src/**/*",
       "!renderer/**/*",
       "!backend/**/*",
-      "!docs/**/*",
       "!scripts/**/*"
     ],
     "extraResources": [

@@ -106,6 +106,10 @@ export interface BuildToutiaoArticleInputArgs {
   options: ToutiaoPublishOptions;
   source: NoteImageSource;
   coverAssetId?: string;
+  platform?: 'toutiao' | 'wechat_mp';
+  author?: string;
+  digest?: string;
+  articleImageAssetIds?: string[];
 }
 
 /**
@@ -121,25 +125,28 @@ export function buildToutiaoArticleInput(
   const revision = args.preview?.previewRevision;
   if (!revision) throw new Error('文章预览尚未完成');
 
-  const articleCopy = { title: args.articleTitle.trim(), body: args.articleBody.trim() };
+  const wechat = args.platform === 'wechat_mp';
+  const articleCopy = { title: args.articleTitle.trim(), body: args.articleBody.trim(),
+    ...(wechat ? { author: args.author?.trim() ?? '', digest: args.digest?.trim() ?? '' } : {}),
+  };
   return {
     sourceJobId: args.sourceJobId,
     previewRevision: revision,
     title: args.title,
     contentType: 'article',
     articleCopy,
-    toutiaoOptions: {
+    ...(wechat ? { ...(args.articleImageAssetIds?.length ? { articleImageAssetIds: [...args.articleImageAssetIds] } : {}) } : { toutiaoOptions: {
       firstPublish: args.options.firstPublish,
       declarations: [...args.options.declarations],
       crossPostWeitoutiao: args.options.crossPostWeitoutiao,
-    },
+    } }),
     imageSource: args.source,
     // 静帧来源绝不能带素材 id（服务端会直接 400）
     ...(args.source === 'library' && args.coverAssetId ? { imageAssetIds: [args.coverAssetId] } : {}),
     platforms: [
       {
-        platform: 'toutiao',
-        copy: { title: articleCopy.title, description: articleCopy.body, hashtags: [] },
+        platform: args.platform ?? 'toutiao',
+        copy: { title: articleCopy.title, description: wechat ? (articleCopy.digest ?? '') : articleCopy.body, hashtags: [] },
       },
     ],
   };

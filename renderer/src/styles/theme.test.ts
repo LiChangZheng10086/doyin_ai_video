@@ -48,6 +48,21 @@ function contrast(a: string, b: string): number {
   return (x + 0.05) / (y + 0.05);
 }
 
+test('浅色主题全部文字、状态填充及控件边界满足对比度', () => {
+  const block = css.match(/:root\[data-theme=['"]light['"]\]\s*\{([^}]+)\}/)?.[1] ?? '';
+  const colors = new Map([...block.matchAll(/--color-([a-z-]+):\s*(#[0-9a-fA-F]{6})/g)].map(match => [match[1], match[2]]));
+  const light = (name: string) => { const value = colors.get(name); assert.ok(value, `浅色缺少 ${name}`); return value; };
+  for (const surface of ['canvas', 'panel', 'elevated', 'well']) {
+    for (const ink of ['ink', 'ink-muted', 'ink-subtle']) assert.ok(contrast(light(ink), light(surface)) >= 4.5, `${ink} on ${surface}`);
+    assert.ok(contrast(light('line-ui'), light(surface)) >= 3, `border on ${surface}`);
+  }
+  for (const tone of ['accent', 'success', 'warning', 'danger', 'info', 'running', 'ai']) {
+    assert.ok(contrast(light(tone), light(`${tone}-soft`)) >= 4.5, `${tone} soft text`);
+    assert.ok(contrast(light(tone), light('panel')) >= 4.5, `${tone} panel text`);
+    if (['accent', 'success', 'danger', 'ai'].includes(tone)) assert.ok(contrast(light('on-accent'), light(tone)) >= 4.5, `${tone} filled button`);
+  }
+});
+
 test('正文与次要文字在所有底层上都达到 AA（≥4.5:1）', () => {
   const surfaces = ['canvas', 'panel', 'elevated', 'well'];
   for (const surface of surfaces) {

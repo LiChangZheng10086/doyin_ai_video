@@ -1,4 +1,6 @@
 import axios, { AxiosInstance, type AxiosRequestConfig } from 'axios';
+import type { Gallery, GalleryDraft, GalleryPreview, GallerySource } from '../../../src/lib/gallery-types';
+import type { HotspotBoard, HotspotFavorite } from '../../../src/lib/hotspots';
 import type {
   ApiResponse,
   CleanedScript,
@@ -106,6 +108,58 @@ export class ApiClient {
   private localSessionToken: string | null = null;
   /** 并发的 401 只触发一次重开会话（避免惊群）。 */
   private sessionRefresh: Promise<void> | null = null;
+
+  async getHotspots(refresh = false): Promise<HotspotBoard[]> {
+    return (await this.publishingRequest<{ boards: HotspotBoard[] }>({ url: refresh ? '/api/hotspots/refresh' : '/api/hotspots', method: refresh ? 'POST' : 'GET' })).boards;
+  }
+  async getHotspotFavorites(): Promise<HotspotFavorite[]> {
+    return (await this.publishingRequest<{ favorites: HotspotFavorite[] }>({ url: '/api/hotspots/favorites' })).favorites;
+  }
+  async saveHotspot(sourceId: string, itemId: string): Promise<HotspotFavorite> {
+    return (await this.publishingRequest<{ favorite: HotspotFavorite }>({ method: 'POST', url: '/api/hotspots/favorites', data: { sourceId, itemId } })).favorite;
+  }
+  async updateHotspotNote(id: string, note: string, version: number): Promise<HotspotFavorite> {
+    return (await this.publishingRequest<{ favorite: HotspotFavorite }>({ method: 'PATCH', url: `/api/hotspots/favorites/${encodeURIComponent(id)}`, data: { note, version } })).favorite;
+  }
+  async removeHotspot(id: string, version: number): Promise<void> {
+    await this.publishingRequest({ method: 'DELETE', url: `/api/hotspots/favorites/${encodeURIComponent(id)}`, data: { version } });
+  }
+
+  async getGalleries(): Promise<Gallery[]> {
+    return (await this.publishingRequest<{ galleries: Gallery[] }>({ url: '/api/galleries' })).galleries;
+  }
+  async createGallery(sourceJobId: string): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: '/api/galleries', data: { sourceJobId } })).gallery;
+  }
+  async getGallery(id: string): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ url: `/api/galleries/${id}` })).gallery;
+  }
+  async saveGallery(id: string, draft: GalleryDraft & { version: number }): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'PATCH', url: `/api/galleries/${id}`, data: draft })).gallery;
+  }
+  async deleteGallery(id: string, version: number): Promise<void> {
+    await this.publishingRequest({ method: 'DELETE', url: `/api/galleries/${id}`, data: { version } });
+  }
+  async renderGallery(id: string, version: number): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/render`, data: { version } })).gallery;
+  }
+  async getGallerySource(id: string): Promise<GallerySource> {
+    return (await this.publishingRequest<{ source: GallerySource }>({ url: `/api/galleries/${id}/source` })).source;
+  }
+  async getGalleryFrame(id: string, time: number): Promise<string> {
+    const blob = await this.publishingRequest<Blob>({ url: `/api/galleries/${id}/frame`, params: { time }, responseType: 'blob' });
+    return URL.createObjectURL(blob);
+  }
+  async getGalleryImageUrl(id: string, index: number, generation: string): Promise<string> {
+    await this.initialize();
+    return `http://localhost:${this.serverPort}/api/galleries/${id}/images/${index}?generation=${encodeURIComponent(generation)}`;
+  }
+  async previewGallery(id: string, version: number): Promise<GalleryPreview> {
+    return (await this.publishingRequest<{ preview: GalleryPreview }>({ method: 'POST', url: `/api/galleries/${id}/publishing/preview`, data: { version } })).preview;
+  }
+  async createGalleryPackage(id: string, previewRevision: string, rightsConfirmed: boolean): Promise<PublishingPackageDetail> {
+    return (await this.publishingRequest<{ detail: PublishingPackageDetail }>({ method: 'POST', url: `/api/galleries/${id}/publishing/packages`, data: { previewRevision, rightsConfirmed } })).detail;
+  }
 
   async initialize() {
     if (!this.serverPort) {
@@ -230,7 +284,7 @@ export class ApiClient {
     id: string,
     platforms: PublishPlatform[],
     contentType?: PackageContentType,
-    images?: { imageSource?: NoteImageSource; imageAssetIds?: string[] },
+    images?: { imageSource?: NoteImageSource; imageAssetIds?: string[]; articleImageAssetIds?: string[] },
   ): Promise<PublishingPreview> {
     const response = await this.publishingRequest<{ preview: PublishingPreview }>({
       method: 'POST',
@@ -240,6 +294,7 @@ export class ApiClient {
         ...(contentType ? { contentType } : {}),
         ...(images?.imageSource ? { imageSource: images.imageSource } : {}),
         ...(images?.imageAssetIds ? { imageAssetIds: images.imageAssetIds } : {}),
+        ...(images?.articleImageAssetIds?.length ? { articleImageAssetIds: images.articleImageAssetIds } : {}),
       },
     });
     return response.preview;
@@ -317,6 +372,10 @@ export class ApiClient {
     });
   }
 
+  async verifyWechatAccount(): Promise<{ ok: boolean; credentials: { ok: boolean; message: string }; ipWhitelist: { ok: boolean; message: string }; draftPermission: { ok: boolean; message: string } }> {
+    return this.publishingRequest({ method: 'POST', url: '/api/publishing/wechat/verify' });
+  }
+
   // ── 小红书：与头条那五条一一对应（同一套形状，端点换成 /publishing/xhs/*）──
 
   async startXhsLogin(): Promise<{ qrDataUrl: string; startedAt: string; expiresAt: string }> {
@@ -326,8 +385,8 @@ export class ApiClient {
     });
   }
 
-  async pollXhsLogin(): Promise<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; username?: string }> {
-    return this.publishingRequest<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; username?: string }>({
+  async pollXhsLogin(): Promise<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; username?: string; qrDataUrl?: string }> {
+    return this.publishingRequest<{ status: 'idle' | 'waiting' | 'logged_in' | 'expired'; username?: string; qrDataUrl?: string }>({
       method: 'GET',
       url: '/api/publishing/xhs/login',
     });

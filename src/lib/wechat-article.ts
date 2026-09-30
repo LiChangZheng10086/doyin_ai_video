@@ -463,7 +463,7 @@ export function substituteWechatImageSlots(
   }
 
   const length = codePointLength(output);
-  if (length > WECHAT_ARTICLE_LIMITS.contentChars) {
+  if (length >= WECHAT_ARTICLE_LIMITS.contentChars || Buffer.byteLength(output, "utf8") >= 1024 * 1024) {
     throw new WechatArticleError(
       "wechat_article_too_long",
       `替换图片地址后正文为 ${length} 字符，超过 ${WECHAT_ARTICLE_LIMITS.contentChars} 上限：请精简正文后重试。`,
@@ -508,7 +508,7 @@ export function renderWechatArticleHtml(
     if (image) parts.push(...renderImage(image));
 
     const rendered = `<section style="${ROOT_STYLE}">${parts.join("\n")}</section>`;
-    if (codePointLength(rendered) > WECHAT_ARTICLE_LIMITS.contentChars) {
+    if (codePointLength(rendered) >= WECHAT_ARTICLE_LIMITS.contentChars) {
       throw new WechatArticleError(
         "wechat_article_too_long",
         `文章正文已超过 ${WECHAT_ARTICLE_LIMITS.contentChars} 字符上限（在第 ${

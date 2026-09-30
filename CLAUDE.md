@@ -300,6 +300,14 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
   不删不改任何历史用户）。**管理员 PIN 的契约没放宽**：普通 `POST /api/local-sessions` 无 PIN 仍 401，
   无 PIN 分支只存在于 `openLocalOperator()` 这一条显式路径上。发布中心的权限与审计（`requireActor`/`actor` 快照）完全保留。
 
+### 字幕图集创作（2026-09-30）
+
+- 独立导航 `/galleries` 与工作台 `/galleries/:id`；原视频区域有快捷入口。已有原视频即可创作，不要求洗稿或 HyperFrames 成片，不改变作品步骤状态。
+- 原生字幕只取画面像素；转录分段仅辅助定位。每张 1～6 条字幕，可调时间、字幕区域、主画面取景/占比；本地 FFmpeg 输出 1080×1440 PNG，保持原比例，不重绘文字。多图复制/排序、文案与草稿可恢复。
+- `GalleryService`/`GalleryMedia`/`gallery-routes` 由 `app.ts` 共用装配。索引 `cache/galleries.json`，产物 `output/galleries/{id}/{generation}/`；生成串行，失败保留旧图仅供参考，成功替换后清理上一代。原视频使用 `resolveSourceVideo` 校验后从已打开 handle 复制到私有临时快照，FFprobe/FFmpeg 不重新打开原路径；源指纹含 inode/size/mtime/ctime。
+- 保存、删除、生成带 `version`；图集发布预览也必须带当前版本。图片 URL 绑定 `generation`，源或图片变化须重生成。`createGalleryNote` 仅接受服务内部已解析路径及有序预期哈希，打包副本与预览不一致就回滚。
+- 发布复用 `note × douyin`，确认字幕与使用权后只建自包含包，再到发布中心预览并人工触发 sau。不会自动发布；修改/删除图集不影响已建包。全量回归 1004 通过、1 跳过；未调用真实抖音提交。
+
 ### 发布中心的「渠道」页签（一级 = 平台，二级 = 内容类型，2026-09-21 改版）
 
 - **一级 = 平台**（抖音 / 小红书 / 今日头条 / 微信公众号 / 其它平台＝视频号+B站）；
@@ -323,13 +331,22 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
   别用 `setParams({status})` 整体替换。换渠道时内容类型**收窄到合法范围**（没有就回「全部」），否则会出现
   一屏空列表却看不出原因。
 - 界面约定：**平台下拉已移除**（一级页签本身就是平台）；每个渠道一行说明（谁在提交、什么前置条件，
-  **视频与「其它平台」必须写明不会自动上传**）；空态给**可照抄的入口**，未接入的（微信公众号）**明说尚未接入**。
+  **视频与「其它平台」必须写明不会自动上传**）；空态给**可照抄的入口**。微信公众号文章只通过官方 API 保存草稿，视频仍是人工交付。
 - ⚠️ **渠道映射必须覆盖每一种可创建的「内容类型 × 平台」组合**：视频向导把 `PUBLISHING_PLATFORMS` **全量**列出
   （含今日头条、微信公众号），所以「头条视频」「公众号视频」这类包真的存在 —— `contentTypes` 漏一个，
   它们就在**所有**页签里都看不见（静默丢数据）。用例 `每一种可创建的「内容类型 × 平台」组合都唯一落在某个渠道里`；
   `node --import tsx scripts/verify-publishing-channels.ts` 用**真实索引**复核（只读零副作用，末尾报有无包不属于任何页签）。
 - 规格与计划：`docs/superpowers/specs/2026-09-18-publishing-channel-tabs-design.md`（含 2026-09-21 改版一节）、
   `docs/superpowers/plans/2026-09-18-publishing-channel-tabs.md`。
+
+### 微信公众号文章草稿（2026-09-29）
+
+- 仅 `article × wechat_mp`：封面永久素材 → 可选正文图 → 微信兼容 HTML → `draft/add`。不调用正式发布/群发，不使用浏览器代点发布。
+- 复用 `CreateToutiaoArticleDialog`（`platform="wechat_mp"`）、发布包与预览流程。封面单选；`articleImageAssetIds` 为独立的有序正文图片列表，选图归属沿用 AssetStore；作者/摘要与图片顺序进入对应预览指纹。
+- 设置「微信公众号」保存 AppID/AppSecret/默认作者；AppSecret 用 safeStorage 加密，不回显。加密/解密失败拒绝保存，避免明文或覆盖丢失。配置即时读取，token 仅本次操作缓存；独立入口使用 `WECHAT_MP_APP_ID` / `WECHAT_MP_APP_SECRET` / `WECHAT_MP_AUTHOR`。
+- `POST /api/publishing/wechat/verify`：普通稳定 token + draft/count，只证明连接/查询；不上传内容，但可能触发管理员风险确认。个人未认证订阅号不能仅凭查询成功宣称可写，认证也不保证解决权限问题。
+- `task.status` 不变；成功子记录保存 `draftOnly: true` 与 `draftMediaId`，绝不等同正式发布。草稿请求网络失败/异常响应保留 `outcomeUncertain`；成功、不确定或遗留 running 都禁止直接重发。核对后台后确需另建时人工创建新包。
+- 当前已通过模拟链路测试，真实账号仍未验收。实测必须覆盖封面+一张正文图，并由用户在后台确认。见 `docs/research/2026-09-29-wechat-draft-feasibility.md` 第 7 节。
 
 ### 凭据扫描（提交前门禁）
 
@@ -607,6 +624,6 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 
 ---
 
-**最后更新**: 2026-09-21
+**最后更新**: 2026-09-29
 **维护者**: Codex
 **仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git

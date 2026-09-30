@@ -61,7 +61,7 @@ test('说明文案跟随选中渠道：头条说扫码登录，其它平台说�
   assert.match(render({ active: 'toutiao' }), /设置 → 今日头条/u);
   assert.match(render({ active: 'other' }), /不会自动上传/u);
   // 未接入的渠道必须明说，不能让人以为它已经在自动发布。
-  assert.match(render({ active: 'wechat-mp' }), /尚未接入/u);
+  assert.match(render({ active: 'wechat-mp' }), /草稿箱/u);
 });
 
 test('内容类型子页签：只有一种类型时不渲染（只含一项的选择是假选择）', () => {

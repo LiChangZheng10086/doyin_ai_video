@@ -10,6 +10,20 @@
  * playwright/puppeteer；它只用 4 个官方端点（本模块覆盖其中 3 个 + 自检用的 1 个）。
  * 官方 API 不会有「上游 DOM 改版就失效」的问题。详见 spec §1.1。
  *
+ * ## 覆盖的端点
+ *
+ * | 方法 | 端点 | 返回 | 用途 |
+ * | --- | --- | --- | --- |
+ * | `getDraftCount` | `GET /cgi-bin/draft/count` | `total_count` | 账号自检（**零副作用**，最便宜的权限判据） |
+ * | `uploadCoverImage` | `POST /cgi-bin/material/add_material?type=image` | `media_id`（**永久素材**） | 封面 → 作为 `draft/add` 的 `thumb_media_id` |
+ * | `uploadContentImage` | `POST /cgi-bin/media/uploadimg` | `url`（微信托管） | 正文配图 → **必须**换成这个 URL 写进 content |
+ * | `createDraft` | `POST /cgi-bin/draft/add` | `media_id`（草稿） | 建草稿。**到此为止，绝不调用 `freepublish/*`**（spec §2） |
+ *
+ * ⚠️ 两个上传端点的**格式白名单不同**（正文图仅 jpg/png；封面另收 bmp/gif），
+ * 且微信按**文件名扩展名**判格式 —— 扩展名与内容不符会报 `40113`，所以两者都按文件名校验。
+ * ⚠️ 本轮只做**图文消息（`article_type: "news"`）**：`newspic`（图片消息）是刻意的将来选项（spec §11），
+ * 不要顺手加 `image_info`。
+ *
  * ## 四条从官方文档实测来的契约（2026-09-18 逐条核对，非推断）
  *
  * 1. **稳定版凭据**：`POST /cgi-bin/stable_token`，JSON body `{grant_type, appid, secret, force_refresh?}`。
@@ -66,7 +80,12 @@ export type WechatMpErrorKind =
   /** 微信给了错误码，但我们没有为它写专门的处理（消息里带上原码与原 msg）。 */
   | "unknown";
 
-export type WechatMpErrorCode = "wechat_mp_not_configured";
+export type WechatMpErrorCode =
+  | "wechat_mp_not_configured"
+  /** 上传的图不合规（空文件 / 格式不被该端点接受 / 超过调用方给的上限）。**本地就拒，不发请求。** */
+  | "wechat_mp_invalid_upload"
+  /** 草稿缺必填项（title / content / thumb_media_id）。**本地就拒，不发请求。** */
+  | "wechat_mp_invalid_draft";
 
 export class WechatMpError extends Error {
   readonly status = 422;
@@ -126,8 +145,40 @@ export interface WechatVerifyReport {
   credentials: WechatVerifyItem;
   /** 调用方 IP 是否被接受（由换取凭据的结果反推）。 */
   ipWhitelist: WechatVerifyItem;
-  /** 草稿箱接口权限是否可用（`draft/count`）。**这是本功能可行性的判据。** */
+  /** 仅证明 `draft/count` 查询可用，不证明素材上传或新建草稿权限。 */
   draftPermission: WechatVerifyItem;
+}
+
+/** 待上传的图片。 */
+export interface WechatImageUpload {
+  /** 文件字节（`Buffer` 是 `Uint8Array` 的子类，可直接传）。 */
+  bytes: Uint8Array;
+  /**
+   * 文件名。⚠️ **微信按扩展名判格式**，所以它必须与内容一致
+   * （扩展名说谎会报 `40113`，而且它决定了 multipart 的 content-type）。
+   */
+  filename: string;
+  /**
+   * 调用方给出的上限（例如 `WECHAT_ARTICLE_LIMITS.contentImageBytes`）。
+   * 给了就**在上传前**拦住超限图，省一次白跑 —— 上限数字的真源仍在限额表里，本模块不另写一份。
+   */
+  maxBytes?: number;
+}
+
+/** 要写进草稿箱的图文消息（`article_type: "news"`）。 */
+export interface WechatDraftArticle {
+  /** 必填，≤32 字（长度上限由 `wechat-article.ts` 的限额表管，本模块只判非空）。 */
+  title: string;
+  /** 必填。**内联样式的微信兼容 HTML**，且图必须是 `uploadimg` 返回的 mmbiz URL（外链会被过滤）。 */
+  content: string;
+  /** 必填，**必须是永久素材 MediaID**（`uploadCoverImage` 的返回值；`uploadimg` 的 URL 不能当封面）。 */
+  thumbMediaId: string;
+  /** 可选，≤16 字。 */
+  author?: string;
+  /** 可选，≤120 字；不填则由平台抓正文前 54 字。 */
+  digest?: string;
+  /** 可选，≤1kb，「阅读原文」的 URL。 */
+  contentSourceUrl?: string;
 }
 
 interface CachedToken {
@@ -142,6 +193,23 @@ const AUTH_ERROR_CODES = new Set([40001, 40002, 40013, 40125, 41002, 41004, 4300
 const QUOTA_ERROR_CODES = new Set([45008, 45009, 45028]);
 /** 官方 `-1` = 系统繁忙，等会儿就好：它是**暂时性**的，可以换另一个端点再试。 */
 const TRANSIENT_ERROR_CODES = new Set([-1]);
+
+/**
+ * 上传格式白名单（扩展名 → multipart 的 content-type）。
+ *
+ * ⚠️ **两个端点不一样，别合并**：`media/uploadimg` 只收 jpg/png（官方注意事项第 5 条），
+ * 而 `material/add_material` 另收 bmp/gif。合并会让一张 webp 在正文图那一步悄悄溜到微信侧才报错。
+ */
+const CONTENT_IMAGE_TYPES = new Map<string, string>([
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".png", "image/png"],
+]);
+const COVER_IMAGE_TYPES = new Map<string, string>([
+  ...CONTENT_IMAGE_TYPES,
+  [".bmp", "image/bmp"],
+  [".gif", "image/gif"],
+]);
 
 /**
  * 错误码 → 类别。**单一真源**：模块内所有报错路径都走这里，
@@ -231,7 +299,7 @@ export class WechatMpClient {
     }
   }
 
-  /** 草稿总数。**零副作用**，是最便宜的「草稿箱权限」探针。 */
+  /** 草稿总数。不上传素材或创建草稿，获取 token 可能触发管理员确认。 */
   async getDraftCount(): Promise<WechatMpResult<{ totalCount: number }>> {
     const token = await this.getAccessToken();
     if (!token.ok) return { ok: false, ...withoutData(token) };
@@ -242,18 +310,24 @@ export class WechatMpClient {
       { accessToken: token.data?.accessToken },
     );
     if (!result.ok) return { ok: false, ...withoutData(result) };
-    return { ok: true, message: "ok", data: { totalCount: result.data?.total_count ?? 0 } };
+    const count = result.data?.total_count;
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) {
+      return { ok: false, errorKind: "invalid_response", message: "草稿数量接口没有返回有效的 total_count，无法确认查询权限。" };
+    }
+    return { ok: true, message: "ok", data: { totalCount: count } };
   }
 
   /**
    * 账号自检：把「凭据 / IP 白名单 / 草稿箱权限」三件事一次性问清楚。
    *
-   * **零副作用**（不建草稿、不上传素材），因此可以在设置页随便点。
+   * 不建草稿、不上传素材；获取 token 可能触发管理员确认。
    * 三项**逐项独立**：凭据好但没权限时，凭据项仍然是 ok —— 这正是可行性判据要的信息。
    */
   async verifyAccount(): Promise<WechatVerifyReport> {
     this.assertConfigured();
-    const token = await this.getAccessToken();
+    // 显式预检不使用缓存；普通稳定 token 不强制刷新，也不回退到会影响其它工具的旧端点。
+    const fresh = await this.requestToken("stable");
+    const token = fresh.ok ? await this.acceptToken(fresh) : fresh;
 
     if (!token.ok) {
       const item: WechatVerifyItem = {
@@ -289,9 +363,200 @@ export class WechatMpClient {
       credentials: { ok: true, message: "凭据有效，已成功换取 access_token。" },
       ipWhitelist: { ok: true, message: "调用方 IP 被接受（换取凭据成功）。" },
       draftPermission: draft.ok
-        ? { ok: true, message: `草稿箱接口可用（当前草稿 ${draft.data?.totalCount ?? 0} 篇）。` }
+        ? { ok: true, message: `草稿数量查询通过（当前 ${draft.data?.totalCount ?? 0} 篇）；素材上传与新建草稿尚未验证。` }
         : { ok: false, message: draft.message, errorKind: draft.errorKind },
     };
+  }
+
+  /**
+   * 上传封面，拿到**永久素材** `media_id`（`draft/add` 的 `thumb_media_id` 只认这个）。
+   *
+   * 封面比例：我们在打包阶段已按 ffmpeg 裁成 900×383（≈`2.35_1`，见 `wechat-media.ts`）。
+   * ⚠️ 官方还支持 `cover_info.crop_percent_list` 同时声明 `2.35_1` + `1_1`（让平台自己裁 1:1 缩略图），
+   * 那是**已记录为将来选项**的增强（research §4 吸收项 4），本轮不发 —— 别当成漏做。
+   */
+  async uploadCoverImage(image: WechatImageUpload): Promise<WechatMpResult<{ mediaId: string }>> {
+    // 顺序有意：**先判输入、再判配置**（本项目被测试抓到过「配置压过输入」的错序）。
+    const prepared = this.prepareImage(image, COVER_IMAGE_TYPES, "封面", "/cgi-bin/material/add_material");
+    const token = await this.getAccessToken();
+    if (!token.ok) return { ok: false, ...withoutData(token) };
+
+    const form = new FormData();
+    form.append("media", prepared.blob, prepared.filename);
+    const result = await this.requestMultipart<{ media_id?: string }>("/cgi-bin/material/add_material", {
+      accessToken: token.data?.accessToken,
+      query: { type: "image" },
+      form,
+    });
+    if (!result.ok) return { ok: false, ...withoutData(result) };
+
+    const mediaId = result.data?.media_id;
+    if (typeof mediaId !== "string" || !mediaId.trim()) {
+      return {
+        ok: false,
+        errorKind: "invalid_response",
+        message: "封面上传没有返回 media_id：封面未生效，草稿也没有创建，可以直接重试。",
+      };
+    }
+    return { ok: true, message: "ok", data: { mediaId } };
+  }
+
+  /**
+   * 上传正文配图，拿到微信托管 `url`。
+   *
+   * ⚠️ 这一步**不可省**：官方明确「外部图片 url 将被过滤」，也就是说直接把本地图/外链写进
+   * `content` 的结局是**草稿里全是裂图**，而接口不会报错。
+   */
+  async uploadContentImage(image: WechatImageUpload): Promise<WechatMpResult<{ url: string }>> {
+    const prepared = this.prepareImage(image, CONTENT_IMAGE_TYPES, "正文图", "/cgi-bin/media/uploadimg");
+    const token = await this.getAccessToken();
+    if (!token.ok) return { ok: false, ...withoutData(token) };
+
+    const form = new FormData();
+    form.append("media", prepared.blob, prepared.filename);
+    const result = await this.requestMultipart<{ url?: string }>("/cgi-bin/media/uploadimg", {
+      accessToken: token.data?.accessToken,
+      form,
+    });
+    if (!result.ok) return { ok: false, ...withoutData(result) };
+
+    const url = result.data?.url;
+    if (typeof url !== "string" || !url.trim()) {
+      return {
+        ok: false,
+        errorKind: "invalid_response",
+        message: "正文图上传没有返回 url：请勿把本地路径写进正文（会被平台过滤成裂图），可直接重试。",
+      };
+    }
+    return { ok: true, message: "ok", data: { url } };
+  }
+
+  /**
+   * 建草稿。**这是本通路的终点**：绝不调用 `freepublish/*`（spec §2 的产品边界）。
+   *
+   * 只发必填 + 用户显式给的可选字段；**不给的键不出现在 payload 里**（不塞 `undefined`/空串 ——
+   * 那会让预览里看到的与发出去的看起来一样、其实不同）。
+   */
+  async createDraft(article: WechatDraftArticle): Promise<WechatMpResult<{ mediaId: string }>> {
+    const draft = this.validateDraft(article);
+    const token = await this.getAccessToken();
+    if (!token.ok) return { ok: false, ...withoutData(token) };
+
+    const entry: Record<string, unknown> = {
+      // 本轮只做图文消息（news）。`newspic`（图片消息）是刻意的将来选项（spec §11）——
+      // 加 image_info 会把整条通路的语义变成另一种内容类型，别顺手加。
+      article_type: "news",
+      title: draft.title,
+      content: draft.content,
+      thumb_media_id: draft.thumbMediaId,
+    };
+    const author = firstNonBlank(article?.author);
+    if (author) entry.author = author;
+    const digest = firstNonBlank(article?.digest);
+    if (digest) entry.digest = digest;
+    const contentSourceUrl = firstNonBlank(article?.contentSourceUrl);
+    if (contentSourceUrl) entry.content_source_url = contentSourceUrl;
+    // 评论字段（need_open_comment / only_fans_can_comment）**目前不发**：不填即平台默认（不打开评论）。
+    // 这是已记录的口径（spec §1.3「我们目前未发的三个字段」），要改先改文档。
+
+    const result = await this.requestJson<{ media_id?: string }>("POST", "/cgi-bin/draft/add", {
+      accessToken: token.data?.accessToken,
+      body: { articles: [entry] },
+    });
+    if (!result.ok) return { ok: false, ...withoutData(result) };
+
+    const mediaId = result.data?.media_id;
+    if (typeof mediaId !== "string" || !mediaId.trim()) {
+      return {
+        ok: false,
+        errorKind: "invalid_response",
+        message:
+          "draft/add 没有返回 media_id：草稿可能没有创建成功。请先到公众号后台草稿箱确认，再决定是否重试（避免重复建草稿）。",
+      };
+    }
+    return { ok: true, message: "ok", data: { mediaId } };
+  }
+
+  /**
+   * 上传前的本地校验。
+   *
+   * **先判输入、再判配置**是有意的：本项目在抖音通路上被测试抓到过「配置压过输入」的错序
+   * （对视频包报「未配置 sau」而不是「这不是图文包」）—— 误报的配置错误会掩盖真正的输入错误。
+   * 所以格式/大小不合规时**连 token 都不换**：白跑一次凭据或一次上传都是净损失。
+   */
+  private prepareImage(
+    image: WechatImageUpload,
+    allowed: Map<string, string>,
+    label: string,
+    endpoint: string,
+  ): { blob: Blob; filename: string } {
+    const filename = typeof image?.filename === "string" ? image.filename.trim() : "";
+    const size = image?.bytes?.byteLength ?? 0;
+    if (size === 0) {
+      throw new WechatMpError(
+        "wechat_mp_invalid_upload",
+        `${label}内容为空（0 字节）：没有可上传的图片，请检查打包阶段是否真的产出了文件。`,
+      );
+    }
+
+    const extension = extensionOf(filename);
+    const contentType = extension ? allowed.get(extension) : undefined;
+    if (!contentType) {
+      const accepts = [...allowed.keys()].join("/").replace(/\./gu, "");
+      throw new WechatMpError(
+        "wechat_mp_invalid_upload",
+        `${label}只收 ${accepts}（${endpoint} 的限制），收到的文件名是“${filename || "（空）"}”：` +
+          "请先把图片转成受支持的格式，并让扩展名与内容一致（扩展名说谎会被平台判为非法图片）。",
+      );
+    }
+
+    if (image.maxBytes !== undefined && size > image.maxBytes) {
+      throw new WechatMpError(
+        "wechat_mp_invalid_upload",
+        `${label}大小 ${formatMegabytes(size)}MB 超过上限 ${formatMegabytes(image.maxBytes)}MB：` +
+          "请先在打包阶段压缩后再上传（这一步是必须的，平台侧会直接拒收）。",
+      );
+    }
+
+    // 不自己设 content-type 头：multipart 的 boundary 必须由 fetch 生成。
+    //
+    // 复制到一块独立的 `ArrayBuffer` 再交给 Blob：TS 5.7 起 `Uint8Array` 的缓冲区是参数化的
+    // （`Buffer` 是 `Uint8Array<ArrayBufferLike>`，理论上可挂在 SharedArrayBuffer 上），
+    // 而 `BlobPart` 只接受 ArrayBuffer 背书的那种。一次 ≤10MB 的拷贝换掉一个类型断言，划算。
+    const copy = new Uint8Array(image.bytes.length);
+    copy.set(image.bytes);
+    return { blob: new Blob([copy], { type: contentType }), filename };
+  }
+
+  /** 草稿的必填项校验；**只判非空**，长度上限的真源在 `wechat-article.ts` 的限额表里。 */
+  private validateDraft(article: WechatDraftArticle): {
+    title: string;
+    content: string;
+    thumbMediaId: string;
+  } {
+    const title = firstNonBlank(article?.title);
+    if (!title) {
+      throw new WechatMpError(
+        "wechat_mp_invalid_draft",
+        "草稿缺少标题（title）：draft/add 要求标题必填且不超过 32 字。",
+      );
+    }
+    const content = article?.content;
+    if (typeof content !== "string" || content.trim().length === 0) {
+      throw new WechatMpError(
+        "wechat_mp_invalid_draft",
+        "草稿正文为空（content）：空正文说明渲染阶段出了问题，不能在本地就把空文章提交上去。",
+      );
+    }
+    const thumbMediaId = firstNonBlank(article?.thumbMediaId);
+    if (!thumbMediaId) {
+      throw new WechatMpError(
+        "wechat_mp_invalid_draft",
+        "草稿缺少封面素材 id（thumb_media_id）：图文消息（news）必填，且必须是永久素材 MediaID" +
+          "（uploadimg 返回的正文图 URL 不能当封面）。",
+      );
+    }
+    return { title, content, thumbMediaId };
   }
 
   private async loadAccessToken(): Promise<WechatMpResult<{ accessToken: string }>> {
@@ -403,18 +668,52 @@ export class WechatMpClient {
     path: string,
     options: { accessToken?: string; query?: Record<string, string>; body?: unknown },
   ): Promise<WechatMpResult<T>> {
-    const url = new URL(path, this.baseUrl);
-    for (const [key, value] of Object.entries(options.query ?? {})) {
-      url.searchParams.set(key, value);
-    }
-    if (options.accessToken) url.searchParams.set("access_token", options.accessToken);
-
     const init: RequestInit = { method };
     if (options.body !== undefined) {
       init.headers = { "content-type": "application/json" };
       init.body = JSON.stringify(options.body);
     }
+    return await this.send<T>(this.buildUrl(path, options), init);
+  }
 
+  /**
+   * multipart 上传（封面 / 正文图）。
+   *
+   * 响应处理与 JSON 请求**共用 `send()`** —— 错误分类、脱敏、`errcode` 判定只有一处真源，
+   * 否则上传通路会长出第二套文案（本项目最忌讳的那种分叉）。
+   */
+  private async requestMultipart<T>(
+    path: string,
+    options: { accessToken?: string; query?: Record<string, string>; form: FormData },
+  ): Promise<WechatMpResult<T>> {
+    // ⚠️ 不能手写 `content-type: multipart/form-data`：boundary 由 fetch 生成，手写会缺 boundary。
+    return await this.send<T>(this.buildUrl(path, options), { method: "POST", body: options.form });
+  }
+
+  private buildUrl(
+    path: string,
+    options: { accessToken?: string; query?: Record<string, string> },
+  ): URL {
+    const url = new URL(path, this.baseUrl);
+    for (const [key, value] of Object.entries(options.query ?? {})) {
+      url.searchParams.set(key, value);
+    }
+    if (options.accessToken) url.searchParams.set("access_token", options.accessToken);
+    return url;
+  }
+
+  /** 所有请求的公共尾段：发送 → HTTP 层 → 解析 → `errcode` 判定。 */
+  private async send<T>(url: URL, init: RequestInit): Promise<WechatMpResult<T>> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      return await this.sendWithSignal<T>(url, { ...init, signal: controller.signal, redirect: "error" });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async sendWithSignal<T>(url: URL, init: RequestInit): Promise<WechatMpResult<T>> {
     let response: Response;
     try {
       response = await this.fetchImpl(url.href, init);
@@ -436,7 +735,7 @@ export class WechatMpClient {
 
     let payload: unknown;
     try {
-      payload = text.length > 0 ? JSON.parse(text) : {};
+      payload = JSON.parse(text);
     } catch {
       return {
         ok: false,
@@ -445,9 +744,13 @@ export class WechatMpClient {
       };
     }
 
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return { ok: false, errorKind: "invalid_response", message: "微信接口返回了无效的响应结构。" };
+    }
     const body = payload as WechatErrorBody & T;
     if (typeof body.errcode === "number" && body.errcode !== 0) {
-      return this.businessFailure<T>(body.errcode, body.errmsg);
+      const failure = this.businessFailure<T>(body.errcode, body.errmsg);
+      return { ...failure, message: `${url.pathname}：${failure.message}` };
     }
     return { ok: true, message: "ok", data: payload as T };
   }
@@ -490,7 +793,7 @@ export class WechatMpClient {
         return `管理员拒绝了这个 IP 的调用（errcode ${errcode}）：请等待 ${wait} 后再试，或先与管理员沟通确认。`;
       }
       case "permission":
-        return `该公众号没有调用这个接口的权限（errcode 48001）：草稿箱接口通常需要微信认证。你仍可使用「下载文章 HTML」把文章粘贴到公众号编辑器。`;
+        return `该公众号没有调用这个接口的权限（errcode 48001）：请核对后台接口权限或咨询微信官方，认证不保证解决。可下载文章和图片手工编辑。`;
       case "quota":
         return `微信公众号接口的当日额度已用完（errcode ${errcode}）：这是日额度限制，请到公众号后台查看当日用量，或等次日额度恢复。`;
       case "rate_limit":
@@ -553,4 +856,15 @@ function withoutData<T>(result: WechatMpResult<unknown>): Omit<WechatMpResult<T>
 
 function firstNonBlank(value: string | undefined): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/** 文件名的扩展名（小写）。微信按扩展名判格式，所以这里大小写不敏感但**保留原文件名**上传。 */
+function extensionOf(filename: string): string | undefined {
+  const match = /\.[A-Za-z0-9]+$/u.exec(filename);
+  return match ? match[0].toLowerCase() : undefined;
+}
+
+/** 人类可读的兆字节（用例断言的是 `2.0MB` / `1.0MB` 这种形态）。 */
+function formatMegabytes(bytes: number): string {
+  return (bytes / (1024 * 1024)).toFixed(1);
 }

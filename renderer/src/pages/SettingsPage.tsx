@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import {
   AlertCircle,
@@ -30,6 +31,7 @@ import { DouyinLoginPanel } from '../components/DouyinLoginPanel';
 import { RuntimeEnvironmentPanel } from '../components/RuntimeEnvironmentPanel';
 import { RuntimeStatusList } from '../components/RuntimeStatusList';
 import { XhsLoginPanel } from '../components/XhsLoginPanel';
+import { WechatSettingsPanel } from '../components/WechatSettingsPanel';
 import { useRuntimeStatus } from '../hooks/useRuntimeStatus';
 import { apiClient } from '../services/api';
 import { parseOutputLimit, toOutputLimitForm, type OutputLimitMode } from '../utils/ai-output-limit';
@@ -87,23 +89,26 @@ const settingsSectionIcons: Record<SettingsSection, typeof KeyRound> = {
   douyin: QrCode,
   toutiao: QrCode,
   xhs: QrCode,
+  wechat: KeyRound,
   asr: Mic,
   storage: HardDrive,
   advanced: SlidersHorizontal,
 };
 
 export function SettingsPage() {
+  const [params, setParams] = useSearchParams();
   const [apiKeys, setApiKeys] = useState<AIKeyConfig[]>([]);
-  const [activeSection, setActiveSection] = useState<SettingsSection>(() => {
+  const activeSection = (() => {
     /*
      * 支持 `?section=runtime` 这类锚点：发布中心概览条的「查看」与「去登录」都靠它把
      * 用户直接送到该看的那一组，而不是丢在设置页首页让他自己找。
      * 不认识的取值一律回落到默认（不制造空白页）。
      */
-    const requested = new URLSearchParams(window.location.search).get('section');
+    const requested = params.get('section');
     const known = settingsSections.some((section) => section.id === requested);
     return known ? (requested as SettingsSection) : 'models';
-  });
+  })();
+  const setActiveSection = (value: SettingsSection) => { const next = new URLSearchParams(params); next.set('section', value); setParams(next, { replace: true }); };
   const [isAdding, setIsAdding] = useState(false);
   const [newKey, setNewKey] = useState<AIKeyForm>(emptyKeyForm);
   const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
@@ -314,6 +319,7 @@ export function SettingsPage() {
       {/* 移动端：水平下拉选择 */}
       <div className="mb-6 lg:hidden">
         <select
+          aria-label="设置分组"
           value={activeSection}
           onChange={(e) => setActiveSection(e.target.value as SettingsSection)}
           className="w-full rounded-lg border border-line-ui bg-well px-4 py-3 text-sm font-medium text-ink outline-none focus:border-accent-line focus:ring-1 focus:ring-accent"
@@ -341,7 +347,7 @@ export function SettingsPage() {
                 <Icon size={18} className="mt-0.5 shrink-0" />
                 <span>
                   <span className="block text-sm font-semibold">{section.label}</span>
-                  <span className="mt-0.5 block text-xs opacity-80">{section.description}</span>
+                  <span className="mt-0.5 block text-xs">{section.description}</span>
                 </span>
               </button>
             );
@@ -380,6 +386,7 @@ export function SettingsPage() {
           {activeSection === 'douyin' && <DouyinSection />}
           {activeSection === 'toutiao' && <ToutiaoSection />}
           {activeSection === 'xhs' && <XhsSection />}
+          {activeSection === 'wechat' && <WechatSettingsPanel />}
           {activeSection === 'asr' && <AsrSection />}
           {activeSection === 'storage' && <StorageSection />}
           {activeSection === 'advanced' && <AdvancedSection />}
@@ -407,6 +414,7 @@ export function SettingsPage() {
     </Layout>
   );
 }
+
 
 function ModelsSection({
   apiKeys,

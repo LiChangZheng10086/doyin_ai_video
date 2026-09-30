@@ -33,6 +33,11 @@ function draft(overrides: Partial<WechatArticleDraft> = {}): WechatArticleDraft 
 
 const WECHAT_IMAGE = "https://mmbiz.qpic.cn/mmbiz_jpg/fake/640";
 
+test("最终正文严格少于两万字符，恰好两万也拒绝", () => {
+  assert.equal(substituteWechatImageSlots("a".repeat(19999), new Map()).length, 19999);
+  assert.throws(() => substituteWechatImageSlots("a".repeat(20000), new Map()), /字符|上限/);
+});
+
 // ── 结构 ──────────────────────────────────────────────────────────────────────
 
 test("段落渲染成 <p> 且带内联样式，顺序保持不变", () => {

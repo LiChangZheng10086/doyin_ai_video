@@ -75,6 +75,7 @@ export function QrLoginPanel({ api, copy, onLoggedIn }: QrLoginPanelProps) {
       const status = await api.poll();
       if (stopped.current) return;
       if (status.status === 'logged_in') {
+        setError('');
         setPhase('logged_in');
         setUsername(status.username);
         setQrDataUrl('');
@@ -213,9 +214,14 @@ export function QrLoginPanel({ api, copy, onLoggedIn }: QrLoginPanelProps) {
     try {
       const result = await api.verify();
       if (result.loggedIn) {
+        stopped.current = true;
+        stopPolling();
+        setError('');
+        setQrDataUrl('');
         setPhase('logged_in');
         setUsername(result.username);
         setFeedback(result.username ? `登录态有效：${result.username}` : '登录态有效');
+        onLoggedIn?.(result.username);
       } else {
         setPhase('idle');
         setError(result.message);
@@ -225,7 +231,7 @@ export function QrLoginPanel({ api, copy, onLoggedIn }: QrLoginPanelProps) {
     } finally {
       setBusy(false);
     }
-  }, [api]);
+  }, [api, onLoggedIn, stopPolling]);
 
   return (
     <div className="space-y-4" data-testid={copy.testId}>

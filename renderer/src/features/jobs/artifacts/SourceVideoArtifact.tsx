@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 
 export interface SourceVideoArtifactProps {
   /** 任务记录里的原视频路径（`raw/videos/<jobId>.mp4`）；为空表示还没做过视频转录。 */
@@ -6,6 +7,7 @@ export interface SourceVideoArtifactProps {
   streamUrl: string | null;
   streamError: boolean;
   onVideoError: () => void;
+  jobId?: string;
 }
 
 /**
@@ -19,6 +21,7 @@ export function SourceVideoArtifact({
   streamUrl,
   streamError,
   onVideoError,
+  jobId,
 }: SourceVideoArtifactProps) {
   if (!videoPath) {
     return (
@@ -45,6 +48,7 @@ export function SourceVideoArtifact({
       <div>
         <h3 className="text-lg font-semibold text-ink">原视频</h3>
         <p className="mt-1 text-sm text-ink-muted">视频转录步骤下载的抖音原片，未经洗稿与渲染。</p>
+        {jobId && <Link to={`/galleries?sourceJobId=${encodeURIComponent(jobId)}`} className="mt-3 inline-flex rounded-lg border border-accent-line px-4 py-2 text-sm text-accent hover:bg-accent-soft">制作字幕图集</Link>}
       </div>
 
       {streamUrl ? (

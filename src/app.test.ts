@@ -11,6 +11,7 @@ import { SauRunner } from "./lib/sau-runner.js";
 import { LocalStorage } from "./lib/storage.js";
 import { ToutiaoRunnerError } from "./lib/toutiao-runner.js";
 import { XhsRunnerError } from "./lib/xhs-runner.js";
+import { WechatMpClient } from "./lib/wechat-mp-client.js";
 import type { DeliveryPackage, PublishTask } from "./types.js";
 
 type JsonResponse = {
@@ -2692,6 +2693,150 @@ function fakeToutiaoRunner(options: {
 
 const ARTICLE_TITLE = "头条文章标题";
 const ARTICLE_BODY = "## 小标题\n\n第一段正文。\n\n第二段正文。";
+
+async function wechatArticleFixture(mode: "ok" | "timeout" | "permission" = "ok", includeBodyImage = true) {
+  const calls: string[] = [];
+  let submitted: Record<string, any> | undefined;
+  const fixture = await publishingApiFixture({
+    wechatClient: new WechatMpClient({ appId: "test-app-id", appSecret: "fake-secret", fetchImpl: async (url, init) => {
+      const endpoint = new URL(url).pathname;
+      calls.push(endpoint);
+      let body: unknown;
+      if (endpoint === "/cgi-bin/stable_token") body = { access_token: "example-token", expires_in: 7200 };
+      else if (endpoint === "/cgi-bin/draft/count") body = { total_count: 0 };
+      else if (endpoint === "/cgi-bin/material/add_material") body = { media_id: "fake-cover-id" };
+      else if (endpoint === "/cgi-bin/media/uploadimg") body = { url: "https://mmbiz.qpic.cn/fake/body.jpg" };
+      else if (endpoint === "/cgi-bin/draft/add") {
+        submitted = JSON.parse(String(init?.body));
+        if (mode === "timeout") throw new Error("connection lost");
+        body = mode === "permission" ? { errcode: 48001, errmsg: "unauthorized" } : { media_id: "fake-draft-id" };
+      } else throw new Error(`UNEXPECTED: ${endpoint}`);
+      return new Response(JSON.stringify(body));
+    } }),
+    wechatMedia: {
+      async prepareCoverImage(src: string) { return { path: src, bytes: 8 }; },
+      async prepareContentImage(src: string) { return { path: src, bytes: 8 }; },
+    },
+  });
+  const [cover, image] = await uploadNoteLibraryImages(fixture);
+  const selection = { imageSource: "library", imageAssetIds: [cover!.id], articleImageAssetIds: includeBodyImage ? [image!.id] : [] };
+  const preview = await jsonFetch(fixture.baseUrl, `/api/jobs/${fixture.jobId}/publishing/preview`, {
+    method: "POST", token: fixture.publisherToken, body: { platforms: ["wechat_mp"], contentType: "article", ...selection },
+  });
+  if (preview.response.status !== 200) await fixture.close();
+  assert.equal(preview.response.status, 200, JSON.stringify(preview.body));
+  const created = await jsonFetch(fixture.baseUrl, "/api/publishing/packages", {
+    method: "POST", token: fixture.publisherToken, body: {
+      sourceJobId: fixture.jobId, title: "公众号测试", contentType: "article", platforms: [{ platform: "wechat_mp" }],
+      previewRevision: preview.body.preview.previewRevision, ...selection,
+      articleCopy: { title: "测试文章", body: ARTICLE_BODY, author: "测试作者", digest: "测试摘要" },
+    },
+  });
+  assert.equal(created.response.status, 201, JSON.stringify(created.body));
+  const detail = created.body.package;
+  const checked = await jsonFetch(fixture.baseUrl, `/api/publishing/packages/${detail.package.id}/preview`, { token: fixture.publisherToken });
+  assert.equal(checked.response.status, 200, JSON.stringify(checked.body));
+  return { ...fixture, calls, submitted: () => submitted, detail, preview: checked.body.preview };
+}
+
+test("公众号文章完整链路只建草稿：封面/正文图/作者摘要入包，ID落盘，重复提交被拒", async () => {
+  const f = await wechatArticleFixture();
+  try {
+    assert.equal(f.detail.package.imagePaths.length, 1);
+    assert.equal(f.preview.imagePaths.length, 1);
+    const imagePreview = await fetch(`${f.baseUrl}/api/publishing/packages/${f.detail.package.id}/images/0`, { headers: { 'X-Local-Session': f.publisherToken } });
+    assert.equal(imagePreview.status, 200, '公众号正文图片必须可在预览里显示');
+    assert.equal(f.preview.articleCopy.author, "测试作者");
+    const task = f.detail.tasks[0];
+    const request = { method: "POST", token: f.publisherToken, body: { previewRevision: f.preview.previewRevision } };
+    const result = await jsonFetch(f.baseUrl, `/api/publishing/tasks/${task.id}/auto-publish`, request);
+    assert.equal(result.response.status, 200, JSON.stringify(result.body));
+    assert.equal(result.body.task.autoPublish.draftMediaId, "fake-draft-id");
+    assert.equal(result.body.task.autoPublish.draftOnly, true);
+    assert.equal(result.body.task.status, "ready");
+    assert.equal(result.body.task.publishedAt, undefined);
+    const article = f.submitted()!.articles[0];
+    assert.equal(article.author, "测试作者");
+    assert.equal(article.digest, "测试摘要");
+    assert.equal(article.thumb_media_id, "fake-cover-id");
+    assert.match(article.content, /https:\/\/mmbiz.qpic.cn\/fake\/body.jpg/);
+    assert.doesNotMatch(article.content, /wechat-image-/);
+    assert.equal((await jsonFetch(f.baseUrl, `/api/publishing/tasks/${task.id}/auto-publish`, request)).response.status, 409);
+    assert.equal(f.calls.filter(p => p === "/cgi-bin/draft/add").length, 1);
+    assert.ok(f.calls.every(p => !/freepublish|message\/mass/.test(p)));
+    const disk = JSON.parse(await readFile(path.join(f.storageRoot, "cache/publishing-index.json"), "utf8"));
+    assert.equal(disk.tasks[task.id].autoPublish.draftMediaId, "fake-draft-id");
+  } finally { await f.close(); }
+});
+
+test("公众号草稿超时只尝试一次并保留待核实状态，刷新后也不能直接重发", async () => {
+  const f = await wechatArticleFixture("timeout");
+  try {
+    const endpoint = `/api/publishing/tasks/${f.detail.tasks[0].id}/auto-publish`;
+    const input = { method: "POST", token: f.publisherToken, body: { previewRevision: f.preview.previewRevision } };
+    const result = await jsonFetch(f.baseUrl, endpoint, input);
+    assert.equal(result.body.task.autoPublish.status, "failed");
+    assert.equal(result.body.task.autoPublish.outcomeUncertain, true);
+    assert.match(result.body.task.autoPublish.message, /核实/);
+    const disk = JSON.parse(await readFile(path.join(f.storageRoot, "cache/publishing-index.json"), "utf8"));
+    assert.equal(disk.tasks[f.detail.tasks[0].id].autoPublish.outcomeUncertain, true);
+    assert.equal((await jsonFetch(f.baseUrl, endpoint, input)).response.status, 409);
+    assert.equal(f.calls.filter(p => p === "/cgi-bin/draft/add").length, 1);
+  } finally { await f.close(); }
+});
+
+test("公众号预览缺失或过期不上传；权限拒绝不改任务状态且不自动重试", async () => {
+  const f = await wechatArticleFixture("permission");
+  try {
+    const endpoint = `/api/publishing/tasks/${f.detail.tasks[0].id}/auto-publish`;
+    for (const [body, status] of [[{}, 400], [{ previewRevision: "old" }, 409]] as const) {
+      assert.equal((await jsonFetch(f.baseUrl, endpoint, { method: "POST", token: f.publisherToken, body })).response.status, status);
+    }
+    assert.equal(f.calls.length, 0);
+    const result = await jsonFetch(f.baseUrl, endpoint, { method: "POST", token: f.publisherToken, body: { previewRevision: f.preview.previewRevision } });
+    assert.equal(result.body.task.status, "ready");
+    assert.equal(result.body.task.autoPublish.status, "failed");
+    assert.match(result.body.task.autoPublish.message, /48001/);
+    assert.equal(f.calls.filter(p => p === "/cgi-bin/draft/add").length, 1);
+  } finally { await f.close(); }
+});
+
+test("公众号连接校验受会话保护且只调用 token/count，不上传内容", async () => {
+  const f = await wechatArticleFixture();
+  try {
+    const endpoint = "/api/publishing/wechat/verify";
+    assert.equal((await jsonFetch(f.baseUrl, endpoint, { method: "POST" })).response.status, 401);
+    assert.deepEqual(f.calls, []);
+    const result = await jsonFetch(f.baseUrl, endpoint, { method: "POST", token: f.publisherToken });
+    assert.equal(result.response.status, 200);
+    assert.equal(result.body.ok, true);
+    assert.deepEqual(f.calls, ["/cgi-bin/stable_token", "/cgi-bin/draft/count"]);
+    assert.doesNotMatch(JSON.stringify(result.body), /fake-secret|example-token/);
+  } finally { await f.close(); }
+});
+
+test("公众号并发点击也只能建一次草稿", async () => {
+  const f = await wechatArticleFixture();
+  try {
+    const request = { method: "POST", token: f.publisherToken, body: { previewRevision: f.preview.previewRevision } };
+    const results = await Promise.all([1, 2].map(() => jsonFetch(f.baseUrl, `/api/publishing/tasks/${f.detail.tasks[0].id}/auto-publish`, request)));
+    assert.deepEqual(results.map(result => result.response.status).sort(), [200, 409]);
+    assert.equal(f.calls.filter(endpoint => endpoint === "/cgi-bin/draft/add").length, 1);
+  } finally { await f.close(); }
+});
+
+test("公众号无正文图也可建草稿，封面仍上传且不调用正文图接口", async () => {
+  const f = await wechatArticleFixture("ok", false);
+  try {
+    assert.deepEqual(f.detail.package.imagePaths, []);
+    const result = await jsonFetch(f.baseUrl, `/api/publishing/tasks/${f.detail.tasks[0].id}/auto-publish`, {
+      method: "POST", token: f.publisherToken, body: { previewRevision: f.preview.previewRevision },
+    });
+    assert.equal(result.body.task.autoPublish.draftMediaId, "fake-draft-id");
+    assert.ok(f.calls.includes("/cgi-bin/material/add_material"));
+    assert.ok(!f.calls.includes("/cgi-bin/media/uploadimg"));
+  } finally { await f.close(); }
+});
 
 /** 头条文章夹具：真建包（走 API），只把成文/封面/执行器换成假实现。 */
 async function toutiaoArticleFixture(options: { runner?: ReturnType<typeof fakeToutiaoRunner> } = {}) {

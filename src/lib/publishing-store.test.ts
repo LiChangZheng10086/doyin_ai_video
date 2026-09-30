@@ -1007,6 +1007,21 @@ test("beginAutoPublish refuses a video package without writing anything", async 
   assert.equal((await store.getTask("task-1"))!.autoPublish, undefined);
 });
 
+test("公众号草稿事务拒绝已取消/已发布及不确定或遗留运行记录，不受30分钟过期放行影响", async () => {
+  for (const status of ["cancelled", "published", "uncertain", "running"] as const) {
+    const root = await mkdtemp(path.join(tmpdir(), "wechat-store-"));
+    const storage = new LocalStorage(root);
+    const autoPublish = status === "uncertain" || status === "running"
+      ? { status: status === "running" ? "running" as const : "failed" as const, startedAt: "2020-01-01T00:00:00Z", attemptId: "old", outcomeUncertain: status === "uncertain" } : undefined;
+    const task = taskRecord(status === "cancelled" || status === "published" ? status : "ready", { platform: "wechat_mp", autoPublish });
+    await storage.writeJsonAtomic("cache/publishing-index.json", seededIndex([packageRecord({ contentType: "article" })], [task]));
+    const store = new PublishingStore(storage);
+    await store.init();
+    const revision = (await store.previewRevision("package-1"))!;
+    await assert.rejects(store.beginAutoPublish(task.id, { previewRevision: revision, attemptId: "new" }, ACTOR), isPublishingError("publish_invalid_transition"));
+  }
+});
+
 test("beginAutoPublish refuses a stale or missing preview revision without writing anything", async () => {
   const { store, readIndexBytes, taskId } = await seededNoteFixture();
   const before = await readIndexBytes();

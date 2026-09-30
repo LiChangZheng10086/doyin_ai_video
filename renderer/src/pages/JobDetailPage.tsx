@@ -77,6 +77,7 @@ export function JobDetailPage() {
   // 图文包（抖音图文）与视频包是两条并列的入口：素材来源、文案口径、必填项都不同
   const [showNoteDialog, setShowNoteDialog] = useState(false);
   const [showToutiaoDialog, setShowToutiaoDialog] = useState(false);
+  const [showWechatDialog, setShowWechatDialog] = useState(false);
   const [publishError, setPublishError] = useState('');
   const currentUser = useOperatorStore((state) => state.currentUser);
 
@@ -608,6 +609,7 @@ export function JobDetailPage() {
                 </div>
                 {activeVideoSide === 'raw' ? (
                   <SourceVideoArtifact
+                    jobId={job.id}
                     videoPath={job.videoPath}
                     streamUrl={rawStreamUrl}
                     streamError={rawStreamError}
@@ -626,6 +628,7 @@ export function JobDetailPage() {
                     onOpenPublishing={openPublishingDialog}
                     onOpenNotePublishing={openNotePublishingDialog}
                     onOpenToutiaoPublishing={openToutiaoPublishingDialog}
+                    onOpenWechatPublishing={() => setShowWechatDialog(true)}
                     onVideoError={() => setStreamError(true)}
                   />
                 ) : videoError ? (
@@ -664,11 +667,12 @@ export function JobDetailPage() {
         />
       )}
 
-      {showToutiaoDialog && videoOutput && isPublishingEligibleVideo(videoOutput) && (
+      {(showToutiaoDialog || showWechatDialog) && videoOutput && isPublishingEligibleVideo(videoOutput) && (
         <CreateToutiaoArticleDialog
+          platform={showWechatDialog ? 'wechat_mp' : 'toutiao'}
           jobId={job.id}
           title={cleaned?.output?.title || job.topic || '未命名作品'}
-          onClose={() => setShowToutiaoDialog(false)}
+          onClose={() => { setShowToutiaoDialog(false); setShowWechatDialog(false); }}
         />
       )}
 

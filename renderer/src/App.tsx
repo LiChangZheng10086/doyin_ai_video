@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { RouterProvider, Outlet } from 'react-router-dom';
+import { createAppRouter } from './utils/appRouter';
 import { JobListPage } from './pages/JobListPage';
 import { JobDetailPage } from './pages/JobDetailPage';
 import { TrashPage } from './pages/TrashPage';
@@ -9,9 +10,30 @@ import { CollectionDetailPage } from './pages/CollectionDetailPage';
 import { SkillListPage } from './pages/SkillListPage';
 import { AssetsPage } from './pages/AssetsPage';
 import { PublishingPage } from './pages/PublishingPage';
+import { GalleriesPage } from './pages/GalleriesPage';
+import { GalleryDetailPage } from './pages/GalleryDetailPage';
+import { HotspotsPage } from './pages/HotspotsPage';
 import { PublishingDuePoller } from './components/PublishingDuePoller';
 import { AppShell } from './components/shell/AppShell';
 import { useOperatorStore } from './store/operator';
+
+const router = createAppRouter([{
+  element: <AppShell><Outlet /></AppShell>,
+  children: [
+    { path: '/', element: <JobListPage /> },
+    { path: '/hotspots', element: <HotspotsPage /> },
+    { path: '/jobs/:id', element: <JobDetailPage /> },
+    { path: '/galleries', element: <GalleriesPage /> },
+    { path: '/galleries/:id', element: <GalleryDetailPage /> },
+    { path: '/collections', element: <CollectionListPage /> },
+    { path: '/collections/:id', element: <CollectionDetailPage /> },
+    { path: '/skills', element: <SkillListPage /> },
+    { path: '/assets', element: <AssetsPage /> },
+    { path: '/publishing', element: <PublishingPage /> },
+    { path: '/trash', element: <TrashPage /> },
+    { path: '/settings', element: <SettingsPage /> },
+  ],
+}]);
 
 function AppContent() {
   const initialize = useOperatorStore((state) => state.initialize);
@@ -37,21 +59,7 @@ function AppContent() {
   }
 
   return (
-    <BrowserRouter>
-      <AppShell>
-        <Routes>
-          <Route path="/" element={<JobListPage />} />
-          <Route path="/jobs/:id" element={<JobDetailPage />} />
-          <Route path="/collections" element={<CollectionListPage />} />
-          <Route path="/collections/:id" element={<CollectionDetailPage />} />
-          <Route path="/skills" element={<SkillListPage />} />
-          <Route path="/assets" element={<AssetsPage />} />
-          <Route path="/publishing" element={<PublishingPage />} />
-          <Route path="/trash" element={<TrashPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-        </Routes>
-      </AppShell>
-    </BrowserRouter>
+    <RouterProvider router={router} />
   );
 }
 
