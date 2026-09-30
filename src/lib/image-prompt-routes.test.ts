@@ -12,7 +12,7 @@ import { ImagePromptService } from './image-prompts.js';
 import { registerAssetRoutes } from './assets-routes.js';
 import { registerImagePromptRoutes } from './image-prompt-routes.js';
 
-async function fixture(t: any) {
+async function fixture(t: any, limits?: { maxFileBytes: number }) {
   const root = await mkdtemp(path.join(tmpdir(), 'image-routes-')); t.after(() => rm(root, { recursive: true, force: true }));
   const storage = new LocalStorage(root); await storage.ensureBaseDirs();
   const users = new LocalUserStore(storage); await users.init(); const sessions = new LocalSessionStore(users);
@@ -20,7 +20,7 @@ async function fixture(t: any) {
   const assets = new AssetStore(storage);
   const prompts = new ImagePromptService(storage, { resolveAiConfig: async () => ({ provider: 'openai', apiKey: 'fake-secret', model: 'test-model' }),
     createClient: () => ({ chat: { completions: { create: async () => ({ choices: [{ message: { content: JSON.stringify({ prompts: [{ title: '雨夜', tags: ['城市'], prompt: '路灯与空街' }] }) } }] }) } } }) });
-  const app = express(); app.use(express.json()); registerAssetRoutes(app, { assets, prompts, sessions }); registerImagePromptRoutes(app, { prompts, sessions });
+  const app = express(); app.use(express.json()); registerAssetRoutes(app, { assets, prompts, sessions, limits }); registerImagePromptRoutes(app, { prompts, sessions });
   const server = app.listen(0, '127.0.0.1'); t.after(() => new Promise<void>(r => { server.closeAllConnections(); server.close(() => r()); }));
   await new Promise<void>(r => server.once('listening', r)); const addr = server.address(); assert.ok(addr && typeof addr !== 'string');
   const base = `http://127.0.0.1:${addr.port}/api`;
@@ -76,4 +76,14 @@ test('partial image uploads identify failed original indices and legacy contract
   const range = await fetch(`${f.base}/assets/${record.id}/raw`, { headers: { Range: 'bytes=0-3' } }); assert.equal(range.status, 206);
   assert.equal((await range.arrayBuffer()).byteLength, 4);
   assert.equal((await fetch(`${f.base}/assets?kind=audio&q=city`)).status, 400);
+});
+
+
+test('one oversized image fails by original index while valid siblings are saved', async t => {
+  const f = await fixture(t, { maxFileBytes: 16 }); const data = new FormData();
+  data.append('files', new Blob(['valid']), 'one.png'); data.append('files', new Blob(['x'.repeat(32)]), 'large.png'); data.append('files', new Blob(['valid']), 'three.png');
+  const response = await fetch(`${f.base}/assets/images`, { method: 'POST', body: data });
+  assert.equal(response.status, 200); const result = await response.json();
+  assert.equal(result.assets.length, 2); assert.deepEqual(result.failures.map((x: any) => [x.index, x.code]), [[1, 'asset_too_large']]);
+  assert.equal((await f.assets.list('image')).length, 2);
 });

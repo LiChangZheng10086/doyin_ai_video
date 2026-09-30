@@ -72,8 +72,22 @@ export function registerAssetRoutes(app: Express, deps: AssetRouteDeps): void {
   });
 
   for (const [route, kind] of Object.entries(KIND_BY_ROUTE)) {
-    const parser = kind === 'image' ? multer({ storage: multer.memoryStorage(), limits: {
-      fileSize: deps.limits?.maxFileBytes ?? 20 * 1024 * 1024, files: deps.limits?.maxFiles ?? DEFAULT_MAX_FILES,
+    const imageMaxBytes = deps.limits?.maxFileBytes ?? 20 * 1024 * 1024;
+    // Keep at most one permitted image in each buffer; drain oversized files without
+    // retaining their bytes so valid siblings can still report independent outcomes.
+    const imageStorage: multer.StorageEngine = {
+      _handleFile(_req, file, callback) {
+        let size = 0; let chunks: Buffer[] = [];
+        file.stream.on('data', (chunk: Buffer) => {
+          size = Math.min(imageMaxBytes + 1, size + chunk.length);
+          if (size > imageMaxBytes) chunks = []; else chunks.push(chunk);
+        });
+        file.stream.on('end', () => callback(null, { buffer: Buffer.concat(chunks), size }));
+      },
+      _removeFile(_req, file, callback) { delete (file as Partial<Express.Multer.File>).buffer; callback(null); },
+    };
+    const parser = kind === 'image' ? multer({ storage: imageStorage, limits: {
+      fileSize: Infinity, files: deps.limits?.maxFiles ?? DEFAULT_MAX_FILES,
       fieldSize: 1024 * 1024, fields: 3,
     } }).array('files') : upload.array('files');
     router.post(`/assets/${route}`, parser, async (req, res, next) => {
@@ -108,7 +122,9 @@ export function registerAssetRoutes(app: Express, deps: AssetRouteDeps): void {
         const created = []; const failures: Array<{ index: number; code: string; message: string }> = [];
         let failureStatus = 400;
         for (const [index, file] of files.entries()) {
-          try { created.push(await deps.assets.add(kind, { originalName: decodeMultipartFilename(file.originalname), data: file.buffer,
+          try {
+            if (kind === 'image' && file.size > imageMaxBytes) throw new AssetError('asset_too_large', 413);
+            created.push(await deps.assets.add(kind, { originalName: decodeMultipartFilename(file.originalname), data: file.buffer,
             ...(kind === 'image' ? { metadata: metadata[index], imagePrompt: snapshot } : {}),
           })); }
           catch (e) {
@@ -123,7 +139,7 @@ export function registerAssetRoutes(app: Express, deps: AssetRouteDeps): void {
           }
         }
         res.status(failures.length ? (created.length ? 200 : failureStatus) : 201).json({ assets: created,
-          ...(failures.length ? { failures, ...(!created.length ? { code: failures[0].code, message: failures[0].message } : {}) } : {}),
+          ...(failures.length ? { failures, ...(!created.length ? { code: (failures.find(item => item.code === 'asset_upload_failed') ?? failures[0]).code, message: (failures.find(item => item.code === 'asset_upload_failed') ?? failures[0]).message } : {}) } : {}),
         });
       } catch (error) {
         next(error);

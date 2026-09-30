@@ -282,9 +282,9 @@ export function AssetsPage() {
                         {record.width && record.height ? `${record.width}×${record.height} · ` : ''}
                         {formatBytes(record.bytes)}
                       </p>
-                      {record.description && <p className="line-clamp-2 text-xs text-ink-muted" title={record.description}>{record.description}</p>}
+                      <p className="line-clamp-2 text-xs text-ink-muted" title={record.description}>{record.description || '描述未填写'}</p>
                       {record.tags?.length ? <p className="truncate text-xs text-ink-muted">{record.tags.join(' · ')}</p> : null}
-                      {record.generationPrompt && <details className="text-xs text-ink-muted"><summary className="cursor-pointer">查看图片提示词</summary><p className="max-h-40 overflow-auto whitespace-pre-wrap break-words pt-2">{record.generationPrompt}</p></details>}
+                      {record.generationPrompt && <details className="text-xs text-ink-muted"><summary className="cursor-pointer">查看图片提示词</summary><p className="max-h-40 overflow-auto whitespace-pre-wrap break-words pt-2">{record.generationPrompt}</p><Button size="sm" onClick={async () => { try { await navigator.clipboard.writeText(record.generationPrompt!); } catch { setUploadError('复制失败，请展开提示词后手动复制。'); } }}>复制图片提示词</Button></details>}
                       <Button size="sm" disabled={editorGuard.busy} onClick={() => { if (!editorGuard.dirty || window.confirm('当前图片信息尚未保存，放弃并切换？')) setEditingImage(record); }}>编辑图片信息</Button>
                     </figcaption>
                   </figure>

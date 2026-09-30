@@ -168,7 +168,6 @@ export class AssetStore {
       const filename = `${id}${extension}`;
       const directory = KIND_DIRECTORY[kind];
       await mkdir(this.storage.resolve(directory), { recursive: true });
-      await writeFile(this.storage.resolve(directory, filename), input.data);
 
       const record: AssetRecord = {
         id,
@@ -183,8 +182,11 @@ export class AssetStore {
       };
 
       index.assets[id] = record;
-      try { await this.storage.writeJsonAtomic(ASSETS_INDEX, index); }
-      catch (error) { await rm(this.storage.resolve(directory, filename), { force: true }); throw error; }
+      try {
+        await writeFile(this.storage.resolve(directory, filename), input.data);
+        await this.storage.writeJsonAtomic(ASSETS_INDEX, index);
+      }
+      catch (error) { await rm(this.storage.resolve(directory, filename), { force: true }).catch(() => undefined); throw error; }
       return record;
     });
   }

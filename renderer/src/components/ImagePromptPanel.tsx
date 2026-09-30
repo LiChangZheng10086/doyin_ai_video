@@ -11,10 +11,16 @@ export function ImagePromptPanel({ referenceText = '', defaultAspectRatio = '16:
 }) {
   const [mode, setMode] = useState<'generate' | 'optimize'>('generate');
   const [reference, setReference] = useState(referenceText); const [original, setOriginal] = useState('');
-  const [changes, setChanges] = useState(''); const [purpose, setPurpose] = useState('cover');
-  const [ratio, setRatio] = useState<string>(defaultAspectRatio ?? '16:9'); const [style, setStyle] = useState('');
+  const [changes, setChanges] = useState('');
+  const [settings, setSettings] = useState({ generate: { purpose: 'cover', ratio: defaultAspectRatio ?? '16:9', style: '' }, optimize: { purpose: '', ratio: '', style: '' } });
+  const { purpose, ratio, style } = settings[mode];
+  const setPurpose = (purpose: string) => setSettings(previous => ({ ...previous, [mode]: { ...previous[mode], purpose } }));
+  const setRatio = (ratio: string) => setSettings(previous => ({ ...previous, [mode]: { ...previous[mode], ratio } }));
+  const setStyle = (style: string) => setSettings(previous => ({ ...previous, [mode]: { ...previous[mode], style } }));
   const [language, setLanguage] = useState<'zh' | 'en'>('zh'); const [count, setCount] = useState(1);
-  const [formDirty, setFormDirty] = useState(false);
+  const [formEdits, setFormEdits] = useState({ generate: false, optimize: false });
+  const formDirty = formEdits.generate || formEdits.optimize;
+  const setFormDirty = (dirty: boolean) => setFormEdits(previous => ({ ...previous, [mode]: dirty }));
   const [records, setRecords] = useState<ImagePromptRecord[]>([]); const [base, setBase] = useState<ImagePromptRecord | null>(null);
   const [title, setTitle] = useState(''); const [tags, setTags] = useState(''); const [prompt, setPrompt] = useState('');
   const [latest, setLatest] = useState<ImagePromptRecord | null>(null);
@@ -41,7 +47,7 @@ export function ImagePromptPanel({ referenceText = '', defaultAspectRatio = '16:
   const choose = (record: ImagePromptRecord) => { if (canLeaveDraft()) { setFiles([]); select(record); setError(''); setNotice(''); } };
   const generate = async () => {
     if (!canLeaveDraft()) return;
-    setBusy(true); setError(''); setNotice('');
+    requestId.current++; setLoading(false); setBusy(true); setError(''); setNotice('');
     try {
       const input: ImagePromptInput = { mode, language, count: mode === 'optimize' ? 1 : count,
         ...(mode === 'generate' ? { referenceText: reference } : { originalPrompt: original, changes }),
@@ -49,23 +55,23 @@ export function ImagePromptPanel({ referenceText = '', defaultAspectRatio = '16:
         ...(ratio ? { aspectRatio: ratio as ImagePromptInput['aspectRatio'] } : {}), ...(style.trim() ? { style } : {}) };
       const created = await apiClient.createImagePrompts(input); setRecords(previous => [...created, ...previous]);
       select(created[0]); setFiles([]); setFormDirty(false); setNotice(`已生成并保存 ${created.length} 条提示词，可复制到生图工具。`);
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { const uncertain = (e as { status?: number }).status === undefined; setError(uncertain ? '生成结果暂不确定，请先刷新草稿核对是否已经保存，再决定是否重新生成；重复生成会再次调用 AI。输入已保留。' : (e as Error).message); }
     finally { setBusy(false); }
   };
   const save = async () => {
-    if (!base) return; setBusy(true); setError(''); setNotice('');
+    if (!base) return; requestId.current++; setLoading(false); setBusy(true); setError(''); setNotice('');
     try { const saved = await apiClient.updateImagePrompt(base.id, { version: base.version, title, tags: splitImageTags(tags), prompt }); select(saved); setRecords(previous => previous.map(item => item.id === saved.id ? saved : item)); setNotice('提示词已保存'); }
     catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
   const remove = async () => {
     if (!base || !window.confirm('删除此提示词草稿？已入库图片的提示词不受影响。') || !canLeaveDraft()) return;
-    setBusy(true); setError('');
+    requestId.current++; setLoading(false); setBusy(true); setError('');
     try { await apiClient.deleteImagePrompt(base.id, base.version); setRecords(previous => previous.filter(item => item.id !== base.id)); setBase(null); setFiles([]); }
     catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   };
   const upload = async () => {
     if (!base || draftDirty || files.length === 0) return;
-    setBusy(true); setError(''); setNotice('');
+    requestId.current++; setLoading(false); setBusy(true); setError(''); setNotice('');
     try {
       const result = await apiClient.uploadImageAssets(files.map(item => item.file), files.map(item => ({ description: item.description, tags: splitImageTags(item.tags) })), { id: base.id, version: base.version });
       const failed = new Map(result.failures?.map(item => [item.index, item.message]));
@@ -78,7 +84,7 @@ export function ImagePromptPanel({ referenceText = '', defaultAspectRatio = '16:
   return <section className="space-y-4 rounded-xl border border-line bg-panel p-4 text-ink">
     <div><h3 className="font-semibold">图片提示词</h3><p className="mt-1 text-xs leading-5 text-ink-muted">生成提示词后，在你使用的生图工具中生成图片；再上传生成成功的图片，填写实际画面描述并入库。</p></div>
     <fieldset disabled={busy} className="space-y-3" onChange={() => setFormDirty(true)}>
-      <div className="flex flex-wrap gap-2">{(['generate', 'optimize'] as const).map(value => <Button key={value} aria-pressed={mode === value} variant={mode === value ? 'accent' : 'outline'} onClick={() => { setMode(value); setStyle(''); setPurpose(value === 'optimize' ? '' : 'cover'); setRatio(value === 'optimize' ? '' : defaultAspectRatio ?? '16:9'); }}>{value === 'generate' ? '生成提示词' : '优化已有提示词'}</Button>)}</div>
+      <div className="flex flex-wrap gap-2">{(['generate', 'optimize'] as const).map(value => <Button key={value} aria-pressed={mode === value} variant={mode === value ? 'accent' : 'outline'} onClick={() => { setMode(value); }}>{value === 'generate' ? '生成提示词' : '优化已有提示词'}</Button>)}</div>
       {mode === 'generate' ? <label className="block text-sm">主题或文章<textarea className={imageInputClass} rows={4} maxLength={12000} value={reference} onChange={e => setReference(e.target.value)} /></label> : <><label className="block text-sm">原图片提示词<textarea className={imageInputClass} rows={4} maxLength={8000} value={original} onChange={e => setOriginal(e.target.value)} /></label><label className="block text-sm">修改要求<textarea className={imageInputClass} rows={2} maxLength={2000} value={changes} onChange={e => setChanges(e.target.value)} /></label></>}
       <div className="grid gap-3 sm:grid-cols-3">
         <label className="text-sm">用途<select className={imageInputClass} value={purpose} onChange={e => setPurpose(e.target.value)}>{mode === 'optimize' && <option value="">保留原提示词</option>}<option value="cover">封面</option><option value="body">正文配图</option></select></label>
@@ -100,11 +106,11 @@ export function ImagePromptPanel({ referenceText = '', defaultAspectRatio = '16:
         <label className="block text-sm">提示词标签（逗号分隔）<input className={imageInputClass} value={tags} onChange={e => setTags(e.target.value)} /></label>
         <label className="block text-sm">最终提示词<textarea className={imageInputClass} rows={6} maxLength={8000} value={prompt} onChange={e => setPrompt(e.target.value)} /></label>
       </fieldset>
-      <div className="flex flex-wrap gap-2"><Button disabled={busy || !draftDirty} variant="primary" onClick={() => void save()}>保存提示词修改</Button><Button disabled={busy} onClick={async () => { try { await navigator.clipboard.writeText(prompt); setNotice('已复制提示词'); } catch { setError('复制失败，请选中提示词手动复制。'); } }}>复制提示词</Button><Button disabled={busy} onClick={() => { if (!formDirty || window.confirm('生成表单尚未使用，替换为这条提示词进行优化？')) { setMode('optimize'); setOriginal(prompt); setChanges(''); setPurpose(''); setRatio(''); setStyle(''); setFormDirty(true); } }}>以此为基础优化</Button><Button variant="subtleDanger" disabled={busy} onClick={() => void remove()}>删除草稿</Button></div>
+      <div className="flex flex-wrap gap-2"><Button disabled={busy || !draftDirty} variant="primary" onClick={() => void save()}>保存提示词修改</Button><Button disabled={busy} onClick={async () => { try { await navigator.clipboard.writeText(prompt); setNotice('已复制提示词'); } catch { setError('复制失败，请选中提示词手动复制。'); } }}>复制提示词</Button><Button disabled={busy} onClick={() => { if (!formDirty || window.confirm('生成表单尚未使用，替换为这条提示词进行优化？')) { setMode('optimize'); setOriginal(prompt); setChanges(''); setSettings(previous => ({ ...previous, optimize: { purpose: '', ratio: '', style: '' } })); setFormEdits(previous => ({ ...previous, optimize: true })); } }}>以此为基础优化</Button><Button variant="subtleDanger" disabled={busy} onClick={() => void remove()}>删除草稿</Button></div>
       {latest && latest.version !== base.version && <div className="space-y-2 text-sm"><p>最新版本 v{latest.version} · {latest.title} · {latest.tags.join('，')}</p><pre className="max-h-40 overflow-auto whitespace-pre-wrap">{latest.prompt}</pre><Button disabled={busy} onClick={() => { setBase(latest); setLatest(null); setError('已采用最新版本号，本次输入保留；请核对后再保存。'); }}>核对后采用此版本号</Button></div>}
       <p className="text-xs text-ink-muted">生成成功的图片：上传前先保存提示词修改。每张图片单独填写实际画面描述与标签。</p>
       <Button disabled={busy || draftDirty} onClick={() => uploadInput.current?.click()}>选择图片绑定此提示词</Button>
-      <input ref={uploadInput} aria-label="选择生成成功的图片" type="file" accept=".jpg,.jpeg,.png,.webp" multiple className="hidden" onChange={e => { const picked = Array.from(e.target.files ?? []); e.target.value = ''; if (picked.length > 20) { setError('单次最多选择 20 张图片'); return; } if (files.length && !window.confirm('替换当前待上传图片及其描述？')) return; setFiles(picked.map(file => ({ file, description: '', tags: '' }))); }} />
+      <input ref={uploadInput} aria-label="选择生成成功的图片" type="file" accept=".jpg,.jpeg,.png,.webp" multiple className="hidden" onChange={e => { const picked = Array.from(e.target.files ?? []); e.target.value = ''; if (picked.length > 20) { setError('单次最多选择 20 张图片'); return; } if (files.length && !window.confirm('替换当前待上传图片及其描述？')) return; setFiles(picked.map(file => ({ file, description: '', tags: base.tags.join('，') }))); }} />
       <div className="space-y-3">{files.map((item, index) => <div key={index} className="rounded-lg border border-line p-3"><div className="flex items-start gap-3">{urls[index] && <img src={urls[index]} alt={item.file.name} className="h-20 w-20 rounded object-contain" />}<p className="min-w-0 break-words text-sm">{item.file.name}</p></div><fieldset disabled={busy}><label className="mt-2 block text-sm">第 {index + 1} 张图片描述<textarea className={imageInputClass} rows={2} maxLength={1000} value={item.description} onChange={e => setFiles(previous => previous.map((old, i) => i === index ? { ...old, description: e.target.value } : old))} /></label><label className="mt-2 block text-sm">第 {index + 1} 张图片标签<input className={imageInputClass} value={item.tags} onChange={e => setFiles(previous => previous.map((old, i) => i === index ? { ...old, tags: e.target.value } : old))} /></label><Button size="sm" onClick={() => setFiles(previous => previous.filter((_, i) => i !== index))}>移除此文件</Button></fieldset>{item.error && <p className="mt-2 text-sm text-danger">{item.error}</p>}</div>)}</div>
       {files.length > 0 && <Button disabled={busy || draftDirty} variant="primary" onClick={() => void upload()}>{busy ? '上传中…' : `上传 ${files.length} 张图片并入库`}</Button>}
     </div>}

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ImagePromptPanel } from './ImagePromptPanel';
 import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
 import { FileText } from 'lucide-react';
@@ -50,6 +51,13 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = '
   const [libraryImages, setLibraryImages] = useState<AssetRecord[]>([]);
   const [libraryUrls, setLibraryUrls] = useState<Record<string, string>>({});
   const [libraryError, setLibraryError] = useState('');
+  const [libraryTotal, setLibraryTotal] = useState(0); const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryQuery, setLibraryQuery] = useState(''); const [appliedQuery, setAppliedQuery] = useState('');
+  const [imageCache, setImageCache] = useState<Record<string, AssetRecord>>({});
+  const [showPrompts, setShowPrompts] = useState(false);
+  const [promptGuard, setPromptGuard] = useState({ dirty: false, busy: false });
+  const promptChanged = useCallback((dirty: boolean, busy: boolean) => setPromptGuard({ dirty, busy }), []);
+  const librarySequence = useRef(0);
   const [selectedCoverId, setSelectedCoverId] = useState('');
   const [articleTitle, setArticleTitle] = useState('');
   const [articleBody, setArticleBody] = useState('');
@@ -69,24 +77,29 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = '
    * 而不是第一个可聚焦控件）、没有 inert、也没有关闭后的焦点归位 ——
    * 关掉弹窗后键盘用户会失去位置（焦点落回 body）。
    */
-  // 素材库图片（封面候选）：与图文向导同一套做法 —— 带会话取 blob 再转成绝对 URL。
+  const refreshLibrary = useCallback(async (query = appliedQuery) => {
+    const sequence = ++librarySequence.current; setLibraryLoading(true); setLibraryError('');
+    try {
+      const result = await apiClient.searchImageAssets(query);
+      const entries = await Promise.all(result.assets.map(async record => [record.id, await apiClient.getAssetRawUrl(record.id)] as const));
+      if (sequence !== librarySequence.current) return;
+      setLibraryImages(result.assets); setLibraryTotal(result.total); setAppliedQuery(query);
+      setImageCache(previous => ({ ...previous, ...Object.fromEntries(result.assets.map(record => [record.id, record])) }));
+      setLibraryUrls(previous => ({ ...previous, ...Object.fromEntries(entries) }));
+    } catch (e) { if (sequence === librarySequence.current) setLibraryError(parseApiError(e).message); }
+    finally { if (sequence === librarySequence.current) setLibraryLoading(false); }
+  }, [appliedQuery]);
+  useEffect(() => { void refreshLibrary(''); return () => { librarySequence.current++; previewSequence.current++; }; }, []);
+  const close = () => {
+    if (busy || promptGuard.busy) return;
+    if (!created && (promptGuard.dirty || copyTouched.current) && !window.confirm('文章或提示词有未保存内容，放弃并关闭？')) return;
+    onClose();
+  };
   useEffect(() => {
-    let cancelled = false;
-    void apiClient.getAssets('image').then(async (records) => {
-      if (cancelled) return;
-      setLibraryImages(records);
-      const entries = await Promise.all(records.map(async (record) => {
-        const url = await apiClient.getAssetRawUrl(record.id).catch(() => '');
-        return [record.id, url] as const;
-      }));
-      if (!cancelled) setLibraryUrls(Object.fromEntries(entries));
-    }).catch((loadError: unknown) => {
-      if (!cancelled) setLibraryError(parseApiError(loadError).message);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (!promptGuard.dirty && !promptGuard.busy) return;
+    const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', guard); return () => window.removeEventListener('beforeunload', guard);
+  }, [promptGuard]);
 
   const runPreview = useCallback(async (nextSource: NoteImageSource, coverAssetId: string) => {
     const sequence = ++previewSequence.current;
@@ -134,11 +147,11 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = '
   const coverBlocker = getToutiaoCoverBlocker({
     source,
     framesCount: source === 'frames' ? (previewing ? 1 : framesCount) : 0,
-    libraryCount: libraryImages.length,
+    libraryCount: libraryTotal,
     hasSelection: selectedCoverId.length > 0,
   });
   const fieldErrors = limits ? toutiaoArticleFieldErrors(articleTitle, articleBody, limits) : [];
-  const canCreate = Boolean(preview) && !coverBlocker && fieldErrors.length === 0 && !previewing && !busy;
+  const canCreate = Boolean(preview) && !coverBlocker && fieldErrors.length === 0 && !previewing && !busy && !promptGuard.busy && !promptGuard.dirty;
 
   const create = async () => {
     setBusy(true);
@@ -170,9 +183,9 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = '
   return (
     <Modal
       open
-      onClose={onClose}
+      onClose={close}
       size="lg"
-      busy={busy}
+      busy={busy || promptGuard.busy}
       title={`创建${platformName}文章包`}
       subtitle={
         <p className="text-xs text-ink-muted">
@@ -181,7 +194,7 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = '
       }
       footer={
         <>
-          <Button variant="outline" onClick={onClose}>{created ? '关闭' : '取消'}</Button>
+          <Button variant="outline" onClick={close}>{created ? '关闭' : '取消'}</Button>
           {!created && (
             <Button variant="ai" onClick={() => void create()} disabled={!canCreate}>
               <FileText size={16} aria-hidden="true" />
@@ -203,6 +216,12 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = '
             </div>
           ) : (
             <>
+              <ArticleImageSearch query={libraryQuery} loading={libraryLoading} total={libraryTotal} count={libraryImages.length} showPrompts={showPrompts} onQuery={setLibraryQuery}
+                onSearch={() => void refreshLibrary(libraryQuery)} onReset={() => { setLibraryQuery(''); void refreshLibrary(''); }}
+                onTogglePrompts={() => { if (!promptGuard.busy && (!showPrompts || !promptGuard.dirty || window.confirm('提示词面板有未保存内容，放弃并返回文章？'))) setShowPrompts(value => !value); }} />
+              {showPrompts && <ImagePromptPanel referenceText={[articleTitle || title, articleBody].filter(Boolean).join('\n\n')} defaultAspectRatio={wechat ? '2.35:1' : '16:9'} onAssetsChanged={refreshLibrary} onDirtyChange={promptChanged} />}
+              <ArticleImageSelectionSummary wechat={wechat} cover={selectedCoverId ? imageCache[selectedCoverId] ?? { id: selectedCoverId, originalName: '已选图片（待核对）' } : undefined}
+                bodyImages={bodyImageIds.map(id => imageCache[id] ?? { id, originalName: '已选图片（待核对）' })} onRemoveCover={() => setSelectedCoverId('')} onRemoveBody={id => setBodyImageIds(ids => ids.filter(value => value !== id))} />
               {/* 封面（单选，必填） */}
               <section className="space-y-2">
                 <p className="text-sm font-medium text-ink">封面（必填，单图）</p>
@@ -236,7 +255,7 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = '
                   </p>
                 ) : libraryImages.length === 0 ? (
                   <p className="text-xs text-ink-muted">
-                    素材库里还没有图片，请先到左侧「素材」页上传（jpg/png/webp，单张 ≤20MB）。
+                    {appliedQuery ? '没有匹配图片，请换短关键词或点击「全部图片」；已选图片仍保留。' : '素材库里还没有图片，可展开「图片提示词」生成后上传，或到「素材」页上传。'}
                   </p>
                 ) : (
                   <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
@@ -248,12 +267,14 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = '
                         aria-label={selectedCoverId === image.id ? `已选封面：${image.originalName}` : `选择封面 ${image.originalName}`}
                         onClick={() => setSelectedCoverId(selectedCoverId === image.id ? '' : image.id)}
                         className={`overflow-hidden rounded-lg border ${selectedCoverId === image.id ? 'border-accent-line ring-2 ring-accent' : 'border-line'}`}
+                        title={[image.description, image.tags?.join('，')].filter(Boolean).join(' · ')}
                       >
                         {libraryUrls[image.id] ? (
                           <img src={libraryUrls[image.id]} alt={image.originalName} className="h-20 w-full object-cover" />
                         ) : (
                           <span className="block h-20 w-full bg-canvas" />
                         )}
+                        <span className="block truncate px-1 py-1 text-xs text-ink-muted">{image.description || image.originalName}</span>
                       </button>
                     ))}
                   </div>
@@ -427,4 +448,29 @@ export function ToutiaoArticleFormView({
       </div>
     </div>
   );
+}
+
+
+export function ArticleImageSearch({ query, loading, total, count, showPrompts, onQuery, onSearch, onReset, onTogglePrompts }: {
+  query: string; loading: boolean; total: number; count: number; showPrompts: boolean;
+  onQuery: (query: string) => void; onSearch: () => void; onReset: () => void; onTogglePrompts: () => void;
+}) {
+  return <section className="space-y-2 rounded-lg border border-line p-3">
+    <form className="flex flex-wrap items-end gap-2" onSubmit={e => { e.preventDefault(); onSearch(); }}>
+      <label className="min-w-0 flex-1 text-sm text-ink">图片关键词<input className="mt-1 w-full rounded-lg border border-line-ui bg-canvas p-2 text-ink" maxLength={200} placeholder="例如：海边 日落（空格分隔）" value={query} onChange={e => onQuery(e.target.value)} /></label>
+      <Button type="submit" disabled={loading}>{loading ? '搜索中…' : '搜索图片'}</Button><Button disabled={loading} onClick={onReset}>全部图片</Button>
+      <Button aria-expanded={showPrompts} onClick={onTogglePrompts}>{showPrompts ? '返回文章选图' : '图片提示词'}</Button>
+    </form>
+    <p className="text-xs text-ink-muted">候选 {count} / 共 {total} 张。封面与正文配图共用搜索；筛选不会取消已选图片。</p>
+  </section>;
+}
+export function ArticleImageSelectionSummary({ cover, bodyImages, wechat, onRemoveCover, onRemoveBody }: {
+  cover?: Pick<AssetRecord, 'id' | 'originalName'>; bodyImages: Pick<AssetRecord, 'id' | 'originalName'>[]; wechat: boolean;
+  onRemoveCover: () => void; onRemoveBody: (id: string) => void;
+}) {
+  if (!cover && (!wechat || !bodyImages.length)) return null;
+  return <div className="space-y-2 rounded-lg border border-line bg-elevated p-3 text-sm text-ink">
+    {cover && <p className="flex flex-wrap items-center gap-2"><span className="break-words">已选封面：{cover.originalName}</span><Button size="sm" onClick={onRemoveCover}>取消封面</Button></p>}
+    {wechat && bodyImages.length > 0 && <><p>正文配图顺序</p><ol className="space-y-1">{bodyImages.map((image, index) => <li key={image.id} className="flex flex-wrap items-center gap-2"><span className="break-words">{index + 1}. {image.originalName}</span><Button size="sm" onClick={() => onRemoveBody(image.id)}>移除正文图 {index + 1}</Button></li>)}</ol></>}
+  </div>;
 }

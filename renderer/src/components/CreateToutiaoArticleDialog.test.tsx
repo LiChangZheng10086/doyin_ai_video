@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ToutiaoArticleFormView } from './CreateToutiaoArticleDialog.js';
+import { ToutiaoArticleFormView, ArticleImageSearch, ArticleImageSelectionSummary } from './CreateToutiaoArticleDialog.js';
 
 const LIMITS = { titleMin: 2, titleMax: 30, bodyChars: 20_000 };
 const noop = () => undefined;
@@ -86,4 +86,15 @@ test('建包成功后只给「关闭」，不再给「创建文章包」（避�
 
   assert.match(html, /已创建头条文章包 v2/u);
   assert.equal(html.includes('>创建文章包<'), false);
+});
+
+test('article image search is explicit and selected images stay visible independently of results', () => {
+ const search = renderToStaticMarkup(<ArticleImageSearch query="" loading={false} total={8} count={8} showPrompts={false} onQuery={noop} onSearch={noop} onReset={noop} onTogglePrompts={noop} />);
+ assert.match(search, /图片关键词/); assert.match(search, /图片提示词/); assert.match(search, /全部图片/);
+ const cover = { id: 'one', originalName: '已选封面.png' };
+ const body = [{ id: 'two', originalName: '正文第二图.png' }, { id: 'one', originalName: '已选封面.png' }];
+ const toutiao = renderToStaticMarkup(<ArticleImageSelectionSummary cover={cover} bodyImages={[]} wechat={false} onRemoveCover={noop} onRemoveBody={noop} />);
+ assert.match(toutiao, /已选封面/); assert.doesNotMatch(toutiao, /正文配图顺序/);
+ const wechat = renderToStaticMarkup(<ArticleImageSelectionSummary cover={cover} bodyImages={body} wechat onRemoveCover={noop} onRemoveBody={noop} />);
+ assert.match(wechat, /正文配图顺序/); assert.ok(wechat.indexOf('正文第二图.png') < wechat.lastIndexOf('已选封面.png'));
 });
