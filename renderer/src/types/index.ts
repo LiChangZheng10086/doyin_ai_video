@@ -865,6 +865,12 @@ export interface AssetRecord {
   width?: number;
   height?: number;
   durationMs?: number;
+  description?: string;
+  tags?: string[];
+  generationPrompt?: string;
+  imagePromptId?: string;
+  imagePromptVersion?: number;
+  metadataVersion?: number;
   createdAt: string;
 }
 

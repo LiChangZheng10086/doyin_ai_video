@@ -1,3 +1,6 @@
+import { useBlocker } from 'react-router-dom';
+import { ImagePromptPanel } from '../components/ImagePromptPanel';
+import { ImageAssetEditor } from '../components/ImageAssetEditor';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, AudioLines, Images, Loader2, Music4, Trash2, Upload } from 'lucide-react';
 import { Layout } from '../components/Layout';
@@ -39,10 +42,26 @@ export function AssetsPage() {
   const [uploading, setUploading] = useState<AssetKind | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AssetRecord | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [showPrompts, setShowPrompts] = useState(false);
+  const [query, setQuery] = useState(''); const [imageQuery, setImageQuery] = useState('');
+  const [imageTotal, setImageTotal] = useState(0); const [searching, setSearching] = useState(false);
+  const [imageError, setImageError] = useState(''); const [editingImage, setEditingImage] = useState<AssetRecord | null>(null);
+  const [promptGuard, setPromptGuard] = useState({ dirty: false, busy: false });
+  const [editorGuard, setEditorGuard] = useState({ dirty: false, busy: false });
+  const promptChanged = useCallback((dirty: boolean, busy: boolean) => setPromptGuard({ dirty, busy }), []);
+  const editorChanged = useCallback((dirty: boolean, busy: boolean) => setEditorGuard({ dirty, busy }), []);
+  const protectedBusy = promptGuard.busy || editorGuard.busy;
+  const protectedDirty = promptGuard.dirty || editorGuard.dirty;
+  const blocker = useBlocker(protectedDirty || protectedBusy);
+  useEffect(() => { if (blocker.state === 'blocked') { if (!protectedBusy && window.confirm('图片编辑尚未保存，放弃并离开？')) blocker.proceed(); else blocker.reset(); } }, [blocker, protectedBusy]);
+  useEffect(() => { if (!protectedDirty && !protectedBusy) return; const guard = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; }; window.addEventListener('beforeunload', guard); return () => window.removeEventListener('beforeunload', guard); }, [protectedDirty, protectedBusy]);
+  const imageRequestId = useRef(0);
   const imageInput = useRef<HTMLInputElement>(null);
   const audioInput = useRef<HTMLInputElement>(null);
+  const assetRequestId = useRef(0);
 
   const load = useCallback(async () => {
+    const request = ++assetRequestId.current;
     setIsLoading(true);
     setError(null);
     try {
@@ -50,12 +69,13 @@ export function AssetsPage() {
         apiClient.getAssets('image'),
         apiClient.getAssets('audio'),
       ]);
-      setImages(loadedImages);
-      setAudio(loadedAudio);
       const urls: Record<string, string> = {};
       for (const record of [...loadedImages, ...loadedAudio]) {
         urls[record.id] = await apiClient.getAssetRawUrl(record.id);
       }
+      if (request !== assetRequestId.current) return;
+      setImages(loadedImages); setImageTotal(loadedImages.length); setImageQuery(''); setQuery('');
+      setAudio(loadedAudio);
       setRawUrls(urls);
     } catch (err) {
       /*
@@ -64,7 +84,7 @@ export function AssetsPage() {
        * 各页口径也不一致（作品列表用的是中文友好文案）。
        */
       console.error('加载素材失败:', err);
-      setError('素材加载失败，请检查后端服务是否正常运行');
+      if (request === assetRequestId.current) setError('素材加载失败，请检查后端服务是否正常运行');
     } finally {
       setIsLoading(false);
     }
@@ -72,7 +92,29 @@ export function AssetsPage() {
 
   useEffect(() => {
     void load();
+    return () => { assetRequestId.current++; imageRequestId.current++; };
   }, [load]);
+
+  const refreshAudio = useCallback(async () => {
+    const request = ++assetRequestId.current;
+    const records = await apiClient.getAssets('audio');
+    const pairs = await Promise.all(records.map(async record => [record.id, await apiClient.getAssetRawUrl(record.id)] as const));
+    if (request !== assetRequestId.current) return;
+    setAudio(records);
+    setRawUrls(previous => ({ ...previous, ...Object.fromEntries(pairs) }));
+  }, []);
+
+  const refreshImages = useCallback(async (nextQuery = imageQuery) => {
+    const request = ++imageRequestId.current; setSearching(true); setImageError('');
+    try {
+      const result = await apiClient.searchImageAssets(nextQuery);
+      const pairs = await Promise.all(result.assets.map(async record => [record.id, await apiClient.getAssetRawUrl(record.id)] as const));
+      if (request !== imageRequestId.current) return;
+      setImages(result.assets); setImageTotal(result.total); setImageQuery(nextQuery);
+      setRawUrls(previous => ({ ...previous, ...Object.fromEntries(pairs) }));
+    } catch (e) { if (request === imageRequestId.current) setImageError((e as Error).message); }
+    finally { if (request === imageRequestId.current) setSearching(false); }
+  }, [imageQuery]);
 
   const handleUpload = useCallback(async (kind: AssetKind, fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
@@ -87,13 +129,14 @@ export function AssetsPage() {
     setUploading(kind);
     try {
       await apiClient.uploadAssets(kind, files);
-      await load();
+      await (kind === 'image' ? refreshImages() : refreshAudio());
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : '上传失败');
+      if (kind === 'image') await refreshImages();
     } finally {
       setUploading(null);
     }
-  }, [load]);
+  }, [refreshImages, refreshAudio]);
 
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -101,13 +144,13 @@ export function AssetsPage() {
     try {
       await apiClient.deleteAsset(deleteTarget.id);
       setDeleteTarget(null);
-      await load();
+      await (deleteTarget.kind === 'image' ? refreshImages() : refreshAudio());
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : '删除失败');
     } finally {
       setDeleting(false);
     }
-  }, [deleteTarget, load]);
+  }, [deleteTarget, refreshImages, refreshAudio]);
 
   const renderUploadButton = (kind: AssetKind, label: string) => (
     <button
@@ -135,6 +178,9 @@ export function AssetsPage() {
     <Layout>
       <PageHeader title="素材" description="手动上传图片与音频，供后续创作选用。" />
 
+      <div className="mb-4 flex flex-wrap gap-2"><Button aria-expanded={showPrompts} disabled={promptGuard.busy} onClick={() => { if (!showPrompts || !promptGuard.dirty || window.confirm('提示词面板有未保存内容，放弃并关闭？')) setShowPrompts(value => !value); }}>图片提示词</Button></div>
+      {showPrompts && <div className="mb-6"><ImagePromptPanel onAssetsChanged={refreshImages} onDirtyChange={promptChanged} /></div>}
+      {editingImage && <div className="mb-6"><ImageAssetEditor key={editingImage.id} asset={editingImage} onDirtyChange={editorChanged} onSaved={saved => { setEditingImage(saved); void refreshImages(); }} onCancel={() => setEditingImage(null)} /></div>}
       {/* ⚠️ 只在已有素材时显示横幅；一份都没有时改由下面的整页错误态独占。 */}
       {error && (images.length > 0 || audio.length > 0) && (
         <div className="mb-4 rounded-lg border border-danger-line bg-danger-soft p-4 text-sm text-danger" role="alert">{error}</div>
@@ -165,9 +211,9 @@ export function AssetsPage() {
               <div>
                 <h2 className="flex items-center gap-2 font-semibold text-ink">
                   <Images size={18} className="text-ink-muted" />
-                  图片 <span className="text-sm font-normal text-ink-muted">({images.length})</span>
+                  图片 <span className="text-sm font-normal text-ink-muted">({imageTotal})</span>
                 </h2>
-                <p className="mt-1 text-xs text-ink-muted">支持 jpg / png / webp，单张不超过 20MB。建议 9:16 竖版。</p>
+                <p className="mt-1 text-xs text-ink-muted">支持 jpg / png / webp，单张不超过 20MB；比例按封面或正文用途选择。</p>
               </div>
               {renderUploadButton('image', '上传图片')}
               <input
@@ -183,8 +229,11 @@ export function AssetsPage() {
               />
             </div>
 
+            <form className="mb-4 flex flex-wrap items-end gap-2" onSubmit={event => { event.preventDefault(); void refreshImages(query); }}><label className="min-w-0 flex-1 text-sm">图片关键词<input className="mt-1 w-full rounded-lg border border-line-ui bg-panel p-2 text-ink" maxLength={200} placeholder="例如：海边 日落（空格分隔）" value={query} onChange={event => setQuery(event.target.value)} /></label><Button type="submit" disabled={searching}>{searching ? '搜索中…' : '搜索图片'}</Button><Button disabled={searching} onClick={() => { setQuery(''); void refreshImages(''); }}>全部图片</Button></form>
+            {imageError && <p role="alert" className="mb-3 text-sm text-danger">{imageError}</p>}
+            <p className="mb-3 text-xs text-ink-muted">显示 {images.length} / 共 {imageTotal} 张 · 描述、标签、提示词与文件名均可检索</p>
             {images.length === 0 ? (
-              renderEmpty(Images, '还没有图片素材', '上传图片后，创建图文发布时可以从这里挑选。')
+              renderEmpty(Images, imageQuery ? '没有匹配的图片' : '还没有图片素材', imageQuery ? '换成短关键词，或点击「全部图片」。' : '上传图片后，创建图文发布时可以从这里挑选。')
             ) : (
               /*
                * 自适应密排：改造前是 `lg:grid-cols-4`，在 1440px 下每格 ~332px 宽，
@@ -233,6 +282,10 @@ export function AssetsPage() {
                         {record.width && record.height ? `${record.width}×${record.height} · ` : ''}
                         {formatBytes(record.bytes)}
                       </p>
+                      {record.description && <p className="line-clamp-2 text-xs text-ink-muted" title={record.description}>{record.description}</p>}
+                      {record.tags?.length ? <p className="truncate text-xs text-ink-muted">{record.tags.join(' · ')}</p> : null}
+                      {record.generationPrompt && <details className="text-xs text-ink-muted"><summary className="cursor-pointer">查看图片提示词</summary><p className="max-h-40 overflow-auto whitespace-pre-wrap break-words pt-2">{record.generationPrompt}</p></details>}
+                      <Button size="sm" disabled={editorGuard.busy} onClick={() => { if (!editorGuard.dirty || window.confirm('当前图片信息尚未保存，放弃并切换？')) setEditingImage(record); }}>编辑图片信息</Button>
                     </figcaption>
                   </figure>
                 ))}
@@ -268,6 +321,7 @@ export function AssetsPage() {
             <div className="mb-4 rounded-lg border border-line bg-elevated px-4 py-3 text-sm text-ink-muted">
               音频暂未接入成片，本轮仅支持上传与试听。
             </div>
+
 
             {audio.length === 0 ? (
               renderEmpty(AudioLines, '还没有音频素材', '上传后可以在这里试听与管理。')

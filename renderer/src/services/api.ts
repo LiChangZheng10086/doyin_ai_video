@@ -1,4 +1,6 @@
 import axios, { AxiosInstance, type AxiosRequestConfig } from 'axios';
+import type { ImagePromptInput, ImagePromptRecord } from '../../../src/lib/image-prompts';
+import type { ImageAssetMetadata } from '../../../src/lib/assets-store';
 import type { Gallery, GalleryDraft, GalleryPreview, GallerySource } from '../../../src/lib/gallery-types';
 import type { HotspotBoard, HotspotFavorite } from '../../../src/lib/hotspots';
 import type {
@@ -41,6 +43,7 @@ import type {
   UpdatePublishingContentInput,
 } from '../types';
 import { parseSkillProgressLine, type SkillProgressEvent } from '../utils/skill-progress';
+
 
 export function parseApiError(error: unknown): ParsedApiError {
   const response = (error as {
@@ -239,13 +242,44 @@ export class ApiClient {
   }
 
   async uploadAssets(kind: AssetKind, files: File[]): Promise<AssetRecord[]> {
+    if (kind === 'image') {
+      const result = await this.uploadImageAssets(files);
+      if (result.failures?.length) throw new Error(`已入库 ${result.assets.length} 张；${result.failures.length} 张未成功：${result.failures.map(item => item.message).join('；')}`);
+      return result.assets;
+    }
     const client = await this.getClient();
     const form = new FormData();
     for (const file of files) form.append('files', file);
     // 不要手写 Content-Type：让运行时带上 multipart 的 boundary
-    const route = kind === 'image' ? 'images' : 'audio';
+    const route = 'audio';
     const response = await client.post<{ assets: AssetRecord[] }>(`/api/assets/${route}`, form);
     return response.data.assets;
+  }
+
+  async getImagePrompts(): Promise<ImagePromptRecord[]> {
+    return (await this.publishingRequest<{ prompts: ImagePromptRecord[] }>({ url: '/api/image-prompts' })).prompts;
+  }
+  async createImagePrompts(input: ImagePromptInput): Promise<ImagePromptRecord[]> {
+    return (await this.publishingRequest<{ prompts: ImagePromptRecord[] }>({ method: 'POST', url: '/api/image-prompts', data: input, timeout: 75_000 })).prompts;
+  }
+  async updateImagePrompt(id: string, input: Pick<ImagePromptRecord, 'title' | 'tags' | 'prompt' | 'version'>): Promise<ImagePromptRecord> {
+    return (await this.publishingRequest<{ prompt: ImagePromptRecord }>({ method: 'PATCH', url: `/api/image-prompts/${encodeURIComponent(id)}`, data: input })).prompt;
+  }
+  async deleteImagePrompt(id: string, version: number): Promise<void> {
+    await this.publishingRequest({ method: 'DELETE', url: `/api/image-prompts/${encodeURIComponent(id)}`, data: { version } });
+  }
+  async searchImageAssets(q = ''): Promise<{ assets: AssetRecord[]; total: number }> {
+    return this.publishingRequest({ url: '/api/assets', params: { kind: 'image', q } });
+  }
+  async updateImageMetadata(id: string, input: ImageAssetMetadata & { version: number }): Promise<AssetRecord> {
+    return (await this.publishingRequest<{ asset: AssetRecord }>({ method: 'PATCH', url: `/api/assets/${encodeURIComponent(id)}/metadata`, data: input })).asset;
+  }
+  async uploadImageAssets(files: File[], metadata?: ImageAssetMetadata[], binding?: { id: string; version: number }): Promise<{ assets: AssetRecord[]; failures?: Array<{ index: number; code: string; message: string }> }> {
+    const data = new FormData();
+    for (const file of files) data.append('files', file);
+    if (metadata) data.append('metadata', JSON.stringify(metadata));
+    if (binding) { data.append('imagePromptId', binding.id); data.append('imagePromptVersion', String(binding.version)); }
+    return this.publishingRequest({ method: 'POST', url: '/api/assets/images', data });
   }
 
   async deleteAsset(id: string): Promise<void> {

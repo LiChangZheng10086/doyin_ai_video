@@ -180,3 +180,28 @@ test('批量执行合集步骤必须关掉客户端超时（否则长批次会�
     '批量路由必须显式传 timeout: 0（不限时），否则会被 16 分钟的全局超时误判为失败',
   );
 });
+
+test('image upload keeps partial failures and per-file metadata order; network failures are not replayed', async () => {
+ const client = new ApiClient(); const requests: any[] = [];
+ client.getClient = async () => ({ request: async (config: any) => { requests.push(config); return { data: { assets: [{ id: 'one' }], failures: [{ index: 1, message: '类型错误' }] } }; } }) as any;
+ const files = [new File(['a'], 'a.png'), new File(['b'], 'b.png')];
+ const metadata = [{ description: '蓝色海水' }, { description: '雪山' }];
+ const result = await client.uploadImageAssets(files, metadata, { id: 'draft', version: 3 });
+ assert.equal(result.failures?.[0].index, 1);
+ assert.equal(requests[0].data.get('metadata'), JSON.stringify(metadata));
+ assert.equal(requests[0].data.get('imagePromptVersion'), '3');
+ await assert.rejects(() => client.uploadAssets('image', files), /已入库 1/);
+ let attempts = 0;
+ client.getClient = async () => ({ request: async () => { attempts++; throw new Error('offline'); } }) as any;
+ await assert.rejects(() => client.uploadImageAssets(files)); assert.equal(attempts, 1);
+});
+
+test('image drafts and metadata writes carry explicit versions and searches preserve totals', async () => {
+ const client = new ApiClient(); const seen: any[] = [];
+ client.getClient = async () => ({ request: async (config: any) => { seen.push(config); return { data: { prompt: { version: 4 }, asset: { metadataVersion: 5 }, assets: [], total: 12 } }; } }) as any;
+ await client.updateImagePrompt('draft', { version: 3, title: '新标题', tags: [], prompt: '新提示词' });
+ await client.updateImageMetadata('image', { version: 4, description: '新描述' });
+ assert.equal(seen[0].data.version, 3); assert.equal(seen[1].data.version, 4);
+ assert.equal((await client.searchImageAssets('海边')).total, 12);
+ await client.deleteImagePrompt('draft', 4); assert.equal(seen[3].data.version, 4);
+});
