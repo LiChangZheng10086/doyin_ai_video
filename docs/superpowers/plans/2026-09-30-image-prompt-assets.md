@@ -10,6 +10,10 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-30-image-prompt-assets-design.md`
 
+**Plan review:** 2026-09-30，用户授权本人审核计划并选择执行方式；已完成规格覆盖、实际接口和测试入口核对。
+
+**Execution method:** Native，由本人在当前会话顺序实现，最后一次独立代码审查。共享文件开始编辑前保存本次工作区差异作为边界参考；不恢复、覆盖或整体提交在线音频改动。计划前置审核已结束，可以开始 Task 1，不再要求用户重复选择。
+
 ## Global Constraints
 
 - 不安装外部 Skills，不新增生图接口、中文自动分词、语义检索或模型专用参数。
@@ -37,7 +41,7 @@
 **Files:** Create `src/lib/image-prompts.ts`, `src/lib/image-prompts.test.ts`, `docs/third-party/image-prompt-rules.md`。
 
 **Interfaces:**
-- `ImagePromptInput`：mode 为 generate／optimize；referenceText、originalPrompt、changes、purpose、aspectRatio、style、language、count 按规格校验。generate 要求非空 referenceText；optimize 要求非空 originalPrompt，count 固定 1。空参考内容不能进入模型。
+- `ImagePromptInput`：mode 为 generate／optimize；referenceText、originalPrompt、changes、purpose、aspectRatio、style、language、count 按规格校验。generate 要求非空 referenceText，缺省用途／比例为 cover／16:9；optimize 要求非空 originalPrompt，count 固定 1，未指定 purpose／aspectRatio／style 时不注入生成模式的默认值。优化界面这些选择缺省显示「保留原提示词」，实际请求省略字段，显式修改要求优先。language 为 zh／en，缺省 zh。空参考内容不能进入生成模型。
 - `ImagePromptRecord`：id、输入快照、title、tags、prompt、rulesVersion、version、createdAt、updatedAt。
 - `ImagePromptService(storage, { resolveAiConfig, createClient? })`；createClient 使用可注入的现有聊天客户端形状，生产配置创建 OpenAI 客户端；复用 `extractAiMessageText`。
 - Produces `list(): Promise<ImagePromptRecord[]>`、`generate(input: unknown): Promise<ImagePromptRecord[]>`、`update(id: string, input: unknown): Promise<ImagePromptRecord>`、`remove(id: string, version: unknown): Promise<void>`、`snapshot(id: string, version: unknown): Promise<ImagePromptRecord>`。
@@ -45,7 +49,7 @@
 
 - [ ] 写最小回归：生成后重建服务能读回；优化另建记录不改原稿；输出数量不符／畸形／超限零写入；版本冲突；损坏索引不覆盖；并发生成不丢记录；snapshot 后编辑／删除不改旧对象。
 - [ ] 运行 `node --import tsx --test src/lib/image-prompts.test.ts`，确认新行为失败后再写实现。
-- [ ] 实现服务与固定通用规则，索引 `cache/image-prompts.json` 带 schemaVersion=1。AI 请求在队列外，最终全组验证后一次串行保存；版本从 1 开始递增。PATCH 只允许编辑 title／tags／prompt，其他输入快照不改；snapshot 返回独立复制。模型响应要求 `{ prompts: [{ title, tags, prompt }] }`，规则与比例设置从业务约束中独立提供。模型输出 token 上限沿用已有 AI 输出配置策略，不假定一个供应商格式通用。
+- [ ] 实现服务与固定通用规则，索引 `cache/image-prompts.json` 带 schemaVersion=1。AI 请求在队列外，最终全组验证后一次串行保存；版本从 1 开始递增。PATCH 只允许编辑 title／tags／prompt，其他输入快照不改；snapshot 返回独立复制。模型响应要求 `{ prompts: [{ title, tags, prompt }] }`，规则与比例设置从业务约束中独立提供。采用单次聊天请求要求 JSON，不强制供应商特有 response_format、不以第二次付费请求作格式降级；解析纯 JSON 或完整包裹的一组 Markdown JSON 代码围栏，其他畸形输出拒绝。maxOutputTokens 未配置时不发送 max_tokens，有配置时传该值；测试覆盖截断结果零保存及每次操作只有一次上游调用。
 - [ ] 第三方说明记录两份参考的固定提交、版权和许可证；规则用本项目自己的简短表达，不复制完整 Skill，不沿用社区宣称的具体模型版本。
 - [ ] 重跑本任务测试，全部通过后仅提交本任务文件，提交信息 `feat: add persistent image prompt generation and optimization`。
 
@@ -65,12 +69,12 @@
 - [ ] 补 store 检查：旧记录可读、元数据修改／清空／冲突、并发新增与编辑不丢其他图片／音频、图片不同描述、中文多词／提示词／文件名检索与确定排序。
 - [ ] 补真实 HTTP 检查：无会话写入 401、multipart 数组不匹配 400 零写入、绑定过期草稿 409 零写入、绑定后编辑／删除不影响快照、部分成功 200、全成功 201、零成功具体 4xx／5xx、metadata 超限、audio 新图片字段拒绝、total 不因搜索变化、音频／原文件 Range 原契约可用。使用临时目录、随机端口与模拟 AI，不动真实数据。
 - [ ] 运行 `node --import tsx --test src/lib/assets-store.test.ts src/lib/image-prompt-routes.test.ts`，确认未实现行为失败。
-- [ ] 接通对应接口。multipart 元数据先完整校验；绑定草稿仅从 snapshot 取原文。同批图片逐项调用统一 store，失败回原始 index；磁盘／索引错误停止剩余项并标未上传。错误处理放路由自身，不依赖注册顺序导致 LocalAuthError 变 500。
+- [ ] 接通对应接口。multipart 元数据先完整校验；绑定草稿仅从 snapshot 取原文。同批图片逐项调用统一 store，失败回原始 index；磁盘／索引错误停止剩余项并标未上传。错误处理放路由自身，不依赖注册顺序导致 LocalAuthError 变 500。共用 AI resolver 的独立后端回退对象补传 `config.aiMaxOutputTokens`，不复制配置解析逻辑。image query 不接受重复参数／数组，audio 不接受非空图片查询条件，避免静默忽略非法条件。
 - [ ] 重跑上述测试及 `node --import tsx --test src/lib/online-audio-routes.test.ts`。通过后只提交本轮新增内容；src/app.ts／assets-store.ts 已有音频修改不能整体顺带提交。
 
 ### Task 3: 素材页提示词面板与图片编辑
 
-**Files:** Modify `renderer/src/services/api.ts`, `renderer/src/types/index.ts`, `renderer/src/pages/AssetsPage.tsx`；Create `renderer/src/components/ImagePromptPanel.tsx`, `renderer/src/components/ImageAssetEditor.tsx`, `renderer/src/components/ImagePromptPanel.test.tsx`。
+**Files:** Modify `renderer/src/services/api.ts`, `renderer/src/services/api.test.ts`, `renderer/src/types/index.ts`, `renderer/src/pages/AssetsPage.tsx`；Create `renderer/src/components/ImagePromptPanel.tsx`, `renderer/src/components/ImageAssetEditor.tsx`, `renderer/src/components/ImagePromptPanel.test.tsx`。
 
 **Interfaces:**
 - Consumes Task 1／2 的数据类型及接口；仅通过 type 导入后端定义，渲染端不导入 Node／OpenAI 运行时代码。AssetRecord 的新字段与后端对齐，保留现有 audioSource。
@@ -79,11 +83,11 @@
 - `ImagePromptPanel({ referenceText?, defaultAspectRatio?, onAssetsChanged })`：可在素材页展开，也可内联进文章 Modal；包含生成／优化表单、已存草稿列表、版本编辑、复制、删除、绑定上传及逐图描述表单。无重叠 Modal。
 - `ImageAssetEditor({ asset, onSaved, onCancel })`：内联编辑描述／标签／最终提示词，保存时带当前版本；冲突保留输入并提供刷新核对。
 
-- [ ] 写静态渲染检查：生成／优化入口、用途／比例／语言选择、复制和上传入口、可见错误区域与表单 label。交互状态通过 Task 4 的隔离浏览器脚本验证，不用静态测试假装覆盖 hooks。
-- [ ] 运行 `node --import tsx --test renderer/src/components/ImagePromptPanel.test.tsx`，确认缺少 UI 的检查失败。
+- [ ] 写静态渲染检查：生成／优化入口、用途／比例／语言选择、复制和上传入口、可见错误区域与表单 label。补 API 行为检查：200 部分成功不得被当成全成功；multipart 的 metadata 顺序与绑定版本正确；网络中断不重放上传；草稿与元数据更新带版本。交互状态通过 Task 4 的隔离浏览器脚本验证，不用静态测试假装覆盖 hooks。
+- [ ] 运行 `node --import tsx --test renderer/src/components/ImagePromptPanel.test.tsx renderer/src/services/api.test.ts`，确认缺少 UI／新 API 的检查失败。
 - [ ] 实现表单、草稿恢复、编辑与明确保存、clipboard 异常提示、标签编辑、图片预览 URL 释放、逐文件绑定上传和失败重试。未保存内容用关闭回调内确认保护；不擅自覆盖草稿或文章。新请求序号丢弃过期结果。
 - [ ] 素材页新增搜索与 metadata 展示／编辑，区分没有素材和无搜索结果；面板入库后刷新图片。沿用 theme 令牌、原控件和音频 OnlineAudioPanel，保持键盘可达。
-- [ ] 运行上述 UI 检查及 `npm run check:renderer`，通过后只提交本轮变更。
+- [ ] 运行上述 UI／API 检查及 `npm run check:renderer`，通过后只提交本轮变更。
 
 ### Task 4: 文章选图集成、浏览器验收与完整门禁
 
@@ -93,7 +97,7 @@
 - Consumes `ImagePromptPanel` 和 Task 3 API。onAssetsChanged 只刷新候选素材，绝不设置 articleTitle／articleBody。
 - 封面和公众号正文共用搜索结果；独立保留素材总数及已选图片缓存。请求 ID 防旧结果覆盖；默认空查询显示全库，筛选不触发选图或文章预览。
 - prompt 面板输入当前编辑的标题／正文，头条 16:9、公众号 2.35:1；显式上传／选图后仍走现有预览指纹与 ID 路径校验。
-- 验收脚本创建临时 storage，启动随机或显式隔离端口，注入模拟 AI，打印入口，退出清理服务与临时目录；正常模式不调用外部生图或平台提交。
+- 验收脚本创建临时 storage，启动随机或显式隔离端口，使用临时本地 OpenAI-compatible HTTP 夹具作为 resolveAiConfig 的 baseURL，模拟 AI 响应及错误。通过现有 createExpressApp 装配实际路由，不新增仅供测试的生产接口。打印入口，退出清理两个服务与临时目录；正常模式不调用外部生图或平台提交。
 
 - [ ] 补文章静态渲染检查：头条仅封面、公众号正文保留顺序、关键词搜索和内联面板存在；保留现有 articleFallback 提示。运行 `node --import tsx --test renderer/src/components/CreateToutiaoArticleDialog.test.tsx` 看新增断言失败。
 - [ ] 实现选图集成；不添加新的发布类型或平台参数，不为搜索请求重新生成文章。
@@ -104,6 +108,8 @@
 - [ ] 请求一次独立代码审查，范围限定本轮差异和批准规格，保留在线音频改动边界；重要问题用失败检查复现后修复，再验证全套门禁。
 - [ ] 最后核对 diff 和凭据扫描，更新验收记录，只提交本功能，汇报真实完成与未验收项目；不自动推送、合并或发布。
 
-## 执行方式建议
+## 计划审核结论与已选执行方式
 
-推荐 Native：四个任务共享 AssetStore、API 和文章表单，且同工作区已有音频改动；由同一实现者顺序完成更容易控制接口与差异边界。最终保留一次独立审查。若选择逐任务子代理方式，同样先写失败检查再实现并逐任务审核，不并发改动共享文件。
+已选 Native：四个任务共享 AssetStore、API 和文章表单，且同工作区已有音频改动；由同一实现者顺序完成更容易控制接口与差异边界。最终保留一次独立审查。
+
+本次审核补齐：优化模式保留原文时不注入默认比例；共享 resolver 透传既有输出上限；跨供应商采用单次 JSON 写作请求；部分上传成功的客户端检查；隔离验收通过本地 AI 夹具运行真实装配。任务 1 的数据类型由任务 2 路由／任务 3 UI 消费，任务 2 的素材协议由任务 3／4 消费，接口命名与版本语义一致。没有需要用户再决策的前置阻塞。
