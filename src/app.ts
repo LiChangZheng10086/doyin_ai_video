@@ -12,6 +12,8 @@ import { registerLocalUserErrorBoundary, registerLocalUserRoutes } from "./lib/l
 import { LocalUserStore } from "./lib/local-users.js";
 import { AssetStore } from "./lib/assets-store.js";
 import { registerAssetRoutes } from "./lib/assets-routes.js";
+import { ImagePromptService } from './lib/image-prompts.js';
+import { registerImagePromptRoutes } from './lib/image-prompt-routes.js';
 import { GalleryService } from "./lib/galleries.js";
 import { GalleryMedia } from "./lib/gallery-media.js";
 import { registerGalleryRoutes } from "./lib/gallery-routes.js";
@@ -204,6 +206,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       model: aiModel,
       apiKey: aiApiKey,
       baseURL: aiBaseURL,
+      maxOutputTokens: aiMaxOutputTokens,
     };
   };
   const publishingCopy = new PublishingCopyService({ resolveAiConfig: resolvePublishingAiConfig });
@@ -211,6 +214,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   // 素材库实例只建一份：素材路由与发布中心的「从素材库选图」必须看同一个索引，
   // 各建一份虽然等价（实例无内存态），但会让「素材库在哪里」出现两个答案。
   const assetStore = new AssetStore(storage);
+  const imagePrompts = new ImagePromptService(storage, { resolveAiConfig: resolvePublishingAiConfig });
   // 未配置 sauBinary 时仍构造实例：缺配置的报错发生在每条自动发布通路上，
   // 而不是让「发布中心整体不可用」（人工交付通路不受影响）。
   const sauRunner = config.sauRunner ?? new SauRunner({
@@ -369,7 +373,8 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   app.use(express.json({ limit: "2mb" }));
   registerLocalUserRoutes(app, { users: localUsers, sessions: localSessions });
-  registerAssetRoutes(app, { assets: assetStore, limits: config.assetUploadLimits });
+  registerAssetRoutes(app, { assets: assetStore, prompts: imagePrompts, sessions: localSessions, limits: config.assetUploadLimits });
+  registerImagePromptRoutes(app, { prompts: imagePrompts, sessions: localSessions });
   registerLocalUserErrorBoundary(app);
   registerPublishingRoutes(app, { publishing, sessions: localSessions });
   registerHotspotRoutes(app, { hotspots: new HotspotService(storage), sessions: localSessions });

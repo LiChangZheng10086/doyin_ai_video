@@ -1,11 +1,15 @@
 import { open } from "node:fs/promises";
 import { Router, type Express, type NextFunction, type Request, type Response } from "express";
 import multer, { MulterError } from "multer";
-import { AssetError, type AssetKind, type AssetStore } from "./assets-store.js";
+import { AssetError, searchImageAssets, validateImageMetadata, type AssetKind, type AssetStore } from "./assets-store.js";
+import { ImagePromptError, type ImagePromptService } from './image-prompts.js';
+import { LocalAuthError, requireActor, type LocalSessionStore } from './local-auth.js';
 import { sendRangeResponse } from "./range-response.js";
 
 export interface AssetRouteDeps {
   assets: AssetStore;
+  prompts?: ImagePromptService;
+  sessions?: LocalSessionStore;
   /** 上传限额，测试可注入更小的值以免构造大文件。 */
   limits?: { maxFileBytes?: number; maxFiles?: number };
 }
@@ -58,14 +62,21 @@ export function registerAssetRoutes(app: Express, deps: AssetRouteDeps): void {
         res.status(400).json({ code: "asset_kind_invalid", message: "素材种类无效" });
         return;
       }
-      res.json({ assets: await deps.assets.list(kindParam) });
+      const query = req.query.q;
+      if (query !== undefined && (typeof query !== 'string' || (kindParam !== 'image' && query !== ''))) throw new AssetError('asset_metadata_invalid', 400, '图片搜索参数无效');
+      const all = await deps.assets.list(kindParam);
+      res.json({ assets: query === undefined ? all : searchImageAssets(all, query), total: all.length });
     } catch (error) {
       next(error);
     }
   });
 
   for (const [route, kind] of Object.entries(KIND_BY_ROUTE)) {
-    router.post(`/assets/${route}`, upload.array("files"), async (req, res, next) => {
+    const parser = kind === 'image' ? multer({ storage: multer.memoryStorage(), limits: {
+      fileSize: deps.limits?.maxFileBytes ?? 20 * 1024 * 1024, files: deps.limits?.maxFiles ?? DEFAULT_MAX_FILES,
+      fieldSize: 1024 * 1024, fields: 3,
+    } }).array('files') : upload.array('files');
+    router.post(`/assets/${route}`, parser, async (req, res, next) => {
       try {
         const files = (req.files as Express.Multer.File[] | undefined) ?? [];
         if (files.length === 0) {
@@ -73,19 +84,60 @@ export function registerAssetRoutes(app: Express, deps: AssetRouteDeps): void {
           return;
         }
 
-        const created = [];
-        for (const file of files) {
-          created.push(await deps.assets.add(kind, {
-            originalName: decodeMultipartFilename(file.originalname),
-            data: file.buffer,
-          }));
+        const input = body(req);
+        const hasMetadata = Object.keys(input).length > 0;
+        if (kind === 'audio' && hasMetadata) throw new AssetError('asset_metadata_invalid', 400, '音频不接受图片元数据');
+        if (hasMetadata) {
+          if (!deps.sessions) throw new LocalAuthError('local_session_required', 401, '本机会话不可用');
+          await new Promise<void>((resolve, reject) => requireActor(deps.sessions!)(req, res, e => e ? reject(e) : resolve()));
+          if (Object.keys(input).some(key => !['metadata', 'imagePromptId', 'imagePromptVersion'].includes(key))) throw new AssetError('asset_metadata_invalid', 400);
         }
-        res.status(201).json({ assets: created });
+        let metadata = files.map(() => ({} as ReturnType<typeof validateImageMetadata>));
+        if (input.metadata !== undefined) {
+          let values: unknown; try { values = typeof input.metadata === 'string' ? JSON.parse(input.metadata) : undefined; } catch { /* Invalid below. */ }
+          if (!Array.isArray(values) || values.length !== files.length) throw new AssetError('asset_metadata_invalid', 400, '图片信息必须与文件数量和顺序一致');
+          metadata = values.map(validateImageMetadata);
+        }
+        let snapshot;
+        if (input.imagePromptId !== undefined || input.imagePromptVersion !== undefined) {
+          if (typeof input.imagePromptId !== 'string' || typeof input.imagePromptVersion !== 'string' || !/^[1-9]\d*$/.test(input.imagePromptVersion)) throw new AssetError('asset_metadata_invalid', 400, '提示词绑定参数无效');
+          if (!deps.prompts) throw new AssetError('asset_metadata_invalid', 400, '提示词服务不可用');
+          if (metadata.some(item => item.generationPrompt !== undefined)) throw new AssetError('asset_metadata_invalid', 400, '绑定上传请先保存草稿中的最终提示词');
+          snapshot = await deps.prompts.snapshot(input.imagePromptId, Number(input.imagePromptVersion));
+        }
+        const created = []; const failures: Array<{ index: number; code: string; message: string }> = [];
+        let failureStatus = 400;
+        for (const [index, file] of files.entries()) {
+          try { created.push(await deps.assets.add(kind, { originalName: decodeMultipartFilename(file.originalname), data: file.buffer,
+            ...(kind === 'image' ? { metadata: metadata[index], imagePrompt: snapshot } : {}),
+          })); }
+          catch (e) {
+            if (kind === 'audio') throw e;
+            failureStatus = e instanceof AssetError ? e.status : 500;
+            failures.push({ index, code: e instanceof AssetError ? e.code : 'asset_upload_failed',
+              message: e instanceof AssetError ? e.message : '图片保存失败，请检查本地存储' });
+            if (!(e instanceof AssetError)) {
+              for (let i = index + 1; i < files.length; i++) failures.push({ index: i, code: 'asset_upload_not_attempted', message: '存储失败后未继续上传' });
+              break;
+            }
+          }
+        }
+        res.status(failures.length ? (created.length ? 200 : failureStatus) : 201).json({ assets: created,
+          ...(failures.length ? { failures, ...(!created.length ? { code: failures[0].code, message: failures[0].message } : {}) } : {}),
+        });
       } catch (error) {
         next(error);
       }
     });
   }
+
+  router.patch('/assets/:id/metadata', async (req, res, next) => {
+    try {
+      if (!deps.sessions) throw new LocalAuthError('local_session_required', 401, '本机会话不可用');
+      await new Promise<void>((resolve, reject) => requireActor(deps.sessions!)(req, res, e => e ? reject(e) : resolve()));
+      res.json({ asset: await deps.assets.updateImageMetadata(req.params.id, req.body) });
+    } catch (e) { next(e); }
+  });
 
   router.get("/assets/:id/raw", async (req, res, next) => {
     try {
@@ -142,16 +194,19 @@ function assetErrorHandler(
   res: Response,
   next: NextFunction,
 ): void {
-  if (error instanceof AssetError) {
+  if (error instanceof AssetError || error instanceof ImagePromptError || error instanceof LocalAuthError) {
     res.status(error.status).json({ code: error.code, message: error.message });
     return;
   }
   if (error instanceof MulterError) {
     // LIMIT_FILE_SIZE 是明确的「太大」；文件数超限属于请求本身不合法
     const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
-    const message = error.code === "LIMIT_FILE_SIZE" ? "文件超出大小上限" : "上传的文件数量超出上限";
+    const message = error.code === "LIMIT_FILE_SIZE" ? "文件超出大小上限" : "上传的文件或文字字段超出上限";
     res.status(status).json({ code: `asset_upload_${error.code.toLowerCase()}`, message });
     return;
+  }
+  if (error instanceof SyntaxError && 'status' in error && error.status === 400) {
+    res.status(400).json({ code: 'asset_metadata_invalid', message: '请求 JSON 无效' }); return;
   }
   next(error);
 }

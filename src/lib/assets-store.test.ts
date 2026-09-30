@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, stat, writeFile, mkdir } from "node:fs/prom
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { AssetError, AssetStore } from "./assets-store.js";
+import { AssetError, AssetStore, searchImageAssets } from "./assets-store.js";
 import { LocalStorage } from "./storage.js";
 
 async function fixture() {
@@ -13,6 +13,32 @@ async function fixture() {
   const store = new AssetStore(storage);
   return { root, storage, store };
 }
+
+test('image metadata edits are versioned, preserve sibling writes and detach changed prompts', async () => {
+  const { store } = await fixture();
+  const image = await store.add('image', { originalName: '雨夜.png', data: pngBytes(4, 4), metadata: { description: '雨夜城市', tags: ['城市'] },
+    imagePrompt: { id: 'draft-id', version: 1, prompt: '旧提示词' } });
+  assert.equal(image.generationPrompt, '旧提示词');
+  const [updated] = await Promise.all([store.updateImageMetadata(image.id, { version: 1, generationPrompt: '新提示词', tags: [] }),
+    store.add('audio', { originalName: 'bgm.mp3', data: Buffer.from('test') })]);
+  assert.equal(updated.metadataVersion, 2); assert.equal(updated.imagePromptId, undefined);
+  assert.equal(updated.description, '雨夜城市'); assert.deepEqual(updated.tags, []);
+  assert.equal((await store.list()).length, 2);
+  await assert.rejects(store.updateImageMetadata(image.id, { version: 1, description: '旧编辑' }), { status: 409 });
+  await assert.rejects(store.add('audio', { originalName: 'bad.mp3', data: Buffer.from('test'), metadata: { tags: [] } }), { status: 400 });
+});
+
+test('image search matches independent fields and ranks actual descriptions above prompt text', async () => {
+  const { store } = await fixture();
+  const described = await store.add('image', { originalName: 'a.png', data: pngBytes(4, 4), metadata: { description: '雨夜', tags: ['城市'] } });
+  const prompted = await store.add('image', { originalName: 'b.png', data: pngBytes(4, 4), metadata: { generationPrompt: '雨夜城市' } });
+  const split = await store.add('image', { originalName: '雨.png', data: pngBytes(4, 4), metadata: { description: '夜' } });
+  const records = await store.list('image');
+  assert.deepEqual(searchImageAssets(records, '雨夜 城市 雨夜').map(x => x.id), [described.id, prompted.id]);
+  assert.equal(searchImageAssets(records, '雨夜').some(x => x.id === split.id), false);
+  assert.equal(searchImageAssets(records, '').length, 3);
+  assert.throws(() => searchImageAssets(records, ['雨']), { status: 400 });
+});
 
 /** 最小但结构正确的 PNG（仅头部用于解析尺寸）。 */
 function pngBytes(width: number, height: number): Buffer {
@@ -168,7 +194,7 @@ test("remove deletes both the index entry and the file on disk", async () => {
   assert.equal(await store.remove(record.id), false);
 });
 
-test("list filters by kind and tolerates a missing or corrupt index", async () => {
+test("list filters by kind and refuses to overwrite a corrupt index", async () => {
   const { root, store } = await fixture();
   await store.add("image", { originalName: "a.png", data: pngBytes(8, 8) });
   await store.add("audio", { originalName: "b.wav", data: wavBytes() });
@@ -178,8 +204,11 @@ test("list filters by kind and tolerates a missing or corrupt index", async () =
   assert.equal((await store.list()).length, 2);
 
   await writeFile(path.join(root, "cache", "assets-index.json"), "{ not json", "utf8");
-  assert.deepEqual(await store.list(), []);
+  await assert.rejects(() => store.list(), /素材索引/);
+  await assert.rejects(() => store.add('audio', { originalName: 'new.wav', data: wavBytes() }), /素材索引/);
+  assert.equal(await readFile(path.join(root, 'cache', 'assets-index.json'), 'utf8'), '{ not json');
 });
+
 
 test("resolveFile reports mime type and size, and refuses unknown ids", async () => {
   const { store } = await fixture();
