@@ -34,6 +34,8 @@
 
 ## 最近操作
 
+- 2026-10-01：按用户要求把 `codex/wechat-drafts`（`6840ee9`）**快进合并进 `main` 并推送**（`7694b42..6840ee9`），本地与远程的 `main` / `codex/wechat-drafts` 现在同一提交；工作分支已切到 `main`（两者同提交，切换未改动任何文件）。合并用 `git fetch . codex/wechat-drafts:main` 而非 checkout 后 merge —— 等价于 `--ff-only` 且带非快进拒绝，但**不会让工作区瞬间回退 12 个提交**，因此不打扰正在运行的 Vite/Electron。用户同时指定**以后默认走 `main`**，该约定已写入 `CLAUDE.md` 新增的「分支与提交流程」一节（含「**推送某分支 ≠ 进了 main**」这条提醒——2026-10-01 就因此产生过一次误会）。仓库现为线性链 `b7c117e ──176──▶ main ──12──▶ 6840ee9`，`git rev-list --all --not main` 计数为 0，即没有任何提交游离在 `main` 之外；`codex/*` 两个历史分支保留未删。
+
 - 2026-10-01：修复用户报告的抖音转录报错（`unable to parse douyin video info` + yt-dlp「Fresh cookies … are needed」）。根因是 `parseDouyinPageVideoInfo()` 请求 iesdouyin 分享页时**漏传登录 cookie** —— 同一 URL 实测：不带 cookie 时 `_ROUTER_DATA` 里没有 `videoInfoRes`，带上即得 `item_list`（已排除「抖音改版」与「URL 形态」两种误判）。顺带查明 yt-dlp 那句报错**完全不检查 cookie**（`tiktok.py` 只在 `aweme/detail` 未返回 `aweme_detail` 时抛出，且该请求不带 `a_bogus`，所以设 `YTDLP_COOKIES_FILE` 对抖音无效）；签名 API 则被 Argus 拦（缺 `Uifid` 头 → 补上后仍 `Signature Not Found`，签名算法已过期，本轮未修）。同时补齐桌面端**从未透传** `YTDLP_COOKIES_FILE`/`YTDLP_COOKIES_FROM_BROWSER` 的缺口（影响视频下载与主页采集两处），抽成可测纯函数并填上「`cookiesFile` → `--cookies`」此前无用例的空白。详见 `docs/worklog/2026-10-01-douyin-transcribe-cookie-fix.md`。
   - 全量 `npm test` **1117 通过、1 跳过、0 失败**；`npm run check` 通过（含凭据扫描 779 文件）。两套产物已 grep 核对（`dist/lib/media.js` 含 `resolveDouyinCookie`、`dist-electron/server.js` 含 `resolveYtDlpCookieConfig`）。线上实测解析出作品与 CDN `HTTP 206`；桌面端重启后读到真实数据目录 **139 个任务**（内嵌后端 61825）。
   - 未完成：抖音 CDN 对本机 IP 截断在约 2MB（Cloudflare 1/10/20/50MB 均完整拉完，故为抖音侧限流），完整端到端下载留待用户在应用内重试；未做 yt-dlp `--cookies` 的运行时抓取验证；`src/server.ts` 未同步「空串＝没配」口径；未改 `Uifid`/过期签名，未调用真实发布。

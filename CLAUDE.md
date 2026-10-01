@@ -245,6 +245,17 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
   但 `dist-electron/server.js` 是旧的 → 无论怎么配都报「未配置」。
 - `npm run check`（`--noEmit`）与 `npm test`（tsx 跑源码）**都不产出任何产物**，不能替代编译。
 
+## 分支与提交流程
+
+- **默认分支 `main`，改动直接落 `main`**（2026-10-01 用户指定，此前是先在 `codex/*` 上做、再快进合并）。
+  动手前先 `git branch --show-current` 确认在 `main` 上；**不要**自建 `codex/*` 工作分支，除非用户当次明确要求。
+- 提交前跑 `npm run check`（含 `check:secrets`）；提交信息沿用既有风格：**单行** + `feat:` / `fix:` / `docs:` 前缀，
+  细节写进 `docs/worklog.md`（追加到「最近操作」**最上方**）与 `docs/worklog/YYYY-MM-DD-<主题>.md`，不在提交信息里堆正文。
+- 改了 `src/` 或 `electron/`，提交前**确认对应产物已编译**并 grep 得到改动（见上一节的两套产物陷阱）。
+- **推送某分支 ≠ 进了 `main`** —— 这是两件独立的事，别把「已推送」当成「已合并」。（2026-10-01 就因此产生过一次误会。）
+- 历史分支 `codex/wechat-drafts`（2026-10-01 起与 `main` 同一提交）与 `codex/hyperframes-video`（旧线，已完全并入 `main`）
+  **保留未删**，只是历史，不再往它们上面提改动。
+
 ## 关键注意事项
 
 ### 数据来源与加载
@@ -624,6 +635,6 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 
 ---
 
-**最后更新**: 2026-09-29
+**最后更新**: 2026-10-01
 **维护者**: Codex
 **仓库**: https://github.com/LiChangZheng10086/doyin_ai_video.git
