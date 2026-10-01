@@ -12,6 +12,13 @@ export interface MediaServiceConfig {
   ffprobeBinary?: string;
   cookiesFile?: string;
   cookiesFromBrowser?: string;
+  /**
+   * 抖音登录 cookie（`loadCookie()` 的注入点）。
+   *
+   * 缺省时惰性取 `douyin-cookie.ts` 的 `loadCookie()`（与签名 API 通路同一个真源）。
+   * 用例靠它断言「请求确实带上了 cookie」，否则只能读到开发者本机那个文件。
+   */
+  douyinCookie?: () => string;
   commandRunner?: MediaCommandRunner;
 }
 
@@ -303,10 +310,16 @@ export class MediaService {
   }
 
   private async parseDouyinPageVideoInfo(sourceUrl: string): Promise<DouyinPageVideoInfo> {
+    // ⚠️ 分享页不带登录 cookie 时，`_ROUTER_DATA` 里**没有** `videoInfoRes`
+    // （表现为 "unable to parse douyin video info"），而不是页面改版。
+    // 桌面版 `www.douyin.com/video/{id}` 更是只回 JS-VM 挑战页、连 `_ROUTER_DATA` 都没有。
+    const cookie = await this.resolveDouyinCookie();
+    const headers = cookie ? { ...DOUYIN_HEADERS, Cookie: cookie } : { ...DOUYIN_HEADERS };
+
     const shareResponse = await fetch(sourceUrl, {
       method: "GET",
       redirect: "follow",
-      headers: DOUYIN_HEADERS
+      headers
     });
 
     if (!shareResponse.ok) {
@@ -322,7 +335,7 @@ export class MediaService {
     const pageUrl = `https://www.iesdouyin.com/share/video/${videoId}`;
     const pageResponse = await fetch(pageUrl, {
       method: "GET",
-      headers: DOUYIN_HEADERS
+      headers
     });
 
     if (!pageResponse.ok) {
@@ -336,7 +349,11 @@ export class MediaService {
       loaderData["video_(id)/page"]?.videoInfoRes ?? loaderData["note_(id)/page"]?.videoInfoRes;
 
     if (!videoInfoRes?.item_list?.length) {
-      throw new Error("unable to parse douyin video info");
+      throw new Error(
+        cookie
+          ? "unable to parse douyin video info"
+          : "unable to parse douyin video info（未带抖音 cookie：分享页不会返回 videoInfoRes，请先在设置页扫码登录）"
+      );
     }
 
     const item = videoInfoRes.item_list[0] as Record<string, any>;
@@ -389,6 +406,22 @@ export class MediaService {
     }
 
     await pipeline(Readable.fromWeb(response.body as any), createWriteStream(filePath));
+  }
+
+  /**
+   * 抖音登录 cookie 的唯一取用口（默认实现是 `douyin-cookie.ts` 的 `loadCookie()`）。
+   *
+   * 用惰性 import 是为了避免 `douyin-cookie.ts` ↔ `media.ts` 的模块加载环，
+   * 与签名 API 通路同一写法。失败不抛错：没有 cookie 时分享页拿不到数据，
+   * 由调用方按「未登录」给出可照抄的指引。
+   */
+  private async resolveDouyinCookie(): Promise<string> {
+    if (this.config.douyinCookie) {
+      return this.config.douyinCookie();
+    }
+
+    const { loadCookie } = await import("./douyin-cookie.js");
+    return loadCookie();
   }
 
   private buildCookieArgs() {

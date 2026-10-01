@@ -34,6 +34,10 @@
 
 ## 最近操作
 
+- 2026-10-01：修复用户报告的抖音转录报错（`unable to parse douyin video info` + yt-dlp「Fresh cookies … are needed」）。根因是 `parseDouyinPageVideoInfo()` 请求 iesdouyin 分享页时**漏传登录 cookie** —— 同一 URL 实测：不带 cookie 时 `_ROUTER_DATA` 里没有 `videoInfoRes`，带上即得 `item_list`（已排除「抖音改版」与「URL 形态」两种误判）。顺带查明 yt-dlp 那句报错**完全不检查 cookie**（`tiktok.py` 只在 `aweme/detail` 未返回 `aweme_detail` 时抛出，且该请求不带 `a_bogus`，所以设 `YTDLP_COOKIES_FILE` 对抖音无效）；签名 API 则被 Argus 拦（缺 `Uifid` 头 → 补上后仍 `Signature Not Found`，签名算法已过期，本轮未修）。同时补齐桌面端**从未透传** `YTDLP_COOKIES_FILE`/`YTDLP_COOKIES_FROM_BROWSER` 的缺口（影响视频下载与主页采集两处），抽成可测纯函数并填上「`cookiesFile` → `--cookies`」此前无用例的空白。详见 `docs/worklog/2026-10-01-douyin-transcribe-cookie-fix.md`。
+  - 全量 `npm test` **1117 通过、1 跳过、0 失败**；`npm run check` 通过（含凭据扫描 779 文件）。两套产物已 grep 核对（`dist/lib/media.js` 含 `resolveDouyinCookie`、`dist-electron/server.js` 含 `resolveYtDlpCookieConfig`）。线上实测解析出作品与 CDN `HTTP 206`；桌面端重启后读到真实数据目录 **139 个任务**（内嵌后端 61825）。
+  - 未完成：抖音 CDN 对本机 IP 截断在约 2MB（Cloudflare 1/10/20/50MB 均完整拉完，故为抖音侧限流），完整端到端下载留待用户在应用内重试；未做 yt-dlp `--cookies` 的运行时抓取验证；`src/server.ts` 未同步「空串＝没配」口径；未改 `Uifid`/过期签名，未调用真实发布。
+
 - 2026-09-30：按用户要求整理本轮代码同步与 README：详细列出公众号官方草稿、独立原生字幕图集、五平台热点、右上角三主题、小红书扫码修复和 sau 路径持久化；校正旧数据目录、渠道分栏及构建说明。新增 5 张实际运行界面截图，图集使用隔离合成视频、发布包仅本地创建，未向平台提交；不含密钥或二维码。通过 documentation-generator 按代码核对，真实账号未验收部分单独注明。重新验证全量 1037 通过、1 跳过、0 失败，check/build 通过；待认可的创作工作台重设计草案不纳入本轮提交。
 
 - 2026-09-30：修复小红书扫码轮询每轮 `goto(首页)` 打断手机确认/作废旧码的问题，轮询与窗口等待改为只观察当前页面，复用既有登录判据；平台静默换码同步至面板。校验登录复用活跃扫码页面，等待确认返回 409、不另开同 profile 浏览器、不误记 invalid；轮询/校验成功关闭浏览器保存 profile，共享面板清错清码、校验成功停止轮询。

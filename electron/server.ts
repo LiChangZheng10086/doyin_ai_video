@@ -4,6 +4,7 @@ import { app as electronApp } from 'electron';
 import { getBinaryPaths } from './utils/binary-paths';
 import { loadConfig, saveConfig } from './handlers/config-handler';
 import { resolveSauConfig, rememberSauConfig } from './utils/sau-config';
+import { resolveYtDlpCookieConfig } from './utils/ytdlp-config';
 
 let serverInstance: any = null;
 
@@ -58,6 +59,8 @@ export async function startServer(): Promise<number> {
           } : null;
         },
         ytDlpBinary: binaryPaths.ytdlp,
+        // yt-dlp 的 cookie 来源与独立后端同一套 env 契约（缺这条时桌面端配了环境变量也不生效）。
+        ...resolveYtDlpCookieConfig(process.env),
         ffmpegBinary: binaryPaths.ffmpeg,
         ffprobeBinary: binaryPaths.ffprobe,
         whisperCliPath: binaryPaths.whisperCli,
