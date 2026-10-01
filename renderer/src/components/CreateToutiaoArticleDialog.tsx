@@ -4,6 +4,7 @@ import { Modal } from './ui/Modal';
 import { Button } from './ui/Button';
 import { FileText } from 'lucide-react';
 import { apiClient, parseApiError } from '../services/api';
+import { articleDialogCloseDecision } from '../utils/navigationGuards';
 import type {
   AssetRecord,
   NoteImageSource,
@@ -91,9 +92,15 @@ export function CreateToutiaoArticleDialog({ jobId, title, onClose, platform = '
   }, [appliedQuery]);
   useEffect(() => { void refreshLibrary(''); return () => { librarySequence.current++; previewSequence.current++; }; }, []);
   const close = () => {
-    if (busy || promptGuard.busy) return;
-    if (!created && (promptGuard.dirty || copyTouched.current) && !window.confirm('文章或提示词有未保存内容，放弃并关闭？')) return;
-    onClose();
+    // 决策在 articleDialogCloseDecision 里，有用例守「任何状态下都关得掉」这条不变式。
+    const decision = articleDialogCloseDecision({
+      busy,
+      promptBusy: promptGuard.busy,
+      dirty: promptGuard.dirty || copyTouched.current,
+      created: !!created,
+      confirm: (message) => window.confirm(message),
+    });
+    if (decision === 'close') onClose();
   };
   useEffect(() => {
     if (!promptGuard.dirty && !promptGuard.busy) return;

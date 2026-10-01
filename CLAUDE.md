@@ -556,6 +556,25 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 - **界面入口**：作品详情页成果画布「创建头条文章包」（`CreateToutiaoArticleDialog`，与「创建图文包」并列）；
   发布中心任务行的「提交到头条号」（必经预览）与「下载文章 HTML」；设置页「今日头条」扫码登录。
 
+### 导航拦截与弹窗（不许把界面锁死，2026-10-01）
+
+- **任何 `useBlocker` / 弹窗都必须有一个「一定能出去的出口」**。2026-10-01 用户报「在文章创作页无法切换到其他页面」，
+  实际是三处缺出口，症状完全一致：**页面看上去正常、没有任何提示，但点导航毫无反应**。
+  ① 对标页 `dirty` 把**折叠起来的**「新建对标组」表单也算未保存编辑（输入已进 sessionStorage、展开即恢复），
+  于是页面上看不到任何待保存内容却拦下所有导航；② 它的解除按钮只在**页面顶部的普通文档流横幅**里，滚下去就看不见
+  —— 其它页面（文章详情/素材/热点/图集）都用 `window.confirm`，**只有它用页内横幅**；
+  ③ `ArticleDetailPage` blocked 时 `if (busy) return;` 把 blocker **永远挂在 blocked**（全仓库唯一），
+  `CreateToutiaoArticleDialog` 忙时 `close()` 直接 return —— 而 `Modal` 打开时会给 `#root` 设 **`inert`**（整个应用不可点），
+  Esc / 点遮罩 / 右上角 X 在忙时又都被 `Modal` 自己封死 ⇒ 请求一挂住（`api.ts` 默认超时 **16 分钟**）就是既关不掉也点不动的死胡同。
+- **判定只有一份**：`renderer/src/utils/navigationGuards.ts` 的 `benchmarkDirty` / `blockedNavigationAction` /
+  `articleDialogCloseDecision`，各有用例（`navigationGuards.test.ts`）守「永不留死路」这条不变式。改拦截行为改这里。
+- ⚠️ **纯函数不要 export 在组件文件里**：Vite 会报 `Could not Fast Refresh (... export is incompatible)`，
+  这两个页面的热更会退化成整页刷新。放 `utils/` 既是仓库既有约定（如 `utils/publishing.ts`），也保住 Fast Refresh。
+- **拦截提示必须能强制看见**：要么 `window.confirm`，要么 `sticky top-14 z-40`（顶栏是 `fixed top-0 h-14 z-30`）。
+  **不要**只在文档流里放一条横幅 —— 用户滚在下方时它等于不存在。
+- **新增弹窗时先问「忙的时候怎么关」**：`Modal` 一打开 `#root` 就 `inert`，**只要有一个关不掉的弹窗，整个应用就完全不可交互**。
+  `onClose` 必须任何状态下都能被调用（需要拦就用 `window.confirm` 确认，**不要无条件 `return`**）。
+
 ## 故障排查
 
 ### 转录功能不工作

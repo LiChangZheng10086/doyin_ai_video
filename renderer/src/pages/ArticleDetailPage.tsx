@@ -7,6 +7,7 @@ import { ArticleTemplatePicker, WritingStructurePicker } from '../components/Art
 import { apiClient, parseApiError } from '../services/api';
 import type { ArticleRecord, ArticleStep, ArticlePreview, ResearchDraft } from '../../../src/lib/article-types';
 import type { AssetRecord } from '../types';
+import { blockedNavigationAction } from '../utils/navigationGuards';
 
 const steps: Array<{id:ArticleStep;label:string;hint:string}> = [
   {id:'diagnose',label:'选题诊断',hint:'先明确写给谁、解决什么问题，再选择一个方向。'},
@@ -34,7 +35,7 @@ export function ArticleDetailPage() {
   const [assets,setAssets] = useState<AssetRecord[]>([]); const [imageUrls,setImageUrls] = useState<Record<string,string>>({}); const [preview,setPreview] = useState<ArticlePreview>();
   const dirty = Object.keys(edit).length > 0 || !!text || !!title || !!url;
   const blocker = useBlocker(dirty || busy);
-  useEffect(() => { if (blocker.state === 'blocked') { if (busy) return; if (!dirty || window.confirm('编辑尚未保存，保留本地草稿并离开？')) blocker.proceed(); else blocker.reset(); } },[blocker,busy,dirty]);
+  useEffect(() => { if (blocker.state !== 'blocked') return; if (blockedNavigationAction({busy,dirty,confirm:(message) => window.confirm(message)}) === 'proceed') blocker.proceed(); else blocker.reset(); },[blocker,busy,dirty]);
   useEffect(() => { const listener = (e: BeforeUnloadEvent) => {if (dirty || busy) {e.preventDefault(); e.returnValue='';}}; window.addEventListener('beforeunload',listener); return () => window.removeEventListener('beforeunload',listener); },[dirty,busy]);
   useEffect(() => {
     let live = true;
