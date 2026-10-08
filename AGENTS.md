@@ -682,4 +682,4 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 - 图片保存 description／tags／generationPrompt 快照；修改或删除提示词草稿不改变已入库图片。上传逐图描述／标签；单张超限独立失败，不阻断合法同批图片；返回原文件 index，客户端只保留失败项。没有收到响应时先核对入库结果，不自动重传。
 - `GET /api/assets?kind=image&q=短词` 返回 assets／total，按空格分词，所有词匹配；描述／标签优先。元数据编辑带 metadataVersion，直接改最终提示词解除草稿来源绑定。新写入沿用本机会话，文件与路径校验仍在 AssetStore。
 - 文章选图默认展示全部，筛选不取消封面和有序正文图，不改文章；头条仅封面，公众号封面及正文。未增加生图、语义检索或外部 Skills 运行时。
-- 隔离验收：构建后运行 `node scripts/verify-image-prompt-assets-ui.js`（系统 Chrome）或 `node --import tsx scripts/verify-image-prompt-assets.ts --serve`；不使用真实素材或账号。真实 AI／外部生图效果尚未验收。
+- 隔离验收：构建后运行 `node scripts/verify-image-prompt-assets-ui.js`（系统 Chrome）或 `node --import tsx scripts/verify-image-prompt-assets.ts --serve`；不使用真实素材或账号。当前 DeepSeek 配置的生成／优化已于 2026-10-08 补验；外部生图效果尚未验收。
