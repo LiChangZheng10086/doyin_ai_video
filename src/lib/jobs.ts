@@ -14,10 +14,12 @@ import type { MediaService } from "./media.js";
 import type { AsrService } from "./asr.js";
 import { LocalStorage } from "./storage.js";
 import { parseDouyinShare } from "./douyin.js";
+import { parseVideoAudioOptions } from './video-audio.js';
 import { toSimplifiedChinese } from "./chinese.js";
 import { JobStepEventHub } from "./job-step-events.js";
 import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import type {
+  VideoAudioOptions,
   JobStepStreamEvent,
   JobOverview,
   JobPreview,
@@ -279,15 +281,21 @@ export class JobStore {
     return record;
   }
 
-  async runStep(id: string, step: PipelineStep) {
-    return this.runStepInternal(id, step);
+  async runStep(id: string, step: PipelineStep, audio?: unknown) {
+    let options: VideoAudioOptions | undefined;
+    if (audio !== undefined) {
+      if (step !== 'generate_video') throw new JobStepError('音频选项只用于生成视频', 400);
+      try { options = parseVideoAudioOptions(audio); }
+      catch (error) { throw new JobStepError(error instanceof Error ? error.message : '音频选项无效', 400); }
+    }
+    return this.runStepInternal(id, step, false, options);
   }
 
   async retranscribe(id: string): Promise<JobRecord> {
     return this.runStepInternal(id, "transcribe", true);
   }
 
-  private async runStepInternal(id: string, step: PipelineStep, retranscribe = false) {
+  private async runStepInternal(id: string, step: PipelineStep, retranscribe = false, audio?: VideoAudioOptions) {
     if (this.runningSteps.has(id)) {
       throw new JobStepError("another step is already running for this job", 409);
     }
@@ -306,7 +314,8 @@ export class JobStore {
     };
     this.activeRuns.set(id, activeRun);
     try {
-      const record = await this.getStepRunnableRecord(id, step, retranscribe);
+      const record = await this.getStepRunnableRecord(id, step, retranscribe, audio !== undefined);
+      if (audio) record.videoAudio = audio;
       // A failed repair retried through the ordinary step must preserve the same history contract.
       retranscribe ||= step === "transcribe" && await this.storedFileExists(path.join("raw", "transcripts", `${id}.json`));
       await this.markStepRunning(record, step);
@@ -493,7 +502,7 @@ export class JobStore {
     return this.stepEvents.subscribe(id, step, listener, afterId);
   }
 
-  private async getStepRunnableRecord(id: string, step: PipelineStep, retranscribe = false) {
+  private async getStepRunnableRecord(id: string, step: PipelineStep, retranscribe = false, explicitVideoOptions = false) {
     const record = await this.get(id);
     if (!record) {
       throw new JobStepError("job not found", 404);
@@ -513,7 +522,7 @@ export class JobStore {
     if (current.status === "running") {
       throw new JobStepError("step is already running", 409, record);
     }
-    if (current.status === "succeeded" && !retranscribe) {
+    if (current.status === "succeeded" && !retranscribe && !(step === "generate_video" && explicitVideoOptions)) {
       throw new JobStepError("step has already succeeded", 409, record);
     }
     const previous = STEP_PREVIOUS[step];
@@ -881,7 +890,7 @@ export class JobStore {
 
     const videoResult = await this.videoGenerator.generate(script, id, async ({ phase, progress }) => {
       await this.updateStep(id, "generate_video", { phase, progress });
-    }, signal);
+    }, signal, record.videoAudio);
     const enhanced: ScriptAsset = {
       ...script,
       hyperframesVideo: videoResult,
@@ -972,6 +981,7 @@ export class JobStore {
       {
         status: "processing",
         stage: STEP_STAGE[step].running,
+        ...(step === 'generate_video' && record.videoAudio ? { videoAudio: record.videoAudio } : {}),
         errorMessage: undefined
       }
     );

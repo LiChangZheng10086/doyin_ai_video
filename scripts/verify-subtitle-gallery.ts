@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createExpressApp } from '../src/app.js';
 import { LocalStorage } from '../src/lib/storage.js';
+import { GalleryMedia } from '../src/lib/gallery-media.js';
 import { runCommand } from '../src/lib/command.js';
 
 const root = await mkdtemp(path.join(tmpdir(), 'subtitle-gallery-ui-'));
@@ -41,6 +42,9 @@ const cli = path.join(root, 'whisper-fixture.mjs');
 await writeFile(cli, `#!/usr/bin/env node\nimport {writeFileSync} from 'node:fs';const args=process.argv;writeFileSync(args[args.indexOf('-of')+1]+'.json',JSON.stringify(${JSON.stringify({ transcription: segments.map(s => ({ offsets: { from: s.start * 1000, to: s.end * 1000 }, text: s.text })) })}));\n`);
 await chmod(cli, 0o755);
 const model = path.join(root, 'model.bin'); await writeFile(model, 'command fixture');
+// Raster markers deliberately exercise only the pixel path; real OCR has its own fixed-source regression.
+const originalSuggest = GalleryMedia.prototype.suggestSubtitle;
+GalleryMedia.prototype.suggestSubtitle = function (video, quote, region) { return originalSuggest.call(this, video, { start: quote.start, end: quote.end }, region); };
 const app = await createExpressApp({ storagePath: root, rootDir: root, whisperCliPath: cli, whisperModelPath: model });
 const serve = process.argv.includes('--serve');
 const port = serve ? Number(process.env.SUBTITLE_GALLERY_PORT ?? 3183) : 0;

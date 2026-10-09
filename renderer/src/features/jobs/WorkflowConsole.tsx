@@ -16,6 +16,10 @@ export interface WorkflowConsoleProps {
 export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPauseStep, onReClean }: WorkflowConsoleProps) {
   const steps = buildWorkflowSteps(job, runningStep);
   const focus = findFocusStep(steps);
+  const phase = job.steps?.generate_video?.phase;
+  let progressLabel = `${focus?.label}进行中`;
+  if (phase === 'synthesizing_audio') progressLabel = '生成中文配音与字幕';
+  if (phase === 'mixing_audio') progressLabel = '混合配音与背景音乐';
 
   const completed = steps.filter((s) => s.status === 'succeeded').length;
   const total = steps.length;
@@ -55,7 +59,7 @@ export function WorkflowConsole({ job, runningStep, actionError, onRunStep, onPa
             {focus?.progress !== undefined && focus.status === 'running' && (
               <div className="mt-4">
                 <div className="mb-2 flex items-center justify-between text-xs font-medium text-ink-muted">
-                  <span>{focus.label}进行中</span>
+                  <span>{progressLabel}</span>
                   <span>{Math.round(focus.progress)}%</span>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-panel">

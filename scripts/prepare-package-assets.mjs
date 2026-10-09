@@ -68,6 +68,10 @@ const browserDir = path.join(targetDir, "browser");
 await mkdir(binDir, { recursive: true });
 await mkdir(path.join(whisperDir, "models"), { recursive: true });
 
+if (target.platform === "darwin") {
+  if (process.platform !== "darwin") throw new Error("macOS OCR must be compiled on a Mac build host");
+  await run(process.execPath, [path.join(rootDir, "scripts/prepare-subtitle-ocr.mjs"), `--output=${path.join(binDir, 'subtitle-ocr')}`]);
+}
 await ensureFfmpeg();
 await ensureFfprobe();
 await ensureYtDlp();
@@ -266,6 +270,7 @@ async function stagePackageAssets() {
     runtimeId: target.id,
     createdAt: new Date().toISOString(),
     assets: {
+      ...(target.platform === "darwin" ? { subtitleOcr: "bin/subtitle-ocr" } : {}),
       ffmpeg: `bin/${target.bin.ffmpeg}`,
       ffprobe: `bin/${target.bin.ffprobe}`,
       ytdlp: `bin/${target.bin.ytdlp}`,

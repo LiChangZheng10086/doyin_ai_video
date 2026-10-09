@@ -38,7 +38,7 @@ export function VideoArtifact({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h3 className="text-lg font-semibold text-ink">视频成片</h3>
-          <p className="mt-1 text-sm text-ink-muted">HyperFrames 本地渲染的 9:16 无声动效版。</p>
+          <p className="mt-1 text-sm text-ink-muted">{output.audio?.voiceover ? 'HyperFrames 本地中文配音与同步字幕版。' : output.audio?.backgroundAssetId ? 'HyperFrames 本地背景音乐动效版。' : 'HyperFrames 本地渲染的 9:16 无声动效版。'}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <button

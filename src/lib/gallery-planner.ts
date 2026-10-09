@@ -4,7 +4,7 @@ import { GalleryError } from './gallery-media.js';
 import { inspectTranscriptQuality } from './transcript-quality.js';
 import { SAU_NOTE_MAX_IMAGES } from './sau-runner.js';
 
-export type SubtitleCandidate = { time: number; bandTop: number; bandBottom: number };
+export type SubtitleCandidate = { time: number; bandTop: number; bandBottom: number; recognizedText?: string; verification?: 'ocr' | 'pixels' };
 
 export async function planGallery(
   transcript: TranscriptAsset,
@@ -57,7 +57,7 @@ export async function planGallery(
           if (words.length) { chunkStart = words[0]!.start!; chunkEnd = Math.min(source.duration - .001, words.at(-1)!.end!); }
         }
         const q = { segmentIndex, text: chunk, start: chunkStart, end: chunkEnd };
-        if (pending && q.start - pending.end < 1.5 && pending.text.length + chunk.length <= 36 && !/[。！？!?\n]$/u.test(pending.text)) {
+        if (pending && q.start - pending.end < 1.5 && pending.text.length + chunk.length <= 36 && chunkEnd - pending.start <= 4 && !/[。！？!?\n]$/u.test(pending.text)) {
           pending.text += chunk; pending.end = chunkEnd;
         } else { flush(); pending = q; }
         if (/[。！？!?\n]$/u.test(chunk) || chunk.length === 36) flush();
@@ -80,7 +80,10 @@ export async function planGallery(
   };
   for (const quote of quotes) {
     const result = await candidate(quote);
-    if (!result) { finish(); excluded.push({ segmentIndex: quote.segmentIndex, reason: `「${quote.text}」附近未找到可靠的原生字幕候选，请校准字幕区域或使用高级调整` }); continue; }
+    if (!result) { finish(); excluded.push({ segmentIndex: quote.segmentIndex, reason: `「${quote.text}」附近未找到与定位文字匹配的可读原生字幕，可能是横幅、转录偏差或字幕切换；请校准字幕区域或使用高级调整` }); continue; }
+    if (result.verification === 'pixels' && !warnings.some(w => w.includes('仅为像素候选'))) {
+      warnings.push('本地 OCR 未就绪，当前仅为像素候选，稳定横幅也可能入选。请逐条核对原画面或统一校准区域；macOS 可运行 npm run prepare:subtitle-ocr 启用本地文字核对。');
+    }
     const proposed = [...group, { quote, candidate: result }];
     const top = Math.min(...proposed.map(g => g.candidate.bandTop));
     const bottom = Math.max(...proposed.map(g => g.candidate.bandBottom));

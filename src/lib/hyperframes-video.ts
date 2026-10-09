@@ -3,8 +3,11 @@ import { copyFile, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { CommandError, runCommand } from "./command.js";
+import { LocalVideoAudio, type VideoAudioPreparationOptions } from './video-audio.js';
 import { toSimplifiedChinese } from "./chinese.js";
 import type {
+  VideoAudioOptions,
+  VideoAudioManifest,
   ScriptAsset,
   ShortVideoShot,
   ShortVideoVisualItem,
@@ -31,6 +34,7 @@ export interface HyperframesCommandRunner {
 }
 
 export interface HyperframesVideoResult {
+  audio?: VideoAudioManifest;
   provider: "hyperframes";
   projectPath: string;
   videoPath: string;
@@ -53,11 +57,14 @@ export interface HyperframesVideoGeneratorOptions {
   useElectronAsNode?: boolean;
   browserPath?: string;
   ffprobeBinary?: string;
+  ffmpegBinary?: string;
+  resolveBackgroundAudio?: VideoAudioPreparationOptions['resolveBackground'];
+  synthesizeVoice?: VideoAudioPreparationOptions['synthesize'];
   commandRunner?: HyperframesCommandRunner;
 }
 
 export type HyperframesProgress = {
-  phase: "checking_environment" | "building_project" | "validating" | "snapshotting" | "rendering" | "verifying";
+  phase: "synthesizing_audio" | "mixing_audio" | "checking_environment" | "building_project" | "validating" | "snapshotting" | "rendering" | "verifying";
   progress: number;
 };
 
@@ -107,7 +114,8 @@ export class HyperframesVideoGenerator {
     script: ScriptAsset,
     jobId: string,
     onProgress?: (progress: HyperframesProgress) => Promise<void> | void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    audioOptions: VideoAudioOptions = { voiceover: false }
   ): Promise<HyperframesVideoResult> {
     const jobOutputPath = path.join(this.options.storageRoot, "output", "videos", jobId);
     const projectPath = path.join(jobOutputPath, "hyperframes");
@@ -133,6 +141,12 @@ export class HyperframesVideoGenerator {
       await mkdir(path.join(stagingPath, "renders"), { recursive: true });
       await mkdir(path.join(stagingPath, "assets"), { recursive: true });
       await copyFile(require.resolve("gsap/dist/gsap.min.js"), path.join(stagingPath, "assets", "gsap.min.js"));
+      if (audioOptions.voiceover || audioOptions.backgroundAssetId) await onProgress?.({ phase: "synthesizing_audio", progress: 20 });
+      const audio = await new LocalVideoAudio({
+        ffmpegBinary: this.options.ffmpegBinary, ffprobeBinary: this.options.ffprobeBinary,
+        runner: this.runner, resolveBackground: this.options.resolveBackgroundAudio, synthesize: this.options.synthesizeVoice,
+      }).prepare(scenes, duration, stagingPath, audioOptions, signal);
+      if (audio) await onProgress?.({ phase: "mixing_audio", progress: 30 });
       await writeFile(path.join(stagingPath, "DESIGN.md"), this.renderDesign(script), "utf8");
       await writeFile(path.join(stagingPath, "video-source.json"), JSON.stringify({
         provider: "hyperframes",
@@ -144,6 +158,7 @@ export class HyperframesVideoGenerator {
           title: script.coverTitle || script.title,
           summary: script.summary,
           cleanScript: script.cleanScript,
+          voiceoverScript: script.voiceoverScript,
           shortVideoScript: script.shortVideoScript,
           shortVideoShots: script.shortVideoShots,
           videoPrompts: script.videoPrompts,
@@ -153,9 +168,10 @@ export class HyperframesVideoGenerator {
         height: HEIGHT,
         aspectRatio: "9:16",
         duration,
-        scenes
+        scenes,
+        audio
       }, null, 2), "utf8");
-      await writeFile(path.join(stagingPath, "index.html"), this.renderIndexHtml(script, scenes, duration), "utf8");
+      await writeFile(path.join(stagingPath, "index.html"), this.renderIndexHtml(script, scenes, duration, audio), "utf8");
 
       await onProgress?.({ phase: "validating", progress: 35 });
       await this.runHyperframes(["lint"], { cwd: stagingPath, timeoutMs: 120_000, signal });
@@ -180,8 +196,21 @@ export class HyperframesVideoGenerator {
         throw new Error("HyperFrames render completed but video.mp4 was not created");
       }
 
+      if (audio) {
+        // Keep preview and exported audio identical. The pinned CLI can silently drop
+        // audio when its legacy filter_complex_script fails on newer FFmpeg.
+        await onProgress?.({ phase: "mixing_audio", progress: 90 });
+        const muxed = path.join(stagingPath, 'renders/video-with-audio.mp4');
+        await this.runner.run(this.options.ffmpegBinary ?? 'ffmpeg', [
+          '-hide_banner', '-loglevel', 'error', '-y', '-i', stagingVideoPath,
+          '-i', path.join(stagingPath, audio.mixFile), '-map', '0:v:0', '-map', '1:a:0',
+          '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-t', String(duration),
+          '-movflags', '+faststart', muxed
+        ], { captureStderr: true, timeoutMs: 120_000, env: this.buildEnv(), signal });
+        await rename(muxed, stagingVideoPath);
+      }
       await onProgress?.({ phase: "verifying", progress: 95 });
-      await this.verifyVideo(stagingVideoPath, script.planVersion === 2, signal);
+      await this.verifyVideo(stagingVideoPath, script.planVersion === 2, signal, Boolean(audio));
       await this.promoteProject(stagingPath, projectPath);
 
       const result: HyperframesVideoResult = {
@@ -194,7 +223,8 @@ export class HyperframesVideoGenerator {
         aspectRatio: "9:16",
         width: WIDTH,
         height: HEIGHT,
-        scenes
+        scenes,
+        audio
       };
       await writeFile(result.manifestPath, JSON.stringify(result, null, 2), "utf8");
       await onProgress?.({ phase: "verifying", progress: 100 });
@@ -224,9 +254,9 @@ export class HyperframesVideoGenerator {
     }
   }
 
-  private async verifyVideo(videoPath: string, enforceShortDuration: boolean, signal?: AbortSignal) {
-    if (!this.options.ffprobeBinary) return;
-    const result = await this.runner.run(this.options.ffprobeBinary, [
+  private async verifyVideo(videoPath: string, enforceShortDuration: boolean, signal?: AbortSignal, requireAudio = false) {
+    if (!this.options.ffprobeBinary && !requireAudio) return;
+    const result = await this.runner.run(this.options.ffprobeBinary ?? "ffprobe", [
       "-v", "error",
       "-show_entries", "stream=codec_type,codec_name,width,height,r_frame_rate:format=duration,size",
       "-of", "json",
@@ -243,6 +273,9 @@ export class HyperframesVideoGenerator {
     }
     if (!Number.isFinite(duration) || (enforceShortDuration && (duration < 50 || duration > 60.5))) {
       throw new Error(`生成的视频时长异常：${payload.format?.duration ?? "unknown"} 秒`);
+    }
+    if (requireAudio && !payload.streams?.some(stream => stream.codec_type === "audio" && stream.codec_name === "aac")) {
+      throw new Error("生成的视频缺少 AAC 音轨，配音或混音未成功合入成片");
     }
     if (Number(payload.format?.size) <= 0) throw new Error("生成的视频文件为空");
   }
@@ -411,7 +444,7 @@ export class HyperframesVideoGenerator {
       emphasisWords: (shot.emphasisWords ?? []).map(cleanText).filter(Boolean).slice(0, 3),
       transition: shot.transition || "cut",
       pacing: shot.pacing || "medium",
-      narration: cleanText(shot.narration || shot.caption || headline).slice(0, 80),
+      narration: cleanText(shot.narration || shot.caption || headline),
       duration: Math.max(3, Math.min(8, Math.round(shot.duration || 5))),
       accent: ACCENTS[0]
     };
@@ -479,19 +512,25 @@ Vertical Chinese faceless explainer. Full-bleed semantic motion graphics with di
 `;
   }
 
-  private renderIndexHtml(script: ScriptAsset, scenes: HyperframesVideoScene[], duration: number) {
+  private renderIndexHtml(script: ScriptAsset, scenes: HyperframesVideoScene[], duration: number, audio?: VideoAudioManifest) {
     let start = 0;
     const markup = scenes.map((scene) => {
-      const html = this.renderScene(scene, start, scenes.length);
+      const html = this.renderScene(scene, start, scenes.length, Boolean(audio?.voiceover));
       start += scene.duration;
       return html;
     }).join("\n");
     start = 0;
     const timeline = scenes.map((scene) => {
-      const code = this.renderSceneTimeline(scene, start);
+      const code = this.renderSceneTimeline(scene, start, Boolean(audio?.voiceover));
       start += scene.duration;
       return code;
     }).join("\n");
+    const audioMarkup = audio ? `<audio id="mixed-audio" src="${audio.mixFile}" data-start="0" data-duration="${duration}" data-track-index="10" data-volume="1"></audio>` : '';
+    const spokenCaptions = audio?.cues.map((cue, index) => {
+      const characters = Array.from(cue.text);
+      const lines = [characters.slice(0, 14).join(''), characters.slice(14).join('')].filter(Boolean);
+      return `<div id="spoken-caption-${index + 1}" class="audience-caption spoken-caption clip" data-start="${cue.start}" data-duration="${cue.end - cue.start}" data-track-index="2">${lines.map(line => `<span>${escapeHtml(line)}</span>`).join('')}</div>`;
+    }).join('\n') ?? '';
     const title = escapeHtml(script.coverTitle || script.title || script.topic || "视频成片");
 
     return `<!doctype html>
@@ -560,6 +599,8 @@ Vertical Chinese faceless explainer. Full-bleed semantic motion graphics with di
     <div id="root" data-composition-id="main" data-start="0" data-duration="${duration}" data-width="${WIDTH}" data-height="${HEIGHT}">
       <div id="background"></div>
 ${markup}
+${spokenCaptions}
+${audioMarkup}
     </div>
     <script>
       window.__timelines = window.__timelines || {};
@@ -571,7 +612,7 @@ ${timeline}
 </html>`;
   }
 
-  private renderScene(scene: HyperframesVideoScene, start: number, count: number) {
+  private renderScene(scene: HyperframesVideoScene, start: number, count: number, spoken = false) {
     const progress = Math.round((scene.index / count) * 100);
     const captions = scene.captionLines.map((line) => `<span>${escapeHtml(line)}</span>`).join("");
     return `      <section id="scene-${scene.index}" class="scene clip" data-layout="${scene.layout}" data-start="${start}" data-duration="${scene.duration}" data-track-index="1" style="--accent:${scene.accent};--progress:${progress}%">
@@ -582,7 +623,7 @@ ${timeline}
           <p class="supporting">${escapeHtml(scene.supportingText ?? "")}</p>
           <div class="visual-zone">${this.renderLayout(scene)}</div>
         </div>
-        <div class="audience-caption">${captions}</div>
+        ${spoken ? "" : `<div class="audience-caption">${captions}</div>`}
         <div class="progress"><i></i></div>
       </section>`;
   }
@@ -610,7 +651,7 @@ ${timeline}
     return `<div class="concept-map"><div class="concept-core visual-element">${escapeHtml(scene.headline)}</div>${nodes.map((item) => `<div class="concept-node visual-element ${toneClass(item)}"><span class="visual-label">${escapeHtml(item.label)}</span></div>`).join("")}</div>`;
   }
 
-  private renderSceneTimeline(scene: HyperframesVideoScene, start: number) {
+  private renderSceneTimeline(scene: HyperframesVideoScene, start: number, spoken = false) {
     const selector = `#scene-${scene.index}`;
     const enter = transitionVars(scene.transition);
     const exitAt = Math.max(start + scene.duration - 0.38, start + 0.8);
@@ -623,10 +664,10 @@ ${timeline}
       tl.fromTo("${selector} .supporting", { opacity: 0, x: -42 }, { opacity: 1, x: 0, duration: 0.46, ease: "power2.out" }, ${start + 0.48});
       tl.fromTo("${selector} .visual-element", { opacity: 0, y: 48, scale: 0.92 }, { opacity: 1, y: 0, scale: 1, duration: 0.5, stagger: ${stagger}, ease: "back.out(1.35)" }, ${start + 0.72});
       tl.fromTo("${selector} .flow-line, ${selector} .kinetic-rule, ${selector} .metric-bar", { scaleY: 0, scaleX: 0 }, { scaleY: 1, scaleX: 1, duration: 0.58, ease: "power2.out" }, ${start + 0.9});
-      tl.fromTo("${selector} .audience-caption span", { opacity: 0, y: 28 }, { opacity: 1, y: 0, duration: 0.38, stagger: 0.14, ease: "power3.out" }, ${start + 1.05});
+${spoken ? "" : `      tl.fromTo("${selector} .audience-caption span", { opacity: 0, y: 28 }, { opacity: 1, y: 0, duration: 0.38, stagger: 0.14, ease: "power3.out" }, ${start + 1.05});`}
       tl.fromTo("${selector} .orb-a", { x: 0, y: 0, scale: 0.94 }, { x: 42, y: 54, scale: 1.08, duration: ${Math.max(2, scene.duration - 0.4)}, ease: "sine.inOut" }, ${start + 0.2});
       tl.fromTo("${selector} .orb-b", { x: 0, y: 0 }, { x: -32, y: -44, duration: ${Math.max(2, scene.duration - 0.6)}, ease: "none" }, ${start + 0.3});
-      tl.to("${selector} .scene-inner, ${selector} .audience-caption", { opacity: 0, duration: 0.3, ease: "power2.in" }, ${exitAt});`;
+      tl.to("${selector} .scene-inner${spoken ? "" : `, ${selector} .audience-caption`}", { opacity: 0, duration: 0.3, ease: "power2.in" }, ${exitAt});`;
   }
 }
 

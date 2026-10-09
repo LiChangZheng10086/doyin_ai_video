@@ -1,3 +1,5 @@
+import type { VideoAudioOptions, VideoAudioManifest } from '../../../src/types';
+export type { VideoAudioOptions } from '../../../src/types';
 // 任务状态
 export type AiProvider = 'deepseek' | 'openai' | 'custom';
 export type JobStatus = 'queued' | 'processing' | 'done' | 'failed';
@@ -462,6 +464,8 @@ export interface AiStreamPreview {
 export type PipelineStepStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'paused';
 export type VideoGenerationPhase =
   | 'checking_environment'
+  | 'synthesizing_audio'
+  | 'mixing_audio'
   | 'building_project'
   | 'validating'
   | 'snapshotting'
@@ -532,6 +536,7 @@ export interface Job {
   videoProjectPath?: string;
   videoOutputPath?: string;
   videoGeneratedAt?: string;
+  videoAudio?: VideoAudioOptions;
 }
 
 export interface HyperframesVideoScene {
@@ -559,6 +564,7 @@ export interface HyperframesVideoScene {
 }
 
 export interface HyperframesVideoOutput {
+  audio?: VideoAudioManifest;
   provider: 'hyperframes';
   projectPath: string;
   videoPath: string;

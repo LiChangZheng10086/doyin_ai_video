@@ -4,6 +4,7 @@ import {
   getJobVisualState,
   selectActiveJob,
   filterJobOverviews,
+  getJobDateRangeError,
   buildWorkflowSteps,
   buildArtifactStates,
   readStoredViewMode,
@@ -114,4 +115,41 @@ test('readStoredViewMode returns list for missing/invalid', () => {
   const empty = new Map<string, string>();
   assert.equal(readStoredViewMode({ getItem: (k) => empty.get(k) ?? null } as Storage), 'list');
   assert.equal(readStoredViewMode({ getItem: () => { throw new Error('blocked'); } } as unknown as Storage), 'list');
+});
+
+
+test('creation dates include both local day boundaries and combine with search/status', () => {
+  const date = (day: number, hour = 0, ms = 0) => new Date(2026, 9, day, hour, 0, 0, ms).toISOString();
+  const jobs = [
+    makeOverview({ id: 'before', createdAt: date(8, 23) }),
+    makeOverview({ id: 'start', createdAt: date(9) }),
+    makeOverview({ id: 'end', createdAt: new Date(2026, 9, 10, 23, 59, 59, 999).toISOString() }),
+    makeOverview({ id: 'after', createdAt: date(11) }),
+    makeOverview({ id: 'wrong-status', createdAt: date(9), status: 'done' }),
+    makeOverview({ id: 'invalid', createdAt: 'invalid' }),
+  ];
+  const ids = (from?: string, to?: string) => filterJobOverviews(jobs, '测试', 'processing', { from, to }).map(j => j.id);
+  assert.deepEqual(ids('2026-10-09', '2026-10-10'), ['start', 'end']);
+  assert.deepEqual(ids('2026-10-09', '2026-10-09'), ['start']);
+  assert.deepEqual(ids('2026-10-10'), ['end', 'after']);
+  assert.deepEqual(ids(undefined, '2026-10-09'), ['before', 'start']);
+  assert.deepEqual(ids(), ['before', 'start', 'end', 'after', 'invalid']);
+  assert.deepEqual(filterJobOverviews(jobs, '不匹配', 'all', { from: '2026-10-09' }), []);
+  assert.equal(getJobDateRangeError({ from: '2026-10-10', to: '2026-10-09' }), '开始日期不能晚于结束日期');
+  assert.deepEqual(ids('2026-10-10', '2026-10-09'), []);
+  for (const from of ['2026-02-29', '2026-13-01', '2026-01-32', 'bad']) {
+    assert.equal(getJobDateRangeError({ from }), '请输入有效的创建日期');
+    assert.deepEqual(ids(from), []);
+  }
+  assert.equal(getJobDateRangeError({ from: '2024-02-29' }), undefined);
+});
+
+test('creation date end follows local midnight over daylight-saving transitions', () => {
+  for (const [month, day] of [[2, 8], [10, 1]]) {
+    const end = new Date(2026, month, day, 23, 59, 59, 999);
+    const next = new Date(2026, month, day + 1);
+    const date = `2026-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const jobs = [makeOverview({ id: 'end', createdAt: end.toISOString() }), makeOverview({ id: 'next', createdAt: next.toISOString() })];
+    assert.deepEqual(filterJobOverviews(jobs, '', 'all', { from: date, to: date }).map(j => j.id), ['end']);
+  }
 });

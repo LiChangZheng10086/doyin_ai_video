@@ -113,12 +113,19 @@ test('JobListToolbar renders search, filter pills, and view toggle buttons', () 
       filter: 'all',
       viewMode: 'list',
       polling: false,
+      createdFrom: '2026-10-09',
+      createdTo: '',
+      onCreatedFromChange: noop,
+      onCreatedToChange: noop,
       onQueryChange: noop,
       onFilterChange: noop,
       onViewModeChange: noop,
     }),
   );
   assert.match(markup, /placeholder="搜索/);
+  assert.equal((markup.match(/type="date"/g) || []).length, 2);
+  assert.match(markup, /创建日期从/);
+  assert.match(markup, /清除日期/);
   for (const label of ['全部', '处理中', '失败', '已完成', '待执行']) {
     assert.match(markup, new RegExp(`>${label}<`));
   }

@@ -15,6 +15,11 @@ export interface JobListToolbarProps {
   filter: JobFilterStatus;
   viewMode: ViewMode;
   polling: boolean;
+  createdFrom: string;
+  createdTo: string;
+  dateRangeError?: string;
+  onCreatedFromChange: (value: string) => void;
+  onCreatedToChange: (value: string) => void;
   onQueryChange: (value: string) => void;
   onFilterChange: (value: JobFilterStatus) => void;
   onViewModeChange: (mode: ViewMode) => void;
@@ -25,12 +30,17 @@ export function JobListToolbar({
   filter,
   viewMode,
   polling,
+  createdFrom,
+  createdTo,
+  dateRangeError,
+  onCreatedFromChange,
+  onCreatedToChange,
   onQueryChange,
   onFilterChange,
   onViewModeChange,
 }: JobListToolbarProps) {
   return (
-    <div className="mb-5 flex flex-col gap-3 rounded-lg border border-line bg-panel p-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="mb-5 flex flex-col gap-3 rounded-lg border border-line bg-panel p-3 xl:flex-row xl:flex-wrap xl:items-center xl:justify-between">
       <div className="relative flex-1">
         <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
         <input
@@ -40,7 +50,23 @@ export function JobListToolbar({
           className="h-10 w-full rounded-lg border border-line-ui bg-panel pl-10 pr-4 text-sm text-ink outline-none placeholder:text-ink-muted focus:border-accent-line focus:ring-2 focus:ring-accent"
         />
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+        <label className="flex items-center gap-2">
+          创建日期从
+          <input type="date" value={createdFrom} onChange={(event) => onCreatedFromChange(event.target.value)}
+            aria-invalid={Boolean(dateRangeError)} aria-describedby={dateRangeError ? 'job-date-error' : undefined}
+            className="h-10 min-w-0 rounded-lg border border-line-ui bg-panel px-2 text-sm text-ink focus:border-accent-line" />
+        </label>
+        <label className="flex items-center gap-2">
+          至
+          <input type="date" value={createdTo} onChange={(event) => onCreatedToChange(event.target.value)}
+            aria-invalid={Boolean(dateRangeError)} aria-describedby={dateRangeError ? 'job-date-error' : undefined}
+            className="h-10 min-w-0 rounded-lg border border-line-ui bg-panel px-2 text-sm text-ink focus:border-accent-line" />
+        </label>
+        {(createdFrom || createdTo) && <button type="button" onClick={() => { onCreatedFromChange(''); onCreatedToChange(''); }} className="text-accent underline">清除日期</button>}
+        {dateRangeError && <span id="job-date-error" role="alert" className="text-danger">{dateRangeError}</span>}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1">
           {filterOptions.map((item) => (
             <button

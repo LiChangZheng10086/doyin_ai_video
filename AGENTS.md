@@ -268,7 +268,9 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 - 生成视频是**本地 HTML/CSS/GSAP 动画渲染**（不是 Sora/Remotion/HeyGen），依赖 Node 22+、FFmpeg、
   `npx hyperframes doctor`；流程：`doctor --json` → 生成项目（写 `index.html`/`video-source.json`/`DESIGN.md`）
   → `lint`/`validate`/`inspect`/`render`；产物默认 `output/videos/{jobId}/hyperframes/renders/video.mp4`。
-  v1 不做真人/数字人、不自动 TTS；`voiceoverScript` 用作字幕与节奏。
+  默认可保留无声；工作台「成片配音与音乐」可开启 macOS 系统离线中文 TTS、选择本机音频素材与音量（最高 50%）。`GET /api/video-audio/capabilities` 返回已安装中文语音，`POST /api/jobs/:id/steps/generate-video` 可传 `{audio:{voiceover,voice,rate,backgroundAssetId,backgroundVolume}}`。选项写入 `job.videoAudio`，重试保留；已完成步骤只有明确传音频选项才允许重新生成，任务互斥和旧产物保护仍生效。
+- 配音按分镜 narration 完整分段，不截断；以实测音频时长写 `assets/audio/subtitles.srt` 与 `audio-manifest.json`，最多 1.35 倍加速适配，仍放不下则报错请调整稿件。音乐从素材库安全快照读取，循环、淡入淡出并在口播时自动压低，限制峰值。预览引用同一 `mix.wav`，最终以本地 FFmpeg 明确映射 AAC 音轨再验收；固定版 CLI 的旧 `filter_complex_script` 不兼容新 FFmpeg 时也不会交付无声成片。未配置音频不生成音轨；失败不降级为无声成功。
+- 本地中文 TTS 当前仅支持 macOS 的已安装系统语音，Windows/Linux 暂不支持中文 TTS（可使用背景音乐）；不启用付费云服务、不上传素材、不保存新凭据。`npm run test:hyperframes` 验收真实中文配音、字幕、混音及 AAC；`scripts/verify-job-date-audio.ts` 用隔离 API/系统 Chrome 验收日期组合筛选与音频控件，需先编译 renderer。
 
 ### 重新洗稿（reclean）
 - 重新洗稿走独立接口 `POST /api/jobs/:id/reclean`，不经过 `steps/clean`（后者对已 `succeeded` 的步骤返回 409）。
@@ -319,7 +321,7 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 
 - 独立导航 `/galleries` 与工作台 `/galleries/:id`；原视频区域有快捷入口。已有原视频即可创作，不要求洗稿或 HyperFrames 成片，不改变作品步骤状态。
 - 原生字幕只取画面像素；转录分段仅辅助定位。默认自动规划整套，目标每张 6～9 条（默认 8），长句或多行字幕会减少条数并增加张数；手动支持 1～9 条。先查看每张文字与候选拼图，确认整套字幕后一次生成；时间、区域、主画面取景和拆分/合并收进高级调整。本地 FFmpeg 输出 1080×1440 PNG，保持原比例，不重绘文字。草稿与未确认方案可恢复。
-- 自动候选比较附近多个画面的文字状像素及稳定性，宽屏检测采样宽度 720；无可靠候选列明排除原因。没有 OCR，仍可能把横幅当字幕，必须整套核对；无候选不能确认生成。预览与最终图哈希一致，长字幕不能靠拉伸挤进 9 条。
+- 自动候选在 macOS 使用本地 Apple Vision OCR，七帧采样并核对转录字符顺序、字幕位置与尺寸；无标点合并窗口最多 4 秒。新闻标签、过大或偏侧文字及不匹配文字排除，仍可能漏检或误选，必须整套核对；无候选不能确认生成。构建机先运行 `npm run prepare:subtitle-ocr`（需 Swift 工具链），Mac 打包自动编译并携带桥接二进制，用户机器无需 Swift。Windows 自动 OCR 暂未实现；无本地 OCR 时保留旧像素候选并在方案中明确警告（不能当作已识别对白）。统一校准与手动高级调整仍可用；识别运行失败明确报错，不以像素冒充 OCR。预览与最终图哈希一致，长字幕不能靠拉伸挤进 9 条。
 - `POST /api/galleries/:id/plan`（version、targetLines、可选统一字幕区域）、`POST .../plan/render`（version、planId、subtitlesConfirmed）、`GET .../plan/images/:index`（planId、version）。方案绑定源指纹和转录哈希，修改草稿使方案失效；确认与生成结束都复核来源，自动图集发布预览也拒绝旧转录。
 - `GalleryService`/`GalleryMedia`/`gallery-routes` 由 `app.ts` 共用装配。索引 `cache/galleries.json`，产物 `output/galleries/{id}/{generation}/`；生成串行，失败保留旧图仅供参考，成功替换后清理上一代。原视频使用 `resolveSourceVideo` 校验后从已打开 handle 复制到私有临时快照，FFprobe/FFmpeg 不重新打开原路径；源指纹含 inode/size/mtime/ctime。
 - 保存、删除、生成带 `version`；图集发布预览也必须带当前版本。图片 URL 绑定 `generation`，源或图片变化须重生成。`createGalleryNote` 仅接受服务内部已解析路径及有序预期哈希，打包副本与预览不一致就回滚。

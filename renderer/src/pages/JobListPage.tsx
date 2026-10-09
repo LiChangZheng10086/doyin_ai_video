@@ -20,6 +20,7 @@ import { useJobPolling } from '../hooks/useJobPolling';
 import type { JobFilterStatus, JobOverview, ViewMode } from '../types';
 import {
   filterJobOverviews,
+  getJobDateRangeError,
   selectActiveJob,
   readStoredViewMode,
   writeStoredViewMode,
@@ -38,6 +39,8 @@ export function JobListPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [overviews, setOverviews] = useState<JobOverview[]>([]);
   const [query, setQuery] = useState('');
+  const [createdFrom, setCreatedFrom] = useState('');
+  const [createdTo, setCreatedTo] = useState('');
   const [filter, setFilter] = useState<JobFilterStatus>('all');
   const [viewMode, setViewMode] = useState<ViewMode>(() => readStoredViewMode(window.localStorage));
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -88,9 +91,10 @@ export function JobListPage() {
   }, [isPolling, overviews.length, refreshOverviews]);
 
   const activeJob = selectActiveJob(overviews);
+  const dateRangeError = getJobDateRangeError({ from: createdFrom, to: createdTo });
   const filteredJobs = useMemo(() => {
-    return filterJobOverviews(overviews, query, filter);
-  }, [filter, overviews, query]);
+    return filterJobOverviews(overviews, query, filter, { from: createdFrom, to: createdTo });
+  }, [filter, overviews, query, createdFrom, createdTo]);
 
   const handleJobClick = (jobId: string) => {
     navigate(`/jobs/${jobId}`);
@@ -204,6 +208,11 @@ export function JobListPage() {
       <JobListToolbar
         query={query}
         filter={filter}
+        createdFrom={createdFrom}
+        createdTo={createdTo}
+        dateRangeError={dateRangeError}
+        onCreatedFromChange={setCreatedFrom}
+        onCreatedToChange={setCreatedTo}
         viewMode={viewMode}
         polling={isPolling && overviews.length > 0}
         onQueryChange={setQuery}
@@ -243,12 +252,12 @@ export function JobListPage() {
         <div className="rounded-xl border border-line bg-panel">
           <EmptyState
             icon={Search}
-            title="没有匹配的作品"
-            description="换个关键词或筛选条件再试试。"
+            title={dateRangeError ? "创建日期范围有误" : "没有匹配的作品"}
+            description={dateRangeError || "换个关键词、创建日期或筛选条件再试试。"}
             action={
               <Button
                 variant="outline"
-                onClick={() => { setQuery(''); setFilter('all'); }}
+                onClick={() => { setQuery(''); setFilter('all'); setCreatedFrom(''); setCreatedTo(''); }}
               >
                 清空筛选条件
               </Button>

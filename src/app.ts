@@ -35,6 +35,7 @@ import { sendRangeResponse } from "./lib/range-response.js";
 import { JobStepError, JobStore } from "./lib/jobs.js";
 import { CollectionStore } from "./lib/collections.js";
 import { registerConfigRoutes } from "./lib/config-server.js";
+import { localSpeechCapabilities, snapshotBackgroundAudio } from './lib/video-audio.js';
 import { HyperframesVideoGenerator } from "./lib/hyperframes-video.js";
 import { simplifyChineseValue } from "./lib/chinese.js";
 import { buildSkillContext, getSkillErrorMessage, isRetryableSkillError } from "./lib/skill-generation.js";
@@ -197,6 +198,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     whisperModelPath: config.whisperModelPath
   });
 
+  const assetStore = new AssetStore(storage);
   const videoGenerator = new HyperframesVideoGenerator({
     storageRoot: config.storagePath,
     npxBinary: config.hyperframesNpxBinary,
@@ -205,7 +207,9 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     nodeBinary: config.hyperframesNodeBinary,
     useElectronAsNode: config.hyperframesUseElectronAsNode,
     browserPath: config.hyperframesBrowserPath,
-    ffprobeBinary: config.ffprobeBinary
+    ffprobeBinary: config.ffprobeBinary,
+    ffmpegBinary: config.ffmpegBinary,
+    resolveBackgroundAudio: (id, destination) => snapshotBackgroundAudio(assetStore, config.storagePath, id, destination),
   });
 
   const jobs = new JobStore(storage, cleaner, media, asr, videoGenerator);
@@ -231,7 +235,6 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   const publishingAssets = new PublishingAssetService({ storageRoot: config.storagePath });
   // 素材库实例只建一份：素材路由与发布中心的「从素材库选图」必须看同一个索引，
   // 各建一份虽然等价（实例无内存态），但会让「素材库在哪里」出现两个答案。
-  const assetStore = new AssetStore(storage);
   const imagePrompts = new ImagePromptService(storage, { resolveAiConfig: resolvePublishingAiConfig });
   // 未配置 sauBinary 时仍构造实例：缺配置的报错发生在每条自动发布通路上，
   // 而不是让「发布中心整体不可用」（人工交付通路不受影响）。
@@ -572,9 +575,9 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     res.json({ message: "job permanently deleted" });
   });
 
-  const runStepRoute = async (id: string, step: PipelineStep) => {
+  const runStepRoute = async (id: string, step: PipelineStep, audio?: unknown) => {
     try {
-      const record = await jobs.runStep(id, step);
+      const record = await jobs.runStep(id, step, audio);
       return {
         status: 200,
         body: {
@@ -696,8 +699,10 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     res.status(result.status).json(result.body);
   });
 
+  app.get('/api/video-audio/capabilities', async (_req, res) => { res.json(await localSpeechCapabilities()); });
+
   app.post("/api/jobs/:id/steps/generate-video", async (req, res) => {
-    const result = await runStepRoute(req.params.id, "generate_video");
+    const result = await runStepRoute(req.params.id, "generate_video", req.body?.audio);
     res.status(result.status).json(result.body);
   });
 

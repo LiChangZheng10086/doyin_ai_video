@@ -939,3 +939,43 @@ test("permanent deletion stays blocked until repair releases its lock after fina
   assert.equal(await jobs.permanentlyDelete(id), "deleted");
   await assert.rejects(readFile(storage.resolve("raw/transcripts/repair.json")));
 });
+
+
+test("video audio persists across retries, explicit regeneration preserves old artifacts on failure and concurrent work stays locked", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'jobs-video-audio-'));
+  const storage = new LocalStorage(root);
+  const options = { voiceover: true, rate: 210, backgroundVolume: .12 };
+  let calls = 0;
+  let release: (() => void) | undefined;
+  let entered: (() => void) | undefined;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const wait = new Promise<void>(resolve => { release = resolve; });
+  const videoGenerator = { async generate(_script: ScriptAsset, _id: string, _progress: unknown, _signal: unknown, audio: unknown) {
+    assert.deepEqual(audio, options); calls++;
+    if (calls === 1) { entered!(); await wait; }
+    throw new Error('local audio render failed');
+  } } as unknown as HyperframesVideoGenerator;
+  const jobs = new JobStore(storage, { async clean(input) { return input.draft; } }, {} as MediaService, {} as AsrService, videoGenerator);
+  await jobs.init();
+  const initial = await jobs.create({ sourceUrl: 'https://example.com/video', topic: 'audio retry' });
+  const record: JobRecord = { ...initial, status: 'done', stage: 'rendered', videoOutputPath: 'output/videos/old.mp4', steps: {
+    transcribe: { status: 'succeeded', attempts: 1 }, clean: { status: 'succeeded', attempts: 1 },
+    generate_video_prompts: { status: 'succeeded', attempts: 1 }, generate_video: { status: 'succeeded', attempts: 1 }
+  } };
+  await storage.writeJson('cache/jobs-index.json', { [record.id]: record });
+  const script = { sourceUrl: record.sourceUrl, topic: record.topic, rawText: '中文', status: 'rendered', videoPrompts: ['旧分镜'], hyperframesVideo: { videoPath: 'old.mp4' } };
+  await storage.writeJson(record.storagePath, script);
+  await assert.rejects(jobs.runStep(record.id, 'generate_video'), /already succeeded/);
+  await assert.rejects(jobs.runStep(record.id, 'generate_video', { rate: 999 }), (error: unknown) => error instanceof JobStepError && error.statusCode === 400);
+  await assert.rejects(jobs.runStep(record.id, 'clean', options), (error: unknown) => error instanceof JobStepError && error.statusCode === 400);
+  const rendering = assert.rejects(jobs.runStep(record.id, 'generate_video', options), /local audio render failed/);
+  await started;
+  await assert.rejects(jobs.runStep(record.id, 'generate_video', options), /running|正在执行/i);
+  release!(); await rendering;
+  assert.deepEqual((await jobs.get(record.id))?.videoAudio, options);
+  assert.equal((await jobs.get(record.id))?.videoOutputPath, record.videoOutputPath);
+  assert.deepEqual(await storage.readJson(record.storagePath), script);
+  await assert.rejects(jobs.runStep(record.id, 'generate_video'), /local audio render failed/);
+  assert.equal(calls, 2);
+  await rm(root, { recursive: true, force: true });
+});

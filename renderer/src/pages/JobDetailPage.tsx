@@ -19,6 +19,7 @@ import { apiClient } from '../services/api';
 import { useOperatorStore } from '../store/operator';
 import { getCleanArtifactDecision, getCleanArtifactLoadError } from '../utils/jobArtifacts';
 import { isPublishingEligibleVideo } from '../utils/publishing';
+import { VideoAudioOptionsPanel } from '../features/jobs/VideoAudioOptionsPanel';
 import { WorkflowConsole } from '../features/jobs/WorkflowConsole';
 import { ArtifactNavigator, type ArtifactKey } from '../features/jobs/artifacts/ArtifactNavigator';
 import { TranscriptArtifact } from '../features/jobs/artifacts/TranscriptArtifact';
@@ -30,6 +31,7 @@ import { SourceVideoArtifact } from '../features/jobs/artifacts/SourceVideoArtif
 import { JobContextSidebar } from '../features/jobs/JobContextSidebar';
 import { buildArtifactStates } from '../features/jobs/jobPresentation';
 import type {
+  VideoAudioOptions,
   Job,
   CleanedScript,
   RawTranscript,
@@ -48,6 +50,7 @@ export function JobDetailPage() {
   const [job, setJob] = useState<Job | null>(null);
   const [cleaned, setCleaned] = useState<CleanedScript | null>(null);
   const [rawTranscript, setRawTranscript] = useState<RawTranscript | null>(null);
+  const [videoAudio, setVideoAudio] = useState<VideoAudioOptions>({ voiceover: false });
   const [videoOutput, setVideoOutput] = useState<HyperframesVideoOutput | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +124,7 @@ export function JobDetailPage() {
   }, []);
 
   const loadJobArtifacts = async (jobData: Job, isInitialLoad = false) => {
+    if (isInitialLoad) setVideoAudio(jobData.videoAudio ?? { voiceover: false });
     setCleanedError(null);
     setTranscriptError(null);
     setVideoError(null);
@@ -370,7 +374,7 @@ export function JobDetailPage() {
         setStreamPreview(null);
       }
       setRunningStep(step);
-      const updated = await apiClient.runJobStep(job.id, step);
+      const updated = await apiClient.runJobStep(job.id, step, step === 'generate_video' ? videoAudio : undefined);
       setJob(updated);
       await loadJobArtifacts(updated);
       setStreamPreview(null);
@@ -521,6 +525,9 @@ export function JobDetailPage() {
         </div>
       )}
 
+      {!job.deletedAt && job.steps?.generate_video_prompts?.status === 'succeeded' && <VideoAudioOptionsPanel value={videoAudio} onChange={setVideoAudio}
+        disabled={Boolean(runningStep) || Object.values(job.steps ?? {}).some(step => step.status === 'running')}
+        canRegenerate={job.steps?.generate_video?.status === 'succeeded'} onRegenerate={() => void handleRunStep('generate_video')} />}
       {/* Workflow console */}
       <WorkflowConsole
         job={job}

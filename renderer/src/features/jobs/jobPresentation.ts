@@ -134,11 +134,39 @@ export function buildWorkflowSteps(
 
 // ── Filtering & Selection ──
 
+export interface JobDateRange {
+  from?: string;
+  to?: string;
+}
+
+function parseLocalDate(value: string): Date | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(0);
+  date.setFullYear(year, month - 1, day);
+  date.setHours(0, 0, 0, 0);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return undefined;
+  return date;
+}
+
+export function getJobDateRangeError({ from, to }: JobDateRange): string | undefined {
+  if ((from && !parseLocalDate(from)) || (to && !parseLocalDate(to))) return '请输入有效的创建日期';
+  if (from && to && from > to) return '开始日期不能晚于结束日期';
+  return undefined;
+}
+
 export function filterJobOverviews(
   jobs: JobOverview[],
   query: string,
   filter: JobFilterStatus,
+  dateRange: JobDateRange = {},
 ): JobOverview[] {
+  if (getJobDateRangeError(dateRange)) return [];
+  const from = dateRange.from ? parseLocalDate(dateRange.from)!.getTime() : undefined;
+  const end = dateRange.to ? parseLocalDate(dateRange.to)! : undefined;
+  // Exclusive next local midnight includes the whole end date, including DST days.
+  if (end) end.setDate(end.getDate() + 1);
+  const until = end?.getTime();
   const needle = query.trim().toLowerCase();
   return jobs.filter((job) => {
     const matchesFilter =
@@ -147,6 +175,12 @@ export function filterJobOverviews(
         ? job.status === 'queued' && job.workflowMode === 'manual'
         : job.status === filter);
     if (!matchesFilter) return false;
+    if (from !== undefined || until !== undefined) {
+      const createdAt = Date.parse(job.createdAt);
+      if (!Number.isFinite(createdAt)) return false;
+      if (from !== undefined && createdAt < from) return false;
+      if (until !== undefined && createdAt >= until) return false;
+    }
     if (!needle) return true;
     return [
       job.preview.displayTitle,

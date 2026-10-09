@@ -29,7 +29,8 @@
     "check": "npm run check:backend && npm run check:renderer && npm run check:secrets",
     "check:secrets": "node --import tsx scripts/check-secrets.ts",
     "check:backend": "tsc -p tsconfig.json --noEmit",
-    "check:renderer": "tsc -p tsconfig.renderer.json --noEmit"
+    "check:renderer": "tsc -p tsconfig.renderer.json --noEmit",
+    "prepare:subtitle-ocr": "node scripts/prepare-subtitle-ocr.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",

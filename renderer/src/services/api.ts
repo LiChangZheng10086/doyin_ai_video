@@ -10,6 +10,7 @@ import type { ResearchReadInput, ResearchReadResult, ResearchSearchResult, Resea
 import type { AudioBoard, AudioImportBatch, AudioPreview } from '../../../src/lib/online-audio';
 import type { AudioSource, AudioBoardId, OnlineTrack } from '../../../src/lib/online-audio-sources';
 import type {
+  VideoAudioOptions,
   ApiResponse,
   CleanedScript,
   CollectionOverview,
@@ -790,8 +791,13 @@ export class ApiClient {
     return response.data.jobs || [];
   }
 
+  async getVideoAudioCapabilities(): Promise<import('../../../src/lib/video-audio').LocalSpeechCapabilities> {
+    const client = await this.getClient();
+    return (await client.get('/api/video-audio/capabilities')).data;
+  }
+
   // 执行一个手动步骤
-  async runJobStep(id: string, step: PipelineStep): Promise<Job> {
+  async runJobStep(id: string, step: PipelineStep, audio?: VideoAudioOptions): Promise<Job> {
     const client = await this.getClient();
     const routeMap: Record<PipelineStep, string> = {
       transcribe: 'transcribe',
@@ -799,7 +805,7 @@ export class ApiClient {
       generate_video_prompts: 'generate-video-prompts',
       generate_video: 'generate-video',
     };
-    const response = await client.post<ApiResponse>(`/api/jobs/${id}/steps/${routeMap[step]}`);
+    const response = await client.post<ApiResponse>(`/api/jobs/${id}/steps/${routeMap[step]}`, step === 'generate_video' && audio ? { audio } : undefined);
     return response.data.job!;
   }
 

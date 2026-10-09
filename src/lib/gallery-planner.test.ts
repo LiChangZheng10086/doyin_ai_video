@@ -74,3 +74,13 @@ test('unreadable submillisecond tail is explicitly excluded instead of sending a
   assert.equal(plan.excluded[0]!.segmentIndex, 0);
   assert.match(plan.excluded[0]!.reason, /尾段|读取/);
 });
+
+
+test('unpunctuated changing ASR segments do not merge into ten-second candidate windows', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const asset = transcript(['早期对白', '另一条对白', '接下来对白', '最后的对白']);
+  const seen: { start: number; end: number }[] = [];
+  const plan = await planGallery(asset, source, async q => { seen.push(q); return candidate(q); });
+  assert.ok(seen.every(q => q.end - q.start <= 4));
+  assert.equal(plan.images.flatMap(i => i.quotes).map(q => q.text).join(''), asset.transcript);
+});

@@ -1,3 +1,33 @@
+export interface VideoAudioOptions {
+  voiceover: boolean;
+  voice?: string;
+  rate?: number;
+  backgroundAssetId?: string;
+  backgroundVolume?: number;
+}
+
+export interface VideoCaptionCue {
+  sceneIndex: number;
+  text: string;
+  start: number;
+  end: number;
+  file: string;
+}
+
+export interface VideoAudioManifest {
+  provider: 'system-local';
+  voiceover: boolean;
+  voice?: string;
+  rate?: number;
+  backgroundAssetId?: string;
+  backgroundTitle?: string;
+  backgroundVolume?: number;
+  mixFile: string;
+  subtitleFile?: string;
+  duration: number;
+  cues: VideoCaptionCue[];
+}
+
 import type { PlatformCopyValidationError } from "./lib/publishing-platforms.js";
 
 export type AiProvider = "deepseek" | "openai" | "custom";
@@ -484,6 +514,8 @@ export interface JobStepStreamEvent {
 export type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed" | "paused";
 export type VideoGenerationPhase =
   | "checking_environment"
+  | "synthesizing_audio"
+  | "mixing_audio"
   | "building_project"
   | "validating"
   | "snapshotting"
@@ -528,6 +560,7 @@ export interface JobRecord {
   videoProjectPath?: string;
   videoOutputPath?: string;
   videoGeneratedAt?: string;
+  videoAudio?: VideoAudioOptions;
   storagePath: string;
 }
 
@@ -678,6 +711,7 @@ export interface HyperframesVideoScene {
 }
 
 export interface HyperframesVideoOutput {
+  audio?: VideoAudioManifest;
   provider: "hyperframes";
   projectPath: string;
   videoPath: string;

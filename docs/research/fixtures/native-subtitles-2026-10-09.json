@@ -1,0 +1,62 @@
+{
+  "sourceSha256": "be31496df8e405ad73dc956e9c503e65bfd6a931f110ee152958ab08d227ce91",
+  "width": 1680,
+  "height": 720,
+  "annotation": "Manually checked dialogue windows and news-only banner windows. Measures correct candidate selection in these windows, not every spoken line or word accuracy. Video bytes stay local. Transcript text is loaded only from the local file supplied at runtime; no dialogue or transcript is committed.",
+  "cases": [
+    {
+      "id": "opening",
+      "quote": {
+        "segmentIndex": 0,
+        "start": 0,
+        "end": 2.64
+      },
+      "expectedDialogue": true
+    },
+    {
+      "id": "early-dialogue",
+      "quote": {
+        "segmentIndex": 1,
+        "start": 4.32,
+        "end": 12.16
+      },
+      "expectedDialogue": true
+    },
+    {
+      "id": "moving-dialogue",
+      "quote": {
+        "segmentIndex": 5,
+        "start": 12.16,
+        "end": 22.84
+      },
+      "expectedDialogue": true
+    },
+    {
+      "id": "crowd-dialogue",
+      "quote": {
+        "segmentIndex": 10,
+        "start": 23.84,
+        "end": 35.48
+      },
+      "expectedDialogue": true
+    },
+    {
+      "id": "news-headline",
+      "quote": {
+        "segmentIndex": 14,
+        "start": 35.48,
+        "end": 42.4
+      },
+      "expectedDialogue": false
+    },
+    {
+      "id": "reporter-banner",
+      "quote": {
+        "segmentIndex": 17,
+        "start": 42.4,
+        "end": 44.92
+      },
+      "expectedDialogue": false
+    }
+  ]
+}
