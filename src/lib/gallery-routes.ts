@@ -11,9 +11,12 @@ import { publishingErrorStatus } from './publishing-routes.js';
 export function registerGalleryRoutes(app: Express, deps: { galleries: GalleryService; sessions: LocalSessionStore }): void {
   const router = Router();
   const service = deps.galleries;
-  const handle = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => { void fn(req, res).catch(next); };
+  const handle = (fn: (req: Request, res: Response) => Promise<unknown>) => (req: Request, res: Response, next: NextFunction) => {
+    if (req.method === 'POST' && ['plan', 'render', 'translate', 'copy'].includes(req.path.split('/').at(-1) ?? '')) { req.setTimeout(0); res.setTimeout(0); }
+    void fn(req, res).catch(next);
+  };
   router.get('/', handle(async (_req, res) => res.json({ galleries: await service.list() })));
-  router.post('/', requireActor(deps.sessions), handle(async (req, res) => res.status(201).json({ gallery: await service.create(req.body?.sourceJobId) })));
+  router.post('/', requireActor(deps.sessions), handle(async (req, res) => res.status(201).json({ gallery: await service.create(req.body?.sourceJobId, req.body?.mode) })));
   router.get('/:id', handle(async (req, res) => res.json({ gallery: await service.get(String(req.params.id)) })));
   router.patch('/:id', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.update(String(req.params.id), req.body) })));
   router.delete('/:id', requireActor(deps.sessions), handle(async (req, res) => { await service.remove(String(req.params.id), req.body?.version); res.json({ ok: true }); }));
@@ -23,6 +26,9 @@ export function registerGalleryRoutes(app: Express, deps: { galleries: GallerySe
     res.type('png').set('Cache-Control', 'no-store').send(await service.frame(String(req.params.id), Number(req.query.time)));
   }));
   router.post('/:id/plan', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.plan(String(req.params.id), req.body) })));
+  router.post('/:id/translate', requireActor(deps.sessions), handle(async (req, res) => {
+    res.json({ gallery: await service.translate(String(req.params.id), req.body) });
+  }));
   router.post('/:id/copy', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.generateCopy(String(req.params.id), req.body?.version) })));
   router.post('/:id/plan/render', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.renderPlan(String(req.params.id), req.body) })));
   router.get('/:id/plan/images/:index', handle(async (req, res) => res.type('png').set('Cache-Control', 'no-store').send(

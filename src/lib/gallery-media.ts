@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { recognizeNativeText, nativeSubtitleOcrAvailable, selectNativeSubtitle, type SubtitleRecognizer } from './subtitle-ocr.js';
 import { runCommand } from './command.js';
+import { renderTranslatedGallery, validateTranslatedCaptions } from './translated-gallery-media.js';
 import type { GalleryImage, GallerySource } from './gallery-types.js';
 import type { SubtitleCandidate } from './gallery-planner.js';
 
@@ -23,6 +24,7 @@ export function validateGalleryImage(value: GalleryImage, duration = Infinity): 
     throw new GalleryError(422, '画面时间必须在原视频时长范围内');
   }
   if (value.times.length < 1 || value.times.length > 9) throw new GalleryError(422, '每张拼图需 1～9 条字幕');
+  if (value.translatedCaptions !== undefined) validateTranslatedCaptions(value.translatedCaptions, value.times.length);
   if (value.compact !== undefined && typeof value.compact !== 'boolean') throw new GalleryError(422, '拼图排版配置无效');
   if (value.filmstrip !== undefined && typeof value.filmstrip !== 'boolean') throw new GalleryError(422, '拼图排版配置无效');
   if (!Number.isFinite(value.bandTop) || !Number.isFinite(value.bandBottom)
@@ -38,7 +40,7 @@ export function validateGalleryImage(value: GalleryImage, duration = Infinity): 
 }
 
 export class GalleryMedia {
-  constructor(private readonly config: { ffmpegBinary?: string; ffprobeBinary?: string; recognizeSubtitles?: SubtitleRecognizer } = {}) {}
+  constructor(private readonly config: { ffmpegBinary?: string; ffprobeBinary?: string; browserBinary?: string; recognizeSubtitles?: SubtitleRecognizer } = {}) {}
 
   async probe(video: string): Promise<GallerySource> {
     const { stdout } = await runCommand(this.config.ffprobeBinary ?? 'ffprobe',
@@ -180,6 +182,7 @@ export class GalleryMedia {
   async render(video: string, image: GalleryImage, output: string): Promise<void> {
     const info = await this.probe(video);
     validateGalleryImage(image, info.duration);
+    if (image.translatedCaptions !== undefined) return renderTranslatedGallery(image, time => this.frame(video, time), output, this.config);
     await mkdir(path.dirname(output), { recursive: true });
     const dir = await mkdtemp(path.join(path.dirname(output), 'frames-'));
     try {

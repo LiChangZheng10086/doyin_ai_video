@@ -3,7 +3,7 @@ import type { BenchmarkView, BenchmarkSearchResult } from '../../../src/lib/wech
 import axios, { AxiosInstance, type AxiosRequestConfig } from 'axios';
 import type { ImagePromptInput, ImagePromptRecord } from '../../../src/lib/image-prompts';
 import type { ImageAssetMetadata } from '../../../src/lib/assets-store';
-import type { Gallery, GalleryDraft, GalleryPreview, GallerySource } from '../../../src/lib/gallery-types';
+import type { Gallery, GalleryDraft, GalleryPreview, GallerySource, GalleryTranslation } from '../../../src/lib/gallery-types';
 import type { HotspotBoard, HotspotFavorite } from '../../../src/lib/hotspots';
 import type { HotspotItem } from '../../../src/lib/hotspots';
 import type { ResearchReadInput, ResearchReadResult, ResearchSearchResult, ResearchSelection, ResearchStatus } from '../../../src/lib/research-types';
@@ -184,14 +184,17 @@ export class ApiClient {
   async getGalleries(): Promise<Gallery[]> {
     return (await this.publishingRequest<{ galleries: Gallery[] }>({ url: '/api/galleries' })).galleries;
   }
-  async createGallery(sourceJobId: string): Promise<Gallery> {
-    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: '/api/galleries', data: { sourceJobId } })).gallery;
+  async createGallery(sourceJobId: string, mode?: 'native' | 'translated'): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: '/api/galleries', data: { sourceJobId, mode } })).gallery;
   }
   async getGallery(id: string): Promise<Gallery> {
     return (await this.publishingRequest<{ gallery: Gallery }>({ url: `/api/galleries/${id}` })).gallery;
   }
-  async saveGallery(id: string, draft: GalleryDraft & { version: number }): Promise<Gallery> {
+  async saveGallery(id: string, draft: GalleryDraft & { version: number; translation?: GalleryTranslation }): Promise<Gallery> {
     return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'PATCH', url: `/api/galleries/${id}`, data: draft })).gallery;
+  }
+  async translateGallery(id: string, version: number, start: number, end: number): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/translate`, data: { version, start, end }, timeout: 0 })).gallery;
   }
   async deleteGallery(id: string, version: number): Promise<void> {
     await this.publishingRequest({ method: 'DELETE', url: `/api/galleries/${id}`, data: { version } });
@@ -808,7 +811,7 @@ export class ApiClient {
       generate_video_prompts: 'generate-video-prompts',
       generate_video: 'generate-video',
     };
-    const response = await client.post<ApiResponse>(`/api/jobs/${id}/steps/${routeMap[step]}`, step === 'generate_video' && audio ? { audio } : undefined);
+    const response = await client.post<ApiResponse>(`/api/jobs/${id}/steps/${routeMap[step]}`, step === 'generate_video' && audio ? { audio } : undefined, step === 'transcribe' ? { timeout: 0 } : undefined);
     return response.data.job!;
   }
 

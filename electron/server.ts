@@ -62,6 +62,8 @@ export async function startServer(): Promise<number> {
           } : null;
         },
         ytDlpBinary: binaryPaths.ytdlp,
+        ytDlpJsRuntime: process.env.YTDLP_JS_RUNTIME || process.execPath,
+        ytDlpUseElectronAsNode: true,
         // yt-dlp 的 cookie 来源与独立后端同一套 env 契约（缺这条时桌面端配了环境变量也不生效）。
         ...resolveYtDlpCookieConfig(process.env),
         ffmpegBinary: binaryPaths.ffmpeg,

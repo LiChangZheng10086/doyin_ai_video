@@ -21,3 +21,9 @@ test('gallery workspace exposes independent copy generation, source warnings and
   assert.match(html, /文案.*不.*重新生成图片/);
   assert.match(render({ ...gallery, description: '', copyReference: undefined, copyError: undefined }), /生成图文文案/);
 });
+
+test('translated workspace exposes range, bilingual editable text and a distinct gallery mode', () => {
+ const g: Gallery = {id:'g',sourceJobId:'job',version:2,mode:'translated',title:'中文',description:'',hashtags:[],status:'draft',images:[{mainTime:1,times:[1],bandTop:.8,bandBottom:.9,mainFraction:.5}],createdAt:'',updatedAt:'',translation:{start:0,end:4,transcriptHash:'h',sourceFingerprint:'s',cues:[{segmentIndex:0,original:'Never give up.',text:'永不放弃。',start:0,end:4}]}};
+ const html=renderToStaticMarkup(<RouterProvider router={createMemoryRouter([{path:'/',element:<GalleryWorkspace initial={g} source={{width:640,height:360,duration:3600}} transcript={{transcript:'Never give up.',segments:[{start:0,end:4,text:'Never give up.'}]}}/>}])}/>);
+ assert.match(html,/中文译文图集/); assert.match(html,/翻译开始/); assert.match(html,/Never give up/); assert.match(html,/永不放弃/); assert.match(html,/翻译所选片段/); assert.doesNotMatch(html,/高级调整 · 手动换句/);
+});

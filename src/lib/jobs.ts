@@ -12,6 +12,8 @@ import { buildScriptDraft } from "./script-builder.js";
 import type { ScriptCleaner } from "./ai-cleaner.js";
 import type { MediaService } from "./media.js";
 import type { AsrService } from "./asr.js";
+import type { TranscriptResult } from "./asr.js";
+import { isYouTubeUrl } from "./youtube.js";
 import { LocalStorage } from "./storage.js";
 import { parseDouyinShare } from "./douyin.js";
 import { parseVideoAudioOptions } from './video-audio.js';
@@ -564,7 +566,13 @@ export class JobStore {
       videoMetadataPath: downloadResult.metadataPath,
       downloadErrorMessage: undefined
     });
-    await this.writePageInfoBestEffort(id, record.sourceUrl);
+    if (isYouTubeUrl(record.sourceUrl)) {
+      await this.storage.writeJson(path.join("raw", "page", `${id}.json`), {
+        requestedUrl: record.sourceUrl, finalUrl: record.sourceUrl, canonicalUrl: record.sourceUrl,
+        pageTitle: downloadResult.metadata.title, pageDescription: downloadResult.metadata.description,
+        authorName: downloadResult.metadata.uploader, isChallengePage: false, redirectChain: []
+      });
+    } else await this.writePageInfoBestEffort(id, record.sourceUrl);
   }
 
   private async runExtractAudioStep(id: string) {
@@ -588,18 +596,19 @@ export class JobStore {
       await this.runDownloadStep(id);
       record = await this.requireRecord(id);
     }
-    if (!(await this.isWhisperReadyAudio(id, record.audioPath))) {
+    const captions = await this.readYouTubeCaptions(record);
+    if (!captions && !(await this.isWhisperReadyAudio(id, record.audioPath))) {
       await this.update(id, { status: "processing", stage: "extracting" });
       await this.runExtractAudioStep(id);
       record = await this.requireRecord(id);
     }
     await this.update(id, { status: "processing", stage: "transcribing" });
     const audioPath = record.audioPath;
-    if (!audioPath) {
+    if (!audioPath && !captions) {
       throw new Error("audio file is missing; transcription could not extract audio from the source video");
     }
 
-    const transcriptAsset = await this.createTranscriptAsset(id, audioPath);
+    const transcriptAsset = await this.createTranscriptAsset(id, audioPath ?? "", undefined, captions ?? undefined);
     const transcriptPath = path.join("raw", "transcripts", `${id}.json`);
     await this.storage.writeJsonAtomic(transcriptPath, transcriptAsset);
     await this.update(id, {
@@ -609,20 +618,28 @@ export class JobStore {
     });
   }
 
-  private async createTranscriptAsset(id: string, audioPath: string, duration?: number): Promise<TranscriptAsset> {
+  private async readYouTubeCaptions(record: JobRecord) {
+    if (!isYouTubeUrl(record.sourceUrl) || !this.media.readYouTubeCaptions) return null;
+    const metadata = await this.readOptionalJson<{ duration?: number }>(path.join("raw", "videos", `${record.id}.info.json`));
+    return this.media.readYouTubeCaptions(record.id, metadata?.duration);
+  }
+
+  private async createTranscriptAsset(id: string, audioPath: string, duration?: number, captions?: TranscriptResult): Promise<TranscriptAsset> {
     const record = await this.requireRecord(id);
-    const result = await this.asr.transcribe(audioPath);
-    const text = result?.text ? toSimplifiedChinese(result.text).trim() : "";
+    const youtube = isYouTubeUrl(record.sourceUrl);
+    const result = captions ?? await this.asr.transcribe(audioPath, youtube ? "auto" : "zh");
+    const normalize = (text: string) => youtube ? text : toSimplifiedChinese(text);
+    const text = result?.text ? normalize(result.text).trim() : "";
     if (!result || !text) throw new Error("ASR returned no transcript; check ASR configuration and retry");
     const manifest = await this.readOptionalJson<{ duration?: number; audio?: { duration?: number }; source?: { duration?: number } }>(path.join("raw", "audio", `${id}.json`));
-    const actualDuration = duration ?? manifest?.audio?.duration ?? manifest?.source?.duration ?? manifest?.duration ?? result.duration;
-    const segments = result.segments.map((segment) => ({ ...segment, text: toSimplifiedChinese(segment.text) }));
+    const actualDuration = duration ?? (captions ? captions.duration : undefined) ?? manifest?.audio?.duration ?? manifest?.source?.duration ?? manifest?.duration ?? result.duration;
+    const segments = result.segments.map((segment) => ({ ...segment, text: normalize(segment.text) }));
     const issues = inspectTranscriptQuality({ segments, text, duration: actualDuration });
     if (issues.length) throw new Error(`转录异常：${issues.join("；")}`);
     return {
       jobId: id, sourceUrl: record.sourceUrl, audioPath,
       transcript: text, text, segments,
-      words: result.words?.map((word) => ({ ...word, word: toSimplifiedChinese(word.word) })),
+      words: result.words?.map((word) => ({ ...word, word: normalize(word.word) })),
       duration: actualDuration, language: result.language, model: result.model, provider: result.provider,
       createdAt: new Date().toISOString()
     };
@@ -637,8 +654,10 @@ export class JobStore {
     let committed = false;
     try {
       source = await resolveSourceVideo(this.storage.resolve(), record);
+      const captions = await this.readYouTubeCaptions(record);
       let audioPath: string;
-      if (await this.isWhisperReadyAudio(id, record.audioPath)) {
+      if (captions) audioPath = record.audioPath ?? "";
+      else if (await this.isWhisperReadyAudio(id, record.audioPath)) {
         audioPath = path.join(workDir, "audio.wav");
         await this.copyStoredSnapshot(record.audioPath!, audioPath);
       } else {
@@ -650,8 +669,8 @@ export class JobStore {
         extracted = await this.media.extractAudio(videoSnapshot, extractionId);
         audioPath = extracted.audioPath;
       }
-      const transcript = await this.createTranscriptAsset(id, audioPath, extracted?.duration);
-      transcript.audioPath = extracted?.audioPath ?? record.audioPath!;
+      const transcript = await this.createTranscriptAsset(id, audioPath, extracted?.duration, captions ?? undefined);
+      transcript.audioPath = extracted?.audioPath ?? record.audioPath ?? "";
       signal?.throwIfAborted();
       const next = await this.commitRetranscript(record, transcript, extracted, signal);
       committed = true;
@@ -1474,6 +1493,7 @@ export class JobStore {
         throw error;
       });
       for (const entry of entries) {
+        if (directory === "raw/transcripts" && entry.startsWith(`${record.id}.captions.`) && /^[a-zA-Z0-9-]+\.json3$/.test(entry.slice(`${record.id}.captions.`.length))) addRelative(directory, entry);
         const suffix = directory === "raw/audio"
           ? entry.startsWith(`${record.id}-repair-`) ? entry.slice(`${record.id}-repair-`.length) : ""
           : entry.startsWith(`${record.id}.json.before-retranscribe-`) ? entry.slice(`${record.id}.json.before-retranscribe-`.length) : "";

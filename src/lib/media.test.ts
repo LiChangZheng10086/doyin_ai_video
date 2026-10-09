@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -8,6 +8,66 @@ import { MediaService } from "./media.js";
 import { LocalStorage } from "./storage.js";
 
 const DOUYIN_DESKTOP_URL = "https://www.douyin.com/video/7690254449486351616";
+
+test("YouTube ingestion rejects channel and playlist URLs before any download", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "media-youtube-single-"));
+  try {
+    const media = new MediaService(new LocalStorage(root), { commandRunner: { async run() { throw new Error("must not download a playlist"); } } });
+    for (const url of ["https://www.youtube.com/@channel", "https://www.youtube.com/playlist?list=abc"]) {
+      await assert.rejects(media.downloadVideo(url, "single"), /单条 YouTube 视频/);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("YouTube bypasses Douyin, uses explicit runtime/FFmpeg and reads authored JSON3 without browser cookies", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "media-youtube-"));
+  const storage = new LocalStorage(root);
+  await storage.ensureBaseDirs();
+  const calls: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+  let douyinCookieReads = 0;
+  const media = new MediaService(storage, {
+    ytDlpJsRuntime: "/fake/Electron", ytDlpUseElectronAsNode: true, ffmpegBinary: "/bundle/ffmpeg",
+    douyinCookie() { douyinCookieReads += 1; throw new Error("YouTube must not read Douyin cookies"); },
+    commandRunner: { async run(_command, args, options) {
+      calls.push({ args, env: options?.env });
+      if (args.includes("--skip-download")) {
+        await writeFile(storage.resolve("raw/transcripts", "youtube.captions.en.json3"), JSON.stringify({ events: [{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: "Original 繁體" }] }] }));
+      } else {
+        await writeFile(storage.resolve("raw/videos", "youtube.mp4"), "video");
+        await storage.writeJson("raw/videos/youtube.info.json", { duration: 2, language: "en", subtitles: { en: [{ ext: "json3", url: "https://www.youtube.com/api/timedtext?lang=en" }] } });
+      }
+      return { stdout: "", stderr: "" };
+    } }
+  } as any);
+  try {
+    await media.downloadVideo("https://www.youtube.com/watch?v=abc", "youtube");
+    const result = await (media as any).readYouTubeCaptions("youtube", 2);
+    assert.equal(result.provider, "youtube-authored-captions");
+    assert.equal(result.language, "en");
+    assert.equal(result.text, "Original 繁體");
+    assert.equal(douyinCookieReads, 0);
+    assert.ok(calls.every(({ args }) => !args.includes("--cookies-from-browser") && args.includes("--ignore-config")));
+    assert.ok(calls[0].args.includes("node:/fake/Electron"));
+    assert.ok(calls[0].args.includes("/bundle/ffmpeg"));
+    assert.ok(calls[0].args.includes("--remux-video"), "single-stream fallbacks must also become MP4");
+    assert.equal(calls[0].env?.ELECTRON_RUN_AS_NODE, "1");
+    assert.ok(calls[1].args.includes("--write-subs"));
+    assert.ok(!calls[1].args.includes("--write-auto-subs"));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("YouTube caption download error leaves original video intact and reports caption failure", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "media-youtube-caption-error-"));
+  const storage = new LocalStorage(root);
+  await storage.ensureBaseDirs();
+  await writeFile(storage.resolve("raw/videos", "youtube.mp4"), "original");
+  await storage.writeJson("raw/videos/youtube.info.json", { automatic_captions: { "en-orig": [{ ext: "json3", url: "https://www.youtube.com/api/timedtext?lang=en" }] } });
+  try {
+    const media = new MediaService(storage, { commandRunner: { async run() { throw new Error("HTTP 429"); } } });
+    await assert.rejects(() => (media as any).readYouTubeCaptions("youtube", 10), /YouTube 字幕.*HTTP 429/s);
+    assert.equal(await readFile(storage.resolve("raw/videos", "youtube.mp4"), "utf8"), "original");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 /** 抖音分享页的典型形状：**带 cookie 才有 `videoInfoRes`**（实测，见探针记录）。 */
 function douyinSharePageHtml(withVideoInfo: boolean): string {
@@ -250,4 +310,17 @@ test("MediaService extracts Whisper-ready wav audio and records manifest", async
   assert.equal(manifest.status, "ready");
   assert.equal(manifest.audioPath, result.audioPath);
   assert.deepEqual(manifest.args, ffmpegCall.args);
+});
+
+test('yt-dlp leaves PATH FFmpeg discovery enabled unless an actual configured path is supplied', async () => {
+ const root=await mkdtemp(path.join(tmpdir(),'media-ffmpeg-path-'));const storage=new LocalStorage(root);await storage.ensureBaseDirs();
+ try {
+  for(const ffmpegBinary of [undefined,'ffmpeg','ffmpeg.exe','/bundle/ffmpeg']) {
+   let argsSeen:string[]=[];
+   const media=new MediaService(storage,{ffmpegBinary,commandRunner:{run:async(_c,args)=>{argsSeen=args;await writeFile(storage.resolve('raw/videos/path.mp4'),'video');await storage.writeJson('raw/videos/path.info.json',{});return{stdout:'',stderr:''};}}});
+   await media.downloadVideo('https://www.youtube.com/watch?v=path','path');
+   assert.equal(argsSeen.includes('--ffmpeg-location'),ffmpegBinary==='/bundle/ffmpeg');
+   if(ffmpegBinary==='/bundle/ffmpeg') assert.equal(argsSeen[argsSeen.indexOf('--ffmpeg-location')+1],ffmpegBinary);
+  }
+ }finally{await rm(root,{recursive:true,force:true});}
 });

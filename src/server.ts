@@ -34,6 +34,7 @@ const app = await createExpressApp({
   aiApiKey,
   aiBaseURL: process.env.AI_BASE_URL ?? (aiProvider === "deepseek" ? "https://api.deepseek.com" : undefined),
   ytDlpBinary: process.env.YTDLP_BINARY,
+  ytDlpJsRuntime: process.env.YTDLP_JS_RUNTIME ?? process.execPath,
   ffmpegBinary: process.env.FFMPEG_BINARY,
   ffprobeBinary: process.env.FFPROBE_BINARY ?? "ffprobe",
   cookiesFile: process.env.YTDLP_COOKIES_FILE,

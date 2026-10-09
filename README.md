@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | 资料搜索与阅读 | 热点详情和文章共用资料面板；主动读取公开正文、搜索相关报道，将选中的正文导入文章 | Jina / Exa 缺省关闭；搜索摘录和话题页不能当作正文。真实 Exa 搜索已验证，本机 Jina 直连读取超时，见[资料验收](docs/research/2026-10-08-content-research-verification.md) |
 | 自动字幕图集 | 默认目标每张 8 条，在 6～9 条范围内均衡规划；macOS 本地 OCR 辅助筛选原生字幕，确认整套后生成 1080×1440 PNG | 保留原视频字幕像素；满宽主画面和各条原画面背景组成连续切片，仍需人工核对。见[OCR 验收](docs/research/2026-10-09-native-subtitle-ocr-verification.md)与[排版验收](docs/research/2026-10-09-gallery-filmstrip-verification.md) |
+| YouTube 中文译文图集 | 单条链接下载，人工／自动字幕优先，无字幕用本地多语言 ASR；选片段翻译、原文对照、中文 PNG 与现有抖音图文包 | 与原生字幕像素模式独立；译文需人工核对。真实验收为所提供视频的短片段，未完成全长转录。见[验收记录](docs/research/2026-10-10-youtube-translated-gallery-verification.md) |
 | 图集配套文案 | 从完整转录生成标题、背景引入、编号要点、互动结尾和话题；可独立重生成文案 | 已有正文不被重规划覆盖；替换前确认，失败保留原记录，仅改文案保留图片。见[文案验收](docs/research/2026-10-09-gallery-copy-verification.md) |
 | 转录质量与受控修复 | 检查严重循环、非法时间和越界；作品转录页与图集可主动重新转录 | 备份旧文件，失败恢复；成功后下游需重做，已建发布包保留。启动时不批量修复历史，见[转录修复验收](docs/research/2026-10-09-subtitle-gallery-asr-verification.md) |
 | 成片配音与音乐 | 可选 macOS 离线中文系统配音、分段字幕、本机音频素材、循环与口播时音乐压低；最终验收 AAC 音轨 | 中文 TTS 当前仅支持 macOS 已安装语音；未选音频可无声，音频失败不降级为无声成功。见[音频验收](docs/research/2026-10-09-date-and-hyperframes-audio-verification.md) |
@@ -550,6 +551,23 @@ npx playwright install chromium  # 或装一个完整的 Playwright chromium
 生成结果、图片顺序与文案进入完整性和预览版本校验。删除图集不会删除已建发布包。创建包不等于发到抖音，提交仍复用已有外部 sau 引擎，失败不自动重试，平台结果由本人核实；不会因为有图集而自动下载、洗稿、排期代发。
 
 OCR 只辅助筛选，仍可能漏检或误选，必须整套核对；Windows 自动 OCR 尚未实现，无本地 OCR 时方案明确标为像素候选。满宽取景可能裁掉上下内容，可在高级调整中修改。
+
+### YouTube 视频 → 中文译文图集
+
+1. 新建作品选择「视频链接（抖音 / YouTube）」，粘贴公开单条 YouTube 链接，然后执行「视频转录」。原视频落盘；优先读取原语言人工字幕，其次自动字幕，缺少字幕时由内置 whisper.cpp 自动判断语言。来源作品保留原文全文、时间轴、语言与来源，字幕轨道不会标成音频 ASR。
+2. 进入「图集创作」，选择已下载作品。YouTube 默认使用「中文译文」，也可明确选「原生字幕像素」模式；原生模式仍要求画面本身有字幕。
+3. 在工作台选择翻译开始／结束秒，默认前两分钟（短视频取全长）。与边界重叠的分段完整保留。点击「翻译所选片段」，使用设置中的 AI 分批翻译；逐句对照原文、编辑中文并保存。失败保留已有译文，重新翻译前确认替换。
+4. 自动规划图片，默认目标每张 8 条，长文字减少条数。中文模式由 FFmpeg 取对应时间画面，隔离 Chromium 绘制中文到 **1080×1440 PNG**；原文在工作台对照，不当作原生中文字幕。逐张核对预览，再确认生成。
+5. 修改译文后旧方案失效，需重新规划、确认与生成。文案基于所选片段，已有文案保留；旧自动文案依据改变时需重新生成。原视频或转录改变后须重新翻译。超 35 张时明确要求缩小片段，**不截断内容**。
+6. 保存标题、正文与话题，检查发布预览，确认使用权并建包，再到现有发布中心操作。图集不会自动发布，已建包不受后续译文修改影响。
+
+长视频没有固定一小时上限，下载和转录请求不再受现有 10 分钟空闲超时中断；缺字幕时仍是整段本地 ASR，未实现分片续传或断点恢复。耗时、内存和磁盘取决于视频与硬件，请保持应用开启。当前真实验收视频长 4 小时 22 分钟，只验证了约 70 秒样本的下载与真实转录，未验证全长。
+
+YouTube 支持复用 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，没有另装 youtube-transcript-api、YouTube.js 或 pytubefix。打包准备固定使用验收通过的 **2026.08.19**（可用 `YTDLP_VERSION` 显式覆盖），版本戳会刷新旧缓存。开发者旧版报 403 时先更新 `YTDLP_BINARY` 指向的下载器；应用安装包须重新准备资源并打包。运行时显式使用 Node JavaScript runtime（Electron 使用自身 Node）与 FFmpeg。公开视频仍可能因网络、地域、登录或平台校验失败，错误会保留原视频并提示；不会自动读取浏览器 Cookie。独立后端可用 `YTDLP_JS_RUNTIME` 指定 Node 路径，Cookie 仅使用主动配置的 `YTDLP_COOKIES_FILE`／`YTDLP_COOKIES_FROM_BROWSER`。
+
+本次实现使用的开发 Skills（代理工作流，非应用运行依赖）：`brainstorming`、`superpowers:writing-plans`、`superpowers:dispatching-parallel-agents`、`superpowers:using-git-worktrees`、`superpowers:test-driven-development`、`superpowers:verification-before-completion`、`requesting-code-review`、`superpowers:finishing-a-development-branch`、`playwright`（并遵循 `superpowers:using-superpowers` 的技能加载规则）。项目内可用于内容创作的全部 Skills 仍见下方清单。
+
+隔离验收：`node --import tsx scripts/verify-subtitle-gallery.ts --translated`；追加 `--serve` 打开合成工作台（默认 3183，可通过 `SUBTITLE_GALLERY_PORT` 修改）。合成译文不证明真实翻译准确；现有无参数原生字幕验收保持兼容。
 
 ### 微信公众号文章草稿的完整流程
 

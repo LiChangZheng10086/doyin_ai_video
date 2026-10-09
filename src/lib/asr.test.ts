@@ -86,6 +86,26 @@ test("AsrService reports a clear error when bundled Whisper resources are missin
   );
 });
 
+test("AsrService accepts auto language and retains detected source language", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "asr-auto-"));
+  try {
+    const audio = path.join(root, "audio.wav");
+    const cli = path.join(root, "whisper-cli");
+    const model = path.join(root, "model.bin");
+    await Promise.all([audio, cli, model].map((file) => writeFile(file, "fixture")));
+    const service = new AsrService({ whisperCliPath: cli, whisperModelPath: model, commandRunner: {
+      async run(_command, args) {
+        assert.equal(args[args.indexOf("-l") + 1], "auto");
+        await writeFile(`${args[args.indexOf("-of") + 1]}.json`, JSON.stringify({ result: { language: "en" }, segments: [{ start: 0, end: 2, text: "Original text" }] }));
+        return { stdout: "", stderr: "" };
+      }
+    } });
+    const result = await (service.transcribe as any)(audio, "auto");
+    assert.equal(result.language, "en");
+    assert.equal(result.text, "Original text");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("AsrService decorates whisper.cpp command failures", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "asr-failed-"));
   const cliPath = path.join(root, process.platform === "win32" ? "whisper-cli.exe" : "whisper-cli");

@@ -1,13 +1,17 @@
 import { createWriteStream } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { CommandError, runCommand } from "./command.js";
 import type { LocalStorage } from "./storage.js";
+import type { TranscriptResult } from "./asr.js";
+import { isYouTubeUrl, parseYouTubeJson3, selectYouTubeCaption } from "./youtube.js";
 
 export interface MediaServiceConfig {
   ytDlpBinary?: string;
+  ytDlpJsRuntime?: string;
+  ytDlpUseElectronAsNode?: boolean;
   ffmpegBinary?: string;
   ffprobeBinary?: string;
   cookiesFile?: string;
@@ -92,6 +96,13 @@ export class MediaService {
   }
 
   async downloadVideo(sourceUrl: string, jobId: string): Promise<DownloadResult> {
+    if (isYouTubeUrl(sourceUrl)) {
+      const url = new URL(sourceUrl);
+      const videoLink = url.hostname === "youtu.be" ? /^\/[\w-]+\/?$/.test(url.pathname)
+        : (url.pathname === "/watch" && /^[\w-]+$/.test(url.searchParams.get("v") ?? "")) || /^\/(shorts|live|embed)\/[\w-]+\/?$/.test(url.pathname);
+      if (!videoLink) throw new Error("请使用单条 YouTube 视频链接；暂不支持频道或播放列表批量采集");
+      return this.downloadViaYtDlp(sourceUrl, jobId);
+    }
     // Try page parser first (works without auth, gets watermarked video)
     let pageError: Error | null = null;
     try {
@@ -117,6 +128,36 @@ export class MediaService {
         .join("\n")
         .trim();
       throw new Error(message || "video download failed");
+    }
+  }
+
+  async readYouTubeCaptions(jobId: string, duration?: number): Promise<TranscriptResult | null> {
+    let metadata: Record<string, unknown>;
+    const metadataPath = this.storage.resolve("raw/videos", `${jobId}.info.json`);
+    try { metadata = JSON.parse(await readFile(metadataPath, "utf8")); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw new Error(`YouTube 字幕元数据不可读取：${error instanceof Error ? error.message : String(error)}`);
+    }
+    const track = selectYouTubeCaption(metadata);
+    if (!track) return null;
+    const output = this.storage.resolve("raw/transcripts", `${jobId}.captions.%(ext)s`);
+    const captionPath = this.storage.resolve("raw/transcripts", `${jobId}.captions.${track.language}.json3`);
+    try {
+      await rm(captionPath, { force: true });
+      await this.runner.run(this.config.ytDlpBinary ?? "yt-dlp", [
+        ...this.ytDlpRuntimeArgs(), "--no-playlist", "--skip-download", "--load-info-json", metadataPath,
+        track.automatic ? "--write-auto-subs" : "--write-subs", "--sub-langs", track.language,
+        "--sub-format", "json3", "-o", output, ...this.buildCookieArgs()
+      ], this.ytDlpRunOptions());
+      const actualDuration = duration ?? (typeof metadata.duration === "number" ? metadata.duration : undefined);
+      const segments = parseYouTubeJson3(JSON.parse(await readFile(captionPath, "utf8")), actualDuration);
+      return { text: segments.map((segment) => segment.text).join("\n"), segments, duration: actualDuration,
+        language: track.language.replace(/-orig$/, ""), model: "youtube-json3",
+        provider: track.automatic ? "youtube-automatic-captions" : "youtube-authored-captions" };
+    } catch (error) {
+      const message = error instanceof CommandError ? error.stderr.trim() || error.message : error instanceof Error ? error.message : String(error);
+      throw new Error(`YouTube 字幕读取失败（已下载原视频保留，可重试）：${message}`);
     }
   }
 
@@ -267,11 +308,14 @@ export class MediaService {
     const ytDlp = this.config.ytDlpBinary ?? "yt-dlp";
     const outputTemplate = this.storage.resolve("raw/videos", `${jobId}.%(ext)s`);
     const args = [
+      ...this.ytDlpRuntimeArgs(),
       "--no-playlist",
       "--no-progress",
       "--no-warnings",
       "--restrict-filenames",
       "--merge-output-format",
+      "mp4",
+      "--remux-video",
       "mp4",
       "--write-info-json",
       "-f",
@@ -283,11 +327,9 @@ export class MediaService {
     ];
 
     try {
-      await this.runner.run(ytDlp, args, {
-        captureStderr: true
-      });
+      await this.runner.run(ytDlp, args, this.ytDlpRunOptions());
     } catch (error) {
-      throw this.decorateYtDlpError(error);
+      throw this.decorateYtDlpError(error, !isYouTubeUrl(sourceUrl));
     }
 
     const videoPath = await this.findGeneratedFile("raw/videos", jobId, {
@@ -436,6 +478,16 @@ export class MediaService {
     return [];
   }
 
+  private ytDlpRuntimeArgs() {
+    return ["--ignore-config", "--no-js-runtimes", "--js-runtimes", `node:${this.config.ytDlpJsRuntime ?? process.execPath}`,
+      ...(this.config.ffmpegBinary && !["ffmpeg", "ffmpeg.exe"].includes(this.config.ffmpegBinary)
+        ? ["--ffmpeg-location", this.config.ffmpegBinary] : [])];
+  }
+
+  private ytDlpRunOptions() {
+    return { captureStderr: true, ...(this.config.ytDlpUseElectronAsNode ? { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } } : {}) };
+  }
+
   private extractRouterData(html: string) {
     const match = html.match(/window\._ROUTER_DATA\s*=\s*(.*?)<\/script>/s);
     if (!match) {
@@ -499,12 +551,12 @@ export class MediaService {
     return path.join(targetDir, candidates[0]);
   }
 
-  private decorateYtDlpError(error: unknown) {
+  private decorateYtDlpError(error: unknown, includeCookieHint = true) {
     if (!(error instanceof CommandError)) {
       return error instanceof Error ? error : new Error("yt-dlp download failed");
     }
 
-    const hint = this.buildYtDlpHint();
+    const hint = includeCookieHint ? this.buildYtDlpHint() : "";
     const message = [error.stderr.trim(), hint].filter(Boolean).join("\n").trim();
     return new Error(message || "yt-dlp download failed");
   }

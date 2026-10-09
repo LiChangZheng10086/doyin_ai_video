@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensurePackagedYtDlp, YTDLP_VERSION } from './ytdlp-package.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -16,6 +17,7 @@ const devWhisperDir = path.join(vendorDir, "whisper");
 const modelUrl = process.env.WHISPER_MODEL_URL || "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
 const hyperframesVersion = process.env.HYPERFRAMES_VERSION || "0.7.108";
 const chromeHeadlessShellVersion = process.env.HYPERFRAMES_CHROME_VERSION || "152.0.7928.2";
+const ytDlpVersion = process.env.YTDLP_VERSION || YTDLP_VERSION;
 
 const targets = {
   mac: {
@@ -30,7 +32,7 @@ const targets = {
     browserPlatform: process.arch === "x64" ? "mac" : "mac_arm",
     ffmpegPackage: process.arch === "x64" ? "@ffmpeg-installer/darwin-x64@4.1.0" : "@ffmpeg-installer/darwin-arm64@4.1.5",
     ffprobePackage: process.arch === "x64" ? "@ffprobe-installer/darwin-x64@5.1.0" : "@ffprobe-installer/darwin-arm64@5.0.1",
-    ytdlpUrl: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+    ytdlpAsset: "yt-dlp_macos"
   },
   win: {
     id: "win32-x64",
@@ -44,7 +46,7 @@ const targets = {
     browserPlatform: "win64",
     ffmpegPackage: "@ffmpeg-installer/win32-x64@4.1.0",
     ffprobePackage: "@ffprobe-installer/win32-x64@5.1.0",
-    ytdlpUrl: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+    ytdlpAsset: "yt-dlp.exe",
     whisperZipUrl: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip"
   }
 };
@@ -96,13 +98,8 @@ async function ensureFfprobe() {
 }
 
 async function ensureYtDlp() {
-  const output = path.join(binDir, target.bin.ytdlp);
-  if (await exists(output)) {
-    await makeExecutable(output);
-    return;
-  }
-  await download(target.ytdlpUrl, output);
-  await makeExecutable(output);
+  await ensurePackagedYtDlp({ output: path.join(binDir, target.bin.ytdlp), asset: target.ytdlpAsset,
+    version: ytDlpVersion, download, makeExecutable });
 }
 
 async function ensureWhisper() {

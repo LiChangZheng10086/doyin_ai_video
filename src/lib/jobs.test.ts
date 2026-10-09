@@ -11,6 +11,53 @@ import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import { LocalStorage } from "./storage.js";
 import type { ScriptAsset, JobRecord } from "../types.js";
 
+for (const captions of [true, false]) {
+  test(`YouTube transcription ${captions ? "uses captions before ASR" : "falls back to auto language"} and preserves source text`, async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "jobs-youtube-"));
+    const storage = new LocalStorage(root);
+    let asrCalls = 0;
+    const media = {
+      async downloadVideo(_url: string, id: string) {
+        const videoPath = storage.resolve("raw/videos", `${id}.mp4`);
+        const metadataPath = storage.resolve("raw/videos", `${id}.info.json`);
+        await writeFile(videoPath, "video");
+        await storage.writeJson(`raw/videos/${id}.info.json`, { title: "YouTube source", duration: 2 });
+        return { videoPath, metadataPath, metadata: { title: "YouTube source", duration: 2 }, method: "yt-dlp" };
+      },
+      async readYouTubeCaptions() { return captions ? { text: "Original 繁體", segments: [{ start: 0, end: 2, text: "Original 繁體" }], duration: 2, language: "en", model: "youtube-json3", provider: "youtube-authored-captions" } : null; },
+      async extractAudio(_video: string, id: string) {
+        assert.equal(captions, false, "caption source does not need audio extraction");
+        const audioPath = storage.resolve("raw/audio", `${id}.wav`);
+        await writeFile(audioPath, "audio");
+        return { audioPath, manifestPath: storage.resolve("raw/audio", `${id}.json`), duration: 2 };
+      }
+    } as unknown as MediaService;
+    const jobs = new JobStore(storage, { async clean(input) { return input.draft; } }, media, {
+      async transcribe(_audio: string, language?: string) {
+        asrCalls += 1;
+        assert.equal(language, "auto");
+        return { text: "Original 繁體", segments: [{ start: 0, end: 2, text: "Original 繁體" }], language: "en", duration: 2, model: "ggml-small", provider: "whisper.cpp" };
+      }
+    } as unknown as AsrService);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => { throw new Error("Must not request Douyin pages for YouTube"); };
+    try {
+      await jobs.init();
+      const job = await jobs.create({ sourceUrl: "https://www.youtube.com/watch?v=abc" });
+      const result = await jobs.runStep(job.id, "transcribe");
+      const transcript = await storage.readJson<any>(`raw/transcripts/${job.id}.json`);
+      assert.equal(result.steps?.transcribe.status, "succeeded");
+      assert.equal(transcript.text, "Original 繁體");
+      assert.equal(transcript.segments[0].text, "Original 繁體");
+      assert.equal(transcript.provider, captions ? "youtube-authored-captions" : "whisper.cpp");
+      assert.equal(asrCalls, captions ? 0 : 1);
+      const page = await storage.readJson<any>(`raw/page/${job.id}.json`);
+      assert.equal(page.pageTitle, "YouTube source");
+      assert.equal(page.errorMessage, undefined);
+    } finally { globalThis.fetch = originalFetch; await rm(root, { recursive: true, force: true }); }
+  });
+}
+
 test("JobStore recovers persisted running steps after restart so they can be retried", async () => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-restart-recovery-"));
   const storage = new LocalStorage(storageRoot);
@@ -688,6 +735,8 @@ test("permanent deletion removes only this job's generated repair files and hist
   const unrelated = [`${id}-other-repair-${uuid}.wav`, `${id}-repair-invalid.wav`, `${id}-repair-${uuid}.mp3`];
   for (const file of unrelated) await writeFile(storage.resolve("raw/audio", file), "unrelated");
   await writeFile(storage.resolve("raw/transcripts", `${id}-other.json.before-retranscribe-${uuid}.json`), "other job history");
+  await writeFile(storage.resolve("raw/transcripts", `${id}.captions.en-orig.json3`), "captions");
+  await writeFile(storage.resolve("raw/transcripts", `${id}-other.captions.en.json3`), "other captions");
   await jobs.trash(id);
   assert.equal(await jobs.permanentlyDelete(id), "deleted");
   for (const folder of ["raw/transcripts", "processed/scripts", "processed/cleaned"]) {
@@ -697,6 +746,8 @@ test("permanent deletion removes only this job's generated repair files and hist
   for (const extension of ["wav", "json"]) await assert.rejects(readFile(storage.resolve("raw/audio", `${id}-repair-${uuid}.${extension}`)));
   for (const file of unrelated) assert.equal(await readFile(storage.resolve("raw/audio", file), "utf8"), "unrelated");
   assert.equal(await readFile(storage.resolve("raw/transcripts", `${id}-other.json.before-retranscribe-${uuid}.json`), "utf8"), "other job history");
+  await assert.rejects(readFile(storage.resolve("raw/transcripts", `${id}.captions.en-orig.json3`)));
+  assert.equal(await readFile(storage.resolve("raw/transcripts", `${id}-other.captions.en.json3`), "utf8"), "other captions");
 });
 
 

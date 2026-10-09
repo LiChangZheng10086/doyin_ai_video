@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link, useBlocker, useNavigate, useParams } from 'react-router-dom';
 import { ArrowDown, ArrowUp, Copy, Loader2, Plus, Trash2 } from 'lucide-react';
 import { Layout } from '../components/Layout';
+import { GalleryTranslationPanel } from '../components/GalleryTranslationPanel';
 import { GalleryPlanPanel } from '../components/GalleryPlanPanel';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { apiClient, parseApiError } from '../services/api';
@@ -58,11 +59,12 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   const frameRequest = useRef(0);
   const frameUrl = useRef('');
   const mounted = useRef(true);
+  const translated = saved.mode === 'translated';
   const image = draft.images[selected]!;
   const segments = (activeTranscript?.segments ?? []).flatMap(s => typeof s.start === 'number' && typeof s.end === 'number'
     && Number.isFinite(s.start) && Number.isFinite(s.end) ? [{ start: s.start, end: s.end, text: s.text }] : []);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
-  const imagesDirty = JSON.stringify(draft.images) !== JSON.stringify(saved.images);
+  const imagesDirty = JSON.stringify(draft.images) !== JSON.stringify(saved.images) || JSON.stringify(draft.translation) !== JSON.stringify(saved.translation);
   const working = !!busy || saved.status === 'running';
   const locked = working || !!sourceError;
   const blocker = useBlocker(dirty);
@@ -139,7 +141,7 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   };
   const generatePlan = async () => {
     if (!saved.plan || dirty || !planConfirmed) return;
-    try { accept(await apiClient.renderGalleryPlan(saved.id, saved.version, saved.plan.id, true)); select(0); setNotice('整套图集已生成，可继续局部微调或准备发布。'); }
+    try { accept(await apiClient.renderGalleryPlan(saved.id, saved.version, saved.plan.id, true)); select(0); setNotice(translated ? '中文图集已生成，可准备发布。修改译文后请重新规划。' : '整套图集已生成，可继续局部微调或准备发布。'); }
     catch (e) { accept(await apiClient.getGallery(saved.id)); throw e; }
   };
   const retranscribe = async () => {
@@ -158,8 +160,8 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   const select = (index: number) => { setSelected(index); setFrame(null); frameRequest.current++; setFrameBusy(false); };
   return <div>
     <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-      <div><Link to="/galleries" className="text-sm text-accent">← 图集创作</Link><h1 className="mt-2 text-2xl font-semibold text-ink">字幕图集工作台</h1>
-        <p className="mt-2 text-sm text-ink-muted">保留原视频字幕，不绘制转录文字。{!sourceError && <>原视频 {source.width}×{source.height} · {source.duration.toFixed(1)} 秒 · </>}<Link className="text-accent" to={`/jobs/${draft.sourceJobId}`}>查看来源</Link></p></div>
+      <div><Link to="/galleries" className="text-sm text-accent">← 图集创作</Link><h1 className="mt-2 text-2xl font-semibold text-ink">{translated ? '中文译文图集工作台' : '字幕图集工作台'}</h1>
+        <p className="mt-2 text-sm text-ink-muted">{translated ? '原文与时间轴保留供核对，图片绘制经确认的中文译文。' : '保留原视频字幕，不绘制转录文字。'}{!sourceError && <>原视频 {source.width}×{source.height} · {source.duration.toFixed(1)} 秒 · </>}<Link className="text-accent" to={`/jobs/${draft.sourceJobId}`}>查看来源</Link></p></div>
       <div className="flex flex-wrap gap-2"><button disabled={locked} className={buttonClass} onClick={() => void action('保存中', async () => { await save(); setNotice('创作草稿已保存'); })}>保存草稿{dirty ? ' *' : ''}</button>
       </div>
     </div>
@@ -168,25 +170,29 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     {notice && <p role="status" className="mb-4 text-sm text-success">{notice}</p>}
     {saved.error && <p role="alert" className="mb-4 text-sm text-danger">上次生成：{saved.error}</p>}
     {working && <p role="status" className="mb-4 text-sm text-ink-muted">{busy || '图集生成中'}…请等待操作完成，避免关闭应用。</p>}
+    {translated && <GalleryTranslationPanel gallery={draft} duration={source.duration} disabled={locked} dirty={dirty}
+      onEdit={translation => edit({ translation })} onTranslate={(start, end) => void action('翻译中', async () => {
+        accept(await apiClient.translateGallery(saved.id, saved.version, start, end)); setNotice('译文已保存，请对照原文核对，再规划图片。');
+      })} />}
     <section className="mb-5 rounded-lg border border-line bg-panel p-5">
       <h2 className="font-semibold text-ink">先规划整套图文，再一键生成</h2>
-      <p className="mt-2 text-sm text-ink-muted">自动规划字幕图片，并根据完整视频内容整理标题、正文和话题。你只需核对图片与文案，无须逐张创建或逐句输入时间。</p>
+      <p className="mt-2 text-sm text-ink-muted">{translated ? '按已保存译文规划图片，根据所选片段整理文案。长句会减少每张条数，超出 35 张时请缩小片段。' : '自动规划字幕图片，并根据完整视频内容整理标题、正文和话题。'}你只需核对图片与文案，无须逐张创建或逐句输入时间。</p>
       {!!activeTranscript?.qualityIssues?.length && <div role="alert" className="mt-3 text-sm text-warning"><p>转录存在异常，请先重新转录：</p>{activeTranscript.qualityIssues.map((issue, i) => <p key={i}>{issue}</p>)}</div>}
       <div className="mt-4 flex flex-wrap items-center gap-3"><label className="text-sm text-ink">每张目标条数 <select aria-label="每张目标条数" value={targetLines} disabled={locked}
         onChange={e => { setTargetLines(Number(e.target.value)); setPlanConfirmed(false); }} className="ml-2 rounded-lg border border-line bg-canvas px-3 py-2">{[6, 7, 8, 9].map(n => <option key={n} value={n}>{n} 条{n === 8 ? '（默认）' : ''}</option>)}</select></label>
-        <button disabled={locked || dirty || !!activeTranscript?.qualityIssues?.length || !segments.length} className="rounded-lg bg-accent px-4 py-2 text-sm text-on-accent disabled:opacity-50" onClick={() => void action('规划图片与文案中', plan)}>{busy === '规划图片与文案中' && <Loader2 size={16} className="mr-2 inline animate-spin" />}自动创作整套图文</button>
+        <button disabled={locked || dirty || !!activeTranscript?.qualityIssues?.length || !segments.length || (translated && !saved.translation)} className="rounded-lg bg-accent px-4 py-2 text-sm text-on-accent disabled:opacity-50" onClick={() => void action('规划图片与文案中', plan)}>{busy === '规划图片与文案中' && <Loader2 size={16} className="mr-2 inline animate-spin" />}自动创作整套图文</button>
         <button disabled={locked || dirty} className={buttonClass} onClick={() => setRetranscribeOpen(true)}>重新转录来源视频</button>
       </div>
       {dirty && <p className="mt-2 text-sm text-warning">请先保存现有修改，再重新规划。新方案在确认前不会替换当前图片。</p>}
       {!segments.length && <p className="mt-2 text-sm text-ink-muted">自动规划需要带时间的转录，请先重新转录来源视频；已有手动草稿可在高级调整中继续编辑。</p>}
-      <details className="mt-4"><summary className="cursor-pointer text-sm text-ink-muted">整套字幕区域校准（可选）</summary>
+      {!translated && <details className="mt-4"><summary className="cursor-pointer text-sm text-ink-muted">整套字幕区域校准（可选）</summary>
         <label className="mt-3 flex gap-2 text-sm text-ink"><input type="checkbox" checked={calibrate} disabled={locked} onChange={e => { setCalibrate(e.target.checked); setPlanConfirmed(false); }} />用统一区域重新规划；关闭时自动建议区域。</label>
         {calibrate && <div className="mt-3 flex flex-wrap gap-3"><NumberField label="整套字幕上边界（0～1）" value={bandTop} max={1} step={0.01} onChange={n => { setBandTop(n); setPlanConfirmed(false); }} /><NumberField label="整套字幕下边界（0～1）" value={bandBottom} max={1} step={0.01} onChange={n => { setBandBottom(n); setPlanConfirmed(false); }} /></div>}
-      </details>
+      </details>}
     </section>
     {saved.plan && <GalleryPlanPanel key={`${saved.plan.id}-${saved.version}`} plan={saved.plan} imageUrls={planImageUrls} confirmed={planConfirmed} disabled={locked || dirty}
       onConfirmChange={setPlanConfirmed} onGenerate={() => void action('生成中', generatePlan)} />}
-    <details className="mb-6 rounded-lg border border-line bg-panel p-4"><summary className="cursor-pointer font-semibold text-ink">高级调整 · 手动换句、拆图、合图与时间微调</summary>
+    {!translated && <details className="mb-6 rounded-lg border border-line bg-panel p-4"><summary className="cursor-pointer font-semibold text-ink">高级调整 · 手动换句、拆图、合图与时间微调</summary>
     <div className="my-4"><button disabled={locked} className={buttonClass} onClick={() => void action('生成中', generate)}>按高级设置重新生成整套图集</button></div>
     <fieldset disabled={locked} className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[220px_minmax(0,1fr)_300px]">
       <section className="min-w-0 rounded-lg border border-line bg-panel p-4"><h2 className="mb-3 font-semibold text-ink">图片顺序 · {draft.images.length} 张</h2>
@@ -236,7 +242,7 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
         <div className="max-h-[720px] space-y-2 overflow-y-auto">{segments.length ? segments.map((segment, i) => <button key={i} disabled={image.times.length >= 9} onClick={() => { const t = Math.min(source.duration - 0.01, Math.max(0, (segment.start + segment.end) / 2)); editImage({ times: [...image.times, Number(t.toFixed(2))] }); void showFrame(t); }} className="block w-full rounded-lg border border-line p-3 text-left hover:bg-elevated disabled:opacity-50">
           <span className="font-mono text-xs text-accent">{segment.start.toFixed(1)}–{segment.end.toFixed(1)}s</span><p className="mt-1 text-sm text-ink">{segment.text}</p></button>) : <p className="text-sm text-ink-muted">没有带时间戳的转录，可直接填写时间点；也可回作品执行视频转录。</p>}</div>
       </section>
-    </fieldset></details>
+    </fieldset></details>}
     <section className="mt-6 rounded-lg border border-line bg-panel p-5"><h2 className="font-semibold text-ink">整套成品预览</h2>
       <p className="my-2 text-sm text-ink-muted">{saved.status === 'ready' && !imagesDirty ? '按发布顺序逐张检查。文案修改不需要重新生成图片，保存后检查发布预览。' : '修改画面或顺序后须保存并重新生成。下方旧图仅供参考。'}</p>
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-6">{imageUrls.map((url, i) => <a key={url} href={url} target="_blank" rel="noreferrer" className="block"><img src={url} alt={`成品第${i + 1}张`} className="aspect-[3/4] w-full rounded-lg border border-line bg-black object-contain" /><p className="mt-1 text-xs text-ink-muted">第 {i + 1} 张 · 点击查看大图</p></a>)}</div>
@@ -254,7 +260,7 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
       <div className="mt-4 flex flex-wrap items-center gap-3"><button disabled={locked} onClick={() => void action('预览检查中', viewPreview)} className={buttonClass}>检查发布预览</button><p className="text-xs text-ink-muted">整套图片准备好后，保存文案并检查发布限额。</p></div>
       {preview && <div className="mt-4 space-y-3 text-sm text-ink"><p>{preview.imageCount} 张图片 · 标题上限 {preview.copyLimits.titleMax} · 正文上限 {preview.copyLimits.descriptionMax} · 话题上限 {preview.copyLimits.hashtagMax}</p>
         {preview.violations.map((v, i) => <p key={i} role="alert" className="text-danger">{v.message}</p>)}
-        <label className="flex items-start gap-2"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} disabled={locked} className="mt-1" />我已逐张核对原生字幕，确认拥有原视频及生成图集的发布使用权。</label>
+        <label className="flex items-start gap-2"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} disabled={locked} className="mt-1" />我已逐张核对{translated ? '中文译文与原文' : '原生字幕'}，确认拥有原视频及生成图集的发布使用权。</label>
         <button disabled={locked || !rights || dirty || preview.violations.length > 0} onClick={() => void action('创建发布包中', publish)} className="rounded-lg bg-accent px-4 py-2.5 text-on-accent disabled:opacity-50">创建抖音图文发布包</button>
         <p className="text-xs text-ink-muted">此操作只准备发布包。到「发布 → 抖音 → 图文」再次预览后，由你点击提交；不会自动向抖音发送内容。</p>
       </div>}

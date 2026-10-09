@@ -14,6 +14,7 @@ export function GalleriesPage() {
   const [galleries, setGalleries] = useState<Gallery[]>([]);
   const [jobs, setJobs] = useState<JobOverview[]>([]);
   const [source, setSource] = useState(params.get('sourceJobId') ?? '');
+  const [mode,setMode] = useState<'native' | 'translated' | ''>('');
   const [urls, setUrls] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -31,7 +32,7 @@ export function GalleriesPage() {
   useEffect(() => { void load(); }, []);
   const create = async () => {
     setBusy(true); setError('');
-    try { const gallery = await apiClient.createGallery(source); navigate(`/galleries/${gallery.id}`); }
+    try { const gallery = await apiClient.createGallery(source, mode || undefined); navigate(`/galleries/${gallery.id}`); }
     catch (e) { setError(parseApiError(e).message); }
     finally { setBusy(false); }
   };
@@ -45,7 +46,7 @@ export function GalleriesPage() {
   return <Layout>
     <div className="mb-6 flex items-start gap-3"><GalleryVerticalEnd className="mt-1 text-accent" size={28} /><div>
       <h1 className="text-2xl font-semibold text-ink">图集创作</h1>
-      <p className="mt-2 text-sm text-ink-muted">把原视频里的真实字幕拼成整套图集，直接准备抖音图文发布。不需要洗稿或生成视频。</p>
+      <p className="mt-2 text-sm text-ink-muted">把原生字幕或核对后的中文译文制作成整套图集，直接准备抖音图文发布。不需要洗稿或生成视频。</p>
     </div></div>
     {error && <div role="alert" className="mb-4 rounded-lg border border-danger-line bg-danger-soft p-4 text-sm text-danger">{error}<button className="ml-3 underline" onClick={() => void load()}>重新加载</button></div>}
     <section className="mb-7 rounded-lg border border-line bg-panel p-5">
@@ -55,6 +56,7 @@ export function GalleriesPage() {
         <select aria-label="来源作品" value={source} onChange={e => setSource(e.target.value)} disabled={busy || loading} className="min-w-0 flex-1 rounded-lg border border-line bg-canvas px-3 py-2.5 text-sm text-ink">
           <option value="">选择原视频作品</option>{jobs.map(job => <option key={job.id} value={job.id}>{job.topic || job.id}</option>)}
         </select>
+        <select aria-label="图集字幕模式" value={mode} onChange={e=>setMode(e.target.value as typeof mode)} disabled={busy||loading} className="rounded-lg border border-line bg-canvas px-3 py-2.5 text-sm text-ink"><option value="">自动选择（YouTube 用中文译文）</option><option value="native">原生字幕像素</option><option value="translated">中文译文 · 保留原文</option></select>
         <button disabled={!source || busy || loading} onClick={() => void create()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-on-accent disabled:opacity-50">{busy ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}新建字幕图集</button>
       </div>
     </section>
@@ -63,7 +65,7 @@ export function GalleriesPage() {
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{galleries.map(g => <article key={g.id} className="overflow-hidden rounded-lg border border-line bg-panel">
         <Link to={`/galleries/${g.id}`} className="block"><div className="flex aspect-[3/4] items-center justify-center bg-canvas">{urls[g.id] ? <img src={urls[g.id]} alt={g.title} className="h-full w-full object-contain" /> : <GalleryVerticalEnd size={48} className="text-ink-muted" />}</div></Link>
         <div className="p-4"><Link to={`/galleries/${g.id}`} className="font-semibold text-ink hover:text-accent">{g.title}</Link>
-          <div className="mt-2 flex items-center justify-between text-xs text-ink-muted"><span>{g.images.length} 张 · {labels[g.status]}</span><button aria-label={`删除${g.title}`} disabled={busy || g.status === 'running'} onClick={() => void remove(g)} className="p-1 hover:text-danger disabled:opacity-50"><Trash2 size={16} /></button></div>
+          <div className="mt-2 flex items-center justify-between text-xs text-ink-muted"><span>{g.mode === 'translated' ? '中文译文 · ' : ''}{g.images.length} 张 · {labels[g.status]}</span><button aria-label={`删除${g.title}`} disabled={busy || g.status === 'running'} onClick={() => void remove(g)} className="p-1 hover:text-danger disabled:opacity-50"><Trash2 size={16} /></button></div>
           <p className="mt-2 text-xs text-ink-muted">{new Date(g.updatedAt).toLocaleString('zh-CN')}</p>
           <Link to={`/jobs/${g.sourceJobId}`} className="mt-2 inline-block text-xs text-accent">查看来源作品</Link>
         </div>

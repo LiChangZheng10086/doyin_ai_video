@@ -26,7 +26,9 @@ import { ImagePromptService } from './lib/image-prompts.js';
 import { registerImagePromptRoutes } from './lib/image-prompt-routes.js';
 import { OnlineAudioService } from './lib/online-audio.js';
 import { registerOnlineAudioRoutes } from './lib/online-audio-routes.js';
+import { isYouTubeUrl } from './lib/youtube.js';
 import { GalleryService } from "./lib/galleries.js";
+import { GalleryTranslator } from './lib/gallery-translation.js';
 import { GalleryCopyWriter } from './lib/gallery-copy.js';
 import { GalleryMedia } from "./lib/gallery-media.js";
 import { registerGalleryRoutes } from "./lib/gallery-routes.js";
@@ -76,6 +78,8 @@ export interface ServerConfig {
   aiBaseURL?: string;
   aiMaxOutputTokens?: number;
   ytDlpBinary?: string;
+  ytDlpJsRuntime?: string;
+  ytDlpUseElectronAsNode?: boolean;
   ffmpegBinary?: string;
   ffprobeBinary?: string;
   cookiesFile?: string;
@@ -107,6 +111,7 @@ export interface ServerConfig {
   noteMedia?: NoteImagePreparer;
   /** 直接注入文章成文（测试用）；省略时用真实 AI 配置 + 本地兜底。 */
   planArticle?: ArticlePlanner;
+  galleryTranslator?: Pick<GalleryTranslator, 'translate'>;
   galleryCopyWriter?: Pick<GalleryCopyWriter, 'write'>;
   articleWriter?: Pick<ArticleWritingService, 'run'>;
   readArticleSource?: typeof readArticleSource;
@@ -188,6 +193,8 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
 
   const media = new MediaService(storage, {
     ytDlpBinary: config.ytDlpBinary,
+    ytDlpJsRuntime: config.ytDlpJsRuntime,
+    ytDlpUseElectronAsNode: config.ytDlpUseElectronAsNode,
     ffmpegBinary: config.ffmpegBinary,
     ffprobeBinary: config.ffprobeBinary,
     cookiesFile: config.cookiesFile,
@@ -423,8 +430,9 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   })});
   registerGalleryRoutes(app, { sessions: localSessions, galleries: new GalleryService({
     storage, jobs,
+    translator: config.galleryTranslator ?? new GalleryTranslator({ resolveAiConfig: resolvePublishingAiConfig }),
     copyWriter: config.galleryCopyWriter ?? new GalleryCopyWriter({ resolveAiConfig: resolvePublishingAiConfig }),
-    media: new GalleryMedia({ ffmpegBinary: config.ffmpegBinary, ffprobeBinary: config.ffprobeBinary }),
+    media: new GalleryMedia({ ffmpegBinary: config.ffmpegBinary, ffprobeBinary: config.ffprobeBinary, browserBinary: config.hyperframesBrowserPath ?? config.toutiaoBrowserBinary }),
     createPackage: (gallery, paths, actor) => publishingService.createGalleryNote({
       sourceJobId: gallery.sourceJobId, title: gallery.title,
       noteCopy: { title: gallery.title, description: gallery.description, hashtags: gallery.hashtags },
@@ -658,11 +666,13 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   });
 
   app.post("/api/jobs/:id/steps/transcribe", async (req, res) => {
+    req.setTimeout(0);
     const result = await runStepRoute(req.params.id, "transcribe");
     res.status(result.status).json(result.body);
   });
 
   app.post("/api/jobs/:id/retranscribe", async (req, res) => {
+    req.setTimeout(0);
     try {
       res.json({ job: await jobs.retranscribe(req.params.id), message: "retranscribe completed" });
     } catch (error) {
@@ -827,7 +837,8 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
         ...inspectTranscriptQuality({ segments: rawTranscript.segments ?? [], text: rawTranscript.transcript ?? rawTranscript.text, duration }),
         ...(record.steps?.transcribe.status === "failed" && record.transcriptErrorMessage ? [record.transcriptErrorMessage] : []),
       ])];
-      res.json({ rawTranscript: simplifyChineseValue({ ...rawTranscript, duration, qualityIssues }) });
+      const asset = { ...rawTranscript, duration, qualityIssues };
+      res.json({ rawTranscript: isYouTubeUrl(record.sourceUrl) ? asset : simplifyChineseValue(asset) });
     } catch (error) {
       if (isMissingFileError(error)) {
         res.status(404).json({ message: "raw transcript not found" });

@@ -57,7 +57,7 @@ export class AsrService {
     };
   }
 
-  async transcribe(audioPath: string): Promise<TranscriptResult | null> {
+  async transcribe(audioPath: string, language = "zh"): Promise<TranscriptResult | null> {
     await this.assertResources(audioPath);
 
     const workDir = await mkdtemp(path.join(tmpdir(), "douyin-whisper-"));
@@ -72,7 +72,7 @@ export class AsrService {
             "-f",
             audioPath,
             "-l",
-            "zh",
+            language,
             "-ojf",
             "-of",
             outputPrefix,
@@ -108,7 +108,7 @@ export class AsrService {
         segments: segments.length ? segments : [{ text }],
         words: extractWords(payload),
         duration,
-        language: extractLanguage(payload) ?? "zh",
+        language: extractLanguage(payload) ?? language,
         raw: payload
       };
     } finally {

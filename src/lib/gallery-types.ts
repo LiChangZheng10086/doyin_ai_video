@@ -6,6 +6,7 @@ export interface GalleryImage {
   mainFraction: number;
   compact?: boolean;
   filmstrip?: boolean;
+  translatedCaptions?: string[];
   mainCrop?: { left: number; right: number; top: number; bottom: number };
 }
 
@@ -17,13 +18,15 @@ export interface GalleryDraft {
 }
 
 export interface Gallery extends GalleryDraft {
+  mode?: 'native' | 'translated';
+  translation?: GalleryTranslation;
   id: string;
   sourceJobId: string;
   version: number;
   status: 'draft' | 'running' | 'ready' | 'failed';
   error?: string;
   copyError?: string;
-  copyReference?: { transcriptHash: string; sourceFingerprint: string; notes: string[] };
+  copyReference?: { transcriptHash: string; sourceFingerprint: string; translationHash?: string; notes: string[] };
   plan?: GalleryPlan;
   appliedPlanId?: string;
   generated?: {
@@ -53,14 +56,16 @@ export interface GallerySource {
 }
 
 export interface GalleryQuote {
+  originalText?: string;
   segmentIndex: number;
   text: string;
   start: number;
   end: number;
-  verification?: 'ocr' | 'pixels';
+  verification?: 'ocr' | 'pixels' | 'translation';
 }
 
 export interface GalleryPlan {
+  mode?: 'native' | 'translated';
   id: string;
   transcriptHash: string;
   previewHashes?: string[];
@@ -69,6 +74,22 @@ export interface GalleryPlan {
   warnings: string[];
   blockedReason?: string;
   excluded: { segmentIndex: number; reason: string }[];
+}
+
+export interface GalleryTranslationCue {
+  segmentIndex: number;
+  original: string;
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface GalleryTranslation {
+  transcriptHash: string;
+  sourceFingerprint: string;
+  start: number;
+  end: number;
+  cues: GalleryTranslationCue[];
 }
 
 export interface GalleryPlanInput {

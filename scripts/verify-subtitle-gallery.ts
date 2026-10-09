@@ -10,6 +10,7 @@ import { LocalStorage } from '../src/lib/storage.js';
 import { GalleryMedia } from '../src/lib/gallery-media.js';
 import { runCommand } from '../src/lib/command.js';
 
+const translatedMode = process.argv.includes('--translated');
 const root = await mkdtemp(path.join(tmpdir(), 'subtitle-gallery-ui-'));
 const storage = new LocalStorage(root);
 await storage.ensureBaseDirs();
@@ -27,9 +28,9 @@ for (let char = 0; char < 20; char++) for (let y = 0; y < 7; y++) for (let x = 0
 const raster = path.join(root, 'caption.ppm');
 await writeFile(raster, Buffer.concat([Buffer.from('P6\n320 480\n255\n'), pixels]));
 await runCommand('ffmpeg', ['-y', '-loop', '1', '-i', raster, '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', '64', '-r', '5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', videoPath], { captureStderr: true });
-const segments = Array.from({ length: 32 }, (_, i) => ({ start: i * 2, end: (i + 1) * 2, text: `第${i + 1}段合成验收标记。` }));
+const segments = Array.from({ length: 32 }, (_, i) => ({ start: i * 2, end: (i + 1) * 2, text: translatedMode ? `Sentence ${i + 1}. Keep going.` : `第${i + 1}段合成验收标记。` }));
 await storage.writeJson('cache/jobs-index.json', { 'gallery-demo': {
-  id: 'gallery-demo', topic: '图集自动规划验收（合成画面）', sourceUrl: 'https://example.com/demo', videoPath,
+  id: 'gallery-demo', topic: '图集自动规划验收（合成画面）', sourceUrl: translatedMode ? 'https://www.youtube.com/watch?v=synthetic-demo' : 'https://example.com/demo', videoPath,
   status: 'queued', stage: 'transcribed', workflowMode: 'manual',
   steps: { transcribe: { status: 'succeeded', attempts: 1 }, clean: { status: 'pending', attempts: 0 }, generate_video_prompts: { status: 'pending', attempts: 0 }, generate_video: { status: 'pending', attempts: 0 } },
   storagePath: 'processed/scripts/gallery-demo.json', createdAt: now, updatedAt: now,
@@ -51,8 +52,9 @@ GalleryMedia.prototype.suggestSubtitles = async function (video, quote, region) 
 };
 let copyRuns = 0;
 const app = await createExpressApp({ storagePath: root, rootDir: root, whisperCliPath: cli, whisperModelPath: model,
+  galleryTranslator: { translate: async cues => cues.map(c => ({ ...c, text: `第${c.segmentIndex + 1}段译文：坚持前行。` })) },
   galleryCopyWriter: { write: async input => {
-    assert.match(input.transcript, /第32段合成验收标记/);
+    assert.match(input.transcript, translatedMode ? /Sentence 32/ : /第32段合成验收标记/);
     return { title: '合成图文验收', description: `这是隔离测试生成的配套文案（第${++copyRuns}次）。\n1. 按完整内容组织核心观点。\n2. 保留最后一段的信息。\n你想先调整哪一点？`, hashtags: ['合成验收'], notes: ['测试夹具不证明真实文案语义准确'] };
   } } });
 const serve = process.argv.includes('--serve');
@@ -78,7 +80,7 @@ process.on('SIGINT', () => { void close().then(() => process.exit(0)); });
 process.on('SIGTERM', () => { void close().then(() => process.exit(0)); });
 const address = server.address(); assert.ok(address && typeof address === 'object');
 const base = `http://127.0.0.1:${address.port}`;
-if (serve) console.log(`Isolated synthetic gallery UI: ${base}/galleries?sourceJobId=gallery-demo (no live publishing; raster markers are not real dialogue)`);
+if (serve) console.log(`Isolated synthetic ${translatedMode ? 'translated' : 'native'} gallery UI: ${base}/galleries?sourceJobId=gallery-demo (no live publishing; raster markers are not real dialogue)`);
 else try {
   const session = await fetch(base + '/api/local-sessions/auto', { method: 'POST' });
   const token = (await session.json()).session.token;
@@ -89,7 +91,8 @@ else try {
   const created = await fetch(base + '/api/galleries', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Local-Session': token }, body: JSON.stringify({ sourceJobId: 'gallery-demo' }) });
   assert.equal(created.status, 201); const gallery = (await created.json()).gallery;
   const url = `/api/galleries/${gallery.id}`;
-  const planned = (await request(url + '/plan', { version: gallery.version, targetLines: 8 })).gallery;
+  const sourceGallery = translatedMode ? (await request(url + '/translate', { version: gallery.version, start: 0, end: 64 })).gallery : gallery;
+  const planned = (await request(url + '/plan', { version: sourceGallery.version, targetLines: 8 })).gallery;
   assert.deepEqual(planned.plan.images.map((i: any) => i.quotes.length), [8, 8, 8, 8]);
   assert.match(planned.description, /核心观点/);
   assert.ok(planned.copyReference);

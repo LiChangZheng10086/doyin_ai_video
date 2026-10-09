@@ -128,7 +128,7 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
         <p className="text-sm text-ink-muted">
           {inputMode === 'user-page'
             ? '输入抖音用户主页链接，批量采集该用户全部作品'
-            : '输入抖音视频链接或分享文本开始处理'}
+            : '输入视频链接（抖音 / YouTube）或分享文本开始处理'}
         </p>
       }
     >
@@ -177,13 +177,13 @@ export function CreateJobDialog({ isOpen, onClose }: CreateJobDialogProps) {
           {inputMode === 'url' && (
             <div>
               <label className="block text-sm font-medium text-ink mb-2">
-                抖音视频链接
+                视频链接（抖音 / YouTube）
               </label>
               <input
                 type="text"
                 value={sourceUrl}
                 onChange={(e) => setSourceUrl(e.target.value)}
-                placeholder="https://www.douyin.com/video/..."
+                placeholder="https://www.youtube.com/watch?v=... 或抖音视频链接"
                 className="w-full px-4 py-3 rounded-lg border border-line-ui bg-well text-ink placeholder-ink-muted focus:outline-none focus:ring-2 focus:ring-accent focus:border-transparent transition-all"
               />
             </div>

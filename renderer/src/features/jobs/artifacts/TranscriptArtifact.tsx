@@ -9,7 +9,9 @@ export interface TranscriptArtifactProps {
 
 export function TranscriptArtifact({ transcript, fallbackText, transcriptError }: TranscriptArtifactProps) {
   if (transcript) {
-    return <TranscriptContent transcriptData={transcript} source="视频音频转录" />;
+    const source = transcript.provider === 'youtube-authored-captions' ? 'YouTube 人工字幕'
+      : transcript.provider === 'youtube-automatic-captions' ? 'YouTube 自动字幕' : '视频音频转录';
+    return <TranscriptContent transcriptData={transcript} source={source} />;
   }
   if (transcriptError) {
     return (
@@ -40,6 +42,7 @@ function TranscriptContent({ transcriptData, source }: { transcriptData: RawTran
       <p className="mt-1 text-xs text-ink-muted">
         {source === '视频音频转录'
           ? '本地模型从视频音频识别的文字，可能有错字或漏识别，请结合原视频核对。'
+          : source.startsWith('YouTube') ? '来自 YouTube 字幕轨道，原文与时间轴保留。自动字幕和人工字幕均需对照原视频核对。'
           : '这是从分享文本解析的内容，非实际音频转录'}
       </p>
       {!!transcriptData.qualityIssues?.length && <div role="alert" className="mt-4 rounded-lg border border-warning-line bg-warning-soft p-4 text-sm text-warning">
@@ -49,6 +52,7 @@ function TranscriptContent({ transcriptData, source }: { transcriptData: RawTran
       {(transcriptData.provider || transcriptData.model || transcriptData.duration) && (
         <div className="my-4 grid grid-cols-1 gap-3 md:grid-cols-3">
           {transcriptData.provider && <Metric label="服务" value={transcriptData.provider} />}
+          {transcriptData.language && <Metric label="原文语言" value={transcriptData.language} />}
           {transcriptData.model && <Metric label="模型" value={transcriptData.model} />}
           {transcriptData.duration && <Metric label="时长" value={formatSeconds(transcriptData.duration)} />}
         </div>
