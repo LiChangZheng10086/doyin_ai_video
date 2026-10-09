@@ -13,12 +13,18 @@ export class GalleryError extends Error {
   }
 }
 
+export function galleryFilmstripHeight(source: Pick<GallerySource, 'width' | 'height'>, top: number, bottom: number): number {
+  return Math.ceil(Math.max(96, (bottom - top) * source.height * 1080 / source.width + 40) / 2) * 2;
+}
+
 export function validateGalleryImage(value: GalleryImage, duration = Infinity): void {
   const time = (t: number) => typeof t === 'number' && Number.isFinite(t) && t >= 0 && t < duration;
   if (!value || !time(value.mainTime) || !Array.isArray(value.times) || !value.times.every(time)) {
     throw new GalleryError(422, '画面时间必须在原视频时长范围内');
   }
   if (value.times.length < 1 || value.times.length > 9) throw new GalleryError(422, '每张拼图需 1～9 条字幕');
+  if (value.compact !== undefined && typeof value.compact !== 'boolean') throw new GalleryError(422, '拼图排版配置无效');
+  if (value.filmstrip !== undefined && typeof value.filmstrip !== 'boolean') throw new GalleryError(422, '拼图排版配置无效');
   if (!Number.isFinite(value.bandTop) || !Number.isFinite(value.bandBottom)
     || value.bandTop < 0 || value.bandBottom > 1 || value.bandBottom - value.bandTop < 0.01) {
     throw new GalleryError(422, '字幕区域须在画面内，且下边界大于上边界');
@@ -68,6 +74,14 @@ export class GalleryMedia {
   }
 
   async suggestSubtitle(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number } = {}): Promise<SubtitleCandidate | null> {
+    return (await this.detectSubtitles(video, quote, region, false))[0] ?? null;
+  }
+
+  async suggestSubtitles(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number } = {}): Promise<SubtitleCandidate[]> {
+    return this.detectSubtitles(video, quote, region, true);
+  }
+
+  private async detectSubtitles(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number }, collect: boolean): Promise<SubtitleCandidate[]> {
     const info = await this.probe(video);
     if (!Number.isFinite(quote.start) || !Number.isFinite(quote.end) || quote.start < 0 || quote.end <= quote.start || quote.start >= info.duration) {
       throw new GalleryError(422, '转录时间无法用于字幕候选');
@@ -79,7 +93,10 @@ export class GalleryMedia {
     try {
       if (quote.text && (this.config.recognizeSubtitles || nativeSubtitleOcrAvailable())) {
         let best: (SubtitleCandidate & { score: number }) | null = null;
-        for (const fraction of [.15, .25, .35, .5, .65, .75, .85]) {
+        const found: SubtitleCandidate[] = [];
+        const count = Math.max(7, Math.min(80, Math.ceil((quote.end - quote.start) / .5)));
+        const fractions = collect ? Array.from({ length: count }, (_, i) => (i + .5) / count) : [.15, .25, .35, .5, .65, .75, .85];
+        for (const fraction of fractions) {
           const time = Math.min(info.duration - .001, quote.start + (Math.min(quote.end, info.duration) - quote.start) * fraction);
           const file = path.join(dir, `ocr-${fraction}.png`);
           // Keep the native fine glyphs; OCR handles camera motion outside the text.
@@ -89,9 +106,13 @@ export class GalleryMedia {
           catch (error) { throw new GalleryError(503, `原生字幕识别不可用：${error instanceof Error ? error.message : String(error)}`, 'gallery_ocr_unavailable'); }
           const result = selectNativeSubtitle(lines.map(line => ({ ...line, top: .5 + line.top * .48, bottom: .5 + line.bottom * .48 })), quote.text, region);
           if (result && (!best || result.score > best.score)) best = { time, ...result };
+          if (result && (!found.length || result.recognizedText.replace(/[^\p{L}\p{N}]/gu, '') !== found.at(-1)!.recognizedText!.replace(/[^\p{L}\p{N}]/gu, ''))) {
+            found.push({ time, bandTop: result.bandTop, bandBottom: result.bandBottom, recognizedText: result.recognizedText, verification: 'ocr' });
+          }
         }
-        if (!best) return null;
-        return { time: best.time, bandTop: best.bandTop, bandBottom: best.bandBottom, recognizedText: best.recognizedText, verification: 'ocr' };
+        if (collect) return found;
+        if (!best) return [];
+        return [{ time: best.time, bandTop: best.bandTop, bandBottom: best.bandBottom, recognizedText: best.recognizedText, verification: 'ocr' }];
       }
       const candidates: { time: number; edges: Set<number>; top: number; bottom: number; strength: number }[] = [];
       for (const fraction of [.25, .5, .75]) {
@@ -130,7 +151,7 @@ export class GalleryMedia {
         const bottom = region.bandBottom ?? Math.min(1, (glyphs.at(-1)! + pad + 1) / height);
         candidates.push({ time, edges: new Set(glyphs.flatMap(y => rowEdges.get(y) ?? [])), top, bottom, strength });
       }
-      if (candidates.length < 2) return null;
+      if (candidates.length < 2) return [];
       let best: typeof candidates[number] | undefined;
       let bestScore = Infinity;
       for (const a of candidates) {
@@ -151,8 +172,8 @@ export class GalleryMedia {
         const score = difference - Math.min(.01, a.strength / 1_000_000);
         if (score < bestScore) { best = a; bestScore = score; }
       }
-      if (!best || bestScore > .4) return null;
-      return { time: best.time, bandTop: best.top, bandBottom: best.bottom, verification: 'pixels' };
+      if (!best || bestScore > .4) return [];
+      return [{ time: best.time, bandTop: best.top, bandBottom: best.bottom, verification: 'pixels' }];
     } finally { await rm(dir, { recursive: true, force: true }); }
   }
 
@@ -166,21 +187,48 @@ export class GalleryMedia {
       for (const [index, time] of times.entries()) {
         await this.execute(['-ss', String(time), '-i', video, '-frames:v', '1', '-threads', '1', path.join(dir, `${index}.png`)]);
       }
-      const desiredMain = Math.round(1440 * image.mainFraction / 2) * 2;
-      const nativeStrip = (image.bandBottom - image.bandTop) * info.height * 1080 / info.width;
-      const mainHeight = image.times.length >= 6
-        ? Math.max(576, Math.min(desiredMain, Math.floor((1440 - image.times.length * Math.max(64, nativeStrip)) / 2) * 2))
-        : desiredMain;
-      if (image.times.length > 6 && nativeStrip > (1440 - mainHeight) / image.times.length + 2) throw new GalleryError(422, '字幕区域过高，请缩小区域或拆分图片以保证可读性');
-      const bandHeight = Math.floor((1440 - mainHeight) / image.times.length / 2) * 2;
-      const c = image.mainCrop;
-      const mainCrop = c ? `crop=iw*${c.right - c.left}:ih*${c.bottom - c.top}:iw*${c.left}:ih*${c.top},` : '';
-      const filters = [`[0:v]${mainCrop}scale=1080:${mainHeight}:force_original_aspect_ratio=decrease,pad=1080:${mainHeight}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v0]`];
-      image.times.forEach((_, i) => {
-        const height = i === image.times.length - 1 ? 1440 - mainHeight - i * bandHeight : bandHeight;
-        filters.push(`[${i + 1}:v]crop=iw:ih*${image.bandBottom - image.bandTop}:0:ih*${image.bandTop},scale=1080:${height}:force_original_aspect_ratio=decrease,pad=1080:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v${i + 1}]`);
-      });
-      filters.push(`${times.map((_, i) => `[v${i}]`).join('')}vstack=inputs=${times.length}[out]`);
+      let filters: string[];
+      if (image.filmstrip) {
+        const desiredMain = Math.round(1440 * image.mainFraction / 2) * 2;
+        const bandHeight = Math.max(galleryFilmstripHeight(info, image.bandTop, image.bandBottom),
+          Math.floor((1440 - desiredMain) / image.times.length / 2) * 2);
+        const mainHeight = 1440 - bandHeight * image.times.length;
+        if (mainHeight < 432) throw new GalleryError(422, '字幕区域过高，请拆分图片以保证可读性');
+        const c = image.mainCrop;
+        const mainCrop = c ? `crop=iw*${c.right - c.left}:ih*${c.bottom - c.top}:iw*${c.left}:ih*${c.top},` : '';
+        filters = [`[0:v]${mainCrop}scale=1080:${mainHeight}:force_original_aspect_ratio=increase,crop=1080:${mainHeight},setsar=1[v0]`];
+        for (const [i, time] of image.times.entries()) {
+          const bg = await this.suggestMainCrop(video, { ...image, mainTime: time });
+          const bgCrop = `crop=iw*${bg.right - bg.left}:ih*${bg.bottom - bg.top}:iw*${bg.left}:ih*${bg.top},`;
+          filters.push(`[${i + 1}:v]split=2[bg${i}][text${i}]`);
+          filters.push(`[bg${i}]${bgCrop}scale=1080:${bandHeight}:force_original_aspect_ratio=increase,crop=1080:${bandHeight},setsar=1[b${i}]`);
+          filters.push(`[text${i}]crop=iw:ih*${image.bandBottom - image.bandTop}:0:ih*${image.bandTop},scale=1080:-2,setsar=1[t${i}]`);
+          filters.push(`[b${i}][t${i}]overlay=0:(H-h)/2:shortest=1[v${i + 1}]`);
+        }
+        filters.push(`${times.map((_, i) => `[v${i}]`).join('')}vstack=inputs=${times.length}[out]`);
+      } else {
+        const desiredMain = Math.round(1440 * image.mainFraction / 2) * 2;
+        const nativeStrip = (image.bandBottom - image.bandTop) * info.height * 1080 / info.width;
+        let mainHeight = image.times.length >= 6
+          ? Math.max(576, Math.min(desiredMain, Math.floor((1440 - image.times.length * Math.max(64, nativeStrip)) / 2) * 2))
+          : desiredMain;
+        if (image.times.length > 6 && nativeStrip > (1440 - mainHeight) / image.times.length + 2) throw new GalleryError(422, '字幕区域过高，请缩小区域或拆分图片以保证可读性');
+        const c = image.mainCrop;
+        let bandHeight = Math.floor((1440 - mainHeight) / image.times.length / 2) * 2;
+        if (image.compact) {
+          bandHeight = Math.ceil(Math.max(64, nativeStrip + 12) / 2) * 2;
+          const naturalMain = 1080 * info.height * (c ? c.bottom - c.top : 1) / (info.width * (c ? c.right - c.left : 1));
+          mainHeight = Math.floor(Math.min(desiredMain, naturalMain, 1440 - bandHeight * image.times.length) / 2) * 2;
+          if (mainHeight < 144 || (image.times.length > 6 && mainHeight < 576)) throw new GalleryError(422, '字幕区域过高，请拆分图片以保证可读性');
+        }
+        const mainCrop = c ? `crop=iw*${c.right - c.left}:ih*${c.bottom - c.top}:iw*${c.left}:ih*${c.top},` : '';
+        filters = [`[0:v]${mainCrop}scale=1080:${mainHeight}:force_original_aspect_ratio=decrease,pad=1080:${mainHeight}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v0]`];
+        image.times.forEach((_, i) => {
+          const height = !image.compact && i === image.times.length - 1 ? 1440 - mainHeight - i * bandHeight : bandHeight;
+          filters.push(`[${i + 1}:v]crop=iw:ih*${image.bandBottom - image.bandTop}:0:ih*${image.bandTop},scale=1080:${height}:force_original_aspect_ratio=decrease,pad=1080:${height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v${i + 1}]`);
+        });
+        filters.push(`${times.map((_, i) => `[v${i}]`).join('')}vstack=inputs=${times.length}${image.compact ? ',pad=1080:1440:0:0:color=black' : ''}[out]`);
+      }
       await this.execute(['-filter_complex_threads', '1', ...times.flatMap((_, i) => ['-i', path.join(dir, `${i}.png`)]), '-filter_complex', filters.join(';'), '-map', '[out]', '-frames:v', '1', '-threads', '1', output]);
       const png = await this.png(output);
       if (png.readUInt32BE(16) !== 1080 || png.readUInt32BE(20) !== 1440) throw new GalleryError(422, '拼图尺寸不正确');
@@ -196,5 +244,22 @@ export class GalleryMedia {
       throw new GalleryError(422, '图片产物为空、损坏或超过 20MB');
     }
     return data;
+  }
+
+  async suggestMainCrop(video: string, image: GalleryImage): Promise<NonNullable<GalleryImage['mainCrop']>> {
+    const info = await this.probe(video);
+    validateGalleryImage(image, info.duration);
+    const height = Math.max(2, Math.floor(info.height * image.bandTop / 2) * 2);
+    const { stderr } = await runCommand(this.config.ffmpegBinary ?? 'ffmpeg', ['-hide_banner', '-ss', String(image.mainTime), '-i', video,
+      '-vf', `crop=iw:${height}:0:0,cropdetect=24:2:0`, '-frames:v', '3', '-an', '-f', 'null', '-'], { captureStderr: true, timeoutMs: 20_000 });
+    const crops = [...stderr.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)];
+    const values = crops.at(-1)?.slice(1).map(Number);
+    if (values) {
+      const [width, cropHeight, x, y] = values as [number, number, number, number];
+      if (width >= 16 && cropHeight >= 16 && x + width <= info.width && y + cropHeight <= height) {
+        return { left: x / info.width, right: (x + width) / info.width, top: y / info.height, bottom: (y + cropHeight) / info.height };
+      }
+    }
+    return { left: 0, right: 1, top: 0, bottom: height / info.height };
   }
 }

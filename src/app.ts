@@ -27,6 +27,7 @@ import { registerImagePromptRoutes } from './lib/image-prompt-routes.js';
 import { OnlineAudioService } from './lib/online-audio.js';
 import { registerOnlineAudioRoutes } from './lib/online-audio-routes.js';
 import { GalleryService } from "./lib/galleries.js";
+import { GalleryCopyWriter } from './lib/gallery-copy.js';
 import { GalleryMedia } from "./lib/gallery-media.js";
 import { registerGalleryRoutes } from "./lib/gallery-routes.js";
 import { HotspotService } from "./lib/hotspots.js";
@@ -106,6 +107,7 @@ export interface ServerConfig {
   noteMedia?: NoteImagePreparer;
   /** 直接注入文章成文（测试用）；省略时用真实 AI 配置 + 本地兜底。 */
   planArticle?: ArticlePlanner;
+  galleryCopyWriter?: Pick<GalleryCopyWriter, 'write'>;
   articleWriter?: Pick<ArticleWritingService, 'run'>;
   readArticleSource?: typeof readArticleSource;
   wechatMp?: { appId?: string; appSecret?: string; author?: string };
@@ -421,6 +423,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   })});
   registerGalleryRoutes(app, { sessions: localSessions, galleries: new GalleryService({
     storage, jobs,
+    copyWriter: config.galleryCopyWriter ?? new GalleryCopyWriter({ resolveAiConfig: resolvePublishingAiConfig }),
     media: new GalleryMedia({ ffmpegBinary: config.ffmpegBinary, ffprobeBinary: config.ffprobeBinary }),
     createPackage: (gallery, paths, actor) => publishingService.createGalleryNote({
       sourceJobId: gallery.sourceJobId, title: gallery.title,

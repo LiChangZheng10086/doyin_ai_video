@@ -5,6 +5,68 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runCommand } from './command.js';
 
+test('filmstrip fills the main width and retains each timestamp background around native captions', async () => {
+  const { GalleryMedia } = await import('./gallery-media.js');
+  const root = await mkdtemp(path.join(tmpdir(), 'gallery-filmstrip-'));
+  try {
+    const video = path.join(root, 'source.mp4');
+    await runCommand('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=red:s=320x180:d=1:r=10', '-f', 'lavfi', '-i', 'color=blue:s=320x180:d=1:r=10',
+      '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0,drawbox=x=0:y=0:w=80:h=140:color=black:t=fill:enable=gte(t\\,1),drawbox=x=240:y=0:w=80:h=140:color=black:t=fill:enable=gte(t\\,1),drawbox=x=0:y=140:w=320:h=40:color=black:t=fill,drawbox=x=70:y=155:w=180:h=10:color=white:t=fill[v]',
+      '-map', '[v]', '-c:v', 'libx264', video], { captureStderr: true });
+    const media = new GalleryMedia();
+    const image = { mainTime: .5, times: [.5, 1.5, .5, 1.5, .5, 1.5, .5], bandTop: .82, bandBottom: .94, mainFraction: .48,
+      filmstrip: true, mainCrop: { left: .1, right: .9, top: 0, bottom: .75 } };
+    const output = path.join(root, 'filmstrip.png');
+    await media.render(video, image, output);
+    const raw = path.join(root, 'pixels');
+    await runCommand('ffmpeg', ['-y', '-i', output, '-pix_fmt', 'rgb24', '-f', 'rawvideo', raw], { captureStderr: true });
+    const pixels = await readFile(raw);
+    const pixel = (x: number, y: number) => pixels.subarray((y * 1080 + x) * 3, (y * 1080 + x) * 3 + 3);
+    assert.ok(pixel(5, 50)[0]! > 180, 'main frame reaches the left edge');
+    assert.ok(pixel(1074, 50)[0]! > 180, 'main frame reaches the right edge');
+    const rowHeight = 114, mainHeight = 1440 - 7 * rowHeight;
+    for (let i = 0; i < 7; i++) for (const offset of [5, rowHeight - 6]) {
+      const p = pixel(50, mainHeight + i * rowHeight + offset);
+      assert.ok(i % 2 ? p[2]! > p[0]! + 100 : p[0]! > p[2]! + 100, `row ${i} keeps its own video background`);
+    }
+    const glyphRows = Array.from({ length: 1440 }, (_, y) => pixel(540, y).every(p => p > 220));
+    assert.equal(glyphRows.filter((white, y) => white && !glyphRows[y - 1]).length, 7, 'native captions appear once per row');
+    assert.ok(glyphRows.filter(Boolean).length >= 7 * 24, 'native glyphs are not squeezed');
+    assert.equal(pixels.length, 1080 * 1440 * 3);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('automatic layout removes source borders and keeps seven caption rows compact without duplicate main subtitles', async () => {
+  const { GalleryMedia } = await import('./gallery-media.js');
+  const root = await mkdtemp(path.join(tmpdir(), 'gallery-compact-'));
+  try {
+    const video = path.join(root, 'source.mp4');
+    await runCommand('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=black:s=320x180:d=2:r=10', '-vf',
+      'drawbox=x=90:y=20:w=140:h=100:color=red:t=fill,drawbox=x=70:y=155:w=180:h=10:color=white:t=fill', '-c:v', 'libx264', video], { captureStderr: true });
+    let recognized = 0;
+    const media = new GalleryMedia({ recognizeSubtitles: async () => [{ text: recognized++ < 3 ? '第一条画面字幕' : '第二条画面字幕',
+      confidence: 1, left: .25, right: .75, top: .65, bottom: .8 }] });
+    const captions = await media.suggestSubtitles(video, { start: 0, end: 1.8, text: '第一条画面字幕。第二条画面字幕。' });
+    assert.deepEqual(captions.map(c => c.recognizedText), ['第一条画面字幕', '第二条画面字幕']);
+    const image = { mainTime: .5, times: Array(7).fill(.5), bandTop: .82, bandBottom: .94, mainFraction: .7, compact: true };
+    const crop = await media.suggestMainCrop(video, image);
+    assert.ok(crop && crop.left > .2 && crop.right < .8 && crop.bottom < .8);
+    const output = path.join(root, 'compact.png');
+    await media.render(video, { ...image, mainCrop: crop }, output);
+    const raw = path.join(root, 'gray');
+    await runCommand('ffmpeg', ['-y', '-i', output, '-pix_fmt', 'gray', '-f', 'rawvideo', raw], { captureStderr: true });
+    const pixels = await readFile(raw);
+    const runs: number[][] = [];
+    for (let y = 0; y < 1440; y++) if (pixels.subarray(y * 1080, (y + 1) * 1080).some(p => p > 220)) {
+      if (!runs.length || y > runs.at(-1)!.at(-1)! + 1) runs.push([]);
+      runs.at(-1)!.push(y);
+    }
+    assert.equal(runs.length, 7, 'main picture does not repeat a subtitle');
+    assert.ok(runs.every(r => r.length >= 24), 'native glyph height remains readable');
+    assert.ok(runs.slice(1).every((r, i) => r[0]! - runs[i]!.at(-1)! < 80), 'caption gaps do not consume hundreds of pixels');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('native gallery rejects invalid timestamps and crops before starting ffmpeg', async () => {
   const { validateGalleryImage } = await import('./gallery-media.js');
   const image = { mainTime: 1, times: [1, 2], bandTop: 0.78, bandBottom: 0.96, mainFraction: 0.7 };
@@ -12,8 +74,8 @@ test('native gallery rejects invalid timestamps and crops before starting ffmpeg
   assert.doesNotThrow(() => validateGalleryImage({ ...image, times: Array(9).fill(1) }, 3));
   for (const bad of [{ ...image, mainTime: -1 }, { ...image, times: [3] }, { ...image, times: [NaN] },
     { ...image, bandTop: 0.96 }, { ...image, bandBottom: 1.1 }, { ...image, times: [] },
-    { ...image, times: Array(10).fill(1) }, { ...image, mainFraction: 1 }]) {
-    assert.throws(() => validateGalleryImage(bad, 3), /时间|字幕|比例/);
+    { ...image, times: Array(10).fill(1) }, { ...image, mainFraction: 1 }, { ...image, filmstrip: 'yes' as unknown as boolean }]) {
+    assert.throws(() => validateGalleryImage(bad, 3), /时间|字幕|比例|排版/);
   }
   assert.throws(() => validateGalleryImage({ ...image, mainCrop: { left: 0.8, right: 0.2, top: 0, bottom: 1 } }, 3), /取景/);
 });

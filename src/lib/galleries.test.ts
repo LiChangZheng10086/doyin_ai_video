@@ -33,7 +33,9 @@ test('gallery persists independent drafts and blocks stale versions, files and p
     assert.equal((await new GalleryService(deps).get(draft.id)).sourceJobId, 'job-1');
     await assert.rejects(service.update(draft.id, { ...draft, version: 0 }), /版本/);
     await assert.rejects(service.update(draft.id, { ...draft, images: [{ ...draft.images[0]!, mainTime: 12 }] }), /时间/);
-    const ready = await service.render(draft.id, draft.version);
+    const configured = await service.update(draft.id, { ...draft, images: [{ ...draft.images[0]!, filmstrip: true }] });
+    assert.equal((await new GalleryService(deps).get(draft.id)).images[0]!.filmstrip, true);
+    const ready = await service.render(draft.id, configured.version);
     assert.equal(ready.status, 'ready');
     const preview = await service.preview(draft.id, ready.version);
     assert.equal(preview.imageCount, 1);
@@ -207,8 +209,69 @@ test('blank plans cannot render and source changes or duplicate confirmation can
     await storage.writeJsonAtomic('raw/transcripts/job.json', { segments: [{ start: 0, end: 1, text: '新的原句。' }], transcript: '新的原句。' });
     await assert.rejects(service.preview(draft.id, ready.version), /转录/);
     const edited = await service.update(draft.id, { ...ready, title: '手动编辑' });
-    assert.equal(edited.plan, undefined);
-    await assert.rejects(readFile(storage.resolve('output/galleries', draft.id, `plan-${fresh.plan!.id}`, '0.png')), /ENOENT/);
+    assert.equal(edited.plan!.id, fresh.plan!.id);
+    assert.equal((await readFile(storage.resolve('output/galleries', draft.id, `plan-${fresh.plan!.id}`, '0.png'))).toString(), 'png');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('automatic copy uses the full transcript, preserves manual copy and edits do not discard previews or finished pixels', async () => {
+  const { GalleryService } = await import('./galleries.js');
+  const root = await mkdtemp(path.join(tmpdir(), 'gallery-copy-service-'));
+  try {
+    const storage = new LocalStorage(root); await storage.ensureBaseDirs();
+    const videoPath = storage.resolve('raw/videos/job.mp4'); await writeFile(videoPath, 'source');
+    const transcript = { transcript: '第一条原句。末尾没有选进图的核心信息。完整全文独有的末尾观点。',
+      segments: [{ start: 0, end: 2, text: '第一条原句。' }, { start: 2, end: 4, text: '末尾没有选进图的核心信息。' }] };
+    await storage.writeJsonAtomic('raw/transcripts/job.json', transcript);
+    let calls = 0; let fail = false; let changeSource = false;
+    const result = { title: '完整图文标题', description: '背景。\n1. 内容与解释。\n你怎么看？', hashtags: ['写作'], notes: ['数字仍需核对'] };
+    const service = new GalleryService({ storage, jobs: { get: async () => ({ id: 'job', topic: '来源', videoPath } as JobRecord) }, media: {
+      probe: async () => ({ width: 320, height: 480, duration: 5 }), frame: async () => Buffer.from('frame'),
+      suggestSubtitle: async (_v, q) => q.start < 2 ? { time: .5, bandTop: .82, bandBottom: .85, recognizedText: '画面真实字幕', verification: 'ocr' as const } : null,
+      render: async (_v, _i, output) => { await writeFile(output, 'png'); },
+    }, copyWriter: { write: async input => {
+      calls++; assert.match(input.transcript, /末尾没有选进图的核心信息/); assert.ok(input.nativeSubtitles.includes('画面真实字幕'));
+      assert.match(input.transcript, /完整全文独有的末尾观点/);
+      if (fail) throw new Error('AI unavailable');
+      if (changeSource) await storage.writeJsonAtomic('raw/transcripts/job.json', { ...transcript, transcript: 'changed' });
+      return result;
+    } } });
+    const draft = await service.create('job');
+    const planned = await service.plan(draft.id, { version: draft.version });
+    assert.equal(planned.description, result.description); assert.equal(calls, 1); assert.ok(planned.copyReference);
+    const edited = await service.update(draft.id, { ...planned, description: '用户自己的完整正文' });
+    assert.equal(edited.plan!.id, planned.plan!.id);
+    assert.equal((await service.planImage(draft.id, 0, edited.plan!.id, edited.version)).toString(), 'png');
+    const replanned = await service.plan(draft.id, { version: edited.version });
+    assert.equal(replanned.description, edited.description); assert.equal(calls, 1, 'replanning must not replace authored copy');
+    const ready = await service.renderPlan(draft.id, { version: replanned.version, planId: replanned.plan!.id, subtitlesConfirmed: true });
+    const preview = await service.preview(draft.id, ready.version);
+    const updated = await service.update(draft.id, { ...ready, description: '仅更新正文' });
+    assert.equal(updated.status, 'ready'); assert.deepEqual(updated.generated, ready.generated); assert.equal(updated.appliedPlanId, ready.appliedPlanId);
+    assert.notEqual((await service.preview(draft.id, updated.version)).previewRevision, preview.previewRevision);
+    fail = true; await assert.rejects(service.generateCopy(draft.id, updated.version), /AI unavailable/);
+    assert.deepEqual(await service.get(draft.id), updated, 'failed AI does not change manual copy or images');
+    fail = false; changeSource = true;
+    await assert.rejects(service.generateCopy(draft.id, updated.version), /转录.*变化/);
+    await assert.rejects(service.preview(draft.id, updated.version), /转录|文案/);
+    const stale = await service.get(draft.id); assert.match(stale.copyError!, /转录|来源/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('failed automatic copy still returns image proposal and does not fabricate an empty success', async () => {
+  const { GalleryService } = await import('./galleries.js');
+  const root = await mkdtemp(path.join(tmpdir(), 'gallery-copy-failed-'));
+  try {
+    const storage = new LocalStorage(root); await storage.ensureBaseDirs();
+    const videoPath = storage.resolve('raw/videos/job.mp4'); await writeFile(videoPath, 'source');
+    await storage.writeJsonAtomic('raw/transcripts/job.json', { segments: [{ start: 0, end: 1, text: '完整原句。' }] });
+    const service = new GalleryService({ storage, jobs: { get: async () => ({ id: 'job', videoPath } as JobRecord) }, copyWriter: { write: async () => { throw new Error('请配置 AI'); } }, media: {
+      probe: async () => ({ width: 320, height: 480, duration: 5 }), frame: async () => Buffer.from('frame'),
+      suggestSubtitle: async () => ({ time: .5, bandTop: .82, bandBottom: .85 }), render: async (_v, _i, out) => { await writeFile(out, 'png'); },
+    } });
+    const draft = await service.create('job'); const planned = await service.plan(draft.id, { version: draft.version });
+    assert.equal(planned.plan!.images.length, 1); assert.equal(planned.description, ''); assert.match(planned.copyError!, /配置/);
+    await assert.rejects(service.generateCopy(draft.id, draft.version), /版本/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -239,5 +302,33 @@ test('automatic render rejects bytes differing from the confirmed preview and pr
     const ready = await service.renderPlan(draft.id, { version: failed.version, planId: planned.plan!.id, subtitlesConfirmed: true });
     assert.equal(ready.status, 'ready');
     assert.deepEqual(ready.generated!.hashes, ready.plan!.previewHashes);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('low coverage plans remain inspectable but cannot be confirmed or bypassed after reload', async () => {
+  const { GalleryService } = await import('./galleries.js');
+  const root = await mkdtemp(path.join(tmpdir(), 'gallery-low-coverage-'));
+  try {
+    const storage = new LocalStorage(root); await storage.ensureBaseDirs();
+    const videoPath = storage.resolve('raw/videos/job.mp4'); await writeFile(videoPath, 'video');
+    await storage.writeJsonAtomic('raw/transcripts/job.json', { segments: Array.from({ length: 16 }, (_, i) => ({ start: i * 2, end: i * 2 + 1, text: `不同原句${i}。` })) });
+    const deps = { storage, jobs: { get: async () => ({ id: 'job', videoPath } as JobRecord) }, media: {
+      probe: async () => ({ width: 320, height: 480, duration: 40 }), frame: async () => Buffer.from('frame'),
+      suggestSubtitle: async (_v: string, q: { start: number }) => q.start < 4 ? { time: q.start + .5, bandTop: .82, bandBottom: .85 } : null,
+      render: async (_v: string, _i: unknown, out: string) => { await writeFile(out, 'png'); },
+    } };
+    const service = new GalleryService(deps); const draft = await service.create('job');
+    const planned = await service.plan(draft.id, { version: draft.version });
+    assert.ok(planned.plan!.blockedReason);
+    const reloaded = new GalleryService(deps);
+    assert.ok((await reloaded.get(draft.id)).plan!.blockedReason);
+    await assert.rejects(reloaded.renderPlan(draft.id, { version: planned.version, planId: planned.plan!.id, subtitlesConfirmed: true }), /覆盖不足/);
+    assert.equal((await reloaded.get(draft.id)).status, 'draft');
+    const oldPlan = { ...planned.plan! }; delete oldPlan.blockedReason;
+    await storage.writeJsonAtomic('cache/galleries.json', { [draft.id]: { ...planned, plan: oldPlan,
+      images: oldPlan.images.map(i => i.image), appliedPlanId: oldPlan.id } });
+    const legacy = new GalleryService(deps);
+    await assert.rejects(legacy.render(draft.id, planned.version), /覆盖不足/);
+    assert.equal((await legacy.get(draft.id)).status, 'draft');
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -6,6 +6,40 @@ const transcript = (texts: string[]): TranscriptAsset => ({ segments: texts.map(
 const source = { width: 320, height: 480, duration: 100 };
 const candidate = async (quote: { start: number; end: number }) => ({ time: (quote.start + quote.end) / 2, bandTop: .82, bandBottom: .85 });
 
+test('a proposal missing most source windows is not offered as a normal generation plan', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const asset = transcript(Array.from({ length: 16 }, (_, i) => `不同原句${i}。`));
+  const plan = await planGallery(asset, source, q => q.segmentIndex < 2 ? candidate(q) : Promise.resolve(null));
+  assert.match(plan.blockedReason!, /不足|过低|大部分/);
+  assert.equal(plan.excluded.length, 14);
+});
+
+test('one ASR window can supply multiple native captions and fills the requested seven rows', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const asset = transcript(['完整的上下文用于核对，不能只保留其中一帧。', '暂时没有可读字幕。', '后续内容继续按原顺序组织。']);
+  const plan = await planGallery(asset, source, async q => q.segmentIndex === 1 ? [] : Array.from({ length: 7 }, (_, i) => ({
+    time: q.start + .1 + i * .2, bandTop: .82, bandBottom: .85, recognizedText: `画面${q.segmentIndex}字幕${i}`, verification: 'ocr' as const,
+  })), { targetLines: 7 });
+  assert.deepEqual(plan.images.map(i => i.quotes.length), [7, 7]);
+  assert.equal(plan.excluded.length, 1);
+  assert.equal(plan.images[0]!.quotes[0]!.text, '画面0字幕0');
+  assert.ok(plan.images.every(i => i.image.filmstrip));
+});
+
+test('caption groups do not become one image per missed context and balance a small final tail', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const asset = transcript(Array.from({ length: 17 }, (_, i) => `原句第${i}条。`));
+  const plan = await planGallery(asset, source, async q => q.segmentIndex === 8 ? null : candidate(q), { targetLines: 7 });
+  assert.deepEqual(plan.images.map(i => i.quotes.length), [8, 8]);
+  assert.equal(plan.images.flatMap(i => i.quotes).length, 16);
+});
+
+test('a seven-row target balances 29 captions within the six-to-nine range', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const plan = await planGallery(transcript(Array.from({ length: 29 }, (_, i) => `不同台词${i}。`)), source, candidate, { targetLines: 7 });
+  assert.deepEqual(plan.images.map(i => i.quotes.length), [8, 7, 7, 7]);
+});
+
 test('planner covers 32 complete sentences in four chronological groups without inventing text', async () => {
   const { planGallery } = await import('./gallery-planner.js');
   const texts = Array.from({ length: 32 }, (_, i) => `原句第${i + 1}条。`);
@@ -45,6 +79,14 @@ test('large subtitle bands split images for readability and valid word timestamp
   const words = { ...transcript(['甲句。乙句。']), words: [{ word: '甲句。', start: .1, end: .4 }, { word: '乙句。', start: .9, end: 1.3 }] };
   const result = await planGallery(words, source, candidate);
   assert.deepEqual(result.images[0]!.quotes.map(q => [q.start, q.end]), [[.1, .4], [.9, 1.3]]);
+});
+
+test('compact row padding is included when checking whether eight captions fit', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const asset = transcript(Array.from({ length: 16 }, (_, i) => `不同台词${i}。`));
+  const plan = await planGallery(asset, { width: 1080, height: 1000, duration: 100 }, async q => ({ time: q.start + .2, bandTop: .8, bandBottom: .9 }));
+  assert.ok(plan.images.every(i => i.quotes.length <= 7));
+  assert.equal(plan.images.flatMap(i => i.quotes).length, 16);
 });
 
 test('tail tolerance clamps the whole interval before interpolation without losing long sentence text', async () => {

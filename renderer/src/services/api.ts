@@ -205,6 +205,9 @@ export class ApiClient {
   async renderGalleryPlan(id: string, version: number, planId: string, subtitlesConfirmed: boolean): Promise<Gallery> {
     return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/plan/render`, data: { version, planId, subtitlesConfirmed }, timeout: 0 })).gallery;
   }
+  async generateGalleryCopy(id: string, version: number): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/copy`, data: { version }, timeout: 0 })).gallery;
+  }
   async getGalleryPlanImageUrl(id: string, index: number, planId: string, version: number): Promise<string> {
     await this.initialize();
     return `http://localhost:${this.serverPort}/api/galleries/${id}/plan/images/${index}?planId=${encodeURIComponent(planId)}&version=${version}`;

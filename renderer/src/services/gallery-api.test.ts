@@ -10,12 +10,16 @@ test('gallery plan confirmation sends version and plan identity and allows long 
   } }) as any;
   await (client as any).planGallery('g', { version: 2, targetLines: 8 });
   await (client as any).renderGalleryPlan('g', 3, 'p', true);
+  await (client as any).generateGalleryCopy('g', 4);
   assert.deepEqual(calls[0].data, { version: 2, targetLines: 8 });
   assert.deepEqual(calls[1].data, { version: 3, planId: 'p', subtitlesConfirmed: true });
   assert.equal(calls[0].url, '/api/galleries/g/plan');
   assert.equal(calls[1].url, '/api/galleries/g/plan/render');
   assert.equal(calls[0].timeout, 0);
   assert.equal(calls[1].timeout, 0);
+  assert.deepEqual(calls[2].data, { version: 4 });
+  assert.equal(calls[2].url, '/api/galleries/g/copy');
+  assert.equal(calls[2].timeout, 0);
 });
 
 test('controlled retranscription is separate from repeating a succeeded step', async () => {

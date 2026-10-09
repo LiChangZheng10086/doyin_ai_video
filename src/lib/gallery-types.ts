@@ -4,6 +4,8 @@ export interface GalleryImage {
   bandTop: number;
   bandBottom: number;
   mainFraction: number;
+  compact?: boolean;
+  filmstrip?: boolean;
   mainCrop?: { left: number; right: number; top: number; bottom: number };
 }
 
@@ -20,6 +22,8 @@ export interface Gallery extends GalleryDraft {
   version: number;
   status: 'draft' | 'running' | 'ready' | 'failed';
   error?: string;
+  copyError?: string;
+  copyReference?: { transcriptHash: string; sourceFingerprint: string; notes: string[] };
   plan?: GalleryPlan;
   appliedPlanId?: string;
   generated?: {
@@ -45,6 +49,7 @@ export interface GallerySource {
   height: number;
   duration: number;
   imageLimit?: number;
+  copyLimits?: GalleryPreview['copyLimits'];
 }
 
 export interface GalleryQuote {
@@ -52,6 +57,7 @@ export interface GalleryQuote {
   text: string;
   start: number;
   end: number;
+  verification?: 'ocr' | 'pixels';
 }
 
 export interface GalleryPlan {
@@ -61,6 +67,7 @@ export interface GalleryPlan {
   sourceFingerprint: string;
   images: { title: string; quotes: GalleryQuote[]; image: GalleryImage }[];
   warnings: string[];
+  blockedReason?: string;
   excluded: { segmentIndex: number; reason: string }[];
 }
 

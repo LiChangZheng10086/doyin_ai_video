@@ -15,6 +15,7 @@ test('gallery HTTP route creates a self-contained douyin note without cleaned co
   try {
     const storage = new LocalStorage(root); await storage.ensureBaseDirs();
     const videoPath = storage.resolve('raw/videos/source.mp4');
+    await storage.writeJsonAtomic('raw/transcripts/source.json', { segments: [{ start: 0, end: 1, text: '原视频完整内容。' }] });
     await runCommand('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=blue:s=240x320:d=2:r=5', '-vf', 'drawbox=x=30:y=260:w=180:h=10:color=white:t=fill', '-c:v', 'libx264', videoPath], { captureStderr: true });
     const now = new Date().toISOString();
     await storage.writeJson('cache/jobs-index.json', { source: { id: 'source', topic: '字幕图集测试', videoPath, status: 'queued', stage: 'transcribed', sourceUrl: 'https://example.com/video', storagePath: 'processed/scripts/source.json', createdAt: now, updatedAt: now } });
@@ -24,7 +25,8 @@ test('gallery HTTP route creates a self-contained douyin note without cleaned co
     runner.syncBackCookies = async () => 'fake-cookie-file';
     runner.checkLogin = async () => ({ ok: true, exitCode: 0, output: 'valid', needsVerificationCode: false });
     runner.runUploadNote = async input => { assert.equal(input.title, '字幕图集测试'); assert.equal(input.imagePaths.length, 1); return { ok: true, exitCode: 0, output: 'submitted', needsVerificationCode: false }; };
-    const app = await createExpressApp({ rootDir: root, storagePath: root, sauRunner: runner });
+    const app = await createExpressApp({ rootDir: root, storagePath: root, sauRunner: runner,
+      galleryCopyWriter: { write: async input => { assert.match(input.transcript, /完整内容/); return { title: '字幕图集测试', description: '背景。\n1. 核心建议。\n你怎么看？', hashtags: ['创作'], notes: [] }; } } });
     server = createServer(app); await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
     const address = server.address(); assert.ok(address && typeof address === 'object');
     const base = `http://127.0.0.1:${address.port}`;
@@ -34,12 +36,16 @@ test('gallery HTTP route creates a self-contained douyin note without cleaned co
       return { status: response.status, body: await response.json() as any };
     };
     assert.equal((await request('/api/galleries', 'POST', { sourceJobId: 'source' })).status, 401);
+    assert.equal((await request('/api/galleries/source/copy', 'POST', { version: 1 })).status, 401);
     token = (await request('/api/local-sessions/auto', 'POST')).body.session.token;
     const created = await request('/api/galleries', 'POST', { sourceJobId: 'source' });
     assert.equal(created.status, 201);
     const gallery = created.body.gallery;
     const url = `/api/galleries/${gallery.id}`;
-    const rendered = await request(url + '/render', 'POST', { version: gallery.version });
+    const copy = await request(url + '/copy', 'POST', { version: gallery.version });
+    assert.equal(copy.status, 200); assert.match(copy.body.gallery.description, /核心建议/);
+    assert.equal((await request(url + '/copy', 'POST', { version: gallery.version })).status, 409);
+    const rendered = await request(url + '/render', 'POST', { version: copy.body.gallery.version });
     assert.equal(rendered.status, 200);
     assert.equal((await request(url + '/publishing/preview', 'POST', { version: gallery.version })).status, 409);
     const preview = await request(url + '/publishing/preview', 'POST', { version: rendered.body.gallery.version }); assert.equal(preview.status, 200);
@@ -51,6 +57,8 @@ test('gallery HTTP route creates a self-contained douyin note without cleaned co
     const detail = built.body.detail;
     assert.equal(detail.package.contentType, 'note');
     assert.equal(detail.package.noteCopy.title, '字幕图集测试');
+    assert.equal(detail.package.noteCopy.description, copy.body.gallery.description);
+    assert.deepEqual(detail.package.noteCopy.hashtags, ['创作']);
     assert.equal(detail.tasks[0].platform, 'douyin');
     assert.equal(detail.tasks[0].status, 'ready');
     const packagedImage = path.join(detail.package.packagePath, detail.package.imagePaths[0]);

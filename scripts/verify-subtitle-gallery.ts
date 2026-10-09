@@ -45,7 +45,16 @@ const model = path.join(root, 'model.bin'); await writeFile(model, 'command fixt
 // Raster markers deliberately exercise only the pixel path; real OCR has its own fixed-source regression.
 const originalSuggest = GalleryMedia.prototype.suggestSubtitle;
 GalleryMedia.prototype.suggestSubtitle = function (video, quote, region) { return originalSuggest.call(this, video, { start: quote.start, end: quote.end }, region); };
-const app = await createExpressApp({ storagePath: root, rootDir: root, whisperCliPath: cli, whisperModelPath: model });
+GalleryMedia.prototype.suggestSubtitles = async function (video, quote, region) {
+  const result = await this.suggestSubtitle(video, quote, region);
+  return result ? [result] : [];
+};
+let copyRuns = 0;
+const app = await createExpressApp({ storagePath: root, rootDir: root, whisperCliPath: cli, whisperModelPath: model,
+  galleryCopyWriter: { write: async input => {
+    assert.match(input.transcript, /第32段合成验收标记/);
+    return { title: '合成图文验收', description: `这是隔离测试生成的配套文案（第${++copyRuns}次）。\n1. 按完整内容组织核心观点。\n2. 保留最后一段的信息。\n你想先调整哪一点？`, hashtags: ['合成验收'], notes: ['测试夹具不证明真实文案语义准确'] };
+  } } });
 const serve = process.argv.includes('--serve');
 const port = serve ? Number(process.env.SUBTITLE_GALLERY_PORT ?? 3183) : 0;
 if (serve) {
@@ -82,13 +91,18 @@ else try {
   const url = `/api/galleries/${gallery.id}`;
   const planned = (await request(url + '/plan', { version: gallery.version, targetLines: 8 })).gallery;
   assert.deepEqual(planned.plan.images.map((i: any) => i.quotes.length), [8, 8, 8, 8]);
+  assert.match(planned.description, /核心观点/);
+  assert.ok(planned.copyReference);
   const candidate = await fetch(base + url + `/plan/images/0?planId=${planned.plan.id}&version=${planned.version}`);
   assert.equal(candidate.status, 200); assert.equal(Buffer.from(await candidate.arrayBuffer()).readUInt32BE(20), 1440);
   const rendered = (await request(url + '/plan/render', { version: planned.version, planId: planned.plan.id, subtitlesConfirmed: true })).gallery;
   assert.equal(rendered.status, 'ready'); assert.equal(rendered.generated.hashes.length, 4);
-  assert.equal((await request(url + '/publishing/preview', { version: rendered.version })).preview.imageCount, 4);
+  const recopy = (await request(url + '/copy', { version: rendered.version })).gallery;
+  assert.equal(recopy.status, 'ready'); assert.deepEqual(recopy.generated, rendered.generated); assert.equal(recopy.plan.id, rendered.plan.id);
+  assert.match(recopy.description, /第2次/);
+  assert.equal((await request(url + '/publishing/preview', { version: recopy.version })).preview.imageCount, 4);
   assert.equal((await request('/api/jobs/gallery-demo/retranscribe', {})).job.steps.clean.status, 'pending');
-  const stale = await fetch(base + url + '/publishing/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: rendered.version }) });
+  const stale = await fetch(base + url + '/publishing/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: recopy.version }) });
   assert.equal(stale.status, 409);
-  console.log('PASS: isolated 32 segments → four complete candidate previews → confirm/render → publish preview → controlled retranscribe → old preview rejected. No real data or publishing writes.');
+  console.log('PASS: isolated full transcript → four image previews + copy → confirm/render → regenerate copy preserves pixels → publish preview → retranscribe rejects stale copy/images. No real data or publishing writes.');
 } finally { await close(); }

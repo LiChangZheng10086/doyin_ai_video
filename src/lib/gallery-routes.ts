@@ -23,6 +23,7 @@ export function registerGalleryRoutes(app: Express, deps: { galleries: GallerySe
     res.type('png').set('Cache-Control', 'no-store').send(await service.frame(String(req.params.id), Number(req.query.time)));
   }));
   router.post('/:id/plan', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.plan(String(req.params.id), req.body) })));
+  router.post('/:id/copy', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.generateCopy(String(req.params.id), req.body?.version) })));
   router.post('/:id/plan/render', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.renderPlan(String(req.params.id), req.body) })));
   router.get('/:id/plan/images/:index', handle(async (req, res) => res.type('png').set('Cache-Control', 'no-store').send(
     await service.planImage(String(req.params.id), Number(req.params.index), typeof req.query.planId === 'string' ? req.query.planId : '', Number(req.query.version)))));

@@ -16,4 +16,6 @@ test('whole gallery plan shows all source quotes and exclusions before confirmat
   assert.match(html, /按此方案生成整套图集/);
   assert.match(html, /disabled=""/);
   assert.doesNotMatch(html, /type="number"/);
+  const blocked = renderToStaticMarkup(<GalleryPlanPanel plan={{ ...plan, blockedReason: '大部分内容未匹配，不能生成' }} imageUrls={[]} confirmed={true} disabled={false} onConfirmChange={() => {}} onGenerate={() => {}} />);
+  assert.match(blocked, /大部分内容未匹配，不能生成/);
 });

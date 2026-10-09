@@ -1,8 +1,41 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { selectNativeSubtitle, type NativeTextLine } from './subtitle-ocr.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { nativeSubtitleOcrBinary, selectNativeSubtitle, type NativeTextLine } from './subtitle-ocr.js';
+
+test('development Electron uses the local OCR bridge despite having resourcesPath', () => {
+  const resources = Object.getOwnPropertyDescriptor(process, 'resourcesPath');
+  const defaultApp = Object.getOwnPropertyDescriptor(process, 'defaultApp');
+  try {
+    Object.defineProperty(process, 'resourcesPath', { value: '/electron-resources', configurable: true });
+    Object.defineProperty(process, 'defaultApp', { value: true, configurable: true });
+    assert.equal(nativeSubtitleOcrBinary(), path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../vendor/runtime/subtitle-ocr'));
+    Object.defineProperty(process, 'defaultApp', { value: false, configurable: true });
+    assert.equal(nativeSubtitleOcrBinary(), path.join('/electron-resources', 'bin/subtitle-ocr'));
+    Reflect.deleteProperty(process, 'resourcesPath');
+    assert.equal(nativeSubtitleOcrBinary(), path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../vendor/runtime/subtitle-ocr'));
+  } finally {
+    if (resources) Object.defineProperty(process, 'resourcesPath', resources); else Reflect.deleteProperty(process, 'resourcesPath');
+    if (defaultApp) Object.defineProperty(process, 'defaultApp', defaultApp); else Reflect.deleteProperty(process, 'defaultApp');
+  }
+});
 
 const line = (text: string, overrides: Partial<NativeTextLine> = {}): NativeTextLine => ({ text, confidence: .95, left: .3, right: .7, top: .9, bottom: .94, ...overrides });
+
+test('readable large native captions are not rejected as headlines', () => {
+  assert.ok(selectNativeSubtitle([line('每一章都有清晰的收获', { top: .806, bottom: .895, left: .28, right: .7 })], '每一章都有清晰的收获'));
+  assert.equal(selectNativeSubtitle([line('每一章都有清晰的收获', { top: .72, bottom: .91 })], '每一章都有清晰的收获'), null);
+});
+
+test('confident native captions tolerate ASR word errors but reject unrelated or news-labelled text', () => {
+  assert.ok(selectNativeSubtitle([line('第一，开头回收上章悬念。', { confidence: .5 })], '第一,开头回休相交悬念,前几百字一定要给结果变化或者新信息'));
+  assert.equal(selectNativeSubtitle([line('第一，开头回收上章悬念。', { confidence: .5 })], '第一开头介绍完全无关的内容'), null);
+  assert.ok(selectNativeSubtitle([line('第一，开头快速抛出悬念。', { confidence: 1 })], '第一开头回休相交悬念前几百字一定要给结果变化或者新信息'));
+  assert.ok(selectNativeSubtitle([line('真正稳住追读率的方法', { confidence: 1 })], '签证文著追读率的方法'));
+  assert.equal(selectNativeSubtitle([line('今天讲述完全无关的消息', { confidence: 1 })], '第一开头快速抛出悬念'), null);
+  assert.equal(selectNativeSubtitle([line('新闻直播间', { left: .05, right: .2 }), line('第一开头快速抛出悬念', { confidence: 1 })], '第一开头回休相交悬念'), null);
+});
 
 test('OCR corroborates thin dialogue and rejects unmatched headlines, blank and low-confidence text', () => {
   assert.ok(selectNativeSubtitle([line('内容系统需要清晰目标')], '内容系统需要清晰目标先确定方向'));

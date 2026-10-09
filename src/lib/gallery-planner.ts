@@ -1,17 +1,29 @@
 import type { TranscriptAsset } from '../types.js';
 import type { GalleryImage, GalleryPlan, GalleryPlanInput, GalleryQuote, GallerySource } from './gallery-types.js';
-import { GalleryError } from './gallery-media.js';
+import { GalleryError, galleryFilmstripHeight } from './gallery-media.js';
 import { inspectTranscriptQuality } from './transcript-quality.js';
 import { SAU_NOTE_MAX_IMAGES } from './sau-runner.js';
 
 export type SubtitleCandidate = { time: number; bandTop: number; bandBottom: number; recognizedText?: string; verification?: 'ocr' | 'pixels' };
 
+function balancedGroupSize(remaining: number, target: number): number {
+  let groups = Math.ceil(remaining / target);
+  while (groups > 1 && remaining / groups < 6 && Math.ceil(remaining / (groups - 1)) <= 9) groups--;
+  return Math.ceil(remaining / groups);
+}
+
+export function galleryPlanBlockReason(plan: Pick<GalleryPlan, 'images' | 'excluded'>): string | undefined {
+  const matched = new Set(plan.images.flatMap(image => image.quotes.map(quote => `${quote.segmentIndex}:${quote.start}:${quote.end}`))).size;
+  if (plan.excluded.length > matched) return `大部分内容未匹配（${matched} 个定位片段可用，${plan.excluded.length} 个未匹配），覆盖不足，不能生成；请重新转录或校准后重新规划。`;
+  return undefined;
+}
+
 export async function planGallery(
   transcript: TranscriptAsset,
   source: GallerySource,
-  candidate: (quote: GalleryQuote) => Promise<SubtitleCandidate | null>,
+  candidate: (quote: GalleryQuote) => Promise<SubtitleCandidate | SubtitleCandidate[] | null>,
   options: Omit<GalleryPlanInput, 'version'> = {},
-): Promise<Pick<GalleryPlan, 'images' | 'warnings' | 'excluded'>> {
+): Promise<Pick<GalleryPlan, 'images' | 'warnings' | 'excluded' | 'blockedReason'>> {
   const target = options.targetLines ?? 8;
   if (![6, 7, 8, 9].includes(target)) throw new GalleryError(422, '建议条数须为 6～9 条');
   if ((options.bandTop === undefined) !== (options.bandBottom === undefined)
@@ -66,34 +78,52 @@ export async function planGallery(
     }
   }
   flush();
+  const selected: { quote: GalleryQuote; candidate: SubtitleCandidate }[] = [];
+  for (const quote of quotes) {
+    const result = await candidate(quote);
+    const found = (Array.isArray(result) ? result : result ? [result] : []).sort((a, b) => a.time - b.time);
+    if (!found.length) {
+      excluded.push({ segmentIndex: quote.segmentIndex, reason: `「${quote.text}」附近未找到与定位文字匹配的可读原生字幕，可能是横幅、转录偏差或字幕切换；请校准字幕区域或使用高级调整` });
+      continue;
+    }
+    for (const item of found) {
+      const text = item.verification === 'ocr' && item.recognizedText ? item.recognizedText : quote.text;
+      const previous = selected.at(-1);
+      if (item.verification === 'ocr' && previous?.candidate.verification === 'ocr'
+        && text.replace(/[^\p{L}\p{N}]/gu, '') === previous.quote.text.replace(/[^\p{L}\p{N}]/gu, '')) continue;
+      selected.push({ quote: { ...quote, text, verification: item.verification }, candidate: item });
+      if (item.verification === 'pixels' && !warnings.some(w => w.includes('仅为像素候选'))) {
+        warnings.push('本地 OCR 未就绪，当前仅为像素候选，稳定横幅也可能入选。请逐条核对原画面或统一校准区域；macOS 可运行 npm run prepare:subtitle-ocr 启用本地文字核对。');
+      }
+    }
+  }
   const images: GalleryPlan['images'] = [];
   let group: { quote: GalleryQuote; candidate: SubtitleCandidate }[] = [];
+  let limit: number = target;
   const finish = () => {
     if (!group.length) return;
     const top = Math.min(...group.map(g => g.candidate.bandTop));
     const bottom = Math.max(...group.map(g => g.candidate.bandBottom));
-    const strip = Math.max(64, (bottom - top) * source.height * 1080 / source.width);
-    const image: GalleryImage = { mainTime: group[0]!.candidate.time, times: group.map(g => g.candidate.time), bandTop: top, bandBottom: bottom,
-      mainFraction: Math.max(.4, Math.min(.7, (1440 - strip * group.length) / 1440)) };
+    const image: GalleryImage = { mainTime: group[0]!.candidate.time, times: group.map(g => g.candidate.time), bandTop: top, bandBottom: bottom, filmstrip: true,
+      mainFraction: .48 };
     images.push({ title: group[0]!.quote.text.slice(0, 36), quotes: group.map(g => g.quote), image });
     group = [];
   };
-  for (const quote of quotes) {
-    const result = await candidate(quote);
-    if (!result) { finish(); excluded.push({ segmentIndex: quote.segmentIndex, reason: `「${quote.text}」附近未找到与定位文字匹配的可读原生字幕，可能是横幅、转录偏差或字幕切换；请校准字幕区域或使用高级调整` }); continue; }
-    if (result.verification === 'pixels' && !warnings.some(w => w.includes('仅为像素候选'))) {
-      warnings.push('本地 OCR 未就绪，当前仅为像素候选，稳定横幅也可能入选。请逐条核对原画面或统一校准区域；macOS 可运行 npm run prepare:subtitle-ocr 启用本地文字核对。');
-    }
-    const proposed = [...group, { quote, candidate: result }];
+  for (const [index, item] of selected.entries()) {
+    if (!group.length) limit = balancedGroupSize(selected.length - index, target);
+    const proposed = [...group, item];
     const top = Math.min(...proposed.map(g => g.candidate.bandTop));
     const bottom = Math.max(...proposed.map(g => g.candidate.bandBottom));
-    const strip = Math.max(64, (bottom - top) * source.height * 1080 / source.width);
-    if (group.length && (group.length >= target || quote.start - group.at(-1)!.quote.end >= 3 || strip * proposed.length > 864)) finish();
-    group.push({ quote, candidate: result });
+    const strip = galleryFilmstripHeight(source, top, bottom);
+    if (group.length && (group.length >= limit || strip * proposed.length > 1008)) {
+      finish();
+      limit = balancedGroupSize(selected.length - index, target);
+    }
+    group.push(item);
   }
   finish();
   if (images.length > SAU_NOTE_MAX_IMAGES) throw new GalleryError(422, `方案超过 ${SAU_NOTE_MAX_IMAGES} 张，请缩小内容范围或调整字幕区域`);
   if (images.some(i => i.quotes.length < target)) warnings.push('内容边界、长句或字幕区域高度使部分图片少于建议条数；保留完整文字并优先保证可读性。');
   if (!images.length) warnings.push('没有可用原生字幕候选，当前方案不能生成。');
-  return { images, warnings, excluded };
+  return { images, warnings, excluded, blockedReason: galleryPlanBlockReason({ images, excluded }) };
 }
