@@ -1,5 +1,18 @@
+import { existsSync, statSync } from 'node:fs';
+import path from 'node:path';
+
 type YtDlpCookieConfig = { cookiesFile?: string; cookiesFromBrowser?: string };
 const text = (value: unknown) => typeof value === 'string' ? value.trim() || undefined : undefined;
+
+export function resolveYtDlpBinary(fallback: string, env: { YTDLP_BINARY?: string }, local?: { rootDir: string; platform: NodeJS.Platform }): string {
+  const explicit = text(env.YTDLP_BINARY);
+  if (explicit) return explicit;
+  if (local) {
+    const binary = path.join(local.rootDir, 'vendor', 'package-assets', 'bin', local.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+    if (existsSync(binary) && statSync(binary).isFile()) return binary;
+  }
+  return fallback;
+}
 
 /**
  * 把 `YTDLP_*` 环境变量收敛成媒体服务配置 —— **与独立后端 `src/server.ts` 同一套契约**。

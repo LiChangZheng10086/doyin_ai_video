@@ -14,6 +14,7 @@ export async function startServer(): Promise<number> {
     try {
       // 设置外部依赖路径
       const binaryPaths = getBinaryPaths();
+      console.log('[Media] yt-dlp binary:', binaryPaths.ytdlp);
 
       // 加载配置
       const config = await loadConfig();

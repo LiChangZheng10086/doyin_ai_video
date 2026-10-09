@@ -27,3 +27,26 @@ test('空串与纯空白等于「没配」，不能下发成 --cookies ""', () =
   );
   assert.deepEqual(resolveYtDlpCookieConfig({}), { cookiesFile: undefined, cookiesFromBrowser: undefined });
 });
+
+test('未打包桌面端优先使用项目已准备的 yt-dlp，尊重显式覆盖并保留 PATH 后备', async () => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const { resolveYtDlpBinary } = await import('./ytdlp-config.js');
+  const rootDir = await mkdtemp(path.join(tmpdir(), 'desktop-ytdlp-'));
+  try {
+    const local = { rootDir, platform: 'darwin' as const };
+    assert.equal(resolveYtDlpBinary('yt-dlp', {}, local), 'yt-dlp');
+    const bin = path.join(rootDir, 'vendor/package-assets/bin'); await mkdir(bin, { recursive: true });
+    const binary = path.join(bin, 'yt-dlp'); await writeFile(binary, 'prepared binary');
+    assert.equal(resolveYtDlpBinary('yt-dlp', {}, local), binary);
+    assert.equal(resolveYtDlpBinary('yt-dlp', { YTDLP_BINARY: '  /explicit/yt-dlp  ' }, local), '/explicit/yt-dlp');
+    assert.equal(resolveYtDlpBinary('yt-dlp', { YTDLP_BINARY: '  ' }, local), binary);
+    assert.equal(resolveYtDlpBinary('/resources/bin/yt-dlp', {}), '/resources/bin/yt-dlp');
+    assert.equal(resolveYtDlpBinary('/resources/bin/yt-dlp', { YTDLP_BINARY: '/explicit/tool' }), '/explicit/tool');
+    await rm(binary); await mkdir(binary);
+    assert.equal(resolveYtDlpBinary('yt-dlp', {}, local), 'yt-dlp');
+    await writeFile(path.join(bin, 'yt-dlp.exe'), 'windows prepared binary');
+    assert.equal(resolveYtDlpBinary('yt-dlp', {}, { rootDir, platform: 'win32' }), path.join(bin, 'yt-dlp.exe'));
+  } finally { await rm(rootDir, { recursive: true, force: true }); }
+});

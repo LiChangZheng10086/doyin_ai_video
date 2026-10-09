@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
+import { resolveYtDlpBinary } from './ytdlp-config';
 
 export interface BinaryPaths {
   binDir?: string;
@@ -23,12 +24,12 @@ export function getBinaryPaths(): BinaryPaths {
 
   if (isDev) {
     const whisperPath = path.join(process.cwd(), 'vendor', 'whisper');
-    // 开发环境：假设用户已安装这些工具
+    // 未打包运行：yt-dlp 优先复用项目资源，其它工具仍从 PATH 读取。
     return {
       binDir: undefined,
       ffmpeg: 'ffmpeg',
       ffprobe: 'ffprobe',
-      ytdlp: 'yt-dlp',
+      ytdlp: resolveYtDlpBinary('yt-dlp', process.env, { rootDir: app.getAppPath(), platform }),
       whisperCli: path.join(whisperPath, platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli'),
       whisperModel: path.join(whisperPath, 'models', 'ggml-small.bin'),
     };
@@ -49,7 +50,7 @@ export function getBinaryPaths(): BinaryPaths {
       binDir: binPath,
       ffmpeg: assetPath('ffmpeg', path.join(binPath, 'ffmpeg.exe')),
       ffprobe: assetPath('ffprobe', path.join(binPath, 'ffprobe.exe')),
-      ytdlp: assetPath('ytdlp', path.join(binPath, 'yt-dlp.exe')),
+      ytdlp: resolveYtDlpBinary(assetPath('ytdlp', path.join(binPath, 'yt-dlp.exe')), process.env),
       whisperCli: assetPath('whisperCli', path.join(whisperPath, 'whisper-cli.exe')),
       whisperModel: assetPath('whisperModel', path.join(whisperPath, 'models', 'ggml-small.bin')),
       hyperframesCli: assetPath('hyperframesCli', path.join(resourcesPath, 'hyperframes', 'node_modules', 'hyperframes', 'dist', 'cli.js')),
@@ -60,7 +61,7 @@ export function getBinaryPaths(): BinaryPaths {
       binDir: binPath,
       ffmpeg: assetPath('ffmpeg', path.join(binPath, 'ffmpeg')),
       ffprobe: assetPath('ffprobe', path.join(binPath, 'ffprobe')),
-      ytdlp: assetPath('ytdlp', path.join(binPath, 'yt-dlp')),
+      ytdlp: resolveYtDlpBinary(assetPath('ytdlp', path.join(binPath, 'yt-dlp')), process.env),
       whisperCli: assetPath('whisperCli', path.join(whisperPath, 'whisper-cli')),
       whisperModel: assetPath('whisperModel', path.join(whisperPath, 'models', 'ggml-small.bin')),
       hyperframesCli: assetPath('hyperframesCli', path.join(resourcesPath, 'hyperframes', 'node_modules', 'hyperframes', 'dist', 'cli.js')),
@@ -72,7 +73,7 @@ export function getBinaryPaths(): BinaryPaths {
       binDir: undefined,
       ffmpeg: 'ffmpeg',
       ffprobe: 'ffprobe',
-      ytdlp: 'yt-dlp',
+      ytdlp: resolveYtDlpBinary('yt-dlp', process.env),
       whisperCli: path.join(whisperPath, 'whisper-cli'),
       whisperModel: path.join(whisperPath, 'models', 'ggml-small.bin'),
     };

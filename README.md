@@ -563,9 +563,9 @@ OCR 只辅助筛选，仍可能漏检或误选，必须整套核对；Windows �
 
 长视频没有固定一小时上限，下载和转录请求不再受现有 10 分钟空闲超时中断；缺字幕时仍是整段本地 ASR，未实现分片续传或断点恢复。耗时、内存和磁盘取决于视频与硬件，请保持应用开启。当前真实验收视频长 4 小时 22 分钟，只验证了约 70 秒样本的下载与真实转录，未验证全长。
 
-YouTube 支持复用 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，没有另装 youtube-transcript-api、YouTube.js 或 pytubefix。打包准备固定使用验收通过的 **2026.08.19**（可用 `YTDLP_VERSION` 显式覆盖），版本戳会刷新旧缓存。开发者旧版报 403 时先更新 `YTDLP_BINARY` 指向的下载器；应用安装包须重新准备资源并打包。运行时显式使用 Node JavaScript runtime（Electron 使用自身 Node）与 FFmpeg。公开视频仍可能因网络、地域、登录或平台校验失败，错误会保留原视频并提示；不会自动读取浏览器 Cookie。独立后端可用 `YTDLP_JS_RUNTIME` 指定 Node 路径，Cookie 仅使用主动配置的 `YTDLP_COOKIES_FILE`／`YTDLP_COOKIES_FROM_BROWSER`。
+YouTube 支持复用 [yt-dlp](https://github.com/yt-dlp/yt-dlp)，没有另装 youtube-transcript-api、YouTube.js 或 pytubefix。打包准备固定使用验收通过的 **2026.08.19**（可用 `YTDLP_VERSION` 显式覆盖），版本戳会刷新旧缓存。桌面端优先使用显式 `YTDLP_BINARY`；未打包启动时其次使用项目 `vendor/package-assets/bin/yt-dlp`（Windows 为 `.exe`），缺失才回退系统 PATH；打包应用使用随包资源。独立后端旧版报 403 时可配置 `YTDLP_BINARY` 指向已验证的下载器；应用安装包须重新准备资源并打包。运行时显式使用 Node JavaScript runtime（Electron 使用自身 Node）与 FFmpeg。公开视频仍可能因网络、地域、登录或平台校验失败，错误会保留原视频并提示；不会自动读取浏览器 Cookie。独立后端可用 `YTDLP_JS_RUNTIME` 指定 Node 路径，Cookie 仅使用主动配置的 `YTDLP_COOKIES_FILE`／`YTDLP_COOKIES_FROM_BROWSER`。
 
-本次实现使用的开发 Skills（代理工作流，非应用运行依赖）：`brainstorming`、`superpowers:writing-plans`、`superpowers:dispatching-parallel-agents`、`superpowers:using-git-worktrees`、`superpowers:test-driven-development`、`superpowers:verification-before-completion`、`requesting-code-review`、`superpowers:finishing-a-development-branch`、`playwright`（并遵循 `superpowers:using-superpowers` 的技能加载规则）。项目内可用于内容创作的全部 Skills 仍见下方清单。
+本次实现使用的开发 Skills（代理工作流，非应用运行依赖）：`brainstorming`、`superpowers:writing-plans`、`superpowers:dispatching-parallel-agents`、`superpowers:using-git-worktrees`、`superpowers:test-driven-development`、`superpowers:systematic-debugging`、`superpowers:verification-before-completion`、`requesting-code-review`、`superpowers:finishing-a-development-branch`、`playwright`（并遵循 `superpowers:using-superpowers` 的技能加载规则）。项目内可用于内容创作的全部 Skills 仍见下方清单。
 
 隔离验收：`node --import tsx scripts/verify-subtitle-gallery.ts --translated`；追加 `--serve` 打开合成工作台（默认 3183，可通过 `SUBTITLE_GALLERY_PORT` 修改）。合成译文不证明真实翻译准确；现有无参数原生字幕验收保持兼容。
 
