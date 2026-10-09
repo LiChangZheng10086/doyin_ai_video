@@ -59,7 +59,7 @@ export function GalleriesPage() {
       </div>
     </section>
     {loading ? <p role="status" className="text-ink-muted">正在加载图集…</p> : galleries.length === 0 ?
-      <div className="rounded-lg border border-dashed border-line p-10 text-center"><h2 className="font-semibold text-ink">还没有字幕图集</h2><p className="mt-2 text-sm text-ink-muted">从上方选择一个原视频，开始选句、校准画面和拼图。</p></div> :
+      <div className="rounded-lg border border-dashed border-line p-10 text-center"><h2 className="font-semibold text-ink">还没有字幕图集</h2><p className="mt-2 text-sm text-ink-muted">从上方选择一个原视频，自动规划整套图集，认可方案后一键生成。</p></div> :
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{galleries.map(g => <article key={g.id} className="overflow-hidden rounded-lg border border-line bg-panel">
         <Link to={`/galleries/${g.id}`} className="block"><div className="flex aspect-[3/4] items-center justify-center bg-canvas">{urls[g.id] ? <img src={urls[g.id]} alt={g.title} className="h-full w-full object-contain" /> : <GalleryVerticalEnd size={48} className="text-ink-muted" />}</div></Link>
         <div className="p-4"><Link to={`/galleries/${g.id}`} className="font-semibold text-ink hover:text-accent">{g.title}</Link>

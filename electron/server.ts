@@ -5,6 +5,7 @@ import { getBinaryPaths } from './utils/binary-paths';
 import { loadConfig, saveConfig } from './handlers/config-handler';
 import { resolveSauConfig, rememberSauConfig } from './utils/sau-config';
 import { resolveYtDlpCookieConfig } from './utils/ytdlp-config';
+import { mergeResearchSettings } from './utils/research-config';
 
 let serverInstance: any = null;
 
@@ -45,6 +46,8 @@ export async function startServer(): Promise<number> {
         aiApiKey: activeKey?.apiKey || '',
         aiBaseURL: activeKey?.baseURL || (activeKey?.provider === 'deepseek' ? 'https://api.deepseek.com' : undefined),
         aiMaxOutputTokens: activeKey?.maxOutputTokens,
+        researchConfigurationSource: 'desktop',
+        resolveResearchConfig: async () => mergeResearchSettings((await loadConfig()).research),
         resolveAiConfig: async () => {
           const latest = await loadConfig();
           const current = latest.aiKeys.find(key => key.isActive);

@@ -5,6 +5,7 @@ import { resolve4, resolve6 } from 'dns/promises';
 import { AppConfig, AIKeyChanges, AIKeyConfig, AIKeyInput, AIKeyTestResult, AiErrorCode } from '../preload';
 import { randomUUID } from 'crypto';
 import { mergeWechatSettings, publicWechatSettings, encryptWechatSettings, decryptWechatSettings } from '../utils/wechat-config';
+import { mergeResearchSettings } from '../utils/research-config';
 import { classifyHttpFailure, classifyNetworkFailure, mergeAiKeyChanges, normalizeBaseURL, normalizeMaxOutputTokens } from '../utils/ai-config';
 
 const CONFIG_FILE = 'config.json';
@@ -174,6 +175,7 @@ export async function saveConfig(config: Partial<AppConfig>): Promise<void> {
     ...existingConfig,
     ...config,
     aiKeys: config.aiKeys || existingConfig.aiKeys,
+    research: mergeResearchSettings(existingConfig.research, config.research),
     wechatMp: config.wechatMp === undefined ? existingConfig.wechatMp : mergeWechatSettings(existingConfig.wechatMp, config.wechatMp),
     app: {
       ...existingConfig.app,

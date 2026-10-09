@@ -471,6 +471,8 @@ test("⚠️ 已经登录时 startLogin **不再去取码**，而是明说「无
 test("打开草稿使用同一 profile 的有头窗口，保留到用户关闭，并阻止并发填稿", async () => {
   const storageRoot = await tempDir();
   const page = fakePage({ urls: [XHS_HOME_URL] });
+  let focused = 0;
+  page.bringToFront = async () => { focused++; };
   let closed = false;
   let opens = 0;
   const listeners: Array<() => void> = [];
@@ -489,6 +491,7 @@ test("打开草稿使用同一 profile 的有头窗口，保留到用户关闭�
   assert.equal(page.expressions.some(expression => expression.includes('onOnPublish')), false);
   await runner.openDraftWindow();
   assert.equal(opens, 1, "复用窗口，不能争用 profile");
+  assert.equal(focused, 1, "再次查看必须将已打开的窗口带到前台");
   const blocked = await runner.publishNote({ title: '标题', body: '正文', imagePaths: ['/tmp/a.png'], aiDeclaration: true, submit: false });
   assert.equal(blocked.ok, false);
   assert.equal(blocked.code, 'xhs_login_in_progress');

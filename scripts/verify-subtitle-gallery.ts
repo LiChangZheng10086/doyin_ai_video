@@ -1,5 +1,7 @@
-/** Temporary gallery data with no publishing engine configured; shared config routes remain available. */
-import { mkdtemp, rm } from 'node:fs/promises';
+/** Isolated real FFmpeg/API check; --serve opens the same synthetic UI fixture, never real data or publishing. */
+import assert from 'node:assert/strict';
+import express from 'express';
+import { mkdtemp, rm, readFile, writeFile, chmod } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -10,26 +12,79 @@ import { runCommand } from '../src/lib/command.js';
 const root = await mkdtemp(path.join(tmpdir(), 'subtitle-gallery-ui-'));
 const storage = new LocalStorage(root);
 await storage.ensureBaseDirs();
-const videoPath = storage.resolve('raw/videos/gallery-demo.mp4');
-await runCommand('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'testsrc2=s=360x640:d=6:r=10', '-vf',
-  'drawbox=x=45:y=520:w=270:h=16:color=white:t=fill,drawbox=x=75:y=552:w=210:h=12:color=white:t=fill',
-  '-c:v', 'libx264', '-pix_fmt', 'yuv420p', videoPath], { captureStderr: true });
 const now = new Date().toISOString();
+const videoPath = storage.resolve('raw/videos/gallery-demo.mp4');
+const pixels = Buffer.alloc(320 * 480 * 3);
+const glyphs = ['10001', '11001', '10101', '10011', '10001', '10001', '10001'];
+for (let char = 0; char < 20; char++) for (let y = 0; y < 7; y++) for (let x = 0; x < 5; x++) {
+  if (glyphs[y]![x] !== '1') continue;
+  for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++) {
+    const at = ((400 + y * 2 + dy) * 320 + 40 + char * 12 + x * 2 + dx) * 3;
+    pixels.fill(255, at, at + 3);
+  }
+}
+const raster = path.join(root, 'caption.ppm');
+await writeFile(raster, Buffer.concat([Buffer.from('P6\n320 480\n255\n'), pixels]));
+await runCommand('ffmpeg', ['-y', '-loop', '1', '-i', raster, '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', '64', '-r', '5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', videoPath], { captureStderr: true });
+const segments = Array.from({ length: 32 }, (_, i) => ({ start: i * 2, end: (i + 1) * 2, text: `第${i + 1}段合成验收标记。` }));
 await storage.writeJson('cache/jobs-index.json', { 'gallery-demo': {
-  id: 'gallery-demo', topic: '字幕图集验收（合成画面）', sourceUrl: 'https://example.com/demo', videoPath,
-  status: 'queued', stage: 'transcribed', storagePath: 'processed/scripts/gallery-demo.json', createdAt: now, updatedAt: now,
+  id: 'gallery-demo', topic: '图集自动规划验收（合成画面）', sourceUrl: 'https://example.com/demo', videoPath,
+  status: 'queued', stage: 'transcribed', workflowMode: 'manual',
+  steps: { transcribe: { status: 'succeeded', attempts: 1 }, clean: { status: 'pending', attempts: 0 }, generate_video_prompts: { status: 'pending', attempts: 0 }, generate_video: { status: 'pending', attempts: 0 } },
+  storagePath: 'processed/scripts/gallery-demo.json', createdAt: now, updatedAt: now,
 } });
 await storage.writeJson('raw/transcripts/gallery-demo.json', {
-  transcript: '这是一段合成验收视频，不含真实台词。白色条用于核对字幕区域像素。',
-  segments: [{ start: 0, end: 2, text: '测试分段一：定位候选帧' }, { start: 2, end: 4, text: '测试分段二：校准字幕区域' }, { start: 4, end: 6, text: '测试分段三：检查图片顺序' }],
-  duration: 6, provider: 'whisper.cpp', model: 'test-fixture',
+  transcript: segments.map(s => s.text).join('\n'), segments, duration: 64, provider: 'whisper.cpp', model: 'test-fixture',
 });
-const app = await createExpressApp({ storagePath: root, rootDir: root });
+// A command double makes historical repair reproducible; synthetic audio is not evidence of ASR accuracy.
+const cli = path.join(root, 'whisper-fixture.mjs');
+await writeFile(cli, `#!/usr/bin/env node\nimport {writeFileSync} from 'node:fs';const args=process.argv;writeFileSync(args[args.indexOf('-of')+1]+'.json',JSON.stringify(${JSON.stringify({ transcription: segments.map(s => ({ offsets: { from: s.start * 1000, to: s.end * 1000 }, text: s.text })) })}));\n`);
+await chmod(cli, 0o755);
+const model = path.join(root, 'model.bin'); await writeFile(model, 'command fixture');
+const app = await createExpressApp({ storagePath: root, rootDir: root, whisperCliPath: cli, whisperModelPath: model });
+const serve = process.argv.includes('--serve');
+const port = serve ? Number(process.env.SUBTITLE_GALLERY_PORT ?? 3183) : 0;
+if (serve) {
+  const renderer = path.resolve('dist-renderer');
+  const html = await readFile(path.join(renderer, 'index.html'), 'utf8');
+  app.use(express.static(renderer, { index: false }));
+  app.get('*', (req, res) => {
+    if (req.path.startsWith('/api/')) { res.status(404).end(); return; }
+    res.type('html').send(html.replaceAll('./assets/', '/assets/').replace('<head>', `<head><script>window.electron={getServerPort:async()=>${port},getConfig:async()=>({aiKeys:[],app:{theme:'dark'}}),saveConfig:async()=>{}};</script>`));
+  });
+}
 const server = createServer(app);
-server.listen(3100, '127.0.0.1', () => console.log('Isolated gallery UI fixture: http://127.0.0.1:3100 (no live publishing configured)'));
+await new Promise<void>(resolve => server.listen(port, '127.0.0.1', resolve));
 let closing = false;
-const close = () => {
-  if (closing) return; closing = true;
-  server.close(() => { void rm(root, { recursive: true, force: true }).then(() => process.exit(0)); });
+const close = async () => {
+  if (closing) return; closing = true; server.closeAllConnections();
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  await rm(root, { recursive: true, force: true });
 };
-process.on('SIGINT', close); process.on('SIGTERM', close);
+process.on('SIGINT', () => { void close().then(() => process.exit(0)); });
+process.on('SIGTERM', () => { void close().then(() => process.exit(0)); });
+const address = server.address(); assert.ok(address && typeof address === 'object');
+const base = `http://127.0.0.1:${address.port}`;
+if (serve) console.log(`Isolated synthetic gallery UI: ${base}/galleries?sourceJobId=gallery-demo (no live publishing; raster markers are not real dialogue)`);
+else try {
+  const session = await fetch(base + '/api/local-sessions/auto', { method: 'POST' });
+  const token = (await session.json()).session.token;
+  const request = async (url: string, data: unknown) => {
+    const res = await fetch(base + url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Local-Session': token }, body: JSON.stringify(data) });
+    const body = await res.json(); assert.equal(res.status, 200, JSON.stringify(body)); return body;
+  };
+  const created = await fetch(base + '/api/galleries', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Local-Session': token }, body: JSON.stringify({ sourceJobId: 'gallery-demo' }) });
+  assert.equal(created.status, 201); const gallery = (await created.json()).gallery;
+  const url = `/api/galleries/${gallery.id}`;
+  const planned = (await request(url + '/plan', { version: gallery.version, targetLines: 8 })).gallery;
+  assert.deepEqual(planned.plan.images.map((i: any) => i.quotes.length), [8, 8, 8, 8]);
+  const candidate = await fetch(base + url + `/plan/images/0?planId=${planned.plan.id}&version=${planned.version}`);
+  assert.equal(candidate.status, 200); assert.equal(Buffer.from(await candidate.arrayBuffer()).readUInt32BE(20), 1440);
+  const rendered = (await request(url + '/plan/render', { version: planned.version, planId: planned.plan.id, subtitlesConfirmed: true })).gallery;
+  assert.equal(rendered.status, 'ready'); assert.equal(rendered.generated.hashes.length, 4);
+  assert.equal((await request(url + '/publishing/preview', { version: rendered.version })).preview.imageCount, 4);
+  assert.equal((await request('/api/jobs/gallery-demo/retranscribe', {})).job.steps.clean.status, 'pending');
+  const stale = await fetch(base + url + '/publishing/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: rendered.version }) });
+  assert.equal(stale.status, 409);
+  console.log('PASS: isolated 32 segments → four complete candidate previews → confirm/render → publish preview → controlled retranscribe → old preview rejected. No real data or publishing writes.');
+} finally { await close(); }

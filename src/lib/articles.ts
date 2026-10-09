@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { ActorSnapshot, PublishingPackageDetail } from '../types.js';
 import { LocalStorage } from './storage.js';
-import { articlePublicUrl, readArticleSource } from './article-sources.js';
+import { articlePublicUrl, readArticleSource, type ArticleSourceRead } from './article-sources.js';
 import { validateWritingResult, type ArticleWritingService } from './article-writing.js';
 import { ARTICLE_STEPS, type ArticleRecord, type ArticleStep, type ArticlePreview, type ArticleMaterial } from './article-types.js';
 import { renderWechatArticleHtml } from './wechat-article.js';
@@ -27,6 +27,8 @@ export type ArticlePackageInput = { article: ArticleRecord; draft: NonNullable<A
 type Deps = {
   storage: LocalStorage; writer: Pick<ArticleWritingService, 'run'>;
   readSource?: typeof readArticleSource;
+  readResearchSource?: (actorId:string,url:string) => Promise<ArticleSourceRead>;
+  resolveResearchSelections?: (actorId:string,selections:unknown) => Promise<ArticleSourceRead[]>;
   resolveHotspot?: (sourceId: string, itemId: string) => Promise<ArticleRecord['hotspot']>;
   resolveAsset?: (id: string) => Promise<ResolvedAssetFile | null>;
   createPackage?: (input: ArticlePackageInput) => Promise<PublishingPackageDetail>;
@@ -86,7 +88,9 @@ export class ArticleService {
   }
   async list(): Promise<ArticleRecord[]> { return this.serial(async () => structuredClone(Object.values(await this.index()).sort((a,b) => b.updatedAt.localeCompare(a.updatedAt)))); }
   async get(id: string): Promise<ArticleRecord> { return this.serial(() => this.record(id)); }
-  async create(input: unknown): Promise<ArticleRecord> {
+  async create(input: unknown, actorId?:string): Promise<ArticleRecord> {
+    const request=object(input);
+    const materials=request.researchSelections===undefined?[]:await this.researchMaterials(actorId,request.researchSelections);
     return this.serial(async () => {
       const data = object(input); let hotspot: ArticleRecord['hotspot'];
       if (data.hotspot) { const h = object(data.hotspot); hotspot = await this.deps.resolveHotspot?.(field(h.sourceId,100,true), field(h.itemId,2048,true)); if (!hotspot) throw new ArticleError(404, '热榜线索已失效，请刷新或从收藏创建'); }
@@ -102,13 +106,33 @@ export class ArticleService {
         topics: [], sources: [], facts: [], issues: [], reviewNotes: [], illustrations: [], reference: {},
         adopted: 'draft', reviewed: false, materialConfirmed: false, outlineConfirmed: false,
         author: '', digest: '', coverAssetId: '', bodyImageAssetIds: [], steps: Object.fromEntries(ARTICLE_STEPS.map(s => [s,'pending'])) as ArticleRecord['steps'] };
-      if (hotspot) a.sources.push(this.newUrl(hotspot.url));
+      if (hotspot && !materials.some(material=>material.url===publicUrl(hotspot.url).href)) a.sources.push(this.newUrl(hotspot.url));
+      if(materials.length)this.appendMaterials(a,materials);
       if (benchmark) Object.assign(a.requirements,benchmark);
       return this.persist(a);
     });
   }
   private newUrl(url: string, depth: 0 | 1 = 0): ArticleMaterial {
     return { id: randomUUID(), url: publicUrl(url).href, title: new URL(url).hostname, text: '', included: true, kind: 'web', depth, status: 'needs_material', readAt: '', hash: '', links: [], truncated: false, error: '尚未读取' };
+  }
+  private async researchMaterials(actorId:string|undefined,selections:unknown){
+    if(!actorId||!this.deps.resolveResearchSelections)throw new ArticleError(422,'资料导入服务不可用');
+    return this.deps.resolveResearchSelections(actorId,selections);
+  }
+  private appendMaterials(a:ArticleRecord,materials:ArticleSourceRead[]){
+    if(a.sources.length+materials.length>10)throw new ArticleError(422,'每篇最多10份资料');
+    const urls=new Set(a.sources.map(s=>s.url).filter(Boolean));
+    for(const m of materials){
+      const url=publicUrl(m.url).href;
+      if(m.status!=='readable'||!m.text||m.hash!==hash(m.text)||m.sourceKind==='topic'||m.sourceKind==='unreadable')throw new ArticleError(422,'资料正文无效，请重新读取');
+      if(urls.has(url))throw new ArticleError(422,'资料链接已存在');urls.add(url);
+      a.sources.push({...structuredClone(m),url,id:randomUUID(),kind:'web',included:true,depth:0});
+    }
+  }
+  async importResearchSources(id:string,version:unknown,selections:unknown,actorId:string):Promise<ArticleRecord>{
+    await this.serial(async()=>this.editable(await this.record(id),version));
+    const materials=await this.researchMaterials(actorId,selections);
+    return this.serial(async()=>{const a=await this.record(id);this.editable(a,version);this.appendMaterials(a,materials);this.invalidate(a,'evidence');return this.persist(a);});
   }
   async update(id: string, input: unknown): Promise<ArticleRecord> {
     return this.serial(async () => {
@@ -206,14 +230,14 @@ export class ArticleService {
       throw new ArticleError(422, error instanceof ArticleError ? error.message : '生成失败：请检查 AI 配置、资料与输出格式后重试');
     }
   }
-  async readSources(id: string, version: unknown, ids: unknown): Promise<ArticleRecord> {
+  async readSources(id: string, version: unknown, ids: unknown, actorId?:string): Promise<ArticleRecord> {
     const snapshot = await this.serial(async () => {
       const a = await this.record(id); this.editable(a,version);
       if (!Array.isArray(ids) || !ids.length || ids.length > 3 || new Set(ids).size !== ids.length || ids.some(id => !a.sources.some(s => s.id === id && s.kind === 'web'))) throw new ArticleError(422,'每批请选择 1～3 个网页来源');
       a.running = 'read'; return this.persist(a);
     });
     try {
-      const sources = await Promise.all(snapshot.sources.filter(s => (ids as string[]).includes(s.id)).map(async s => ({ ...s, ...await (this.deps.readSource ?? readArticleSource)(s.url) })));
+      const sources = await Promise.all(snapshot.sources.filter(s => (ids as string[]).includes(s.id)).map(async s => ({ ...s, ...await (this.deps.readSource ? this.deps.readSource(s.url) : actorId && this.deps.readResearchSource ? this.deps.readResearchSource(actorId,s.url) : readArticleSource(s.url)) })));
       return await this.serial(async () => { const a = await this.record(id); a.sources = a.sources.map(s => sources.find(n => n.id === s.id) ?? s); this.invalidate(a,'evidence'); delete a.running; return this.persist(a); });
     } catch (error) {
       await this.serial(async () => { const a = await this.record(id); delete a.running; a.error = '资料读取失败，请补充资料后重试'; return this.persist(a); }); throw new ArticleError(422,'资料读取失败');

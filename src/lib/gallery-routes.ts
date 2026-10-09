@@ -22,6 +22,10 @@ export function registerGalleryRoutes(app: Express, deps: { galleries: GallerySe
     if (typeof req.query.time !== 'string' || !req.query.time.trim()) throw new GalleryError(400, '请选择画面时间');
     res.type('png').set('Cache-Control', 'no-store').send(await service.frame(String(req.params.id), Number(req.query.time)));
   }));
+  router.post('/:id/plan', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.plan(String(req.params.id), req.body) })));
+  router.post('/:id/plan/render', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.renderPlan(String(req.params.id), req.body) })));
+  router.get('/:id/plan/images/:index', handle(async (req, res) => res.type('png').set('Cache-Control', 'no-store').send(
+    await service.planImage(String(req.params.id), Number(req.params.index), typeof req.query.planId === 'string' ? req.query.planId : '', Number(req.query.version)))));
   router.post('/:id/render', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.render(String(req.params.id), req.body?.version) })));
   router.get('/:id/images/:index', handle(async (req, res) => res.type('png').set('Cache-Control', 'no-store').send(await service.image(String(req.params.id), Number(req.params.index), typeof req.query.generation === 'string' ? req.query.generation : undefined))));
   router.post('/:id/publishing/preview', handle(async (req, res) => res.json({ preview: await service.preview(String(req.params.id), req.body?.version) })));

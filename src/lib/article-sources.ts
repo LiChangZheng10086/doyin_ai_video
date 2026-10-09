@@ -7,6 +7,7 @@ export interface ArticleSourceRead {
   url: string; title: string; text: string; status: 'readable' | 'needs_material';
   readAt: string; hash: string; publishedAt?: string; truncated: boolean;
   links: Array<{ title: string; url: string }>; error?: string;
+  readProvider?: 'direct' | 'jina'; sourceKind?: 'article' | 'topic' | 'unreadable';
 }
 const MAX_BYTES = 2 * 1024 * 1024;
 const denied = new BlockList();
@@ -42,8 +43,9 @@ export async function resolveArticleAddress(input: string, resolver = (hostname:
   return { url, address: addresses[0]!.address, family: isIP(addresses[0]!.address) };
 }
 
-export async function downloadArticleHtml(input: string): Promise<string> {
-  const signal = AbortSignal.timeout(15000);
+export async function downloadArticleHtml(input: string, externalSignal?: AbortSignal): Promise<string> {
+  const signal = externalSignal ? AbortSignal.any([externalSignal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
+  signal.throwIfAborted();
   const pinned = await Promise.race([resolveArticleAddress(input), new Promise<never>((_,reject) => { signal.addEventListener('abort', () => reject(new Error('资料读取超时')), { once: true }); })]);
   return new Promise((resolve, reject) => {
     const req = request(pinned.url, {

@@ -279,6 +279,7 @@ export type PublishingActionId =
   | 'fill-xhs'
   /** 小红书图文：**真的点发布**（姿态甲；同一套闸门 + 频率限制，且点完不做读回）。 */
   | 'submit-xhs'
+  | 'view-xhs-drafts'
   | 'submit-code'
   /** 文章包：下载/打开包内 `article.html`（降级通路，任何时候可用、零依赖）。 */
   | 'download-article';
@@ -638,6 +639,7 @@ export function getPublishingActionIds(
   // 只读预览（spec §14.2）：随时能看一眼「将要发出去的内容」，视频包走这个入口。
   // 与任务状态无关（纯查看），垃圾桶里的包在上面的 early return 已经排除。
   actions.push('preview');
+  if (task.platform === 'xiaohongshu') actions.push('view-xhs-drafts');
   const healthyVideo = detail.package.assetHealth !== 'broken_video';
   if (healthyVideo && detail.package.videoPath) actions.push('show-in-finder');
 

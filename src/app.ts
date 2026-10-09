@@ -4,12 +4,16 @@ import { registerWechatBenchmarkRoutes } from './lib/wechat-benchmark-routes.js'
 import { ArticleWritingService } from './lib/article-writing.js';
 import { registerArticleRoutes } from './lib/article-routes.js';
 import type { readArticleSource } from './lib/article-sources.js';
+import { ResearchService } from './lib/research-service.js';
+import { registerResearchRoutes } from './lib/research-routes.js';
+import type { ResearchConfig, ResearchStatus } from './lib/research-types.js';
 import express, { Express, type Request, type Response } from "express";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AsrService } from "./lib/asr.js";
+import { inspectTranscriptQuality } from "./lib/transcript-quality.js";
 import { OpenAiScriptCleaner, RuntimeScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
@@ -55,9 +59,13 @@ import { PublishingService, summarizeCliOutput } from "./lib/publishing-service.
 import { registerPublishingRoutes } from "./lib/publishing-routes.js";
 import { registerRuntimeRoutes } from "./lib/runtime-routes.js";
 import { createDefaultRuntimeStatusDeps } from "./lib/runtime-status.js";
-import type { AiProvider, CollectionRecord, DueNotification, PipelineStep, ScriptAsset, StreamablePipelineStep } from "./types.js";
+import type { AiProvider, CollectionRecord, DueNotification, PipelineStep, ScriptAsset, StreamablePipelineStep, TranscriptAsset } from "./types.js";
 
 export interface ServerConfig {
+  resolveResearchConfig?: () => Promise<ResearchConfig>;
+  researchConfigurationSource?: ResearchStatus['configurationSource'];
+  researchService?: ResearchService;
+  hotspotService?: HotspotService;
   storagePath: string;
   rootDir: string;
   aiProvider?: AiProvider;
@@ -388,13 +396,21 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   registerOnlineAudioRoutes(app, { audio: new OnlineAudioService(storage, assetStore, { ffprobeBinary: config.ffprobeBinary }), sessions: localSessions });
   registerLocalUserErrorBoundary(app);
   registerPublishingRoutes(app, { publishing, sessions: localSessions });
-  const hotspots = new HotspotService(storage);
-  registerHotspotRoutes(app, { hotspots, sessions: localSessions });
+  const hotspots = config.hotspotService ?? new HotspotService(storage);
+  const research = config.researchService ?? new ResearchService({resolveConfig:config.resolveResearchConfig,configurationSource:config.researchConfigurationSource});
+  registerResearchRoutes(app,{research,sessions:localSessions});
+  registerHotspotRoutes(app, { hotspots, research, sessions: localSessions });
   const wechatBenchmarks = new WechatBenchmarkService(storage);
   registerWechatBenchmarkRoutes(app, {benchmarks:wechatBenchmarks,sessions:localSessions});
   registerArticleRoutes(app, {sessions:localSessions, articles:new ArticleService({storage,
     writer:config.articleWriter ?? new ArticleWritingService({resolveAiConfig:resolvePublishingAiConfig}),
     readSource:config.readArticleSource,
+    readResearchSource:async(actorId,url)=>{
+      const read=await research.read(actorId,{url});
+      return {url:read.url,title:read.title,text:read.text,status:read.status,readAt:read.readAt,hash:read.hash,publishedAt:read.publishedAt,truncated:read.truncated,
+        links:read.candidates.map(c=>({title:c.title,url:c.url})),error:read.error?.message,readProvider:read.provider==='jina'?'jina':'direct',sourceKind:read.kind};
+    },
+    resolveResearchSelections:(actorId,selections)=>research.resolveSelections(actorId,selections),
     resolveHotspot:(sourceId,itemId) => hotspots.resolveForArticle(sourceId,itemId),
     resolveBenchmark:id => wechatBenchmarks.forArticle(id),
     resolveAsset:id => assetStore.resolveFile(id),
@@ -640,6 +656,18 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     res.status(result.status).json(result.body);
   });
 
+  app.post("/api/jobs/:id/retranscribe", async (req, res) => {
+    try {
+      res.json({ job: await jobs.retranscribe(req.params.id), message: "retranscribe completed" });
+    } catch (error) {
+      if (error instanceof JobStepError) {
+        res.status(error.statusCode).json({ message: error.message, job: error.job });
+        return;
+      }
+      res.status(500).json({ message: error instanceof Error ? error.message : "retranscribe failed" });
+    }
+  });
+
   app.post("/api/jobs/:id/steps/clean", async (req, res) => {
     const result = await runStepRoute(req.params.id, "clean");
     res.status(result.status).json(result.body);
@@ -780,8 +808,18 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     }
 
     try {
-      const rawTranscript = await storage.readJson(path.join("raw", "transcripts", `${record.id}.json`));
-      res.json({ rawTranscript: simplifyChineseValue(rawTranscript) });
+      const rawTranscript = await storage.readJson<TranscriptAsset>(path.join("raw", "transcripts", `${record.id}.json`));
+      let duration = rawTranscript.duration;
+      try {
+        const manifest = await storage.readJson<{ audio?: { duration?: number } }>(path.join("raw", "audio", `${record.id}.json`));
+        if (typeof manifest.audio?.duration === "number" && Number.isFinite(manifest.audio.duration)) duration = manifest.audio.duration;
+      } catch (error) { if (!isMissingFileError(error)) throw error; }
+      const qualityIssues = [...new Set([
+        ...(rawTranscript.qualityIssues ?? []),
+        ...inspectTranscriptQuality({ segments: rawTranscript.segments ?? [], text: rawTranscript.transcript ?? rawTranscript.text, duration }),
+        ...(record.steps?.transcribe.status === "failed" && record.transcriptErrorMessage ? [record.transcriptErrorMessage] : []),
+      ])];
+      res.json({ rawTranscript: simplifyChineseValue({ ...rawTranscript, duration, qualityIssues }) });
     } catch (error) {
       if (isMissingFileError(error)) {
         res.status(404).json({ message: "raw transcript not found" });

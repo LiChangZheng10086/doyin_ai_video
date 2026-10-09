@@ -646,6 +646,7 @@ export interface TranscriptSegment {
 
 export interface RawTranscript {
   transcript: string;
+  qualityIssues?: string[];
   text?: string;
   segments?: TranscriptSegment[];
   duration?: number;

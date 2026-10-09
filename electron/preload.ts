@@ -59,6 +59,7 @@ export interface AIKeyTestResult {
 }
 
 export interface AppConfig {
+  research?: {jinaEnabled:boolean;exaEnabled:boolean};
   sauBinary?: string;
   sauBaseDir?: string;
   wechatMp?: { appId?: string; appSecret?: string; author?: string; hasSecret?: boolean };

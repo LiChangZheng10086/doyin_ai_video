@@ -566,6 +566,7 @@ export interface TranscriptWord {
 }
 
 export interface TranscriptAsset {
+  qualityIssues?: string[];
   jobId: string;
   sourceUrl: string;
   audioPath: string;

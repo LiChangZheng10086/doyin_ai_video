@@ -83,6 +83,7 @@ export class XhsRunnerError extends Error {
 export interface XhsPageLike {
   goto(url: string, options?: { waitUntil?: "domcontentloaded" | "load" }): Promise<unknown>;
   url(): string;
+  bringToFront?(): Promise<void>;
   evaluate<T>(expression: string): Promise<T>;
   waitForTimeout?(ms: number): Promise<void>;
   keyboard?: { press(key: string): Promise<void> };
@@ -415,7 +416,10 @@ export class XhsRunner {
 
   /** 使用填稿时的同一个 profile；窗口交给用户，直到手动关闭或应用退出。 */
   async openDraftWindow(): Promise<{ message: string }> {
-    if (this.draftSession) return { message: "小红书草稿浏览器已打开，请在该窗口的「图文笔记」中核对。" };
+    if (this.draftSession) {
+      await this.draftSession.page.bringToFront?.();
+      return { message: "小红书草稿浏览器已打开，请在该窗口的「图文笔记」中核对。" };
+    }
     const resolution = safeResolve(() => resolveXhsHeadedBrowser(this.config));
     if (!resolution.target) throw new XhsRunnerError("xhs_browser_unavailable",
       "打开本地草稿需要可显示窗口的浏览器：请安装 Google Chrome，或运行 npx playwright install chromium。"

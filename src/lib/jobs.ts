@@ -1,5 +1,10 @@
+import { createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { tmpdir } from "node:os";
+import { resolveSourceVideo } from "./video-output.js";
+import { inspectTranscriptQuality } from "./transcript-quality.js";
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { mkdtemp, open, readdir, realpath, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { fetchDouyinPageInfo } from "./douyin-page.js";
 import type { DouyinPageInfo } from "./douyin-page.js";
@@ -64,6 +69,12 @@ const STEP_PREVIOUS: Partial<Record<PipelineStep, PipelineStep>> = {
 };
 
 type JobsIndex = Record<string, JobRecord>;
+type RetranscriptJournal = {
+  version: 1;
+  transactionId: string;
+  record: JobRecord;
+  backups: Array<{ file: string; backup: string; existed: boolean }>;
+};
 type ActiveStepRun = {
   step: PipelineStep;
   controller: AbortController;
@@ -119,12 +130,76 @@ export class JobStore {
       index = await this.storage.readJson<JobsIndex>(JOBS_INDEX);
     } catch {
       index = {};
-      await this.storage.writeJson(JOBS_INDEX, index);
+      await this.storage.writeJsonAtomic(JOBS_INDEX, index);
     }
+    await this.recoverRetranscriptTransactions(index);
     if (this.recoverInterruptedSteps(index)) {
-      await this.storage.writeJson(JOBS_INDEX, index);
+      await this.storage.writeJsonAtomic(JOBS_INDEX, index);
     }
     await this.purgeExpiredTrash();
+  }
+
+  private async storedFileExists(relativePath: string) {
+    try {
+      await stat(this.storage.resolve(relativePath));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  private async recoverRetranscriptTransactions(index: JobsIndex) {
+    const directory = "cache/retranscribe";
+    const entries = await readdir(this.storage.resolve(directory)).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (entry === ".DS_Store") continue;
+      if (/^[a-z0-9-]+\.json\.next-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(entry)) {
+        await rm(this.storage.resolve(directory, entry), { force: true });
+        continue;
+      }
+      if (!/^[a-z0-9-]+\.json$/i.test(entry)) throw new Error("转录恢复记录文件名无效，请保留历史副本并检查本地存储");
+      const id = entry.slice(0, -5);
+      const journalPath = path.join(directory, entry);
+      const journal = await this.storage.readJson<RetranscriptJournal>(journalPath);
+      const record = journal.record;
+      if (journal.version !== 1 || typeof journal.transactionId !== "string" || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(journal.transactionId) ||
+        !record || record.id !== id || typeof record.storagePath !== "string" || record.steps?.transcribe.status !== "running" ||
+        !index[id] || record.createdAt !== index[id].createdAt || !Array.isArray(journal.backups)) {
+        throw new Error("转录恢复记录无效，请保留历史副本并检查本地存储");
+      }
+      const files = [path.join("raw", "transcripts", `${id}.json`), record.storagePath, path.join("processed", "cleaned", `${id}.json`)];
+      if (journal.backups.length !== files.length || journal.backups.some((backup, position) =>
+        !backup || backup.file !== files[position] || typeof backup.existed !== "boolean" ||
+        backup.backup !== path.join(path.dirname(files[position]), `${id}.json.before-retranscribe-${journal.transactionId}.json`))) {
+        throw new Error("转录恢复文件列表无效，请保留历史副本并检查本地存储");
+      }
+      await this.restoreRetranscriptFiles(journal.backups);
+      index[id] = { ...record, deletedAt: index[id].deletedAt, trashExpiresAt: index[id].trashExpiresAt };
+      await this.storage.writeJsonAtomic(JOBS_INDEX, index);
+      await rm(this.storage.resolve(journalPath));
+    }
+  }
+
+  private async restoreRetranscriptFiles(backups: RetranscriptJournal["backups"]) {
+    const root = await realpath(this.storage.resolve());
+    for (const { file, backup, existed } of backups) {
+      const destination = this.toStorageFilePath(file);
+      if (!destination) throw new Error("转录恢复路径超出本地存储范围");
+      const parent = await realpath(path.dirname(destination));
+      const relative = path.relative(root, parent);
+      if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("转录恢复目录超出本地存储范围");
+      if (existed) {
+        const restoring = `${destination}.restore-${randomUUID()}`;
+        try {
+          await this.copyStoredSnapshot(this.storage.resolve(backup), restoring);
+          await rename(restoring, destination);
+        } finally { await rm(restoring, { force: true }); }
+      } else await rm(destination, { force: true });
+    }
   }
 
   private recoverInterruptedSteps(index: JobsIndex) {
@@ -205,6 +280,14 @@ export class JobStore {
   }
 
   async runStep(id: string, step: PipelineStep) {
+    return this.runStepInternal(id, step);
+  }
+
+  async retranscribe(id: string): Promise<JobRecord> {
+    return this.runStepInternal(id, "transcribe", true);
+  }
+
+  private async runStepInternal(id: string, step: PipelineStep, retranscribe = false) {
     if (this.runningSteps.has(id)) {
       throw new JobStepError("another step is already running for this job", 409);
     }
@@ -223,7 +306,9 @@ export class JobStore {
     };
     this.activeRuns.set(id, activeRun);
     try {
-      const record = await this.getStepRunnableRecord(id, step);
+      const record = await this.getStepRunnableRecord(id, step, retranscribe);
+      // A failed repair retried through the ordinary step must preserve the same history contract.
+      retranscribe ||= step === "transcribe" && await this.storedFileExists(path.join("raw", "transcripts", `${id}.json`));
       await this.markStepRunning(record, step);
       if (isStreamableStep(step)) {
         this.stepEvents.publish(id, step, { type: "started" });
@@ -237,11 +322,11 @@ export class JobStore {
         }
         await this.updateStep(id, step, { attempts: attempt });
         try {
-          await this.executeStepAction(id, step, activeRun.controller.signal);
+          const committed = await this.executeStepAction(id, step, activeRun.controller.signal, retranscribe);
           if (activeRun.cancelRequested) {
             return (await this.get(id)) ?? record;
           }
-          const succeeded = await this.markStepSucceeded(id, step);
+          const succeeded = committed ?? await this.markStepSucceeded(id, step);
           if (isStreamableStep(step)) {
             this.stepEvents.publish(id, step, { type: "completed" });
           }
@@ -324,52 +409,57 @@ export class JobStore {
       throw new JobStepError("another step is already running for this job", 409);
     }
 
-    const record = await this.get(id);
-    if (!record) {
-      throw new JobStepError("job not found", 404);
-    }
-    if (record.deletedAt) {
-      throw new JobStepError("deleted job cannot run steps", 409, record);
-    }
-    if (record.workflowMode !== "manual" || !record.steps) {
-      throw new JobStepError("manual workflow steps are not available for this job", 409, record);
-    }
-    const steps = this.ensurePipelineSteps(record.steps);
-    if (steps.clean.status === "running") {
-      throw new JobStepError("step is already running", 409, record);
-    }
-    if (steps.transcribe.status !== "succeeded") {
-      throw new JobStepError("previous step has not succeeded", 409, record);
-    }
-
     this.runningSteps.add(id);
     try {
-      await this.markStepRunning(record, "clean");
-      this.stepEvents.publish(id, "clean", { type: "started" });
+      const record = await this.get(id);
+      if (!record) {
+        throw new JobStepError("job not found", 404);
+      }
+      if (record.deletedAt) {
+        throw new JobStepError("deleted job cannot run steps", 409, record);
+      }
+      if (await this.storedFileExists(path.join("cache", "retranscribe", `${id}.json`))) {
+        throw new JobStepError("有未完成的转录恢复，请重启应用恢复历史成果后重试", 409, record);
+      }
+      if (record.workflowMode !== "manual" || !record.steps) {
+        throw new JobStepError("manual workflow steps are not available for this job", 409, record);
+      }
+      const steps = this.ensurePipelineSteps(record.steps);
+      if (steps.clean.status === "running") {
+        throw new JobStepError("step is already running", 409, record);
+      }
+      if (steps.transcribe.status !== "succeeded") {
+        throw new JobStepError("previous step has not succeeded", 409, record);
+      }
 
-      const context = await this.buildCleanContext(id);
-      await this.storage.writeJson(context.record.storagePath, context.draft);
-      const cleaned = await this.cleaner.clean({
-        parsed: context.parsed,
-        transcriptText: context.transcriptText,
-        topic: context.record.topic,
-        draft: context.draft,
-        pageInfo: context.pageInfo,
-        supplementalText: text
-      }, undefined, (update) => {
-        this.stepEvents.publish(id, "clean", { type: "preview", ...update });
-      });
-      await this.persistCleaned(id, context, text, cleaned);
+      try {
+        await this.markStepRunning(record, "clean");
+        this.stepEvents.publish(id, "clean", { type: "started" });
 
-      await this.resetDownstreamAfterReclean(id);
-      const succeeded = await this.markStepSucceeded(id, "clean");
-      this.stepEvents.publish(id, "clean", { type: "completed" });
-      return succeeded;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "reclean failed";
-      const failed = await this.markStepFailed(id, "clean", message);
-      this.stepEvents.publish(id, "clean", { type: "error", message });
-      throw new JobStepError(message, 500, failed);
+        const context = await this.buildCleanContext(id);
+        await this.storage.writeJson(context.record.storagePath, context.draft);
+        const cleaned = await this.cleaner.clean({
+          parsed: context.parsed,
+          transcriptText: context.transcriptText,
+          topic: context.record.topic,
+          draft: context.draft,
+          pageInfo: context.pageInfo,
+          supplementalText: text
+        }, undefined, (update) => {
+          this.stepEvents.publish(id, "clean", { type: "preview", ...update });
+        });
+        await this.persistCleaned(id, context, text, cleaned);
+
+        await this.resetDownstreamAfterReclean(id);
+        const succeeded = await this.markStepSucceeded(id, "clean");
+        this.stepEvents.publish(id, "clean", { type: "completed" });
+        return succeeded;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "reclean failed";
+        const failed = await this.markStepFailed(id, "clean", message);
+        this.stepEvents.publish(id, "clean", { type: "error", message });
+        throw new JobStepError(message, 500, failed);
+      }
     } finally {
       this.runningSteps.delete(id);
     }
@@ -403,13 +493,16 @@ export class JobStore {
     return this.stepEvents.subscribe(id, step, listener, afterId);
   }
 
-  private async getStepRunnableRecord(id: string, step: PipelineStep) {
+  private async getStepRunnableRecord(id: string, step: PipelineStep, retranscribe = false) {
     const record = await this.get(id);
     if (!record) {
       throw new JobStepError("job not found", 404);
     }
     if (record.deletedAt) {
       throw new JobStepError("deleted job cannot run steps", 409, record);
+    }
+    if (await this.storedFileExists(path.join("cache", "retranscribe", `${id}.json`))) {
+      throw new JobStepError("有未完成的转录恢复，请重启应用恢复历史成果后重试", 409, record);
     }
     if (record.workflowMode !== "manual" || !record.steps) {
       throw new JobStepError("manual workflow steps are not available for this job", 409, record);
@@ -420,7 +513,7 @@ export class JobStore {
     if (current.status === "running") {
       throw new JobStepError("step is already running", 409, record);
     }
-    if (current.status === "succeeded") {
+    if (current.status === "succeeded" && !retranscribe) {
       throw new JobStepError("step has already succeeded", 409, record);
     }
     const previous = STEP_PREVIOUS[step];
@@ -437,8 +530,9 @@ export class JobStore {
     };
   }
 
-  private async executeStepAction(id: string, step: PipelineStep, signal?: AbortSignal) {
+  private async executeStepAction(id: string, step: PipelineStep, signal?: AbortSignal, retranscribe = false): Promise<JobRecord | void> {
     if (step === "transcribe") {
+      if (retranscribe) return this.runRetranscribeAction(id, signal);
       await this.runTranscribeStep(id);
       return;
     }
@@ -496,42 +590,156 @@ export class JobStore {
       throw new Error("audio file is missing; transcription could not extract audio from the source video");
     }
 
-    const transcriptResult = await this.asr.transcribe(audioPath);
-    const transcriptText = transcriptResult?.text ? toSimplifiedChinese(transcriptResult.text).trim() : "";
-    if (!transcriptResult || !transcriptText) {
-      throw new Error("ASR returned no transcript; check ASR configuration and retry");
-    }
-
-    const audioManifest = await this.readOptionalJson<{ duration?: number }>(
-      path.join("raw", "audio", `${id}.json`)
-    );
+    const transcriptAsset = await this.createTranscriptAsset(id, audioPath);
     const transcriptPath = path.join("raw", "transcripts", `${id}.json`);
-    const transcriptAsset: TranscriptAsset = {
-      jobId: id,
-      sourceUrl: record.sourceUrl,
-      audioPath,
-      transcript: transcriptText,
-      text: transcriptText,
-      segments: transcriptResult.segments.map((segment) => ({
-        ...segment,
-        text: toSimplifiedChinese(segment.text)
-      })),
-      words: transcriptResult.words?.map((word) => ({
-        ...word,
-        word: toSimplifiedChinese(word.word)
-      })),
-      duration: transcriptResult.duration ?? audioManifest?.duration,
-      language: transcriptResult.language,
-      model: transcriptResult.model,
-      provider: transcriptResult.provider,
-      createdAt: new Date().toISOString()
-    };
-    await this.storage.writeJson(transcriptPath, transcriptAsset);
+    await this.storage.writeJsonAtomic(transcriptPath, transcriptAsset);
     await this.update(id, {
       transcriptPath,
-      transcriptModel: transcriptResult.model,
+      transcriptModel: transcriptAsset.model,
       transcriptErrorMessage: undefined
     });
+  }
+
+  private async createTranscriptAsset(id: string, audioPath: string, duration?: number): Promise<TranscriptAsset> {
+    const record = await this.requireRecord(id);
+    const result = await this.asr.transcribe(audioPath);
+    const text = result?.text ? toSimplifiedChinese(result.text).trim() : "";
+    if (!result || !text) throw new Error("ASR returned no transcript; check ASR configuration and retry");
+    const manifest = await this.readOptionalJson<{ duration?: number; audio?: { duration?: number }; source?: { duration?: number } }>(path.join("raw", "audio", `${id}.json`));
+    const actualDuration = duration ?? manifest?.audio?.duration ?? manifest?.source?.duration ?? manifest?.duration ?? result.duration;
+    const segments = result.segments.map((segment) => ({ ...segment, text: toSimplifiedChinese(segment.text) }));
+    const issues = inspectTranscriptQuality({ segments, text, duration: actualDuration });
+    if (issues.length) throw new Error(`转录异常：${issues.join("；")}`);
+    return {
+      jobId: id, sourceUrl: record.sourceUrl, audioPath,
+      transcript: text, text, segments,
+      words: result.words?.map((word) => ({ ...word, word: toSimplifiedChinese(word.word) })),
+      duration: actualDuration, language: result.language, model: result.model, provider: result.provider,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  private async runRetranscribeAction(id: string, signal?: AbortSignal): Promise<JobRecord> {
+    const record = await this.requireRecord(id);
+    const workDir = await mkdtemp(path.join(tmpdir(), "douyin-retranscribe-"));
+    let source: Awaited<ReturnType<typeof resolveSourceVideo>> | undefined;
+    const extractionId = `${id}-repair-${randomUUID()}`;
+    let extracted: Awaited<ReturnType<MediaService["extractAudio"]>> | undefined;
+    let committed = false;
+    try {
+      source = await resolveSourceVideo(this.storage.resolve(), record);
+      let audioPath: string;
+      if (await this.isWhisperReadyAudio(id, record.audioPath)) {
+        audioPath = path.join(workDir, "audio.wav");
+        await this.copyStoredSnapshot(record.audioPath!, audioPath);
+      } else {
+        const videoSnapshot = path.join(workDir, "source.mp4");
+        const before = await source.handle.stat();
+        await pipeline(source.handle.createReadStream({ autoClose: false }), createWriteStream(videoSnapshot));
+        const after = await source.handle.stat();
+        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error("原视频在读取期间发生变化");
+        extracted = await this.media.extractAudio(videoSnapshot, extractionId);
+        audioPath = extracted.audioPath;
+      }
+      const transcript = await this.createTranscriptAsset(id, audioPath, extracted?.duration);
+      transcript.audioPath = extracted?.audioPath ?? record.audioPath!;
+      signal?.throwIfAborted();
+      const next = await this.commitRetranscript(record, transcript, extracted, signal);
+      committed = true;
+      return next;
+    } finally {
+      await source?.close();
+      await rm(workDir, { recursive: true, force: true });
+      if (!committed) {
+        await Promise.all(["wav", "json"].map((extension) => rm(this.storage.resolve("raw/audio", `${extractionId}.${extension}`), { force: true })));
+      }
+    }
+  }
+
+  private async copyStoredSnapshot(candidatePath: string, snapshotPath: string) {
+    const storageRoot = path.resolve(this.storage.resolve());
+    const canonicalRoot = await realpath(storageRoot);
+    const candidate = path.isAbsolute(candidatePath) ? path.resolve(candidatePath) : path.resolve(storageRoot, candidatePath);
+    const inside = (root: string, file: string) => {
+      const relative = path.relative(root, file);
+      return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    };
+    if (!inside(storageRoot, candidate) && !inside(canonicalRoot, candidate)) throw new Error("文件路径超出本地存储范围");
+    const handle = await open(candidate, "r");
+    try {
+      const canonical = await realpath(candidate);
+      const info = await handle.stat();
+      const current = await stat(candidate);
+      if (!inside(canonicalRoot, canonical) || !info.isFile() || info.ino !== current.ino || info.dev !== current.dev) throw new Error("文件不可读取或已变化");
+      await pipeline(handle.createReadStream({ autoClose: false }), createWriteStream(snapshotPath, { flags: "wx" }));
+      const after = await handle.stat();
+      if (info.size !== after.size || info.mtimeMs !== after.mtimeMs || info.ctimeMs !== after.ctimeMs) throw new Error("文件在读取期间发生变化");
+    } finally { await handle.close(); }
+  }
+
+  private async commitRetranscript(record: JobRecord, transcript: TranscriptAsset, extracted?: Awaited<ReturnType<MediaService["extractAudio"]>>, signal?: AbortSignal) {
+    const transcriptPath = path.join("raw", "transcripts", `${record.id}.json`);
+    const files = [transcriptPath, record.storagePath, path.join("processed", "cleaned", `${record.id}.json`)];
+    const backups: Array<{ file: string; backup: string; existed: boolean }> = [];
+    const transactionId = randomUUID();
+    const journalPath = path.join("cache", "retranscribe", `${record.id}.json`);
+    if (await this.storedFileExists(journalPath)) throw new Error("有未完成的转录恢复，请重启应用恢复历史成果后重试");
+    const suffix = `.before-retranscribe-${transactionId}.json`;
+    for (const file of files) {
+      const relative = path.relative(this.storage.resolve(), this.storage.resolve(file));
+      if (relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error("历史成果路径超出本地存储范围");
+      const backup = path.join(path.dirname(file), `${record.id}.json${suffix}`);
+      try {
+        await this.copyStoredSnapshot(this.storage.resolve(file), this.storage.resolve(backup));
+        backups.push({ file, backup, existed: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        backups.push({ file, backup, existed: false });
+      }
+    }
+    const journal: RetranscriptJournal = { version: 1, transactionId, record, backups };
+    await this.storage.writeJsonAtomic(journalPath, journal);
+    let changed = false;
+    try {
+      signal?.throwIfAborted();
+      await this.storage.writeJsonAtomic(transcriptPath, transcript);
+      changed = true;
+      for (const file of files.slice(1)) await rm(this.storage.resolve(file), { force: true });
+      signal?.throwIfAborted();
+      const index = await this.readIndex();
+      const current = index[record.id];
+      if (!current) throw new Error("job not found");
+      const steps = this.ensurePipelineSteps(current.steps);
+      for (const step of PIPELINE_STEPS.slice(1)) steps[step] = { status: "pending", attempts: 0 };
+      steps.transcribe = { ...steps.transcribe, status: "succeeded", lastError: undefined, finishedAt: new Date().toISOString() };
+      const next: JobRecord = {
+        ...current, steps, status: "queued", stage: "transcribed", transcriptPath, transcriptModel: transcript.model,
+        transcriptErrorMessage: undefined, errorMessage: undefined, videoProjectPath: undefined, videoOutputPath: undefined, videoGeneratedAt: undefined,
+        ...(extracted ? { audioPath: extracted.audioPath, audioManifestPath: extracted.manifestPath, audioErrorMessage: undefined } : {}),
+        updatedAt: new Date().toISOString()
+      };
+      index[record.id] = next;
+      await this.storage.writeJsonAtomic(JOBS_INDEX, index);
+      signal?.throwIfAborted();
+      await rm(this.storage.resolve(journalPath));
+      return next;
+    } catch (error) {
+      if (changed) {
+        await this.restoreRetranscriptFiles(backups);
+        const index = await this.readIndex();
+        const paused = index[record.id];
+        const restored = { ...record, deletedAt: paused?.deletedAt, trashExpiresAt: paused?.trashExpiresAt };
+        index[record.id] = signal?.aborted
+          ? { ...restored, status: "queued", errorMessage: "用户已暂停当前步骤，可重新执行", steps: { ...record.steps!, transcribe:
+            paused?.steps?.transcribe.status === "paused" ? paused.steps.transcribe : {
+              ...record.steps!.transcribe, status: "paused", lastError: "用户已暂停当前步骤，可重新执行", finishedAt: new Date().toISOString()
+            } } }
+          : restored;
+        await this.storage.writeJsonAtomic(JOBS_INDEX, index);
+      }
+      await rm(this.storage.resolve(journalPath), { force: true });
+      throw error;
+    }
   }
 
   private async isWhisperReadyAudio(id: string, audioPath?: string) {
@@ -592,6 +800,10 @@ export class JobStore {
     if (!transcriptText) {
       throw new Error("transcript is missing; run ASR transcription first");
     }
+    const manifest = await this.readOptionalJson<{ audio?: { duration?: number }; source?: { duration?: number }; duration?: number }>(path.join("raw", "audio", `${id}.json`));
+    const duration = manifest?.audio?.duration ?? manifest?.source?.duration ?? manifest?.duration ?? transcript?.duration;
+    const issues = inspectTranscriptQuality({ segments: transcript?.segments ?? [], text: transcriptText, duration });
+    if (issues.length) throw new Error(`转录异常：${issues.join("；")}`);
     const draft = this.defaultScriptAsset(record.sourceUrl, record.topic, parsed, pageInfo, transcriptText);
     return { record, parsed, pageInfo, transcriptText, draft };
   }
@@ -1094,7 +1306,7 @@ export class JobStore {
   }
 
   private async writeIndex(index: JobsIndex) {
-    await this.storage.writeJson(JOBS_INDEX, index);
+    await this.storage.writeJsonAtomic(JOBS_INDEX, index);
   }
 
   private defaultScriptAsset(
@@ -1183,7 +1395,7 @@ export class JobStore {
   }
 
   private isActive(record: JobRecord) {
-    return record.status === "processing" ||
+    return this.runningSteps.has(record.id) || record.status === "processing" ||
       Boolean(record.steps && PIPELINE_STEPS.some((step) => record.steps?.[step]?.status === "running"));
   }
 
@@ -1230,6 +1442,7 @@ export class JobStore {
     addPath(record.videoProjectPath);
     addPath(record.videoOutputPath);
 
+    addRelative("cache", "retranscribe", `${record.id}.json`);
     addRelative("raw", "text", `${record.id}.json`);
     addRelative("raw", "page", `${record.id}.json`);
     addRelative("raw", "transcripts", `${record.id}.json`);
@@ -1243,6 +1456,21 @@ export class JobStore {
     addRelative("processed", "scenes", `${record.id}.json`);
     addRelative("processed", "subtitles", `${record.id}.srt`);
     addRelative("output", "videos", record.id);
+
+    const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+    for (const directory of ["raw/audio", "raw/transcripts", "processed/scripts", "processed/cleaned"]) {
+      const entries = await readdir(this.storage.resolve(directory)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      });
+      for (const entry of entries) {
+        const suffix = directory === "raw/audio"
+          ? entry.startsWith(`${record.id}-repair-`) ? entry.slice(`${record.id}-repair-`.length) : ""
+          : entry.startsWith(`${record.id}.json.before-retranscribe-`) ? entry.slice(`${record.id}.json.before-retranscribe-`.length) : "";
+        const pattern = directory === "raw/audio" ? `^${uuidPattern}\\.(?:wav|json)$` : `^${uuidPattern}\\.json$`;
+        if (new RegExp(pattern, "i").test(suffix)) addRelative(directory, entry);
+      }
+    }
 
     const script = await this.readScriptForDeletion(record);
     addPath(script?.hyperframesVideo?.projectPath);

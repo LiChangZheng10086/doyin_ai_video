@@ -20,11 +20,14 @@ export interface Gallery extends GalleryDraft {
   version: number;
   status: 'draft' | 'running' | 'ready' | 'failed';
   error?: string;
+  plan?: GalleryPlan;
+  appliedPlanId?: string;
   generated?: {
     id: string;
     draftHash: string;
     sourceFingerprint: string;
     hashes: string[];
+    transcriptHash?: string;
   };
   createdAt: string;
   updatedAt: string;
@@ -42,4 +45,28 @@ export interface GallerySource {
   height: number;
   duration: number;
   imageLimit?: number;
+}
+
+export interface GalleryQuote {
+  segmentIndex: number;
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface GalleryPlan {
+  id: string;
+  transcriptHash: string;
+  previewHashes?: string[];
+  sourceFingerprint: string;
+  images: { title: string; quotes: GalleryQuote[]; image: GalleryImage }[];
+  warnings: string[];
+  excluded: { segmentIndex: number; reason: string }[];
+}
+
+export interface GalleryPlanInput {
+  version: number;
+  targetLines?: 6 | 7 | 8 | 9;
+  bandTop?: number;
+  bandBottom?: number;
 }

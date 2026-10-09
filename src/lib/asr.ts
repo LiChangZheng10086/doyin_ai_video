@@ -1,6 +1,7 @@
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, open, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { inspectTranscriptQuality } from "./transcript-quality.js";
 import { CommandError, runCommand } from "./command.js";
 import type { TranscriptSegment, TranscriptWord } from "../types.js";
 
@@ -75,7 +76,9 @@ export class AsrService {
             "-ojf",
             "-of",
             outputPrefix,
-            "-np"
+            "-np",
+            "-mc",
+            "0"
           ],
           {
             captureStdout: true,
@@ -93,13 +96,18 @@ export class AsrService {
         return null;
       }
 
+      const duration = await readWavDuration(audioPath) ?? extractDuration(payload);
+      const qualityIssues = inspectTranscriptQuality({ segments, text, duration });
+      if (qualityIssues.length || !segments.length) {
+        throw new Error(`whisper.cpp 转录异常：${qualityIssues.join("；") || "缺少带时间的分段"}`);
+      }
       return {
         text,
         model: MODEL,
         provider: PROVIDER,
         segments: segments.length ? segments : [{ text }],
         words: extractWords(payload),
-        duration: extractDuration(payload, segments),
+        duration,
         language: extractLanguage(payload) ?? "zh",
         raw: payload
       };
@@ -173,8 +181,8 @@ function extractSegments(payload: unknown): TranscriptSegment[] {
         return null;
       }
       return {
-        start: toSeconds(row.start ?? row.offsets?.from ?? row.timestamps?.from),
-        end: toSeconds(row.end ?? row.offsets?.to ?? row.timestamps?.to),
+        start: row.start !== undefined ? toSeconds(row.start) : row.offsets ? milliseconds(row.offsets.from) : toSeconds(row.timestamps?.from),
+        end: row.end !== undefined ? toSeconds(row.end) : row.offsets ? milliseconds(row.offsets.to) : toSeconds(row.timestamps?.to),
         text
       };
     })
@@ -217,13 +225,34 @@ function extractWords(payload: unknown): TranscriptWord[] | undefined {
   return result.length ? result : undefined;
 }
 
-function extractDuration(payload: unknown, segments: TranscriptSegment[]) {
-  const direct = toFiniteNumber((payload as { duration?: unknown })?.duration);
-  if (direct !== undefined) {
-    return direct;
-  }
-  const end = Math.max(...segments.map((segment) => segment.end ?? 0));
-  return Number.isFinite(end) && end > 0 ? end : undefined;
+function extractDuration(payload: unknown) {
+  const duration = toFiniteNumber((payload as { duration?: unknown })?.duration);
+  return duration !== undefined && duration > 0 ? duration : undefined;
+}
+
+async function readWavDuration(audioPath: string): Promise<number | undefined> {
+  const handle = await open(audioPath, "r");
+  try {
+    const header = Buffer.alloc(12);
+    if ((await handle.read(header, 0, 12, 0)).bytesRead < 12 || header.toString("ascii", 0, 4) !== "RIFF" || header.toString("ascii", 8) !== "WAVE") return undefined;
+    const size = (await handle.stat()).size;
+    let offset = 12;
+    let byteRate = 0;
+    while (offset + 8 <= size) {
+      const chunk = Buffer.alloc(8);
+      await handle.read(chunk, 0, 8, offset);
+      const length = chunk.readUInt32LE(4);
+      if (offset + 8 + length > size) return undefined;
+      if (chunk.toString("ascii", 0, 4) === "fmt " && length >= 16) {
+        const format = Buffer.alloc(16);
+        await handle.read(format, 0, 16, offset + 8);
+        byteRate = format.readUInt32LE(8);
+      }
+      if (chunk.toString("ascii", 0, 4) === "data" && byteRate > 0) return length / byteRate;
+      offset += 8 + length + (length % 2);
+    }
+    return undefined;
+  } finally { await handle.close(); }
 }
 
 function extractLanguage(payload: unknown) {
@@ -236,20 +265,22 @@ function extractLanguage(payload: unknown) {
 }
 
 function toSeconds(value: unknown) {
-  if (typeof value === "string" && /^\d{2}:\d{2}:\d{2}[,.]\d{3}$/.test(value.trim())) {
-    const [hours = "0", minutes = "0", rest = "0"] = value.trim().replace(",", ".").split(":");
-    return Number(hours) * 3600 + Number(minutes) * 60 + Number(rest);
+  if (typeof value === "string" && value.includes(":")) {
+    const match = /^(\d+):([0-5]\d):([0-5]\d)(?:[,.](\d{1,3}))?$/.exec(value.trim());
+    if (!match) return undefined;
+    return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]) + Number(`0.${match[4] ?? "0"}`);
   }
+  return toFiniteNumber(value);
+}
 
-  const numberValue = toFiniteNumber(value);
-  if (numberValue === undefined) {
-    return undefined;
-  }
-  return Math.abs(numberValue) >= 1000 ? numberValue / 1000 : numberValue;
+function milliseconds(value: unknown) {
+  const number = toFiniteNumber(value);
+  return number === undefined ? undefined : number / 1000;
 }
 
 function toFiniteNumber(value: unknown) {
-  const numberValue = typeof value === "number" ? value : Number(value);
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return undefined;
+  const numberValue = Number(value);
   return Number.isFinite(numberValue) ? numberValue : undefined;
 }
 

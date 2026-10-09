@@ -92,12 +92,18 @@ export class HotspotService {
     const operation = this.writes.then(async () => { const items = await this.favorites(); const result = await action(items); await this.storage.writeJsonAtomic(favoriteFile, items); return result; });
     this.writes = operation.catch(() => {}); return operation;
   }
-  async resolveForArticle(sourceId: string, itemId: string) {
+  async resolveDetail(sourceId: string, itemId: string) {
+    if(typeof sourceId!=='string'||typeof itemId!=='string')return undefined;
     if (!HOTSPOT_SOURCES.some(s => s.id === sourceId)) return undefined;
     const snapshot = await this.snapshot(sourceId);
     const item = snapshot.items.find(i => i.itemId === itemId) ?? (await this.favorites()).find(i => i.sourceId === sourceId && i.itemId === itemId);
     if (!item) return undefined;
-    return {sourceId,itemId,title:item.title,url:item.url,fetchedAt:'fetchedAt' in item ? String(item.fetchedAt) : snapshot.fetchedAt};
+    return {item:structuredClone(item),fetchedAt:'fetchedAt' in item ? String(item.fetchedAt) : snapshot.fetchedAt};
+  }
+  async resolveForArticle(sourceId: string, itemId: string) {
+    const detail=await this.resolveDetail(sourceId,itemId);if(!detail)return undefined;
+    const item=detail.item;
+    return {sourceId,itemId,title:item.title,url:item.url,fetchedAt:detail.fetchedAt};
   }
   async save(sourceId: unknown, itemId: unknown): Promise<HotspotFavorite> {
     if (typeof sourceId !== 'string' || !HOTSPOT_SOURCES.some(source => source.id === sourceId)

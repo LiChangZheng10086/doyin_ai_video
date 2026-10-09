@@ -63,6 +63,7 @@ export function JobDetailPage() {
   const [recleanOpen, setRecleanOpen] = useState(false);
   const [recleanBusy, setRecleanBusy] = useState(false);
   const [recleanError, setRecleanError] = useState<string | null>(null);
+  const [retranscribeOpen, setRetranscribeOpen] = useState(false);
 
   // ── Video player state (must be before any conditional returns) ──
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -346,6 +347,18 @@ export function JobDetailPage() {
     }
   };
 
+  const handleRetranscribe = async () => {
+    if (!job) return;
+    setRetranscribeOpen(false); setRunningStep('transcribe'); setActionError(null);
+    try {
+      const updated = await apiClient.retranscribeJob(job.id);
+      setJob(updated); await loadJobArtifacts(updated); setActiveTab('transcript'); setVideoSide('raw');
+    } catch (err: any) {
+      if (err.response?.data?.job) { setJob(err.response.data.job); await loadJobArtifacts(err.response.data.job); }
+      setActionError(err.response?.data?.message || '重新转录失败，旧转录和历史成果已保留');
+    } finally { setRunningStep(null); }
+  };
+
   const handleRunStep = async (step: PipelineStep) => {
     let closeStream: (() => void) | null = null;
     try {
@@ -536,11 +549,15 @@ export function JobDetailPage() {
           />
           <div className="p-6">
             {activeArtifactKey === 'transcript' && (
+              <>
+              {!job.deletedAt && job.videoPath && <div className="mb-4 flex flex-wrap items-center gap-3"><button disabled={!!runningStep || job.status === 'processing'} onClick={() => setRetranscribeOpen(true)}
+                className="rounded-lg border border-accent-line px-4 py-2 text-sm text-accent disabled:opacity-50">重新转录视频</button><p className="text-xs text-ink-muted">发现重复或错误时可重新识别，旧转录会保留。</p></div>}
               <TranscriptArtifact
                 transcript={rawTranscript}
                 fallbackText={cleaned?.output?.rawText}
                 transcriptError={transcriptError}
               />
+              </>
             )}
             {activeArtifactKey === 'script' && (
               <>
@@ -692,6 +709,8 @@ export function JobDetailPage() {
         onConfirm={handleReclean}
         onClose={() => setRecleanOpen(false)}
       />
+      <ConfirmDialog open={retranscribeOpen} title="重新转录视频" description="新转录通过检查后将替换当前转录，洗稿、提示词和视频需重新生成。旧转录及历史成果会保留，已有图集和发布包不变。"
+        confirmLabel="重新转录" busy={!!runningStep} onConfirm={() => void handleRetranscribe()} onClose={() => setRetranscribeOpen(false)} />
     </Layout>
   );
 }

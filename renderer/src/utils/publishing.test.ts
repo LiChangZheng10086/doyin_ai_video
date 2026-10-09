@@ -1197,3 +1197,24 @@ test('小红书旧草稿记录没有保存证据时必须提示待核实，不�
   assert.match(hint, /未.*确认.*保存/u);
   assert.doesNotMatch(hint, /已填写到.*草稿箱|App/u);
 });
+
+test('所有小红书任务都有独立文字草稿入口，视频包也不能只给外链图标', async () => {
+  const { createElement } = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const { TaskRow } = await import('../pages/PublishingPage.js');
+  for (const contentType of ['note', 'video'] as const) {
+    for (const status of ['ready', 'scheduled', 'failed', 'published', 'cancelled'] as const) {
+      const detail = packageDetail('xhs-draft-entry', 1, status, { contentType });
+      const task = detail.tasks[0];
+      task.platform = 'xiaohongshu';
+      assert.ok(getPublishingActionIds(detail, task, 'publisher').includes('view-xhs-drafts'));
+      const html = renderToStaticMarkup(createElement(TaskRow, { detail, task, role: 'publisher', busy: false, onAction: async () => undefined }));
+      assert.match(html, /<button\b[^>]*aria-label="查看本地草稿"[^>]*>查看本地草稿<\/button>/u);
+    }
+  }
+  const other = packageDetail('douyin', 1);
+  assert.equal(getPublishingActionIds(other, other.tasks[0], 'publisher').includes('view-xhs-drafts'), false);
+  const trash = packageDetail('xhs-trash', 1, 'ready', { state: 'trashed' });
+  trash.tasks[0].platform = 'xiaohongshu';
+  assert.equal(getPublishingActionIds(trash, trash.tasks[0], 'admin').includes('view-xhs-drafts'), false);
+});

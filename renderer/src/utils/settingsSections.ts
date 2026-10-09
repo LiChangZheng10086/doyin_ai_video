@@ -13,6 +13,7 @@ export const settingsSections = [
   { id: 'toutiao', label: '今日头条', description: '头条号扫码登录' },
   { id: 'xhs', label: '小红书', description: '小红书扫码登录' },
   { id: 'wechat', label: '微信公众号', description: '官方 API · 仅存草稿' },
+  { id: 'research', label: '资料搜索与阅读', description: '公开来源 · 创作取材' },
   { id: 'asr', label: '语音转录', description: '视频转录服务' },
   { id: 'storage', label: '存储位置', description: '本地文件位置' },
   { id: 'advanced', label: '高级选项', description: '安全与提示' },

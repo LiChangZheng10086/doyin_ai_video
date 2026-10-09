@@ -5,6 +5,8 @@ import type { ImagePromptInput, ImagePromptRecord } from '../../../src/lib/image
 import type { ImageAssetMetadata } from '../../../src/lib/assets-store';
 import type { Gallery, GalleryDraft, GalleryPreview, GallerySource } from '../../../src/lib/gallery-types';
 import type { HotspotBoard, HotspotFavorite } from '../../../src/lib/hotspots';
+import type { HotspotItem } from '../../../src/lib/hotspots';
+import type { ResearchReadInput, ResearchReadResult, ResearchSearchResult, ResearchSelection, ResearchStatus } from '../../../src/lib/research-types';
 import type { AudioBoard, AudioImportBatch, AudioPreview } from '../../../src/lib/online-audio';
 import type { AudioSource, AudioBoardId, OnlineTrack } from '../../../src/lib/online-audio-sources';
 import type {
@@ -144,7 +146,12 @@ export class ApiClient {
 
   async getArticles(): Promise<ArticleRecord[]> { return (await this.publishingRequest<{articles:ArticleRecord[]}>({url:'/api/articles'})).articles; }
   async getArticle(id: string): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}`})).article; }
-  async createArticle(input: {keyword?:string;hotspot?:{sourceId:string;itemId:string};benchmarkId?:string}): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:'/api/articles',method:'POST',data:input})).article; }
+  async createArticle(input: {keyword?:string;hotspot?:{sourceId:string;itemId:string};benchmarkId?:string;researchSelections?:ResearchSelection[]}): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:'/api/articles',method:'POST',data:input})).article; }
+  async getResearchStatus():Promise<ResearchStatus>{return this.publishingRequest({url:'/api/research/status'});}
+  async searchResearch(query:string,signal?:AbortSignal):Promise<ResearchSearchResult>{return (await this.publishingRequest<{result:ResearchSearchResult}>({url:'/api/research/search',method:'POST',data:{query},timeout:40000,signal})).result;}
+  async readResearch(input:ResearchReadInput,signal?:AbortSignal):Promise<ResearchReadResult>{return (await this.publishingRequest<{result:ResearchReadResult}>({url:'/api/research/read',method:'POST',data:input,timeout:65000,signal})).result;}
+  async getHotspotDetail(sourceId:string,itemId:string,signal?:AbortSignal):Promise<{item:HotspotItem;result:ResearchReadResult}>{return this.publishingRequest({url:'/api/hotspots/detail',method:'POST',data:{sourceId,itemId},timeout:65000,signal});}
+  async importResearchSources(id:string,version:number,selections:ResearchSelection[]):Promise<ArticleRecord>{return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}/sources/import`,method:'POST',data:{version,selections}})).article;}
   async getWechatBenchmarks(): Promise<BenchmarkView[]> {return (await this.publishingRequest<{groups:BenchmarkView[]}>({url:'/api/wechat-benchmarks'})).groups;}
   async createWechatBenchmark(input: Record<string,unknown>): Promise<BenchmarkView> {return (await this.publishingRequest<{group:BenchmarkView}>({url:'/api/wechat-benchmarks',method:'POST',data:input})).group;}
   async saveWechatBenchmark(id:string,input:Record<string,unknown>&{version:number}): Promise<BenchmarkView> {return (await this.publishingRequest<{group:BenchmarkView}>({url:`/api/wechat-benchmarks/${encodeURIComponent(id)}`,method:'PATCH',data:input})).group;}
@@ -152,7 +159,7 @@ export class ApiClient {
   async searchWechatBenchmarks(keyword:string): Promise<BenchmarkSearchResult> {return (await this.publishingRequest<{result:BenchmarkSearchResult}>({url:'/api/wechat-benchmarks/search',method:'POST',data:{keyword},timeout:25000})).result;}
   async saveArticle(id: string, input: Record<string,unknown> & {version:number}): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}`,method:'PATCH',data:input})).article; }
   async runArticleStep(id: string, step: ArticleStep, version: number): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}/steps/${step}`,method:'POST',data:{version},timeout:200000})).article; }
-  async readArticleSources(id: string, sourceIds: string[], version: number): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}/sources/read`,method:'POST',data:{sourceIds,version},timeout:60000})).article; }
+  async readArticleSources(id: string, sourceIds: string[], version: number): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}/sources/read`,method:'POST',data:{sourceIds,version},timeout:65000})).article; }
   async removeArticle(id: string, version: number): Promise<void> { await this.publishingRequest({url:`/api/articles/${encodeURIComponent(id)}`,method:'DELETE',data:{version}}); }
   async previewArticle(id: string, version: number): Promise<ArticlePreview> { return (await this.publishingRequest<{preview:ArticlePreview}>({url:`/api/articles/${encodeURIComponent(id)}/publishing/preview`,method:'POST',data:{version}})).preview; }
   async createArticlePackage(id: string, version: number, previewRevision: string): Promise<PublishingPackageDetail> { return (await this.publishingRequest<{detail:PublishingPackageDetail}>({url:`/api/articles/${encodeURIComponent(id)}/publishing/packages`,method:'POST',data:{version,previewRevision},timeout:120000})).detail; }
@@ -189,7 +196,17 @@ export class ApiClient {
     await this.publishingRequest({ method: 'DELETE', url: `/api/galleries/${id}`, data: { version } });
   }
   async renderGallery(id: string, version: number): Promise<Gallery> {
-    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/render`, data: { version } })).gallery;
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/render`, data: { version }, timeout: 0 })).gallery;
+  }
+  async planGallery(id: string, input: { version: number; targetLines: number; bandTop?: number; bandBottom?: number }): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/plan`, data: input, timeout: 0 })).gallery;
+  }
+  async renderGalleryPlan(id: string, version: number, planId: string, subtitlesConfirmed: boolean): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/plan/render`, data: { version, planId, subtitlesConfirmed }, timeout: 0 })).gallery;
+  }
+  async getGalleryPlanImageUrl(id: string, index: number, planId: string, version: number): Promise<string> {
+    await this.initialize();
+    return `http://localhost:${this.serverPort}/api/galleries/${id}/plan/images/${index}?planId=${encodeURIComponent(planId)}&version=${version}`;
   }
   async getGallerySource(id: string): Promise<GallerySource> {
     return (await this.publishingRequest<{ source: GallerySource }>({ url: `/api/galleries/${id}/source` })).source;
@@ -796,6 +813,12 @@ export class ApiClient {
   async recleanJob(id: string, supplementalText: string): Promise<Job> {
     const client = await this.getClient();
     const response = await client.post<ApiResponse>(`/api/jobs/${id}/reclean`, { supplementalText });
+    return response.data.job!;
+  }
+
+  async retranscribeJob(id: string): Promise<Job> {
+    const client = await this.getClient();
+    const response = await client.post<ApiResponse>(`/api/jobs/${id}/retranscribe`, undefined, { timeout: 0 });
     return response.data.job!;
   }
 

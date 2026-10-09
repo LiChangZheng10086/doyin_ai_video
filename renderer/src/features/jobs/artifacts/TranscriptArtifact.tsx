@@ -39,9 +39,13 @@ function TranscriptContent({ transcriptData, source }: { transcriptData: RawTran
       <h3 className="text-lg font-semibold text-ink">{source}</h3>
       <p className="mt-1 text-xs text-ink-muted">
         {source === '视频音频转录'
-          ? '这是从视频音频提取并转录的真实内容'
+          ? '本地模型从视频音频识别的文字，可能有错字或漏识别，请结合原视频核对。'
           : '这是从分享文本解析的内容，非实际音频转录'}
       </p>
+      {!!transcriptData.qualityIssues?.length && <div role="alert" className="mt-4 rounded-lg border border-warning-line bg-warning-soft p-4 text-sm text-warning">
+        <p className="font-medium">检测到转录异常，旧文字仅供参考，请重新转录后再用于创作。</p>
+        {transcriptData.qualityIssues.map((issue, i) => <p key={i} className="mt-1">{issue}</p>)}
+      </div>}
       {(transcriptData.provider || transcriptData.model || transcriptData.duration) && (
         <div className="my-4 grid grid-cols-1 gap-3 md:grid-cols-3">
           {transcriptData.provider && <Metric label="服务" value={transcriptData.provider} />}

@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { ScriptCleaner } from "./ai-cleaner.js";
 import type { AsrService } from "./asr.js";
-import { JobStore } from "./jobs.js";
+import { JobStore, JobStepError } from "./jobs.js";
 import type { MediaService } from "./media.js";
 import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import { LocalStorage } from "./storage.js";
-import type { ScriptAsset } from "../types.js";
+import type { ScriptAsset, JobRecord } from "../types.js";
 
 test("JobStore recovers persisted running steps after restart so they can be retried", async () => {
   const storageRoot = await mkdtemp(path.join(tmpdir(), "jobs-restart-recovery-"));
@@ -161,7 +161,7 @@ test("JobStore re-extracts old mp3 audio before bundled Whisper transcription", 
         text: "轉錄正文，推薦內容",
         model: "ggml-small",
         provider: "whisper.cpp",
-        segments: [{ text: "轉錄正文，推薦內容" }],
+        segments: [{ start: 0, end: 2, text: "轉錄正文，推薦內容" }],
         duration: 2,
         language: "zh"
       };
@@ -480,4 +480,462 @@ test("JobStore reclean resets downstream steps and persists supplemental text fo
   const cleaned = await storage.readJson<{ supplementalText?: string; output: ScriptAsset }>("processed/cleaned/done.json");
   assert.equal(cleaned.supplementalText, "补充要点：三步流程");
   assert.equal(cleaned.output.title, "补充后洗稿");
+});
+
+async function repairFixture(transcribe: AsrService["transcribe"], cleaner: ScriptCleaner = { async clean(input) { return input.draft; } }) {
+  const root = await mkdtemp(path.join(tmpdir(), "jobs-retranscribe-"));
+  const storage = new LocalStorage(root);
+  const jobs = new JobStore(storage, cleaner,
+    { async downloadVideo() { throw new Error("must reuse source"); }, async extractAudio() { throw new Error("must reuse checked audio"); } } as unknown as MediaService,
+    { transcribe } as AsrService);
+  await jobs.init();
+  const id = "repair";
+  const record = await jobs.create({ sourceUrl: "https://example.com/video", topic: "repair" });
+  // Use a stable identity so the entire old state and disk bytes are independently checkable.
+  await storage.writeJson("cache/jobs-index.json", { [id]: { ...record, id,
+    status: "done", stage: "rendered", storagePath: "processed/scripts/repair.json",
+    videoPath: storage.resolve("raw/videos/repair.mp4"), audioPath: storage.resolve("raw/audio/repair.wav"),
+    transcriptPath: "raw/transcripts/repair.json", transcriptModel: "old-model",
+    videoProjectPath: "output/videos/repair/hyperframes", videoOutputPath: "output/videos/repair/video.mp4", videoGeneratedAt: "2026-10-08T00:00:00Z",
+    steps: {
+      transcribe: { status: "succeeded", attempts: 1 }, clean: { status: "succeeded", attempts: 1 },
+      generate_video_prompts: { status: "succeeded", attempts: 1 }, generate_video: { status: "succeeded", attempts: 1 }
+    }
+  } });
+  await writeFile(storage.resolve("raw/videos/repair.mp4"), "source video");
+  await writeFile(storage.resolve("raw/audio/repair.wav"), "checked wav");
+  await storage.writeJson("raw/audio/repair.json", { status: "ready", args: ["pcm_s16le", "16000", "1"], audio: { duration: 20, streams: [{ codec_name: "pcm_s16le", channels: 1, sample_rate: "16000" }] } });
+  await storage.writeJson("raw/transcripts/repair.json", { transcript: "旧转录", text: "旧转录", segments: [{ start: 2, end: 1, text: "旧转录" }] });
+  await storage.writeJson("processed/scripts/repair.json", { cleanScript: "旧洗稿", videoPrompts: "旧分镜" });
+  await storage.writeJson("processed/cleaned/repair.json", { output: { cleanScript: "旧洗稿" } });
+  await mkdir(storage.resolve("output/videos/repair"), { recursive: true });
+  await writeFile(storage.resolve("output/videos/repair/video.mp4"), "old final video");
+  return { storage, jobs, id };
+}
+
+const repairedTranscript = { text: "有效的新转录", segments: [{ start: 0, end: 3, text: "有效的新转录" }], duration: 20, model: "ggml-small", provider: "whisper.cpp" };
+
+test("explicit retranscription adopts checked output, archives old text and invalidates all downstream steps", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  await assert.rejects(jobs.runStep(id, "transcribe"), /already succeeded/);
+  const result = await jobs.retranscribe(id);
+  assert.equal(result.steps?.transcribe.status, "succeeded");
+  for (const step of ["clean", "generate_video_prompts", "generate_video"] as const) {
+    assert.equal(result.steps?.[step].status, "pending");
+    assert.equal(result.steps?.[step].attempts, 0);
+  }
+  assert.equal(result.videoOutputPath, undefined);
+  assert.equal(result.videoProjectPath, undefined);
+  assert.equal(result.videoGeneratedAt, undefined);
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "有效的新转录");
+  const transcripts = await readdir(storage.resolve("raw/transcripts"));
+  const backup = transcripts.find((file) => file !== "repair.json");
+  assert.ok(backup);
+  assert.equal((await storage.readJson<{ text: string }>(`raw/transcripts/${backup}`)).text, "旧转录");
+  for (const folder of ["scripts", "cleaned"]) {
+    await assert.rejects(storage.readJson(`processed/${folder}/repair.json`));
+    assert.ok((await readdir(storage.resolve(`processed/${folder}`))).length);
+  }
+  assert.equal(await readFile(storage.resolve("output/videos/repair/video.mp4"), "utf8"), "old final video");
+});
+
+test("failed retranscription keeps old bytes and downstream while blocking reuse, within three attempts", async () => {
+  let attempts = 0;
+  const { jobs, storage, id } = await repairFixture(async () => { attempts += 1; return { ...repairedTranscript, segments: [{ start: 4, end: 2, text: "无效" }] }; });
+  const before = await readFile(storage.resolve("raw/transcripts/repair.json"), "utf8");
+  await assert.rejects(jobs.retranscribe(id), /转录.*异常/);
+  assert.equal(attempts, 3);
+  assert.equal(await readFile(storage.resolve("raw/transcripts/repair.json"), "utf8"), before);
+  assert.equal((await jobs.get(id))?.steps?.transcribe.status, "failed");
+  assert.equal((await jobs.get(id))?.steps?.clean.status, "succeeded");
+  assert.equal((await jobs.get(id))?.videoOutputPath, "output/videos/repair/video.mp4");
+  assert.equal((await storage.readJson<{ cleanScript: string }>("processed/scripts/repair.json")).cleanScript, "旧洗稿");
+  await assert.rejects(jobs.reclean(id, "补充信息"), /previous step/);
+});
+
+test("retranscription holds the same job mutex against repair, steps and reclean", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { jobs, id } = await repairFixture(async () => { entered(); await gate; return repairedTranscript; });
+  const run = jobs.retranscribe(id);
+  await started;
+  for (const action of [() => jobs.retranscribe(id), () => jobs.runStep(id, "clean"), () => jobs.reclean(id, "补充")]) {
+    await assert.rejects(action(), (error) => error instanceof JobStepError && error.statusCode === 409);
+  }
+  release();
+  await run;
+});
+
+test("historical abnormal transcript cannot reach cleaner even when transcribe says succeeded", async () => {
+  let cleaned = false;
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript,
+    { async clean(input) { cleaned = true; return input.draft; } });
+  // The previous succeeded label alone must not make an invalid transcript usable.
+  const record = (await jobs.get(id))!;
+  await jobs.update(id, { steps: { ...record.steps!, clean: { status: "pending", attempts: 0 } } });
+  await assert.rejects(jobs.runStep(id, "clean"), /转录.*异常/);
+  assert.equal(cleaned, false);
+  assert.equal((await storage.readJson<{ cleanScript: string }>("processed/scripts/repair.json")).cleanScript, "旧洗稿");
+});
+
+test("retranscription rolls back active transcript and downstream if commit storage fails", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  const oldWrite = storage.writeJsonAtomic.bind(storage);
+  storage.writeJsonAtomic = async (file, data) => {
+    if (file === "cache/jobs-index.json" && JSON.stringify(data).includes('"clean":{"status":"pending"')) throw new Error("disk commit failed");
+    return oldWrite(file, data);
+  };
+  await assert.rejects(jobs.retranscribe(id), /disk commit failed/);
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
+  assert.equal((await storage.readJson<{ cleanScript: string }>("processed/scripts/repair.json")).cleanScript, "旧洗稿");
+  assert.equal((await jobs.get(id))?.steps?.clean.status, "succeeded");
+});
+
+test("reclean reserves the mutex before asynchronous validation so an immediate repair cannot race it", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  await storage.writeJson("raw/transcripts/repair.json", { transcript: "正常转录", text: "正常转录", segments: [{ start: 0, end: 2, text: "正常转录" }] });
+  const cleaning = jobs.reclean(id, "补充");
+  const repairing = jobs.retranscribe(id);
+  const [cleanResult, repairResult] = await Promise.allSettled([cleaning, repairing]);
+  assert.equal(cleanResult.status, "fulfilled");
+  assert.equal(repairResult.status, "rejected");
+  if (repairResult.status === "rejected") assert.equal(repairResult.reason.statusCode, 409);
+});
+
+test("pausing retranscription prevents a late ASR response from changing old artifacts", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const { jobs, storage, id } = await repairFixture(async () => { entered(); await gate; return repairedTranscript; });
+  const run = jobs.retranscribe(id);
+  await started;
+  const paused = jobs.pauseStep(id);
+  // Wait until cancellation is persisted before allowing the deliberately late response.
+  while ((await jobs.get(id))?.steps?.transcribe.status !== "paused") await new Promise((resolve) => setTimeout(resolve, 1));
+  release();
+  await Promise.all([run, paused]);
+  assert.equal((await jobs.get(id))?.steps?.transcribe.status, "paused");
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
+  assert.equal((await jobs.get(id))?.steps?.clean.status, "succeeded");
+});
+
+
+test("repair rejects an audio symlink outside storage before ASR and preserves its target", async () => {
+  let transcribed = false;
+  const { jobs, storage, id } = await repairFixture(async () => { transcribed = true; return repairedTranscript; });
+  const outside = path.join(await mkdtemp(path.join(tmpdir(), "repair-outside-")), "private.wav");
+  await writeFile(outside, "outside private audio");
+  const link = storage.resolve("raw/audio/linked.wav");
+  await symlink(outside, link);
+  await jobs.update(id, { audioPath: link });
+  await assert.rejects(jobs.retranscribe(id), /不可读取|超出/);
+  assert.equal(transcribed, false);
+  assert.equal(await readFile(outside, "utf8"), "outside private audio");
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
+});
+
+test("pause during transcription commit rolls back file changes and retains paused state", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const original = storage.writeJsonAtomic.bind(storage);
+  storage.writeJsonAtomic = async (file, data) => {
+    const result = await original(file, data);
+    if (file === "raw/transcripts/repair.json") { entered(); await gate; }
+    return result;
+  };
+  const run = jobs.retranscribe(id);
+  await started;
+  const pausing = jobs.pauseStep(id);
+  while ((await jobs.get(id))?.steps?.transcribe.status !== "paused") await new Promise((resolve) => setTimeout(resolve, 1));
+  release();
+  await Promise.all([run, pausing]);
+  assert.equal((await jobs.get(id))?.steps?.transcribe.status, "paused");
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
+  assert.equal((await storage.readJson<{ cleanScript: string }>("processed/scripts/repair.json")).cleanScript, "旧洗稿");
+});
+
+test("ordinary transcribe retry after failed repair still archives and invalidates downstream", async () => {
+  let valid = false;
+  const { jobs, storage, id } = await repairFixture(async () => valid ? repairedTranscript : { ...repairedTranscript, segments: [{ start: 5, end: 2, text: "异常" }] });
+  await assert.rejects(jobs.retranscribe(id), /转录.*异常/);
+  valid = true;
+  const result = await jobs.runStep(id, "transcribe");
+  assert.equal(result.steps?.clean.status, "pending");
+  assert.equal(result.videoOutputPath, undefined);
+  assert.ok((await readdir(storage.resolve("raw/transcripts"))).some((file) => file.includes("before-retranscribe")));
+});
+
+test("clean rejects an inflated historical duration using the actual audio manifest", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  const record = (await jobs.get(id))!;
+  await jobs.update(id, { steps: { ...record.steps!, clean: { status: "pending", attempts: 0 } } });
+  await storage.writeJson("raw/transcripts/repair.json", { transcript: "错误时间", text: "错误时间", segments: [{ start: 0, end: 600, text: "错误时间" }], duration: 600 });
+  await assert.rejects(jobs.runStep(id, "clean"), /超出音频时长/);
+  assert.equal((await storage.readJson<{ cleanScript: string }>("processed/scripts/repair.json")).cleanScript, "旧洗稿");
+});
+
+test("permanent deletion removes only this job's generated repair files and history backups", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  await jobs.retranscribe(id);
+  const uuid = "11111111-1111-4111-8111-111111111111";
+  for (const extension of ["wav", "json"]) await writeFile(storage.resolve("raw/audio", `${id}-repair-${uuid}.${extension}`), "repair artifact");
+  const unrelated = [`${id}-other-repair-${uuid}.wav`, `${id}-repair-invalid.wav`, `${id}-repair-${uuid}.mp3`];
+  for (const file of unrelated) await writeFile(storage.resolve("raw/audio", file), "unrelated");
+  await writeFile(storage.resolve("raw/transcripts", `${id}-other.json.before-retranscribe-${uuid}.json`), "other job history");
+  await jobs.trash(id);
+  assert.equal(await jobs.permanentlyDelete(id), "deleted");
+  for (const folder of ["raw/transcripts", "processed/scripts", "processed/cleaned"]) {
+    const names = await readdir(storage.resolve(folder));
+    assert.ok(!names.some((name) => name.startsWith(`${id}.json.before-retranscribe-`)));
+  }
+  for (const extension of ["wav", "json"]) await assert.rejects(readFile(storage.resolve("raw/audio", `${id}-repair-${uuid}.${extension}`)));
+  for (const file of unrelated) assert.equal(await readFile(storage.resolve("raw/audio", file), "utf8"), "unrelated");
+  assert.equal(await readFile(storage.resolve("raw/transcripts", `${id}-other.json.before-retranscribe-${uuid}.json`), "utf8"), "other job history");
+});
+
+
+for (const stage of ["journal-only", "raw-swapped", "downstream-removed", "state-swapped"] as const) {
+  test(`restart rolls back incomplete retranscription at ${stage} before exposing mixed generations`, async () => {
+    const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+    const oldRecord = (await jobs.get(id))!;
+    const transactionId = "22222222-2222-4222-8222-222222222222";
+    const files = ["raw/transcripts/repair.json", "processed/scripts/repair.json", "processed/cleaned/repair.json"];
+    const backups = [];
+    for (const file of files) {
+      const backup = `${file}.before-retranscribe-${transactionId}.json`;
+      await writeFile(storage.resolve(backup), await readFile(storage.resolve(file)));
+      backups.push({ file, backup, existed: true });
+    }
+    const runningRecord = { ...oldRecord, status: "processing", stage: "transcribing", steps: { ...oldRecord.steps!, transcribe: { status: "running", attempts: 1 } } };
+    await storage.writeJsonAtomic("cache/jobs-index.json", { [id]: runningRecord });
+    await storage.writeJsonAtomic(`cache/retranscribe/${id}.json`, { version: 1, transactionId, record: runningRecord, backups });
+    if (stage !== "journal-only") await storage.writeJsonAtomic(files[0], { text: "尚未完成切换的新转录", segments: repairedTranscript.segments });
+    if (stage === "downstream-removed" || stage === "state-swapped") for (const file of files.slice(1)) await rm(storage.resolve(file));
+    if (stage === "state-swapped") await storage.writeJsonAtomic("cache/jobs-index.json", { [id]: {
+      ...oldRecord, status: "queued", stage: "transcribed", videoOutputPath: undefined, videoProjectPath: undefined,
+      steps: { transcribe: { status: "succeeded", attempts: 1 }, clean: { status: "pending", attempts: 0 }, generate_video_prompts: { status: "pending", attempts: 0 }, generate_video: { status: "pending", attempts: 0 } }
+    } });
+    const restarted = new JobStore(storage, {} as ScriptCleaner, {} as MediaService, {} as AsrService);
+    await restarted.init();
+    const restored = (await restarted.get(id))!;
+    assert.equal((await storage.readJson<{ text: string }>(files[0])).text, "旧转录");
+    assert.equal((await storage.readJson<{ cleanScript: string }>(files[1])).cleanScript, "旧洗稿");
+    assert.equal(restored.steps?.transcribe.status, "paused");
+    assert.equal(restored.steps?.clean.status, "succeeded");
+    assert.equal(restored.videoOutputPath, oldRecord.videoOutputPath);
+    await assert.rejects(readFile(storage.resolve(`cache/retranscribe/${id}.json`)));
+    await restarted.init();
+    assert.equal((await restarted.get(id))?.steps?.transcribe.status, "paused");
+  });
+}
+
+test("ordinary retry archives corrupt transcript bytes and invalidates succeeded downstream", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  const record = (await jobs.get(id))!;
+  await jobs.update(id, { steps: { ...record.steps!, transcribe: { status: "failed", attempts: 3 } } });
+  const corrupt = '{"segments":';
+  await writeFile(storage.resolve("raw/transcripts/repair.json"), corrupt);
+  const next = await jobs.runStep(id, "transcribe");
+  assert.equal(next.steps?.clean.status, "pending");
+  const backup = (await readdir(storage.resolve("raw/transcripts"))).find((file) => file.includes("before-retranscribe"));
+  assert.ok(backup);
+  assert.equal(await readFile(storage.resolve("raw/transcripts", backup), "utf8"), corrupt);
+});
+
+test("repair persists complete recovery journal before replacing active transcript", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  const original = storage.writeJsonAtomic.bind(storage);
+  let sawJournal = false;
+  storage.writeJsonAtomic = async (file, data) => {
+    if (file === "raw/transcripts/repair.json") {
+      const journal = await storage.readJson<{ backups: Array<{ backup: string; existed: boolean }> }>(`cache/retranscribe/${id}.json`);
+      assert.equal(journal.backups.length, 3);
+      for (const backup of journal.backups) if (backup.existed) assert.ok((await readFile(storage.resolve(backup.backup))).length);
+      sawJournal = true;
+    }
+    return original(file, data);
+  };
+  await jobs.retranscribe(id);
+  assert.equal(sawJournal, true);
+  await assert.rejects(readFile(storage.resolve(`cache/retranscribe/${id}.json`)));
+});
+
+test("cancellation racing state commit restores old files and retains pause even if state write overtakes pause", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const original = storage.writeJsonAtomic.bind(storage);
+  storage.writeJsonAtomic = async (file, data) => {
+    if (file === "cache/jobs-index.json" && JSON.stringify(data).includes('"clean":{"status":"pending"')) { entered(); await gate; }
+    return original(file, data);
+  };
+  const run = jobs.retranscribe(id);
+  await started;
+  const pausing = jobs.pauseStep(id);
+  while ((await jobs.get(id))?.steps?.transcribe.status !== "paused") await new Promise((resolve) => setTimeout(resolve, 1));
+  release();
+  await Promise.all([run, pausing]);
+  assert.equal((await jobs.get(id))?.steps?.transcribe.status, "paused");
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
+  assert.equal((await jobs.get(id))?.steps?.clean.status, "succeeded");
+});
+
+test("restart rejects a forged recovery target and leaves both storage and outside bytes untouched", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  const old = (await jobs.get(id))!;
+  const outside = path.join(await mkdtemp(path.join(tmpdir(), "journal-outside-")), "private.json");
+  await writeFile(outside, "private bytes");
+  await storage.writeJsonAtomic(`cache/retranscribe/${id}.json`, {
+    version: 1, transactionId: "22222222-2222-4222-8222-222222222222",
+    record: { ...old, steps: { ...old.steps!, transcribe: { status: "running", attempts: 1 } } },
+    backups: [{ file: outside, backup: "raw/transcripts/repair.json", existed: true }]
+  });
+  await assert.rejects(new JobStore(storage, {} as ScriptCleaner, {} as MediaService, {} as AsrService).init(), /恢复文件列表无效/);
+  assert.equal(await readFile(outside, "utf8"), "private bytes");
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
+  assert.ok(await readFile(storage.resolve(`cache/retranscribe/${id}.json`)));
+});
+
+test("unrecovered journal blocks pipeline writes and permanent deletion cleans the journal", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  const old = (await jobs.get(id))!;
+  await jobs.update(id, { steps: { ...old.steps!, clean: { status: "pending", attempts: 0 } } });
+  await storage.writeJsonAtomic(`cache/retranscribe/${id}.json`, { incomplete: true });
+  for (const run of [() => jobs.runStep(id, "clean"), () => jobs.retranscribe(id), () => jobs.reclean(id, "补充")]) {
+    await assert.rejects(run(), /转录恢复/);
+  }
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
+  await jobs.trash(id);
+  assert.equal(await jobs.permanentlyDelete(id), "deleted");
+  await assert.rejects(readFile(storage.resolve(`cache/retranscribe/${id}.json`)));
+});
+
+test("restart removes an interrupted atomic journal write and ignores Finder metadata without changing active artifacts", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  const original = (await jobs.get(id))!;
+  await mkdir(storage.resolve("cache/retranscribe"), { recursive: true });
+  const orphan = `cache/retranscribe/${id}.json.next-33333333-3333-4333-8333-333333333333`;
+  await writeFile(storage.resolve(orphan), '{"version":');
+  await writeFile(storage.resolve("cache/retranscribe/.DS_Store"), "Finder metadata");
+  const restarted = new JobStore(storage, {} as ScriptCleaner, {} as MediaService, {} as AsrService);
+  await restarted.init();
+  assert.deepEqual(await restarted.get(id), original);
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
+  assert.equal((await storage.readJson<{ cleanScript: string }>("processed/scripts/repair.json")).cleanScript, "旧洗稿");
+  await assert.rejects(readFile(storage.resolve(orphan)));
+  assert.equal(await readFile(storage.resolve("cache/retranscribe/.DS_Store"), "utf8"), "Finder metadata");
+});
+
+test("known harmless journal-directory files do not hide a malformed real recovery record", async () => {
+  const { storage, id } = await repairFixture(async () => repairedTranscript);
+  await storage.writeJsonAtomic(`cache/retranscribe/${id}.json`, { version: 1 });
+  await writeFile(storage.resolve("cache/retranscribe/.DS_Store"), "Finder metadata");
+  const restarted = new JobStore(storage, {} as ScriptCleaner, {} as MediaService, {} as AsrService);
+  await assert.rejects(restarted.init(), /转录恢复记录无效/);
+  assert.deepEqual(await storage.readJson(`cache/retranscribe/${id}.json`), { version: 1 });
+});
+
+test("restart preserves and rejects unexpected temporary names rather than deleting arbitrary directory entries", async () => {
+  const { storage } = await repairFixture(async () => repairedTranscript);
+  await mkdir(storage.resolve("cache/retranscribe"), { recursive: true });
+  const unknown = "cache/retranscribe/repair.json.next-not-a-uuid";
+  await writeFile(storage.resolve(unknown), "unknown file");
+  await assert.rejects(new JobStore(storage, {} as ScriptCleaner, {} as MediaService, {} as AsrService).init(), /文件名无效/);
+  assert.equal(await readFile(storage.resolve(unknown), "utf8"), "unknown file");
+});
+
+test("startup transaction recovery preserves a deletion made after journal capture and other job edits", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  const old = (await jobs.get(id))!;
+  const transactionId = "44444444-4444-4444-8444-444444444444";
+  const files = ["raw/transcripts/repair.json", "processed/scripts/repair.json", "processed/cleaned/repair.json"];
+  const backups = [];
+  for (const file of files) {
+    const backup = `${file}.before-retranscribe-${transactionId}.json`;
+    await writeFile(storage.resolve(backup), await readFile(storage.resolve(file)));
+    backups.push({ file, backup, existed: true });
+  }
+  const running = (await jobs.update(id, { status: "processing", stage: "transcribing", steps: { ...old.steps!, transcribe: { status: "running", attempts: 1 } } }))!;
+  await storage.writeJsonAtomic(`cache/retranscribe/${id}.json`, { version: 1, transactionId, record: running, backups });
+  const trashed = (await jobs.trash(id))!;
+  const other = await jobs.create({ sourceUrl: "https://example.com/another-video", topic: "用户新增的作品" });
+  await jobs.update(other.id, { topic: "事务之后更新的标题" });
+  await storage.writeJsonAtomic(files[0], { text: "未提交的新转录" });
+  const restarted = new JobStore(storage, {} as ScriptCleaner, {} as MediaService, {} as AsrService);
+  await restarted.init();
+  const restored = (await restarted.get(id))!;
+  assert.equal(restored.deletedAt, trashed.deletedAt);
+  assert.equal(restored.trashExpiresAt, trashed.trashExpiresAt);
+  assert.equal(restored.steps?.transcribe.status, "paused");
+  assert.equal((await storage.readJson<{ text: string }>(files[0])).text, "旧转录");
+  assert.equal((await restarted.get(other.id))?.topic, "事务之后更新的标题");
+  assert.ok((await restarted.listTrash()).some((job) => job.id === id));
+});
+
+test("failed transaction rollback preserves a concurrent user deletion and unrelated job changes", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  const other = await jobs.create({ sourceUrl: "https://example.com/another-video", topic: "其它作品" });
+  let trashed: Awaited<ReturnType<JobStore["trash"]>>;
+  const original = storage.writeJsonAtomic.bind(storage);
+  storage.writeJsonAtomic = async (file, data) => {
+    if (file === "cache/jobs-index.json" && (data as Record<string, JobRecord>)[id]?.steps?.clean.status === "pending") throw new Error("transaction commit failed");
+    const result = await original(file, data);
+    if (file === "raw/transcripts/repair.json" && !trashed) {
+      trashed = await jobs.trash(id);
+      await jobs.update(other.id, { topic: "并发编辑的标题" });
+    }
+    return result;
+  };
+  await assert.rejects(jobs.retranscribe(id), /transaction commit failed/);
+  const restored = (await jobs.get(id))!;
+  assert.ok(trashed?.deletedAt);
+  assert.equal(restored.deletedAt, trashed.deletedAt);
+  assert.equal(restored.trashExpiresAt, trashed.trashExpiresAt);
+  assert.equal(restored.steps?.transcribe.status, "failed");
+  assert.equal((await jobs.get(other.id))?.topic, "并发编辑的标题");
+  assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
+});
+
+test("permanent deletion stays blocked until repair releases its lock after final state commit", async () => {
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  let entered!: () => void;
+  let release!: () => void;
+  let held = false;
+  const started = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const original = storage.writeJsonAtomic.bind(storage);
+  storage.writeJsonAtomic = async (file, data) => {
+    const result = await original(file, data);
+    if (!held && file === "cache/jobs-index.json" && (data as Record<string, JobRecord>)[id]?.steps?.clean.status === "pending") {
+      held = true;
+      entered();
+      await gate;
+    }
+    return result;
+  };
+  const run = jobs.retranscribe(id);
+  await started;
+  try {
+    assert.equal((await jobs.get(id))?.status, "queued");
+    await jobs.trash(id);
+    assert.equal(await jobs.permanentlyDelete(id), "active");
+    assert.ok(await readFile(storage.resolve(`cache/retranscribe/${id}.json`)));
+    const backups = (await readdir(storage.resolve("raw/transcripts"))).filter((file) => file.includes("before-retranscribe"));
+    assert.equal(backups.length, 1);
+    assert.equal((await storage.readJson<{ text: string }>(`raw/transcripts/${backups[0]}`)).text, "旧转录");
+  } finally {
+    release();
+    await run.catch(() => undefined);
+  }
+  assert.equal((await jobs.get(id))?.steps?.transcribe.status, "succeeded");
+  assert.equal(await jobs.permanentlyDelete(id), "deleted");
+  await assert.rejects(readFile(storage.resolve("raw/transcripts/repair.json")));
 });

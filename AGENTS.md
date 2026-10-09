@@ -310,13 +310,22 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
   不删不改任何历史用户）。**管理员 PIN 的契约没放宽**：普通 `POST /api/local-sessions` 无 PIN 仍 401，
   无 PIN 分支只存在于 `openLocalOperator()` 这一条显式路径上。发布中心的权限与审计（`requireActor`/`actor` 快照）完全保留。
 
-### 字幕图集创作（2026-09-30）
+### 字幕图集创作（2026-10-09 更新）
 
 - 独立导航 `/galleries` 与工作台 `/galleries/:id`；原视频区域有快捷入口。已有原视频即可创作，不要求洗稿或 HyperFrames 成片，不改变作品步骤状态。
-- 原生字幕只取画面像素；转录分段仅辅助定位。每张 1～6 条字幕，可调时间、字幕区域、主画面取景/占比；本地 FFmpeg 输出 1080×1440 PNG，保持原比例，不重绘文字。多图复制/排序、文案与草稿可恢复。
+- 原生字幕只取画面像素；转录分段仅辅助定位。默认自动规划整套，目标每张 6～9 条（默认 8），长句或多行字幕会减少条数并增加张数；手动支持 1～9 条。先查看每张文字与候选拼图，确认整套字幕后一次生成；时间、区域、主画面取景和拆分/合并收进高级调整。本地 FFmpeg 输出 1080×1440 PNG，保持原比例，不重绘文字。草稿与未确认方案可恢复。
+- 自动候选比较附近多个画面的文字状像素及稳定性，宽屏检测采样宽度 720；无可靠候选列明排除原因。没有 OCR，仍可能把横幅当字幕，必须整套核对；无候选不能确认生成。预览与最终图哈希一致，长字幕不能靠拉伸挤进 9 条。
+- `POST /api/galleries/:id/plan`（version、targetLines、可选统一字幕区域）、`POST .../plan/render`（version、planId、subtitlesConfirmed）、`GET .../plan/images/:index`（planId、version）。方案绑定源指纹和转录哈希，修改草稿使方案失效；确认与生成结束都复核来源，自动图集发布预览也拒绝旧转录。
 - `GalleryService`/`GalleryMedia`/`gallery-routes` 由 `app.ts` 共用装配。索引 `cache/galleries.json`，产物 `output/galleries/{id}/{generation}/`；生成串行，失败保留旧图仅供参考，成功替换后清理上一代。原视频使用 `resolveSourceVideo` 校验后从已打开 handle 复制到私有临时快照，FFprobe/FFmpeg 不重新打开原路径；源指纹含 inode/size/mtime/ctime。
 - 保存、删除、生成带 `version`；图集发布预览也必须带当前版本。图片 URL 绑定 `generation`，源或图片变化须重生成。`createGalleryNote` 仅接受服务内部已解析路径及有序预期哈希，打包副本与预览不一致就回滚。
 - 发布复用 `note × douyin`，确认字幕与使用权后只建自包含包，再到发布中心预览并人工触发 sau。不会自动发布；修改/删除图集不影响已建包。全量回归 1004 通过、1 跳过；未调用真实抖音提交。
+
+### 转录可靠性与历史修复（2026-10-09）
+
+- whisper.cpp 的 `offsets.from/to` 固定毫秒，`start/end` 固定秒；音频实际时长从 WAV 容器读取，默认 `-mc 0` 关闭跨段文字上下文。严重循环、非法时间及越界拒绝作为成功输入；正常强调不去重。规则通过不代表台词准确，原生字幕仍以视频像素为准。
+- `GET /api/jobs/:id/raw-transcript` 只读附带 `qualityIssues`，洗稿及自动图集共用检查。`POST /api/jobs/:id/retranscribe` 提供受控修复（作品转录页和图集均有入口），复用安全媒体快照与现有最多三次尝试；不会启动时批量改历史数据。
+- 先把旧转录、脚本和洗稿保存为同目录 `<id>.json.before-retranscribe-<UUID>.json`，再写 `cache/retranscribe/<id>.json` 恢复记录后切换；成功清除下游有效引用并重置为 pending，物理旧成果和已建发布包保留。失败恢复原文件，重启先恢复未完成事务，保留最新垃圾桶状态，提交结束前禁止永久删除。
+- `node --import tsx scripts/check-transcript-quality.ts` 只读扫描桌面存储（支持 `--storage=...`、`--self-test`）；`scripts/verify-subtitle-gallery.ts` 默认隔离真实 FFmpeg/API 验收，`--serve` 提供 3183 合成 UI。两者不得静默修复真实数据；合成标记不证明真实字幕语义正确。
 
 ### 热点选题（2026-09-30）
 
@@ -328,6 +337,16 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 - `node --import tsx scripts/verify-hotspots.ts --live` 只读取真实公开来源；不带参数启动 3100 隔离 UI 夹具（首个备注 PATCH 故意 503），退出清理自身临时存储。不要对真实数据跑模拟写入。
 - 共用数据路由由 `createAppRouter` 选择：开发 HTTP 使用 BrowserRouter，Electron 打包的 `file:` 使用 HashRouter；保留 `useBlocker` 未保存导航保护，避免文件路径被当作页面路由而 404。
 - 热榜采用 CSS 多列（1/2/3 列），卡片不可跨列拆分、按列阅读。不要改回同行等高 grid：知乎长标题会给其它卡片下方制造整行空白。
+
+### 资料搜索与阅读第一期（2026-10-08）
+
+- 热榜与收藏标题打开详情，榜单摘要直接展示；「读取来源／搜索相关报道」才发外部请求。文章的「资料与事实」复用 `ResearchPanel`。话题／问题／搜索摘录不能作为正文证据；正文以纯文本展示，不加载外部图片。
+- 共用 `ResearchService` 与 `/api/research/status`、`/search`、`/read`；`POST /api/hotspots/detail` 仅接收缓存／收藏条目身份。直接阅读优先，按需回退 Jina；Exa 仅匿名 `web_search_exa`，SDK 精确锁定 1.32.1，不读个人 MCP 或发布登录态。
+- 桌面 `research:{jinaEnabled,exaEnabled}` 复用 userData 配置并即时读取；缺省关闭。独立后端只接受 `RESEARCH_JINA_ENABLED=1`／`RESEARCH_EXA_ENABLED=1`，设置页只显示其状态。开关保存／状态查询不联网探测。
+- 搜索 30s／缓存10分钟；单链接直接15s、Jina30s、总50s／快照30分钟；响应2MiB、正文20000字符、失败也限频60s、同操作者最多3并发。快照在内存有界保存，重启／过期／驱逐410，已导入正文持久化在文章中。
+- 每批1～3份正文，以 `readId/hash` 服务端解析；创建文章与 `POST /api/articles/:id/sources/import` 原子写入，校验归属、version、重复URL与10份总量，导入使下游失效。未保存文章编辑禁止导入，失败保留选择。
+- `research-http.ts` 使用公网DNS绑定与有界原生HTTPS流，禁止重定向；SDK响应桥不使用 `Readable.toWeb`（取消后迟到事件曾导致闭合控制器异常）。不要为了代理环境连通性绕过地址绑定。
+- `node --import tsx scripts/verify-content-research.ts` 隔离mock验收；`--serve` 启动3180隔离UI，`--live` 只读真实公开服务。真实Exa三领域查询有结果；本机Jina直连超时，不能宣称全部站点已读通。详见 `docs/research/2026-10-08-content-research-verification.md`。第二／三期尚未实现。
 
 ### 外观主题（2026-09-30）
 

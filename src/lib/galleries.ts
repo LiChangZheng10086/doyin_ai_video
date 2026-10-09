@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os';
 import { pipeline } from 'node:stream/promises';
 import type { Stats } from 'node:fs';
 import path from 'node:path';
-import type { ActorSnapshot, JobRecord, PublishingPackageDetail } from '../types.js';
+import type { ActorSnapshot, JobRecord, PublishingPackageDetail, TranscriptAsset } from '../types.js';
 import { LocalStorage } from './storage.js';
 import { resolveSourceVideo } from './video-output.js';
 import { GalleryError, GalleryMedia, validateGalleryImage } from './gallery-media.js';
-import type { Gallery, GalleryDraft, GalleryPreview, GallerySource } from './gallery-types.js';
+import type { Gallery, GalleryDraft, GalleryPlanInput, GalleryPreview, GallerySource } from './gallery-types.js';
 import { SAU_NOTE_MAX_IMAGES } from './sau-runner.js';
+import { planGallery } from './gallery-planner.js';
 import { PUBLISH_NOTE_POLICIES, validateNoteCopy } from './publishing-platforms.js';
 
 const INDEX = 'cache/galleries.json';
@@ -24,12 +25,12 @@ const safeId = (id: string) => {
 type Deps = {
   storage: LocalStorage;
   jobs: { get(id: string): Promise<JobRecord | null> };
-  media?: Pick<GalleryMedia, 'probe' | 'frame' | 'render'>;
+  media?: Pick<GalleryMedia, 'probe' | 'frame' | 'render'> & Partial<Pick<GalleryMedia, 'suggestSubtitle'>>;
   createPackage?: (gallery: Gallery, paths: string[], actor: ActorSnapshot) => Promise<PublishingPackageDetail>;
 };
 
 export class GalleryService {
-  private readonly media: Pick<GalleryMedia, 'probe' | 'frame' | 'render'>;
+  private readonly media: Pick<GalleryMedia, 'probe' | 'frame' | 'render'> & Partial<Pick<GalleryMedia, 'suggestSubtitle'>>;
   private loaded?: Promise<Record<string, Gallery>>;
   private tail: Promise<unknown> = Promise.resolve();
   // ponytail: one local render at a time; use a bounded queue if parallel production is needed.
@@ -150,7 +151,9 @@ export class GalleryService {
       return this.withSource(current.sourceJobId, async source => {
       const draft = this.normalize(input, source.info.duration);
       const ready = current.generated?.draftHash === imageHash(draft) && current.generated.sourceFingerprint === source.fingerprint;
-      return this.persist({ ...current, ...draft, version: current.version + 1, status: ready ? 'ready' : 'draft', error: undefined, updatedAt: new Date().toISOString() });
+      const saved = await this.persist({ ...current, ...draft, plan: undefined, appliedPlanId: undefined, version: current.version + 1, status: ready ? 'ready' : 'draft', error: undefined, updatedAt: new Date().toISOString() });
+      if (current.plan) { safeId(current.plan.id); await rm(path.join(await this.outputRoot(), current.id, `plan-${current.plan.id}`), { recursive: true, force: true }).catch(() => undefined); }
+      return saved;
       });
     });
   }
@@ -183,10 +186,102 @@ export class GalleryService {
     return target;
   }
 
-  async render(id: string, version: number): Promise<Gallery> {
+  private async transcript(jobId: string): Promise<{ asset: TranscriptAsset; hash: string }> {
+    safeId(jobId);
+    let bytes: Buffer;
+    try {
+      const file = this.deps.storage.resolve('raw/transcripts', `${jobId}.json`);
+      const canonical = await realpath(file);
+      const root = await realpath(this.deps.storage.resolve());
+      if (!canonical.startsWith(root + path.sep)) throw new Error('outside storage');
+      bytes = await readFile(canonical);
+    } catch { throw new GalleryError(422, '没有可用视频转录，请先重新转录'); }
+    try { return { asset: JSON.parse(bytes.toString('utf8')) as TranscriptAsset, hash: hash(bytes) }; }
+    catch { throw new GalleryError(422, '转录文件损坏，请重新转录'); }
+  }
+
+  async plan(id: string, input: GalleryPlanInput): Promise<Gallery> {
+    return this.serial(async () => {
+      const current = await this.record(id); this.editable(current, input?.version);
+      if (!this.media.suggestSubtitle) throw new GalleryError(503, '字幕候选检测未就绪');
+      return this.withSource(current.sourceJobId, async source => {
+        const transcript = await this.transcript(current.sourceJobId);
+        const proposal = await planGallery(transcript.asset, source.info,
+          quote => this.media.suggestSubtitle!(source.path, quote, input), input);
+        const plan = { id: randomUUID(), previewHashes: [] as string[], transcriptHash: transcript.hash, sourceFingerprint: source.fingerprint, ...proposal };
+        const dir = path.join(await this.outputRoot(), current.id, `plan-${plan.id}`);
+        await mkdir(dir, { recursive: true });
+        try {
+          if (!(await realpath(dir)).startsWith((await this.outputRoot()) + path.sep)) throw new GalleryError(422, '方案目录不安全');
+          for (const [i, image] of plan.images.entries()) {
+            const file = path.join(dir, `${i}.png`);
+            await this.media.render(source.path, image.image, file);
+            plan.previewHashes.push(hash(await readFile(file)));
+          }
+          if (await this.sourceFingerprint(current.sourceJobId) !== source.fingerprint) throw new GalleryError(409, '原视频在规划期间发生变化，请重新规划');
+          if ((await this.transcript(current.sourceJobId)).hash !== transcript.hash) throw new GalleryError(409, '转录在规划期间发生变化，请重新规划');
+          const saved = await this.persist({ ...current, plan, version: current.version + 1, updatedAt: new Date().toISOString() });
+          if (current.plan) { safeId(current.plan.id); await rm(path.join(await this.outputRoot(), current.id, `plan-${current.plan.id}`), { recursive: true, force: true }).catch(() => undefined); }
+          return saved;
+        } catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
+      });
+    });
+  }
+
+  private async checkedPlan(gallery: Gallery, planId: string): Promise<void> {
+    if (!gallery.plan || typeof planId !== 'string' || gallery.plan.id !== planId) throw new GalleryError(409, '图集方案已变化，请重新规划');
+    if ((await this.transcript(gallery.sourceJobId)).hash !== gallery.plan.transcriptHash) throw new GalleryError(409, '转录已变化，请重新规划');
+    if (await this.sourceFingerprint(gallery.sourceJobId) !== gallery.plan.sourceFingerprint) throw new GalleryError(409, '原视频已变化，请重新规划');
+  }
+
+  async planImage(id: string, index: number, planId: string, version: number): Promise<Buffer> {
+    return this.serial(async () => {
+      const g = await this.record(id);
+      if (!Number.isInteger(version) || g.version !== version) throw new GalleryError(409, '图集版本已变化，请刷新后重试');
+      await this.checkedPlan(g, planId);
+      if (!Number.isInteger(index) || index < 0 || index >= g.plan!.images.length) throw new GalleryError(404, '方案图片不存在');
+      safeId(planId);
+      return this.readPlanImage(g, index);
+
+    });
+  }
+
+  private async readPlanImage(gallery: Gallery, index: number): Promise<Buffer> {
+    const root = await this.outputRoot();
+    safeId(gallery.plan!.id);
+    try {
+      const file = await realpath(path.join(root, gallery.id, `plan-${gallery.plan!.id}`, `${index}.png`));
+      if (!file.startsWith(root + path.sep)) throw new Error('outside root');
+      const bytes = await readFile(file);
+      if (!bytes.length || bytes.length > 20 * 1024 * 1024 || hash(bytes) !== gallery.plan!.previewHashes?.[index]) throw new Error('hash mismatch');
+      return bytes;
+    } catch { throw new GalleryError(422, '方案预览丢失或被修改，请重新规划'); }
+  }
+
+  async renderPlan(id: string, input: { version: number; planId: string; subtitlesConfirmed: boolean }): Promise<Gallery> {
+    if (typeof input?.planId !== 'string' || !input.planId) throw new GalleryError(422, '请选择有效图集方案');
+    if (input?.subtitlesConfirmed !== true) throw new GalleryError(422, '请先逐张核对整套字幕预览');
+    return this.renderInternal(id, input.version, input.planId);
+  }
+
+  async render(id: string, version: number): Promise<Gallery> { return this.renderInternal(id, version); }
+
+  private async renderInternal(id: string, version: number, planId?: string): Promise<Gallery> {
     let generationDir = '';
+    let previousImages: Gallery['images'] | undefined;
     const current = await this.serial(async () => {
-      const g = await this.record(id); this.editable(g, version);
+      let g = await this.record(id); this.editable(g, version);
+      if (planId !== undefined) {
+        await this.checkedPlan(g, planId);
+        if (!g.plan!.images.length) throw new GalleryError(422, '没有可用原生字幕候选，请重新规划');
+        for (let i = 0; i < g.plan!.images.length; i++) await this.readPlanImage(g, i);
+        previousImages = g.images;
+        g = { ...g, images: g.plan!.images.map(i => i.image), appliedPlanId: planId };
+      }
+      if (g.appliedPlanId) {
+        await this.checkedPlan(g, g.appliedPlanId);
+        if (imageHash(g) !== imageHash({ ...g, images: g.plan!.images.map(i => i.image) })) throw new GalleryError(409, '请重新确认整套方案后生成');
+      }
       if (this.rendering) throw new GalleryError(409, '其它图集生成中，请稍后重试');
       await this.withSource(g.sourceJobId, async source => { this.normalize(g, source.info.duration); });
       this.rendering = true;
@@ -195,6 +290,10 @@ export class GalleryService {
     });
     try {
       return await this.withSource(current.sourceJobId, async source => {
+      if (current.appliedPlanId) {
+        await this.checkedPlan(current, current.appliedPlanId);
+        if (source.fingerprint !== current.plan!.sourceFingerprint) throw new GalleryError(409, '原视频已变化，请重新规划');
+      }
       const generation = randomUUID();
       generationDir = path.join(await this.outputRoot(), current.id, generation);
       await mkdir(generationDir, { recursive: true });
@@ -203,16 +302,22 @@ export class GalleryService {
       for (const [i, image] of current.images.entries()) {
         const file = path.join(generationDir, `${i}.png`);
         await this.media.render(source.path, image, file);
-        hashes.push(hash(await readFile(file)));
+        const renderedHash = hash(await readFile(file));
+        if (current.appliedPlanId && renderedHash !== current.plan!.previewHashes?.[i]) throw new GalleryError(409, '生成图片与已确认的方案预览不一致，请重新规划');
+        hashes.push(renderedHash);
       }
       if (await this.sourceFingerprint(current.sourceJobId) !== source.fingerprint) throw new GalleryError(409, '原视频在生成期间发生变化，请重新生成');
-      const ready = await this.serial(() => this.persist({ ...current, status: 'ready', version: current.version + 1,
-        generated: { id: generation, draftHash: imageHash(current), sourceFingerprint: source.fingerprint, hashes }, updatedAt: new Date().toISOString() }));
+      const ready = await this.serial(async () => {
+        if (current.appliedPlanId) await this.checkedPlan(current, current.appliedPlanId);
+        return this.persist({ ...current, status: 'ready', version: current.version + 1,
+          generated: { id: generation, draftHash: imageHash(current), sourceFingerprint: source.fingerprint, hashes,
+            ...(current.appliedPlanId ? { transcriptHash: current.plan!.transcriptHash } : {}) }, updatedAt: new Date().toISOString() });
+      });
       if (current.generated) await rm(path.join(await this.outputRoot(), current.id, current.generated.id), { recursive: true, force: true }).catch(() => undefined);
       return ready;
       });
     } catch (error) {
-      await this.serial(() => this.persist({ ...current, status: 'failed', version: current.version + 1, error: error instanceof Error ? error.message : '图集生成失败' }));
+      await this.serial(() => this.persist({ ...current, ...(previousImages ? { images: previousImages } : {}), status: 'failed', version: current.version + 1, error: error instanceof Error ? error.message : '图集生成失败' }));
       if (generationDir) await rm(generationDir, { recursive: true, force: true });
       throw error;
     } finally { this.rendering = false; }
@@ -240,6 +345,7 @@ export class GalleryService {
 
   private async checked(g: Gallery): Promise<{ preview: GalleryPreview; paths: string[] }> {
     if (g.status !== 'ready' || !g.generated || g.generated.draftHash !== imageHash(g)) throw new GalleryError(409, '请先保存并重新生成整套图集');
+    if (g.generated.transcriptHash && g.generated.transcriptHash !== (await this.transcript(g.sourceJobId)).hash) throw new GalleryError(409, '转录已变化，请重新规划并生成图集');
     if (g.generated.sourceFingerprint !== await this.sourceFingerprint(g.sourceJobId)) throw new GalleryError(409, '原视频已变化，请重新生成图集');
     const paths: string[] = [];
     for (let i = 0; i < g.images.length; i++) paths.push((await this.readImage(g, i)).file);

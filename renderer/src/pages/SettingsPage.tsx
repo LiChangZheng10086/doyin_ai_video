@@ -17,6 +17,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Search,
   Gauge,
   Trash2,
   X,
@@ -32,6 +33,7 @@ import { RuntimeEnvironmentPanel } from '../components/RuntimeEnvironmentPanel';
 import { RuntimeStatusList } from '../components/RuntimeStatusList';
 import { XhsLoginPanel } from '../components/XhsLoginPanel';
 import { WechatSettingsPanel } from '../components/WechatSettingsPanel';
+import { ResearchSettingsPanel } from '../components/ResearchSettingsPanel';
 import { useRuntimeStatus } from '../hooks/useRuntimeStatus';
 import { apiClient } from '../services/api';
 import { parseOutputLimit, toOutputLimitForm, type OutputLimitMode } from '../utils/ai-output-limit';
@@ -90,6 +92,7 @@ const settingsSectionIcons: Record<SettingsSection, typeof KeyRound> = {
   toutiao: QrCode,
   xhs: QrCode,
   wechat: KeyRound,
+  research: Search,
   asr: Mic,
   storage: HardDrive,
   advanced: SlidersHorizontal,
@@ -387,6 +390,7 @@ export function SettingsPage() {
           {activeSection === 'toutiao' && <ToutiaoSection />}
           {activeSection === 'xhs' && <XhsSection />}
           {activeSection === 'wechat' && <WechatSettingsPanel />}
+          {activeSection === 'research' && <ResearchSettingsPanel />}
           {activeSection === 'asr' && <AsrSection />}
           {activeSection === 'storage' && <StorageSection />}
           {activeSection === 'advanced' && <AdvancedSection />}

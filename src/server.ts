@@ -4,6 +4,7 @@ import { loadEnvFile } from "node:process";
 import { fileURLToPath } from "node:url";
 import { createExpressApp } from "./app.js";
 import type { AiProvider } from "./types.js";
+import { researchEnvironment } from './lib/research-types.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,6 +26,7 @@ const aiApiKey =
     : process.env.OPENAI_API_KEY);
 
 const app = await createExpressApp({
+  resolveResearchConfig: async () => researchEnvironment(process.env),
   storagePath: path.join(rootDir, "storage"),
   rootDir,
   aiProvider,
