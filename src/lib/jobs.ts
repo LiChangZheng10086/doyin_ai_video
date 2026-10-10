@@ -12,6 +12,7 @@ import { buildScriptDraft } from "./script-builder.js";
 import type { ScriptCleaner } from "./ai-cleaner.js";
 import type { MediaService } from "./media.js";
 import type { AsrService } from "./asr.js";
+import type { TranscriptProofreader } from './transcript-proofreader.js';
 import type { TranscriptResult } from "./asr.js";
 import { isYouTubeUrl } from "./youtube.js";
 import { LocalStorage } from "./storage.js";
@@ -124,7 +125,8 @@ export class JobStore {
     private readonly cleaner: ScriptCleaner,
     private readonly media: MediaService,
     private readonly asr: AsrService,
-    private readonly videoGenerator?: HyperframesVideoGenerator
+    private readonly videoGenerator?: HyperframesVideoGenerator,
+    private readonly proofreader?: Pick<TranscriptProofreader, 'proofread'>
   ) {}
 
   async init() {
@@ -544,7 +546,7 @@ export class JobStore {
   private async executeStepAction(id: string, step: PipelineStep, signal?: AbortSignal, retranscribe = false): Promise<JobRecord | void> {
     if (step === "transcribe") {
       if (retranscribe) return this.runRetranscribeAction(id, signal);
-      await this.runTranscribeStep(id);
+      await this.runTranscribeStep(id, signal);
       return;
     }
     if (step === "clean") {
@@ -589,7 +591,7 @@ export class JobStore {
     });
   }
 
-  private async runTranscribeStep(id: string) {
+  private async runTranscribeStep(id: string, signal?: AbortSignal) {
     let record = await this.requireRecord(id);
     if (!record.videoPath) {
       await this.update(id, { status: "processing", stage: "downloading" });
@@ -608,7 +610,8 @@ export class JobStore {
       throw new Error("audio file is missing; transcription could not extract audio from the source video");
     }
 
-    const transcriptAsset = await this.createTranscriptAsset(id, audioPath ?? "", undefined, captions ?? undefined);
+    const transcriptAsset = await this.createTranscriptAsset(id, audioPath ?? "", undefined, captions ?? undefined, signal);
+    signal?.throwIfAborted();
     const transcriptPath = path.join("raw", "transcripts", `${id}.json`);
     await this.storage.writeJsonAtomic(transcriptPath, transcriptAsset);
     await this.update(id, {
@@ -624,7 +627,7 @@ export class JobStore {
     return this.media.readYouTubeCaptions(record.id, metadata?.duration);
   }
 
-  private async createTranscriptAsset(id: string, audioPath: string, duration?: number, captions?: TranscriptResult): Promise<TranscriptAsset> {
+  private async createTranscriptAsset(id: string, audioPath: string, duration?: number, captions?: TranscriptResult, signal?: AbortSignal): Promise<TranscriptAsset> {
     const record = await this.requireRecord(id);
     const youtube = isYouTubeUrl(record.sourceUrl);
     const result = captions ?? await this.asr.transcribe(audioPath, youtube ? "auto" : "zh");
@@ -636,13 +639,15 @@ export class JobStore {
     const segments = result.segments.map((segment) => ({ ...segment, text: normalize(segment.text) }));
     const issues = inspectTranscriptQuality({ segments, text, duration: actualDuration });
     if (issues.length) throw new Error(`转录异常：${issues.join("；")}`);
-    return {
+    const asset: TranscriptAsset = {
       jobId: id, sourceUrl: record.sourceUrl, audioPath,
       transcript: text, text, segments,
       words: result.words?.map((word) => ({ ...word, word: normalize(word.word) })),
       duration: actualDuration, language: result.language, model: result.model, provider: result.provider,
       createdAt: new Date().toISOString()
     };
+    signal?.throwIfAborted();
+    return this.proofreader ? this.proofreader.proofread(asset, signal) : asset;
   }
 
   private async runRetranscribeAction(id: string, signal?: AbortSignal): Promise<JobRecord> {
@@ -669,7 +674,7 @@ export class JobStore {
         extracted = await this.media.extractAudio(videoSnapshot, extractionId);
         audioPath = extracted.audioPath;
       }
-      const transcript = await this.createTranscriptAsset(id, audioPath, extracted?.duration, captions ?? undefined);
+      const transcript = await this.createTranscriptAsset(id, audioPath, extracted?.duration, captions ?? undefined, signal);
       transcript.audioPath = extracted?.audioPath ?? record.audioPath ?? "";
       signal?.throwIfAborted();
       const next = await this.commitRetranscript(record, transcript, extracted, signal);

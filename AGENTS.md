@@ -334,6 +334,7 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 ### 转录可靠性与历史修复（2026-10-09）
 
 - whisper.cpp 的 `offsets.from/to` 固定毫秒，`start/end` 固定秒；音频实际时长从 WAV 容器读取，默认 `-mc 0` 关闭跨段文字上下文。严重循环、非法时间及越界拒绝作为成功输入；正常强调不去重。规则通过不代表台词准确，原生字幕仍以视频像素为准。
+- 新音频 ASR 和受控重新转录在质量检查后自动调用 `TranscriptProofreader`，按批覆盖全部分段并复用当前 AI 配置；只做明确错字的最小替换，保留数字、否定词、顺序与分段时间。资产 `proofreading` 保存状态、模型、修改记录及原文/原分段/原逐词数据；发生修改后正式资产不再保留旧逐词时间。任一批失败或无配置时保存原始 ASR 并明确标未完成校对，不冒充已校对；暂停取消不提交。现成 YouTube 字幕与历史转录不批量改写；后续洗稿/图集读取修正后的正式转录，界面可展开原文对照。AI 校对仍不能证明专名或台词准确。
 - `GET /api/jobs/:id/raw-transcript` 只读附带 `qualityIssues`，洗稿及自动图集共用检查。`POST /api/jobs/:id/retranscribe` 提供受控修复（作品转录页和图集均有入口），复用安全媒体快照与现有最多三次尝试；不会启动时批量改历史数据。
 - 先把旧转录、脚本和洗稿保存为同目录 `<id>.json.before-retranscribe-<UUID>.json`，再写 `cache/retranscribe/<id>.json` 恢复记录后切换；成功清除下游有效引用并重置为 pending，物理旧成果和已建发布包保留。失败恢复原文件，重启先恢复未完成事务，保留最新垃圾桶状态，提交结束前禁止永久删除。
 - `node --import tsx scripts/check-transcript-quality.ts` 只读扫描桌面存储（支持 `--storage=...`、`--self-test`）；`scripts/verify-subtitle-gallery.ts` 默认隔离真实 FFmpeg/API 验收，`--serve` 提供 3183 合成 UI。两者不得静默修复真实数据；合成标记不证明真实字幕语义正确。

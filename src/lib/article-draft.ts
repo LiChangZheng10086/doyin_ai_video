@@ -92,7 +92,7 @@ export interface ArticleAiConfig {
  * 参数用 `any` 是有意的 —— 真实 SDK 的 `create` 是重载签名，收紧类型只会逼出无意义的断言。
  */
 export interface ArticleChatClient {
-  chat: { completions: { create: (args: any) => Promise<any> } };
+  chat: { completions: { create: (args: any, options?: { signal?: AbortSignal }) => Promise<any> } };
 }
 
 export interface ArticlePlanDeps {

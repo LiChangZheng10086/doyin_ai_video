@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AsrService } from "./lib/asr.js";
+import { TranscriptProofreader } from './lib/transcript-proofreader.js';
 import { inspectTranscriptQuality } from "./lib/transcript-quality.js";
 import { OpenAiScriptCleaner, RuntimeScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
@@ -113,6 +114,7 @@ export interface ServerConfig {
   planArticle?: ArticlePlanner;
   galleryTranslator?: Pick<GalleryTranslator, 'translate'>;
   galleryCopyWriter?: Pick<GalleryCopyWriter, 'write'>;
+  transcriptProofreader?: Pick<TranscriptProofreader, 'proofread'>;
   articleWriter?: Pick<ArticleWritingService, 'run'>;
   readArticleSource?: typeof readArticleSource;
   wechatMp?: { appId?: string; appSecret?: string; author?: string };
@@ -221,14 +223,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     resolveBackgroundAudio: (id, destination) => snapshotBackgroundAudio(assetStore, config.storagePath, id, destination),
   });
 
-  const jobs = new JobStore(storage, cleaner, media, asr, videoGenerator);
-  await jobs.init();
-  const resolveVideo = config.resolveJobVideo ?? resolveJobVideo;
-  const resolveSource = config.resolveSourceVideo ?? resolveSourceVideo;
-
-  const publishingStore = new PublishingStore(storage);
-  // AI 配置解析只有一份：文案服务与文章成文都从这里取（两处各写一份必然漂移，
-  // 表现是「文案用了新 Key、文章还在用旧的」）。
+  // 转录校对、文案与文章共用配置解析，桌面端修改配置后下一次调用立即生效。
   const resolvePublishingAiConfig = async () => {
     if (config.resolveAiConfig) return config.resolveAiConfig();
     if (!aiApiKey) return null;
@@ -240,6 +235,13 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       maxOutputTokens: aiMaxOutputTokens,
     };
   };
+  const proofreader = config.transcriptProofreader ?? new TranscriptProofreader({ resolveAiConfig: resolvePublishingAiConfig });
+  const jobs = new JobStore(storage, cleaner, media, asr, videoGenerator, proofreader);
+  await jobs.init();
+  const resolveVideo = config.resolveJobVideo ?? resolveJobVideo;
+  const resolveSource = config.resolveSourceVideo ?? resolveSourceVideo;
+
+  const publishingStore = new PublishingStore(storage);
   const publishingCopy = new PublishingCopyService({ resolveAiConfig: resolvePublishingAiConfig });
   const publishingAssets = new PublishingAssetService({ storageRoot: config.storagePath });
   // 素材库实例只建一份：素材路由与发布中心的「从素材库选图」必须看同一个索引，

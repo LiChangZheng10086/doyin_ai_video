@@ -10,6 +10,7 @@ import type { MediaService } from "./media.js";
 import type { HyperframesVideoGenerator } from "./hyperframes-video.js";
 import { LocalStorage } from "./storage.js";
 import type { ScriptAsset, JobRecord } from "../types.js";
+import type { TranscriptProofreader } from './transcript-proofreader.js';
 
 for (const captions of [true, false]) {
   test(`YouTube transcription ${captions ? "uses captions before ASR" : "falls back to auto language"} and preserves source text`, async () => {
@@ -529,12 +530,12 @@ test("JobStore reclean resets downstream steps and persists supplemental text fo
   assert.equal(cleaned.output.title, "补充后洗稿");
 });
 
-async function repairFixture(transcribe: AsrService["transcribe"], cleaner: ScriptCleaner = { async clean(input) { return input.draft; } }) {
+async function repairFixture(transcribe: AsrService["transcribe"], cleaner: ScriptCleaner = { async clean(input) { return input.draft; } }, proofreader?: Pick<TranscriptProofreader, 'proofread'>) {
   const root = await mkdtemp(path.join(tmpdir(), "jobs-retranscribe-"));
   const storage = new LocalStorage(root);
   const jobs = new JobStore(storage, cleaner,
     { async downloadVideo() { throw new Error("must reuse source"); }, async extractAudio() { throw new Error("must reuse checked audio"); } } as unknown as MediaService,
-    { transcribe } as AsrService);
+    { transcribe } as AsrService, undefined, proofreader);
   await jobs.init();
   const id = "repair";
   const record = await jobs.create({ sourceUrl: "https://example.com/video", topic: "repair" });
@@ -561,6 +562,30 @@ async function repairFixture(transcribe: AsrService["transcribe"], cleaner: Scri
 }
 
 const repairedTranscript = { text: "有效的新转录", segments: [{ start: 0, end: 3, text: "有效的新转录" }], duration: 20, model: "ggml-small", provider: "whisper.cpp" };
+
+for (const mode of ['new', 'repair'] as const) test(`${mode} transcription saves AI proofreading before downstream cleaning`, async () => {
+  let calls = 0;
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript, {
+    async clean(input) { assert.equal(input.draft.cleanScript, '校对后的转录'); return input.draft; },
+  }, { async proofread(asset, signal) {
+    calls++; assert.ok(signal); assert.equal(asset.text, repairedTranscript.text);
+    return { ...asset, text: '校对后的转录', transcript: '校对后的转录', segments: asset.segments.map(s => ({ ...s, text: '校对后的转录' })),
+      proofreading: { status: 'succeeded', checkedAt: 'now', changes: [{ segmentIndex: 0, before: asset.text, after: '校对后的转录' }] } };
+  } });
+  try {
+    if (mode === 'new') {
+      const record = (await jobs.get(id))!;
+      record.steps!.transcribe = { status: 'pending', attempts: 0 };
+      await storage.writeJson('cache/jobs-index.json', { [id]: record });
+      await rm(storage.resolve('raw/transcripts/repair.json'));
+    }
+    const result = mode === 'new' ? await jobs.runStep(id, 'transcribe') : await jobs.retranscribe(id);
+    assert.equal(result.steps?.transcribe.status, 'succeeded'); assert.equal(calls, 1);
+    const transcript = await storage.readJson<any>('raw/transcripts/repair.json');
+    assert.equal(transcript.text, '校对后的转录'); assert.equal(transcript.proofreading.status, 'succeeded');
+    if (mode === 'repair') await jobs.runStep(id, 'clean');
+  } finally { await rm(storage.resolve(), { recursive: true, force: true }); }
+});
 
 test("explicit retranscription adopts checked output, archives old text and invalidates all downstream steps", async () => {
   const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);

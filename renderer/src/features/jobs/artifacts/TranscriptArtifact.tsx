@@ -35,6 +35,7 @@ export function TranscriptArtifact({ transcript, fallbackText, transcriptError }
 
 function TranscriptContent({ transcriptData, source }: { transcriptData: RawTranscript; source: string }) {
   const segments = transcriptData.segments ?? [];
+  const proofreading = transcriptData.proofreading;
 
   return (
     <div>
@@ -45,6 +46,26 @@ function TranscriptContent({ transcriptData, source }: { transcriptData: RawTran
           : source.startsWith('YouTube') ? '来自 YouTube 字幕轨道，原文与时间轴保留。自动字幕和人工字幕均需对照原视频核对。'
           : '这是从分享文本解析的内容，非实际音频转录'}
       </p>
+      {source === '视频音频转录' && <div className="mt-4 rounded-lg border border-line bg-elevated p-4 text-sm text-ink">
+        {proofreading?.status === 'succeeded' ? <>
+          <p className="font-medium">AI 已校对，{proofreading.changes.length ? `修正 ${proofreading.changes.length} 处` : '未发现确定需要修改的错字'}。</p>
+          <p className="mt-1 text-xs text-ink-muted">{proofreading.model} · 保留原意与分段时间；专名和不确定的词仍需对照原视频核对。</p>
+          {!!proofreading.changes.length && <details className="mt-3">
+            <summary className="cursor-pointer">查看修改记录（{proofreading.changes.length} 处）</summary>
+            {proofreading.changes.map(change => <div key={change.segmentIndex} className="mt-2 border-t border-line pt-2">
+              <p className="text-xs text-ink-muted">第 {change.segmentIndex + 1} 段</p>
+              <p className="whitespace-pre-wrap">原文：{change.before}</p><p className="whitespace-pre-wrap">修正：{change.after}</p>
+            </div>)}
+          </details>}
+          {proofreading.original && <details className="mt-3">
+            <summary className="cursor-pointer">查看修改前原文</summary>
+            <p className="mt-2 whitespace-pre-wrap leading-relaxed">{proofreading.original.transcript}</p>
+          </details>}
+        </> : <>
+          <p className="font-medium">AI 校对未完成，当前显示原始音频转录。</p>
+          <p className="mt-1 text-ink-muted">{proofreading?.reason ?? '这是尚未经过 AI 校对的历史转录，可重新转录后自动校对。'}</p>
+        </>}
+      </div>}
       {!!transcriptData.qualityIssues?.length && <div role="alert" className="mt-4 rounded-lg border border-warning-line bg-warning-soft p-4 text-sm text-warning">
         <p className="font-medium">检测到转录异常，旧文字仅供参考，请重新转录后再用于创作。</p>
         {transcriptData.qualityIssues.map((issue, i) => <p key={i} className="mt-1">{issue}</p>)}

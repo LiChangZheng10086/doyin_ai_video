@@ -11,6 +11,7 @@
 | YouTube 中文译文图集 | 单条链接下载，人工／自动字幕优先，无字幕用本地多语言 ASR；选片段翻译、原文对照、中文 PNG 与现有抖音图文包 | 与原生字幕像素模式独立；译文需人工核对。真实验收为所提供视频的短片段，未完成全长转录。见[验收记录](docs/research/2026-10-10-youtube-translated-gallery-verification.md) |
 | 图集配套文案 | 从完整转录生成标题、背景引入、编号要点、互动结尾和话题；可独立重生成文案 | 已有正文不被重规划覆盖；替换前确认，失败保留原记录，仅改文案保留图片。见[文案验收](docs/research/2026-10-09-gallery-copy-verification.md) |
 | 转录质量与受控修复 | 检查严重循环、非法时间和越界；作品转录页与图集可主动重新转录 | 备份旧文件，失败恢复；成功后下游需重做，已建发布包保留。启动时不批量修复历史，见[转录修复验收](docs/research/2026-10-09-subtitle-gallery-asr-verification.md) |
+| 音频转录 AI 校对 | 新转录与重新转录后自动检查明确错别字，修正结果供洗稿和图集使用；保留原文、修改记录及分段时间 | 复用当前 AI 配置；无配置或失败保留原始转录并标记未校对。现成 YouTube 字幕和历史资产不批量改写；AI 校对仍需核对专名，见[规格](docs/superpowers/specs/2026-10-10-transcript-ai-proofreading.md) |
 | 成片配音与音乐 | 可选 macOS 离线中文系统配音、分段字幕、本机音频素材、循环与口播时音乐压低；最终验收 AAC 音轨 | 中文 TTS 当前仅支持 macOS 已安装语音；未选音频可无声，音频失败不降级为无声成功。见[音频验收](docs/research/2026-10-09-date-and-hyperframes-audio-verification.md) |
 | 创建日期筛选 | 创建日期起止与搜索、状态共同筛选作品，按浏览器本地日历日期包含起止当天 | 反向区间和非法日期明确提示，列表与卡片共用规则；见[日期验收](docs/research/2026-10-09-date-and-hyperframes-audio-verification.md) |
 

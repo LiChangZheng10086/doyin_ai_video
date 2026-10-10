@@ -1,4 +1,4 @@
-import type { VideoAudioOptions, VideoAudioManifest } from '../../../src/types';
+import type { VideoAudioOptions, VideoAudioManifest, TranscriptProofreading } from '../../../src/types';
 export type { VideoAudioOptions } from '../../../src/types';
 // 任务状态
 export type AiProvider = 'deepseek' | 'openai' | 'custom';
@@ -652,6 +652,7 @@ export interface TranscriptSegment {
 
 export interface RawTranscript {
   transcript: string;
+  proofreading?: TranscriptProofreading;
   qualityIssues?: string[];
   text?: string;
   segments?: TranscriptSegment[];

@@ -600,6 +600,7 @@ export interface TranscriptWord {
 
 export interface TranscriptAsset {
   qualityIssues?: string[];
+  proofreading?: TranscriptProofreading;
   jobId: string;
   sourceUrl: string;
   audioPath: string;
@@ -612,6 +613,15 @@ export interface TranscriptAsset {
   model: string;
   provider: string;
   createdAt: string;
+}
+
+export interface TranscriptProofreading {
+  status: 'succeeded' | 'skipped' | 'failed';
+  reason?: string;
+  model?: string;
+  checkedAt: string;
+  changes: { segmentIndex: number; before: string; after: string }[];
+  original?: { text: string; transcript: string; segments: TranscriptSegment[]; words?: TranscriptWord[] };
 }
 
 export interface EnhancedScene {
