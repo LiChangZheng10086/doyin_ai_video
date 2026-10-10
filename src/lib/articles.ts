@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import type { ActorSnapshot, PublishingPackageDetail } from '../types.js';
+import type { ActorSnapshot, PublishingPackageDetail, PublishTask } from '../types.js';
 import { LocalStorage } from './storage.js';
 import { articlePublicUrl, readArticleSource, type ArticleSourceRead } from './article-sources.js';
 import { validateWritingResult, type ArticleWritingService } from './article-writing.js';
@@ -32,6 +32,8 @@ type Deps = {
   resolveHotspot?: (sourceId: string, itemId: string) => Promise<ArticleRecord['hotspot']>;
   resolveAsset?: (id: string) => Promise<ResolvedAssetFile | null>;
   createPackage?: (input: ArticlePackageInput) => Promise<PublishingPackageDetail>;
+  previewDraftUpdate?: (taskId: string, input: ArticlePackageInput, articlePreviewRevision: string) => Promise<{ previewRevision: string; mediaId: string }>;
+  updateDraft?: (taskId: string, input: ArticlePackageInput, articlePreviewRevision: string, previewRevision: unknown) => Promise<PublishTask>;
   resolveBenchmark?: (id: string) => Promise<{domain:string;audience:string;styleSample:string}>;
 };
 
@@ -137,7 +139,7 @@ export class ArticleService {
   async update(id: string, input: unknown): Promise<ArticleRecord> {
     return this.serial(async () => {
       const p = object(input); const a = await this.record(id); this.editable(a,p.version);
-      const allowed = ['layoutTemplate','editSourceText','version','keyword','requirements','selectedTopic','addText','addUrl','sourceEdits','removeSourceId','facts','outline','draft','revision','adopted','reviewed','materialConfirmed','outlineConfirmed','author','digest','coverAssetId','bodyImageAssetIds'];
+      const allowed = ['bodyImagePlacements','layoutTemplate','editSourceText','version','keyword','requirements','selectedTopic','addText','addUrl','sourceEdits','removeSourceId','facts','outline','draft','revision','adopted','reviewed','materialConfirmed','outlineConfirmed','author','digest','coverAssetId','bodyImageAssetIds'];
       if (Object.keys(p).some(k => !allowed.includes(k))) throw new ArticleError(400, '存在未知编辑字段');
       if (p.keyword !== undefined) { a.keyword = field(p.keyword,500,true); this.invalidate(a,'diagnose'); }
       if (p.requirements !== undefined) {
@@ -195,6 +197,15 @@ export class ArticleService {
         catch { throw new ArticleError(422,'排版模板无效，请重新选择'); }
       }
       if (p.bodyImageAssetIds !== undefined) { if (!Array.isArray(p.bodyImageAssetIds) || p.bodyImageAssetIds.length > 10 || new Set(p.bodyImageAssetIds).size !== p.bodyImageAssetIds.length) throw new ArticleError(422,'正文图片最多10张，不可重复'); a.bodyImageAssetIds = p.bodyImageAssetIds.map((v: unknown) => field(v,100,true)); }
+      if (p.bodyImagePlacements !== undefined) {
+        const sections = a[a.adopted]?.sections.length ?? 0;
+        if (!Array.isArray(p.bodyImagePlacements) || p.bodyImagePlacements.length !== a.bodyImageAssetIds.length) throw new ArticleError(422,'配图位置须与正文图片一一对应');
+        a.bodyImagePlacements = p.bodyImagePlacements.map((placement: unknown) => {
+          const value = object(placement);
+          if (!Number.isInteger(value.section) || value.section < 0 || value.section >= sections) throw new ArticleError(422,'配图章节无效');
+          return { section: value.section, ...(value.caption !== undefined ? { caption:field(value.caption,200) } : {}) };
+        });
+      } else if (p.bodyImageAssetIds !== undefined || p.draft !== undefined || p.revision !== undefined || p.adopted !== undefined) delete a.bodyImagePlacements;
       delete a.error; return this.persist(a);
     });
   }
@@ -250,17 +261,35 @@ export class ArticleService {
     this.guard(a,'illustrations');
     const chosen = a[a.adopted]; if (!chosen) throw new ArticleError(422,'没有有效定稿');
     const draft = { ...structuredClone(chosen), author: a.author, digest: a.digest,
-      sections: [...structuredClone(chosen.sections), { heading: '资料来源', paragraphs: a.sources.filter(s => s.included && a.facts.some(f => f.sourceId === s.id)).map(s => `${s.title}${s.url ? `：${s.url}` : '（用户提供）'}`), factIds: [] }] };
+      sections: structuredClone(chosen.sections) };
     if (!a.coverAssetId) throw new ArticleError(422,'请选择封面图片');
     const assets: ResolvedAssetFile[] = [];
     for (const id of [a.coverAssetId,...a.bodyImageAssetIds]) { const file = await this.deps.resolveAsset?.(id); if (!file || file.record.kind !== 'image') throw new ArticleError(422,'选中的图片已失效，请重新选择'); assets.push(file); }
     const hashes = await Promise.all(assets.map(a => readFile(a.path).then(hash)));
-    const html = renderWechatArticleHtml(draft,{ layoutTemplate:a.layoutTemplate, images: a.bodyImageAssetIds.map((_,i) => ({slot:i+1})) });
+    const references = a.sources.filter(s => s.included && a.facts.some(f => f.sourceId === s.id)).map(s => `${s.title}${s.url ? `：${s.url}` : '（用户提供）'}`);
+    const html = renderWechatArticleHtml(draft,{ layoutTemplate:a.layoutTemplate, references, images: a.bodyImageAssetIds.map((_,i) => ({slot:i+1,
+      ...(a.bodyImagePlacements?.[i] ? {afterSection:a.bodyImagePlacements[i]!.section,caption:a.bodyImagePlacements[i]!.caption} : {})})) });
     const previewRevision = hash(JSON.stringify({ article: a, hashes, html }));
     return { draft, html, cover: assets[0]!, images: assets.slice(1), hashes, previewRevision };
   }
   async preview(id: string, version: unknown): Promise<ArticlePreview> {
     return this.serial(async () => { const a = await this.record(id); this.editable(a,version); const p = await this.prepared(a); return { version:a.version, previewRevision:p.previewRevision, html:p.html, title:p.draft.title, sourceCount:a.sources.filter(s => s.included).length }; });
+  }
+  async previewDraftUpdate(id: string, taskId: string, version: unknown, actor: ActorSnapshot) {
+    return this.serial(async () => {
+      const a = await this.record(id); this.editable(a,version); const p = await this.prepared(a);
+      if (!this.deps.previewDraftUpdate) throw new ArticleError(500,'草稿更新服务未配置');
+      const checked = await this.deps.previewDraftUpdate(taskId,{article:a,...p,actor},p.previewRevision);
+      return { version:a.version,taskId,mediaId:checked.mediaId,previewRevision:checked.previewRevision,html:p.html,title:p.draft.title };
+    });
+  }
+  async updateDraft(id: string, taskId: string, version: unknown, previewRevision: unknown, actor: ActorSnapshot) {
+    return this.serial(async () => {
+      const a = await this.record(id); this.editable(a,version); const p = await this.prepared(a);
+      if (!this.deps.updateDraft) throw new ArticleError(500,'草稿更新服务未配置');
+      // 持有文章队列至远端结果落盘，当前定稿/图片不能在提交中途被编辑。
+      return this.deps.updateDraft(taskId,{article:a,...p,actor},p.previewRevision,previewRevision);
+    });
   }
   async createPackage(id: string, version: unknown, previewRevision: unknown, actor: ActorSnapshot): Promise<PublishingPackageDetail> {
     // ponytail: serialize local packaging with saves; per-article queues if packaging contention becomes measurable.

@@ -15,3 +15,14 @@ test('trusted templates preserve content and image slots while input styles stay
   assert.notEqual(renderWechatArticleHtml(draft, { layoutTemplate: 'minimal-read' }), original);
   assert.throws(() => renderWechatArticleHtml(draft, { layoutTemplate: 'unknown' }), /模板/);
 });
+
+
+test('article image placement and references preserve safe content with a quieter source hierarchy', () => {
+  const html=renderWechatArticleHtml({title:'标题',sections:[{heading:'概念',paragraphs:['概念正文']},{heading:'按需读取',paragraphs:['加载正文']}]},
+    {layoutTemplate:'business-brief',images:[{slot:1,afterSection:1,caption:'按需读取示意'}],references:['来源 <script>bad</script> https://example.com']});
+  assert.ok(html.indexOf('加载正文')<html.indexOf('{{wechat-image-1}}'));
+  assert.ok(html.includes('按需读取示意'));
+  assert.ok(html.includes('font-size:13px'));
+  assert.doesNotMatch(html,/<script>/);
+  assert.throws(()=>renderWechatArticleHtml({title:'标题',sections:[]},{images:[{slot:1,afterSection:2}]}),/配图/);
+});

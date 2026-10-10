@@ -201,6 +201,7 @@ export interface PublishTask extends PlatformCopy {
    * `succeeded` 的语义是「已提交」；是否真的发出去了，仍由人工点「标记已发布」确认。
    */
   autoPublish?: PublishAutoPublish;
+  wechatDraftUpdate?: WechatDraftUpdate;
 }
 
 export type PublishAutoPublishStatus = "running" | "awaiting_code" | "succeeded" | "failed";
@@ -220,6 +221,19 @@ export interface PublishAutoPublish {
   /** 微信草稿 ID；不是正式发布 ID。 */
   draftMediaId?: string;
   /** 创建请求结果未知，必须先人工核实，不允许直接重发。 */
+  outcomeUncertain?: boolean;
+}
+
+/** 已有微信草稿的更新记录；原建稿记录与发布包保持不变。 */
+export interface WechatDraftUpdate {
+  status: "running" | "succeeded" | "failed";
+  attemptId: string;
+  startedAt: string;
+  finishedAt?: string;
+  previewRevision: string;
+  articleVersion: number;
+  snapshotPath: string;
+  message?: string;
   outcomeUncertain?: boolean;
 }
 

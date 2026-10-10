@@ -1374,3 +1374,24 @@ test("存档形状：xhsOptions 畸形（非布尔）视为**索引损坏**，�
     (error: PublishingError) => error.code === "publish_index_corrupt",
   );
 });
+
+
+test("wechat draft updates keep creation record, serialize attempts and reject stale or uncertain retries", async () => {
+  const f=await fixture();
+  const pkg=packageRecord({contentType:"article",sourceKind:"article",sourceArticleId:"article-1"});
+  const task=taskRecord("ready",{platform:"wechat_mp",autoPublish:{status:"succeeded",startedAt:NOW,attemptId:"created",draftOnly:true,draftMediaId:"original-media"}});
+  await f.store.reserveVersion(pkg.sourceJobId,ACTOR);
+  await f.store.commitPackage({package:pkg,tasks:[task]},ACTOR);
+  const input={articleId:"article-1",mediaId:"original-media",expectedContentRevision:1,expectedAttemptId:undefined,attemptId:"update-1",previewRevision:"preview",articleVersion:2,snapshotPath:"output/update-1"};
+  await f.store.beginWechatDraftUpdate(task.id,input,ACTOR);
+  await assert.rejects(f.store.beginWechatDraftUpdate(task.id,input,ACTOR), /状态|进行/);
+  await f.store.finishWechatDraftUpdate(task.id,"update-1",{status:"succeeded"},ACTOR);
+  assert.equal((await f.store.getTask(task.id))?.autoPublish?.draftMediaId,"original-media");
+  await assert.rejects(f.store.beginWechatDraftUpdate(task.id,input,ACTOR), /修改/);
+  await f.store.beginWechatDraftUpdate(task.id,{...input,expectedAttemptId:"update-1",attemptId:"update-2"},ACTOR);
+  await f.store.finishWechatDraftUpdate(task.id,"update-2",{status:"failed",outcomeUncertain:true},ACTOR);
+  await assert.rejects(f.store.beginWechatDraftUpdate(task.id,{...input,expectedAttemptId:"update-2",attemptId:"update-3"},ACTOR), /状态/);
+  const disk=await f.storage.readJson<PublishingIndex>("cache/publishing-index.json");
+  assert.equal(disk.tasks[task.id].wechatDraftUpdate?.outcomeUncertain,true);
+  assert.ok(disk.audit.some(a=>a.action==="task.wechat_draft_update_succeeded"));
+});

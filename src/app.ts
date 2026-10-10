@@ -429,6 +429,8 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     resolveBenchmark:id => wechatBenchmarks.forArticle(id),
     resolveAsset:id => assetStore.resolveFile(id),
     createPackage:input => publishingService.createIndependentArticle(input),
+    previewDraftUpdate:(taskId,input,revision) => publishingService.previewWechatDraftUpdate(taskId,input,revision),
+    updateDraft:(taskId,input,revision,confirmed) => publishingService.updateWechatDraft(taskId,input,revision,confirmed),
   })});
   registerGalleryRoutes(app, { sessions: localSessions, galleries: new GalleryService({
     storage, jobs,

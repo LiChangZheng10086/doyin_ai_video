@@ -117,6 +117,8 @@ type JobReader = {
 
 type CopyService = Pick<PublishingCopyService, "previewAll">;
 type Store = Pick<PublishingStore,
+  | "beginWechatDraftUpdate"
+  | "finishWechatDraftUpdate"
   | "beginAutoPublish"
   | "cancel"
   | "commitPackage"
@@ -1264,6 +1266,78 @@ export class PublishingService {
     const client = this.deps.wechat ? await this.deps.wechat() : new WechatMpClient();
     client.assertConfigured();
     return client;
+  }
+
+  /** 原文章版本及原草稿任务共同绑定预览；更新不改变历史发布包。 */
+  async previewWechatDraftUpdate(taskId: string, input: ArticlePackageInput, articlePreviewRevision: string) {
+    const task = await this.requireTask(taskId);
+    const detail = await this.requirePackage(task.packageId);
+    assertActivePackage(detail.package);
+    if (task.platform !== "wechat_mp" || detail.package.contentType !== "article" || detail.package.sourceArticleId !== input.article.id) {
+      throw new PublishingServiceError(422, "publish_validation_failed", "只能更新原文章关联的公众号草稿任务");
+    }
+    if (task.wechatDraftUpdate?.status === "running") throw new PublishingServiceError(409, "publish_auto_publish_in_progress", "草稿更新正在进行，请等待本次完成；中断请求须先核实结果");
+    if (task.status === "published" || task.status === "cancelled" || task.autoPublish?.status !== "succeeded" || !task.autoPublish.draftMediaId
+      || task.autoPublish.outcomeUncertain || task.wechatDraftUpdate?.outcomeUncertain) {
+      throw new PublishingServiceError(409, "publish_validation_failed", "草稿状态不允许更新，请先核实原草稿及上次操作结果");
+    }
+    if (!input.html.trim() || validateArticleDraft(input.draft).length) throw new PublishingServiceError(422, "publish_validation_failed", "文章内容无效");
+    const mediaId = task.autoPublish.draftMediaId;
+    const previewRevision = sha256Hex(Buffer.from(JSON.stringify({ articlePreviewRevision, taskId, packageId: task.packageId,
+      mediaId, contentRevision: task.contentRevision, previousAttemptId: task.wechatDraftUpdate?.attemptId })));
+    return { previewRevision, mediaId, contentRevision: task.contentRevision, previousAttemptId: task.wechatDraftUpdate?.attemptId };
+  }
+
+  async updateWechatDraft(taskId: string, input: ArticlePackageInput, articlePreviewRevision: string, previewRevision: unknown): Promise<PublishTask> {
+    if (typeof previewRevision !== "string" || !previewRevision.trim()) throw new PublishingServiceError(400, "publish_validation_failed", "更新草稿必须先预览并带上 previewRevision");
+    const checked = await this.previewWechatDraftUpdate(taskId, input, articlePreviewRevision);
+    if (previewRevision !== checked.previewRevision) throw new PublishingServiceError(409, "publish_revision_conflict", "预览已变化，请重新预览原草稿更新内容");
+    const client = await this.wechatClient();
+    const attemptId = this.createId();
+    const snapshotPath = path.join("output", "publishing", "wechat-draft-updates", taskId, attemptId);
+    const workDir = path.join(this.storageRoot, snapshotPath);
+    await this.storeCall(() => this.deps.store.beginWechatDraftUpdate(taskId, { articleId: input.article.id, mediaId: checked.mediaId,
+      expectedAttemptId: checked.previousAttemptId, expectedContentRevision: checked.contentRevision, attemptId, previewRevision: checked.previewRevision, articleVersion: input.article.version, snapshotPath }, input.actor));
+    let submitted = false; let succeeded = false;
+    const finish = (status: "succeeded" | "failed", message: string, outcomeUncertain = false) =>
+      this.storeCall(() => this.deps.store.finishWechatDraftUpdate(taskId, attemptId, { status, message, outcomeUncertain }, input.actor));
+    try {
+      await mkdir(workDir, { recursive: true, mode: 0o700 });
+      // 持久快照先于任何远端写入。旧发布包与上次快照不覆盖，审计记录保留每次路径。
+      await writeFile(path.join(workDir, "article.json"), JSON.stringify({ article: input.article, draft: input.draft, mediaId: checked.mediaId, previewRevision }, null, 2), { flag: "wx", mode: 0o600 });
+      await writeFile(path.join(workDir, "article.html"), input.html, { flag: "wx", mode: 0o600 });
+      const selected = [input.cover, ...input.images];
+      const snapshots: string[] = [];
+      for (const [i, image] of selected.entries()) {
+        const bytes = await readFile(image.path);
+        if (sha256Hex(bytes) !== input.hashes[i]) throw new PublishingServiceError(409, "publish_revision_conflict", "图片已变化，请重新预览");
+        const file = path.join(workDir, `source-${i}${path.extname(image.path)}`);
+        await writeFile(file, bytes, { flag: "wx", mode: 0o600 }); snapshots.push(file);
+      }
+      const media = this.deps.wechatMedia ?? new WechatMediaService({ ffmpegBinary: this.deps.ffmpegBinary });
+      const cover = await media.prepareCoverImage(snapshots[0]!, workDir);
+      const uploadedCover = await client.uploadCoverImage({ bytes: await readFile(cover.path), filename: "cover.jpg", maxBytes: WECHAT_ARTICLE_LIMITS.coverBytes });
+      if (!uploadedCover.ok) return finish("failed", uploadedCover.message);
+      const urls = new Map<number, string>();
+      for (const [i, file] of snapshots.slice(1).entries()) {
+        const image = await media.prepareContentImage(file, workDir, i + 1);
+        const uploaded = await client.uploadContentImage({ bytes: await readFile(image.path), filename: `${i + 1}.jpg`, maxBytes: WECHAT_ARTICLE_LIMITS.contentImageBytes - 1 });
+        if (!uploaded.ok) return finish("failed", uploaded.message);
+        urls.set(i + 1, uploaded.data!.url);
+      }
+      const content = substituteWechatImageSlots(input.html, urls);
+      await writeFile(path.join(workDir, "submitted.html"), content, { flag: "wx", mode: 0o600 });
+      submitted = true;
+      const result = await client.updateDraft(checked.mediaId, { title: input.draft.title, author: input.draft.author, digest: input.draft.digest,
+        content, thumbMediaId: uploadedCover.data!.mediaId });
+      succeeded = result.ok;
+      // 只存无 token 的业务结果；索引落盘失败时仍可从这里核实 API 是否明确返回成功。
+      await writeFile(path.join(workDir, "result.json"), JSON.stringify({ ok: result.ok, mediaId: checked.mediaId, errorKind: result.errorKind, errorCode: result.errorCode }, null, 2), { flag: "wx", mode: 0o600 });
+      const uncertain = !result.ok && (result.errorKind === "network" || result.errorKind === "invalid_response");
+      return finish(result.ok ? "succeeded" : "failed", result.ok ? "原公众号草稿已更新，尚未发布" : `${result.message}${uncertain ? " 更新结果待核实，禁止直接重试。" : " 原草稿内容保留，可重新预览后再试。"}`, uncertain);
+    } catch {
+      return finish(succeeded ? "succeeded" : "failed", succeeded ? "微信已确认原草稿更新成功，尚未发布" : submitted ? "更新结果待核实，请先核实原草稿，禁止直接重试" : "素材处理或快照保存失败，原草稿未更新", submitted && !succeeded);
+    }
   }
 
   private async autoPublishWechatArticle(

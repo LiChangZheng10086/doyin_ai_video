@@ -151,6 +151,20 @@ export interface PublishTask extends PlatformCopy {
   createdAt: string;
   updatedAt: string;
   autoPublish?: PublishAutoPublish;
+  wechatDraftUpdate?: WechatDraftUpdate;
+}
+
+/** 已有微信草稿的更新记录；原建稿记录与发布包保持不变。 */
+export interface WechatDraftUpdate {
+  status: "running" | "succeeded" | "failed";
+  attemptId: string;
+  startedAt: string;
+  finishedAt?: string;
+  previewRevision: string;
+  articleVersion: number;
+  snapshotPath: string;
+  message?: string;
+  outcomeUncertain?: boolean;
 }
 
 export interface PublishAuditEvent {

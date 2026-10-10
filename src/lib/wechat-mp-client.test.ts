@@ -808,3 +808,24 @@ test("微信返回非字符串或空白 ID/URL 时不能当成上传或建草稿
     assert.equal((await c.createDraft({ title: "标题", content: "<p>正文</p>", thumbMediaId: "cover" })).errorKind, "invalid_response");
   }
 });
+
+
+test("updateDraft locks the original media ID and first article, never adds or publishes", async () => {
+  const { impl, calls } = scriptedFetch(url => isTokenRequest(url) ? jsonResponse({ access_token: ACCESS_TOKEN, expires_in: 7200 }) : jsonResponse({ errcode: 0, errmsg: "ok" }));
+  const c = client({ fetchImpl: impl });
+  const result = await c.updateDraft("existing-draft", { title:"改排版", content:"<p>正文</p>", thumbMediaId:"cover", author:"作者" });
+  assert.equal(result.ok, true); assert.equal(result.data?.mediaId, "existing-draft");
+  const writes = calls.filter(call => !isTokenRequest(call.url));
+  assert.equal(writes.length, 1); assert.equal(new URL(writes[0].url).pathname, "/cgi-bin/draft/update");
+  assert.deepEqual(JSON.parse(writes[0].body!), { media_id:"existing-draft", index:0, articles:{ article_type:"news", title:"改排版", content:"<p>正文</p>", thumb_media_id:"cover", author:"作者" } });
+  await assert.rejects(c.updateDraft("", {title:"标题",content:"<p>正文</p>",thumbMediaId:"cover"}), /草稿/);
+  assert.equal(calls.length, 2);
+});
+
+test("updateDraft requires explicit errcode zero and never retries ambiguous responses", async () => {
+  for (const response of [{}, {errcode:"0"}, {errcode:48001,errmsg:"unauthorized"}]) {
+    const {impl,calls}=scriptedFetch(url => isTokenRequest(url) ? jsonResponse({access_token:ACCESS_TOKEN,expires_in:7200}) : jsonResponse(response));
+    const result=await client({fetchImpl:impl}).updateDraft("existing-draft",{title:"标题",content:"<p>正文</p>",thumbMediaId:"cover"});
+    assert.equal(result.ok,false);assert.equal(calls.filter(call=>!isTokenRequest(call.url)).length,1);
+  }
+});

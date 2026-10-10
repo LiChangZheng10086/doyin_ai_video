@@ -147,8 +147,8 @@ export type WechatArticleDraft = ArticleDraft;
  * 就是一篇全裂图的文章。
  */
 export type WechatArticleImage =
-  | { url: string; caption?: string }
-  | { slot: number; caption?: string };
+  | { url: string; caption?: string; afterSection?: number }
+  | { slot: number; caption?: string; afterSection?: number };
 
 /** 正文图占位符前缀。`substituteWechatImageSlots` 与打包层共用这一份约定。 */
 export const WECHAT_IMAGE_SLOT_PREFIX = "{{wechat-image-";
@@ -157,6 +157,7 @@ const IMAGE_SLOT_PATTERN = /\{\{wechat-image-(\d+)\}\}/gu;
 export interface WechatArticleRenderOptions {
   images?: WechatArticleImage[];
   layoutTemplate?: string;
+  references?: string[];
 }
 
 export type WechatArticleField = ArticleValidationField;
@@ -415,7 +416,7 @@ function renderImage(image: WechatArticleImage): string[] {
   const parts = [`<img src="${escapeAttribute(source)}" style="${IMG_STYLE}">`];
   const caption = (image.caption ?? "").trim();
   if (caption.length > 0) {
-    parts.push(`<p style="${CAPTION_STYLE}">${sanitizeParagraphHtml(caption)}</p>`);
+    parts.push(`<section style="${CAPTION_STYLE}">${sanitizeParagraphHtml(caption)}</section>`);
   }
   return parts;
 }
@@ -479,7 +480,7 @@ export function substituteWechatImageSlots(
  *
  * 输出是**自包含的内联样式片段**（一个根 `<section style="…">`，不带 html/head/body 外壳）。
  *
- * 配图位置：第 k 张图放在第 k 个 section 之后；**图多于 section 时余下的按顺序附在文末**
+ * 配图位置：显式 afterSection 为 0 基章节；否则第 k 张图放在第 k 个 section 之后；**余图附在文末**
  * （宁可多插一张，也不静默丢图）。
  *
  * @throws WechatArticleError `wechat_article_too_long` —— 渲染结果超过 2 万字符，
@@ -497,6 +498,9 @@ export function renderWechatArticleHtml(
   );
   const parts: string[] = [];
   const sections = draft.sections ?? [];
+  for (const image of images) if (image.afterSection !== undefined && (!Number.isInteger(image.afterSection) || image.afterSection < 0 || image.afterSection >= sections.length)) {
+    throw new WechatArticleError("wechat_article_image_unsafe", "配图章节已失效，请重新选择位置");
+  }
 
   sections.forEach((section, index) => {
     const heading = (section.heading ?? "").trim();
@@ -507,8 +511,7 @@ export function renderWechatArticleHtml(
       const content = sanitizeParagraphHtml(paragraph ?? "");
       if (content.length > 0) parts.push(`<p style="${P_STYLE}">${content}</p>`);
     }
-    const image = images[index];
-    if (image) parts.push(...renderImage(image));
+    for (const [i, image] of images.entries()) if ((image.afterSection ?? i) === index) parts.push(...renderImage(image));
 
     const rendered = applyWechatLayout(`<section style="${ROOT_STYLE}">${parts.join("\n")}</section>`, options.layoutTemplate);
     if (codePointLength(rendered) >= WECHAT_ARTICLE_LIMITS.contentChars) {
@@ -521,11 +524,13 @@ export function renderWechatArticleHtml(
     }
   });
 
-  for (const image of images.slice(sections.length)) {
-    parts.push(...renderImage(image));
-  }
+  for (const [i, image] of images.entries()) if (image.afterSection === undefined && i >= sections.length) parts.push(...renderImage(image));
 
-  return applyWechatLayout(`<section style="${ROOT_STYLE}">${parts.join("\n")}</section>`, options.layoutTemplate);
+  const content = applyWechatLayout(parts.join("\n"), options.layoutTemplate);
+  const references = options.references?.length ? `<section style="margin-top:32px;padding-top:16px;border-top:1px solid #e2e8f0;"><p style="font-size:13px;font-weight:700;color:#64748b;margin:0 0 10px;text-indent:0;">资料来源</p>${options.references.map(text => `<p style="font-size:13px;line-height:1.7;color:#64748b;margin:0 0 8px;word-break:break-all;text-indent:0;">${sanitizeParagraphHtml(text)}</p>`).join("\n")}</section>` : "";
+  const result = `<section style="${ROOT_STYLE}">${content}${references}</section>`;
+  if (codePointLength(result) >= WECHAT_ARTICLE_LIMITS.contentChars) throw new WechatArticleError("wechat_article_too_long", "文章含来源后超过微信正文字符上限，请精简");
+  return result;
 }
 
 // ── 公众号档案与 AI 成文 ─────────────────────────────────────────────────────

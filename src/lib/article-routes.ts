@@ -22,6 +22,8 @@ export function registerArticleRoutes(app: Express, deps: { articles: ArticleSer
   router.post('/:id/sources/import',actor,handle(async(req,res)=>res.json({article:await s.importResearchSources(String(req.params.id),req.body?.version,req.body?.selections,getActor(req).userId)})));
   router.post('/:id/publishing/preview',handle(async (req,res) => res.json({preview:await s.preview(String(req.params.id),req.body?.version)})));
   router.post('/:id/publishing/packages',actor,handle(async (req,res) => res.status(201).json({detail:await s.createPackage(String(req.params.id),req.body?.version,req.body?.previewRevision,getActor(req))})));
+  router.post('/:id/wechat-drafts/:taskId/preview',actor,handle(async (req,res) => res.json({preview:await s.previewDraftUpdate(String(req.params.id),String(req.params.taskId),req.body?.version,getActor(req))})));
+  router.post('/:id/wechat-drafts/:taskId/update',actor,handle(async (req,res) => res.json({task:await s.updateDraft(String(req.params.id),String(req.params.taskId),req.body?.version,req.body?.previewRevision,getActor(req))})));
   router.use(researchErrorBoundary);
   router.use((error: unknown,_req: Request,res: Response,_next: NextFunction) => {
     if (error instanceof ArticleError || error instanceof LocalAuthError || error instanceof WechatArticleError || error instanceof PublishingServiceError || error instanceof PublishingAssetError) { res.status(error.status).json({code:error.code,message:error.message}); return; }

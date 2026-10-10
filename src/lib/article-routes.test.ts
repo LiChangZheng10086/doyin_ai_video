@@ -24,7 +24,7 @@ export async function articleFixture() {
     readArticleSource:async url => ({url,title:'资料',text:'项目支持导出，离线编辑仍未开放。',status:'readable',readAt:new Date().toISOString(),hash:'fake',links:[],truncated:false}),
     wechatClient:new WechatMpClient({appId:'test-app-id',appSecret:'fake-secret',fetchImpl:async url => {
       const p = new URL(url).pathname; calls.push(p);
-      return new Response(JSON.stringify(p.endsWith('stable_token') ? {access_token:'example-token',expires_in:7200} : p.endsWith('add_material') ? {media_id:'cover-id'} : p.endsWith('uploadimg') ? {url:'https://mmbiz.qpic.cn/fake/body.jpg'} : {media_id:'draft-id'}));
+      return new Response(JSON.stringify(p.endsWith('stable_token') ? {access_token:'example-token',expires_in:7200} : p.endsWith('add_material') ? {media_id:'cover-id'} : p.endsWith('uploadimg') ? {url:'https://mmbiz.qpic.cn/fake/body.jpg'} : p === '/cgi-bin/draft/update' ? {errcode:0,errmsg:'ok'} : {media_id:'draft-id'}));
     }}),wechatMedia:{prepareCoverImage:async src => ({path:src,bytes:8}),prepareContentImage:async src => ({path:src,bytes:8})},
   });
   const server = createServer(app); await new Promise<void>(resolve => server.listen(0,'127.0.0.1',resolve));
@@ -93,4 +93,39 @@ test('benchmark routes require sessions and only qualified references enter an i
   assert.equal((await f.request(`/api/wechat-benchmarks/${g.id}`,'DELETE',{version:g.version-1})).status,409);
   assert.equal((await f.request(`/api/wechat-benchmarks/${g.id}`,'DELETE',{version:g.version})).status,200);
   assert.equal((await f.request('/api/wechat-benchmarks')).body.groups.length,0);
+});
+
+
+test('existing draft update route requires auth and current article preview, preserves original package and media ID',async t=>{
+  const f=await articleFixture();t.after(f.close);
+  let a=(await f.request('/api/articles','POST',{keyword:'测试稿'})).body.article;
+  const patch=async(p:any)=>{const r=await f.request(`/api/articles/${a.id}`,'PATCH',{version:a.version,...p});assert.equal(r.status,200,JSON.stringify(r.body));a=r.body.article;};
+  const run=async(step:string)=>{const r=await f.request(`/api/articles/${a.id}/steps/${step}`,'POST',{version:a.version});assert.equal(r.status,200,JSON.stringify(r.body));a=r.body.article;};
+  await run('diagnose');await patch({selectedTopic:'topic-1',addText:{title:'说明',text:'项目支持导出，离线编辑仍未开放。'}});
+  await run('evidence');await patch({materialConfirmed:true});await run('outline');await patch({outlineConfirmed:true});await run('draft');await run('review');await patch({reviewed:true});await run('illustrations');
+  const image=await f.upload();await patch({coverAssetId:image,bodyImageAssetIds:[image]});
+  const p=(await f.request(`/api/articles/${a.id}/publishing/preview`,'POST',{version:a.version})).body.preview;
+  const detail=(await f.request(`/api/articles/${a.id}/publishing/packages`,'POST',{version:a.version,previewRevision:p.previewRevision})).body.detail;
+  const taskId=detail.tasks[0].id;
+  const pp=(await f.request(`/api/publishing/packages/${detail.package.id}/preview`)).body.preview;
+  assert.equal((await f.request(`/api/publishing/tasks/${taskId}/auto-publish`,'POST',{previewRevision:pp.previewRevision})).status,200);
+  a=(await f.request(`/api/articles/${a.id}`)).body.article;
+  await patch({layoutTemplate:'business-brief',bodyImagePlacements:[{section:0,caption:'功能示意'}]});
+  const endpoint=`/api/articles/${a.id}/wechat-drafts/${taskId}`;
+  assert.equal((await f.request(endpoint+'/preview','POST',{version:a.version},false)).status,401);
+  const preview=await f.request(endpoint+'/preview','POST',{version:a.version});assert.equal(preview.status,200,JSON.stringify(preview.body));
+  assert.equal(preview.body.preview.mediaId,'draft-id');assert.ok(preview.body.preview.html.includes('font-size:13px'));
+  assert.equal((await f.request(endpoint+'/update','POST',{version:a.version,previewRevision:preview.body.preview.previewRevision},false)).status,401);
+  assert.equal((await f.request(endpoint+'/update','POST',{version:a.version-1,previewRevision:preview.body.preview.previewRevision})).status,409);
+  assert.equal((await f.request(endpoint+'/update','POST',{version:a.version})).status,400);
+  assert.equal((await f.request(endpoint+'/update','POST',{version:a.version,previewRevision:'old'})).status,409);
+  await patch({digest:'新摘要'});
+  assert.equal((await f.request(endpoint+'/update','POST',{version:a.version,previewRevision:preview.body.preview.previewRevision})).status,409);
+  const fresh=(await f.request(endpoint+'/preview','POST',{version:a.version})).body.preview;
+  const result=await f.request(endpoint+'/update','POST',{version:a.version,previewRevision:fresh.previewRevision});
+  assert.equal(result.status,200,JSON.stringify(result.body));assert.equal(result.body.task.wechatDraftUpdate.status,'succeeded');assert.equal(result.body.task.autoPublish.draftMediaId,'draft-id');
+  assert.equal(result.body.task.publishedAt,undefined);
+  assert.equal((await f.request(endpoint+'/update','POST',{version:a.version,previewRevision:fresh.previewRevision})).status,409);
+  assert.equal(f.calls.filter(p=>p==='/cgi-bin/draft/add').length,1);assert.equal(f.calls.filter(p=>p==='/cgi-bin/draft/update').length,1);assert.ok(f.calls.every(p=>!/freepublish|mass/.test(p)));
+  assert.equal((await f.request(`/api/publishing/packages/${detail.package.id}/preview`)).body.preview.previewRevision,pp.previewRevision);
 });

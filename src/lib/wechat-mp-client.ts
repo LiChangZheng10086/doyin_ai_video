@@ -477,6 +477,26 @@ export class WechatMpClient {
     return { ok: true, message: "ok", data: { mediaId } };
   }
 
+  /** 更新同一草稿的第一篇文章；不提供新增或发布回退。 */
+  async updateDraft(mediaId: string, article: WechatDraftArticle): Promise<WechatMpResult<{ mediaId: string }>> {
+    if (typeof mediaId !== "string" || !mediaId.trim() || mediaId.length > 256) {
+      throw new WechatMpError("wechat_mp_invalid_draft", "更新草稿必须指定已有草稿 ID");
+    }
+    const draft = this.validateDraft(article);
+    const token = await this.getAccessToken();
+    if (!token.ok) return { ok: false, ...withoutData(token) };
+    const entry: Record<string, unknown> = { article_type: "news", title: draft.title, content: draft.content, thumb_media_id: draft.thumbMediaId };
+    for (const [key, value] of [["author", article.author], ["digest", article.digest], ["content_source_url", article.contentSourceUrl]]) {
+      const text = firstNonBlank(value); if (text) entry[key!] = text;
+    }
+    const result = await this.requestJson<{ errcode?: number }>("POST", "/cgi-bin/draft/update", {
+      accessToken: token.data?.accessToken, body: { media_id: mediaId, index: 0, articles: entry },
+    });
+    if (!result.ok) return { ok: false, ...withoutData(result) };
+    if (result.data?.errcode !== 0) return { ok: false, errorKind: "invalid_response", message: "更新草稿未返回明确成功结果，请先核实原草稿，勿直接重试。" };
+    return { ok: true, message: "草稿已更新，尚未发布", data: { mediaId } };
+  }
+
   /**
    * 上传前的本地校验。
    *

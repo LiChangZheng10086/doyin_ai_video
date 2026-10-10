@@ -24,6 +24,7 @@ export interface ArticleRecord {
   adopted: 'draft' | 'revision'; reviewed: boolean; materialConfirmed: boolean; outlineConfirmed: boolean;
   author: string; digest: string; coverAssetId: string; bodyImageAssetIds: string[];
   layoutTemplate?: string;
+  bodyImagePlacements?: Array<{ section: number; caption?: string }>;
   steps: Record<ArticleStep, 'pending' | 'running' | 'succeeded' | 'failed'>;
   running?: ArticleStep | 'read' | 'package'; error?: string;
   reference: Partial<Record<ArticleStep, unknown>>;

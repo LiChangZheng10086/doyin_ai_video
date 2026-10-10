@@ -10,6 +10,7 @@ import type {
   PackageContentType,
   PublishAutoPublish,
   PublishAutoPublishStatus,
+  WechatDraftUpdate,
   PublishPlatform,
   PublishTask,
   PublishTaskStatus,
@@ -446,6 +447,45 @@ export class PublishingStore {
     });
   }
 
+  async beginWechatDraftUpdate(taskId: string, input: {
+    articleId: string; mediaId: string; expectedAttemptId?: string; expectedContentRevision: number; attemptId: string;
+    previewRevision: string; articleVersion: number; snapshotPath: string;
+  }, actor: ActorSnapshot): Promise<PublishTask> {
+    return this.mutate(draft => {
+      const task = this.requireMutableTask(draft, taskId);
+      const pkg = this.requirePackage(draft, task.packageId);
+      const previous = task.wechatDraftUpdate;
+      if (task.platform !== "wechat_mp" || pkg.contentType !== "article" || pkg.sourceArticleId !== input.articleId
+        || task.status === "published" || task.status === "cancelled" || task.autoPublish?.status !== "succeeded"
+        || !input.mediaId || task.autoPublish.draftMediaId !== input.mediaId || task.autoPublish.outcomeUncertain
+        || previous?.status === "running" || previous?.outcomeUncertain) {
+        throw new PublishingError("publish_invalid_transition", { reason: "wechat_draft_update_requires_confirmed_draft" });
+      }
+      if (previous?.attemptId !== input.expectedAttemptId || task.contentRevision !== input.expectedContentRevision) throw new PublishingError("publish_revision_conflict");
+      task.wechatDraftUpdate = { status: "running", attemptId: input.attemptId, startedAt: this.timestamp(),
+        previewRevision: input.previewRevision, articleVersion: input.articleVersion, snapshotPath: input.snapshotPath };
+      task.updatedAt = this.timestamp();
+      draft.audit.push(this.auditEvent(task.packageId, "task.wechat_draft_update_start", actor, { taskId,
+        metadata: { ...task.wechatDraftUpdate, mediaId: input.mediaId } }));
+      return task;
+    });
+  }
+
+  async finishWechatDraftUpdate(taskId: string, attemptId: string,
+    patch: Pick<WechatDraftUpdate, "status" | "message" | "outcomeUncertain">, actor: ActorSnapshot): Promise<PublishTask> {
+    return this.mutate(draft => {
+      // 请求期间包可能被移入垃圾桶；仍必须记下远端结果，不能丢失已成功的证据。
+      const task = draft.tasks[taskId];
+      if (!task) throw new PublishingError("publish_task_not_found");
+      if (task.wechatDraftUpdate?.attemptId !== attemptId || task.wechatDraftUpdate.status !== "running") throw new PublishingError("publish_revision_conflict");
+      task.wechatDraftUpdate = { ...task.wechatDraftUpdate, ...patch, finishedAt: this.timestamp() };
+      task.updatedAt = this.timestamp();
+      draft.audit.push(this.auditEvent(task.packageId, `task.wechat_draft_update_${patch.status}`, actor, { taskId,
+        reason: patch.message, metadata: { ...task.wechatDraftUpdate } }));
+      return task;
+    });
+  }
+
   /**
    * 更新自动发布进度。
    *
@@ -524,6 +564,7 @@ export class PublishingStore {
   }
 
   private autoPublishInFlight(task: PublishTask): boolean {
+    if (task.wechatDraftUpdate?.status === "running") return true;
     const record = task.autoPublish;
     if (!record) return false;
     if (record.status !== "running" && record.status !== "awaiting_code") return false;
@@ -548,6 +589,7 @@ export class PublishingStore {
           targetState: "trashed",
         });
       }
+      if (tasksOfPackage(draft, packageId).some(task => task.wechatDraftUpdate?.status === "running")) throw new PublishingError("publish_auto_publish_in_progress");
       const deletedAt = this.now();
       packageRecord.state = "trashed";
       packageRecord.deletedAt = deletedAt.toISOString();
@@ -828,6 +870,7 @@ export class PublishingStore {
   private requireMutableTask(index: PublishingIndex, taskId: string): PublishTask {
     const task = index.tasks[taskId];
     if (!task) throw new PublishingError("publish_task_not_found");
+    if (task.wechatDraftUpdate?.status === "running") throw new PublishingError("publish_auto_publish_in_progress");
     const packageRecord = index.packages[task.packageId];
     if (!packageRecord) throw new PublishingError("publish_package_not_found");
     if (packageRecord.state !== "active") {
