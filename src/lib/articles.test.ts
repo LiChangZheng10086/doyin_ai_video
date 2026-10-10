@@ -138,3 +138,21 @@ test('package success has no fallible article write after the publishing transac
     assert.equal(result.package.id,'created-package');assert.equal((await f.service.get(a.id)).running,undefined);
   }finally {await f.dispose();}
 });
+
+
+test('layout defaults apply only to future articles; saved legacy choices never migrate implicitly',async t=>{
+ const f=await fixture();t.after(f.dispose);
+ const legacy=await f.service.create({keyword:'旧文章'});
+ await f.service.update(legacy.id,{version:legacy.version,layoutTemplate:'minimal-read'});
+ const old=await f.service.get(legacy.id);
+ const defaults=await f.service.layoutDefaults();
+ const saved=await f.service.saveLayoutDefaults({version:defaults.version,layoutTemplate:'deep-reading',layoutOptions:{fontSize:18,lineHeight:2,themeColor:'#555165'}});
+ const next=await f.service.create({keyword:'新文章'});
+ assert.equal(next.layoutTemplate,'deep-reading');assert.equal(next.layoutVersion,2);assert.equal(next.layoutOptions?.fontSize,18);
+ assert.deepEqual(await f.service.get(old.id),old);
+ await assert.rejects(f.service.saveLayoutDefaults({version:defaults.version,layoutTemplate:'tech-explainer',layoutOptions:{}}),/版本/);
+ const reset=await f.service.saveLayoutDefaults({version:saved.version,reset:true});assert.equal(reset.layoutTemplate,'tech-explainer');
+ const restored=new ArticleService({storage:new LocalStorage(f.root),writer:{run:async()=>({})}});
+ assert.equal((await restored.layoutDefaults()).version,reset.version);
+ await assert.rejects(f.service.update(next.id,{version:next.version,layoutOptions:{themeColor:'evil'}}),/主题色/);
+});

@@ -1,4 +1,6 @@
 import { ArticleService } from './lib/articles.js';
+import {ArticleIllustrations} from './lib/article-illustrations.js';
+import type {ArticleRecord} from './lib/article-types.js';
 import { WechatBenchmarkService } from './lib/wechat-benchmarks.js';
 import { registerWechatBenchmarkRoutes } from './lib/wechat-benchmark-routes.js';
 import { ArticleWritingService } from './lib/article-writing.js';
@@ -116,6 +118,7 @@ export interface ServerConfig {
   galleryCopyWriter?: Pick<GalleryCopyWriter, 'write'>;
   transcriptProofreader?: Pick<TranscriptProofreader, 'proofread'>;
   articleWriter?: Pick<ArticleWritingService, 'run'>;
+  articleIllustrator?:{generate:(a:ArticleRecord,signal:AbortSignal)=>Promise<Pick<ArticleRecord,'coverAssetId'|'bodyImageAssetIds'|'bodyImagePlacements'>>};
   readArticleSource?: typeof readArticleSource;
   wechatMp?: { appId?: string; appSecret?: string; author?: string };
   resolveWechatConfig?: () => Promise<{ appId?: string; appSecret?: string; author?: string }>;
@@ -418,6 +421,9 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   registerWechatBenchmarkRoutes(app, {benchmarks:wechatBenchmarks,sessions:localSessions});
   registerArticleRoutes(app, {sessions:localSessions, articles:new ArticleService({storage,
     writer:config.articleWriter ?? new ArticleWritingService({resolveAiConfig:resolvePublishingAiConfig}),
+    checkAi:async()=>{if(config.articleWriter)return true;const ai=await resolvePublishingAiConfig();return !!ai?.apiKey?.trim()&&!!ai.model?.trim();},
+    discardIllustrations:async ids=>{for(const id of ids)await assetStore.remove(id);},
+    illustrate:(a,signal)=>(config.articleIllustrator??new ArticleIllustrations({assets:assetStore,rootDir:config.rootDir,browserBinary:config.hyperframesBrowserPath})).generate(a,signal),
     readSource:config.readArticleSource,
     readResearchSource:async(actorId,url)=>{
       const read=await research.read(actorId,{url});
@@ -431,6 +437,9 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     createPackage:input => publishingService.createIndependentArticle(input),
     previewDraftUpdate:(taskId,input,revision) => publishingService.previewWechatDraftUpdate(taskId,input,revision),
     updateDraft:(taskId,input,revision,confirmed) => publishingService.updateWechatDraft(taskId,input,revision,confirmed),
+    verifyWechat:()=>publishingService.verifyWechatAccount(),
+    getWechatTask:id=>publishingStore.getTask(id),
+    submitWechat:async(taskId,actor)=>{const task=await publishingStore.getTask(taskId);if(!task)throw new Error('公众号任务不存在');const p=await publishingService.packagePreview(task.packageId);return publishingService.autoPublish(taskId,{previewRevision:p.previewRevision},actor);},
   })});
   registerGalleryRoutes(app, { sessions: localSessions, galleries: new GalleryService({
     storage, jobs,

@@ -82,6 +82,8 @@ export interface ArticleSourceContext {
 }
 
 export interface ArticleAiConfig {
+  provider?: string;
+  maxOutputTokens?: number;
   apiKey: string;
   model: string;
   baseURL?: string;

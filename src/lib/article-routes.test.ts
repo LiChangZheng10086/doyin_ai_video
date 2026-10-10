@@ -18,14 +18,14 @@ export const fakeArticleWriter = { async run(step: ArticleStep,a: ArticleRecord)
   return {images:[{section:0,purpose:'封面',caption:'导出与离线',prompt:'简洁流程示意图'}]};
 } };
 
-export async function articleFixture() {
+export async function articleFixture(options:any={}) {
   const root = await mkdtemp(path.join(tmpdir(),'article-http-')); const calls: string[] = [];
   const app = await createExpressApp({rootDir:process.cwd(),storagePath:root,articleWriter:fakeArticleWriter,
     readArticleSource:async url => ({url,title:'资料',text:'项目支持导出，离线编辑仍未开放。',status:'readable',readAt:new Date().toISOString(),hash:'fake',links:[],truncated:false}),
     wechatClient:new WechatMpClient({appId:'test-app-id',appSecret:'fake-secret',fetchImpl:async url => {
       const p = new URL(url).pathname; calls.push(p);
-      return new Response(JSON.stringify(p.endsWith('stable_token') ? {access_token:'example-token',expires_in:7200} : p.endsWith('add_material') ? {media_id:'cover-id'} : p.endsWith('uploadimg') ? {url:'https://mmbiz.qpic.cn/fake/body.jpg'} : p === '/cgi-bin/draft/update' ? {errcode:0,errmsg:'ok'} : {media_id:'draft-id'}));
-    }}),wechatMedia:{prepareCoverImage:async src => ({path:src,bytes:8}),prepareContentImage:async src => ({path:src,bytes:8})},
+      return new Response(JSON.stringify(p.endsWith('stable_token') ? {access_token:'example-token',expires_in:7200} : p.endsWith('draft/count') ? {total_count:0} : p.endsWith('add_material') ? {media_id:'cover-id'} : p.endsWith('uploadimg') ? {url:'https://mmbiz.qpic.cn/fake/body.jpg'} : p === '/cgi-bin/draft/update' ? {errcode:0,errmsg:'ok'} : {media_id:'draft-id'}));
+    }}),wechatMedia:{prepareCoverImage:async src => ({path:src,bytes:8}),prepareContentImage:async src => ({path:src,bytes:8})},...options,
   });
   const server = createServer(app); await new Promise<void>(resolve => server.listen(0,'127.0.0.1',resolve));
   const base = `http://127.0.0.1:${(server.address() as any).port}`;
@@ -74,6 +74,27 @@ test('independent article HTTP workflow builds an immutable package and submits 
     assert.ok(f.calls.includes('/cgi-bin/draft/add')); assert.ok(!f.calls.some(p => /freepublish|mass/.test(p)));
     assert.equal((await f.request('/api/jobs')).body.jobs.length,0);
   } finally { await f.close(); }
+});
+
+test('automatic HTTP creation stops at an editable illustrated preview; only explicit confirmation saves one WeChat draft',async t=>{
+ let image='';const f=await articleFixture({articleIllustrator:{generate:async()=>({coverAssetId:image,bodyImageAssetIds:[image],bodyImagePlacements:[{section:0,caption:'隔离示意图'}]})}});t.after(f.close);image=await f.upload();
+ assert.equal((await f.request('/api/articles/auto','POST',{input:'资料',requestId:'no-auth'},false)).status,401);
+ assert.equal((await f.request('/api/articles/capabilities')).body.aiReady,true);
+ const input={input:'项目支持导出，离线编辑仍未开放。'.repeat(10),requestId:'auto-http-1'};
+ const start=await f.request('/api/articles/auto','POST',input);assert.equal(start.status,202,JSON.stringify(start.body));let a=start.body.article;
+ for(let i=0;i<200;i++){a=(await f.request(`/api/articles/${a.id}`)).body.article;if(!['queued','running','cancelling'].includes(a.automation.status))break;await new Promise(r=>setTimeout(r,10));}
+ assert.equal(a.automation.status,'ready',JSON.stringify(a));assert.equal(a.reviewed,false);assert.equal(a.bodyImageAssetIds.length,1);assert.equal(f.calls.length,0);
+ assert.equal((await f.request('/api/articles/auto','POST',input)).body.article.id,a.id);
+ const layout=await f.request(`/api/articles/${a.id}/layout-preview`,'POST',{version:a.version});assert.equal(layout.status,200);
+ a=(await f.request(`/api/articles/${a.id}`,'PATCH',{version:a.version,materialConfirmed:true,outlineConfirmed:true,reviewed:true})).body.article;
+ const preview=(await f.request(`/api/articles/${a.id}/publishing/preview`,'POST',{version:a.version})).body.preview;
+ const endpoint=`/api/articles/${a.id}/wechat-drafts`;
+ assert.equal((await f.request(endpoint,'POST',{version:a.version,previewRevision:preview.previewRevision,confirmed:false})).status,400);assert.equal(f.calls.length,0);
+ assert.equal((await f.request(endpoint,'POST',{version:a.version,previewRevision:preview.previewRevision,confirmed:true},false)).status,401);
+ const result=await f.request(endpoint,'POST',{version:a.version,previewRevision:preview.previewRevision,confirmed:true});assert.equal(result.status,200,JSON.stringify(result.body));assert.equal(result.body.article.wechatDelivery.state,'succeeded');assert.equal(result.body.task.publishedAt,undefined);
+ a=result.body.article;const current=(await f.request(`/api/articles/${a.id}/publishing/preview`,'POST',{version:a.version})).body.preview;
+ assert.equal((await f.request(endpoint,'POST',{version:a.version,previewRevision:current.previewRevision,confirmed:true})).status,200);
+ assert.equal(f.calls.filter(p=>p==='/cgi-bin/draft/add').length,1);assert.ok(f.calls.every(p=>!/mass|freepublish|draft\/update/.test(p)));
 });
 
 test('benchmark routes require sessions and only qualified references enter an independent article',async t=>{
@@ -128,4 +149,30 @@ test('existing draft update route requires auth and current article preview, pre
   assert.equal((await f.request(endpoint+'/update','POST',{version:a.version,previewRevision:fresh.previewRevision})).status,409);
   assert.equal(f.calls.filter(p=>p==='/cgi-bin/draft/add').length,1);assert.equal(f.calls.filter(p=>p==='/cgi-bin/draft/update').length,1);assert.ok(f.calls.every(p=>!/freepublish|mass/.test(p)));
   assert.equal((await f.request(`/api/publishing/packages/${detail.package.id}/preview`)).body.preview.previewRevision,pp.previewRevision);
+});
+
+
+test('layout preview is read-only and defaults affect only future articles with guarded settings',async t=>{
+ const f=await articleFixture();t.after(f.close);
+ assert.equal((await f.request('/api/articles/layout-defaults','GET',undefined,false)).status,401);
+ const defaults=(await f.request('/api/articles/layout-defaults')).body.defaults;
+ let a=(await f.request('/api/articles','POST',{keyword:'真实文章预览'})).body.article;
+ const patch=async(p:any)=>{const r=await f.request(`/api/articles/${a.id}`,'PATCH',{version:a.version,...p});assert.equal(r.status,200,JSON.stringify(r.body));a=r.body.article;};
+ const run=async(step:string)=>{const r=await f.request(`/api/articles/${a.id}/steps/${step}`,'POST',{version:a.version});assert.equal(r.status,200,JSON.stringify(r.body));a=r.body.article;};
+ await run('diagnose');await patch({selectedTopic:'topic-1',addText:{title:'资料',text:'项目支持导出，离线编辑仍未开放。'}});await run('evidence');await patch({materialConfirmed:true});await run('outline');await patch({outlineConfirmed:true});await run('draft');
+ await patch({layoutTemplate:'minimal-read'});assert.equal(a.layoutVersion,undefined);
+ const before=structuredClone(a);
+ const endpoint=`/api/articles/${a.id}/layout-preview`;
+ const preview=await f.request(endpoint,'POST',{version:a.version,layoutTemplate:'practical-guide',layoutVersion:2,layoutOptions:{fontSize:18,lineHeight:2,themeColor:'#087f72'}});
+ assert.equal(preview.status,200,JSON.stringify(preview.body));assert.ok(preview.body.preview.html.includes('项目支持导出'));assert.ok(preview.body.preview.html.includes('font-size:18px'));
+ assert.deepEqual((await f.request(`/api/articles/${a.id}`)).body.article,before);assert.equal(f.calls.length,0);
+ assert.equal((await f.request(endpoint,'POST',{version:a.version-1,layoutTemplate:'tech-explainer'})).status,409);
+ assert.equal((await f.request(endpoint,'POST',{version:a.version,layoutTemplate:'tech-explainer',layoutOptions:{themeColor:'evil'}})).status,422);
+ assert.equal((await f.request('/api/articles/layout-defaults','PUT',{version:defaults.version,layoutTemplate:'deep-reading',layoutOptions:{fontSize:17}},false)).status,401);
+ const saved=await f.request('/api/articles/layout-defaults','PUT',{version:defaults.version,layoutTemplate:'deep-reading',layoutOptions:{fontSize:17}});assert.equal(saved.status,200);
+ const next=(await f.request('/api/articles','POST',{keyword:'新文章'})).body.article;assert.equal(next.layoutTemplate,'deep-reading');assert.equal(next.layoutVersion,2);
+ assert.deepEqual((await f.request(`/api/articles/${a.id}`)).body.article,before);
+ assert.equal((await f.request('/api/articles/layout-defaults','PUT',{version:defaults.version,reset:true})).status,409);
+ const reset=await f.request('/api/articles/layout-defaults','PUT',{version:saved.body.defaults.version,reset:true});assert.equal(reset.body.defaults.layoutTemplate,'tech-explainer');
+ assert.equal(f.calls.length,0);
 });

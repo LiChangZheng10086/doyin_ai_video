@@ -35,16 +35,44 @@ export const WECHAT_LAYOUTS = [
 ] as const;
 
 export function wechatLayout(id = 'default') {
-  const layout = WECHAT_LAYOUTS.find(item => item.id === id);
+  const layout = WECHAT_LAYOUTS.find(item => item.id === id) ?? MODERN_WECHAT_LAYOUTS.find(item => item.id === id);
   if (!layout) throw new Error('排版模板无效，请重新选择');
   return layout;
 }
 
 /** Input has already been sanitized by wechat-article; never accepts user CSS. */
 export function applyWechatLayout(html: string, id?: string): string {
-  const styles = wechatLayout(id).styles as Record<string, string>;
+  const layout = wechatLayout(id);
+  const styles = ('styles' in layout ? layout.styles : {}) as Record<string, string>;
   return html.replace(/<(h2|p|strong)(\s[^>]*)?>/giu, (tag, name: string, attrs = '') => {
     const style = styles[name.toLowerCase()];
     return style ? `<${name}${attrs.replace(/\sstyle="[^"]*"/giu, '')} style="${style}">` : tag;
   });
+}
+
+/** Version 2 is opt-in: saved legacy IDs keep their original rendering. */
+export const MODERN_WECHAT_LAYOUTS = [
+  { id:'tech-explainer',name:'科技解读',description:'概念导语、细线章节、注释配图',color:'#2563eb',fontSize:16,lineHeight:1.85 },
+  { id:'practical-guide',name:'实操教程',description:'步骤标记、代码框、截图与提示',color:'#087f72',fontSize:16,lineHeight:1.8 },
+  { id:'business-brief',name:'商务简报',description:'摘要栏、资讯分区、紧凑来源',color:'#1e40af',fontSize:16,lineHeight:1.8 },
+  { id:'deep-reading',name:'深度长文',description:'书页留白、衬线章节、安静引用',color:'#555165',fontSize:17,lineHeight:2 },
+  { id:'image-story',name:'图片故事',description:'大图在前、轻标题、留白图注',color:'#b4533c',fontSize:16,lineHeight:1.9 },
+  { id:'resource-list',name:'清单推荐',description:'条目卡片、醒目分项、资源注释',color:'#496b38',fontSize:16,lineHeight:1.8 },
+] as const;
+export interface WechatLayoutOptions { themeColor?: string; fontSize?: number; lineHeight?: number }
+export interface WechatLayoutDefaults { version:number; layoutTemplate:string; layoutVersion:2; layoutOptions:WechatLayoutOptions }
+export const FACTORY_WECHAT_LAYOUT = {layoutTemplate:'tech-explainer',layoutVersion:2 as const,layoutOptions:{}};
+export function validateWechatLayoutOptions(value:unknown):WechatLayoutOptions {
+  if(!value || typeof value!=='object' || Array.isArray(value))throw new Error('排版选项须为对象');
+  const o=value as Record<string,unknown>;
+  if(Object.keys(o).some(k=>!['themeColor','fontSize','lineHeight'].includes(k)))throw new Error('排版包含未知设置');
+  if(o.themeColor!==undefined && (typeof o.themeColor!=='string'||!/^#[a-f0-9]{6}$/i.test(o.themeColor)))throw new Error('主题色须为六位十六进制颜色');
+  if(o.fontSize!==undefined && (!Number.isInteger(o.fontSize)||Number(o.fontSize)<15||Number(o.fontSize)>18))throw new Error('正文字号须为15～18');
+  if(o.lineHeight!==undefined && (typeof o.lineHeight!=='number'||!Number.isFinite(o.lineHeight)||o.lineHeight<1.5||o.lineHeight>2.1))throw new Error('行距须为1.5～2.1');
+  return {...o} as WechatLayoutOptions;
+}
+export function modernWechatLayout(id:string) {
+  const layout=MODERN_WECHAT_LAYOUTS.find(item=>item.id===id);
+  if(!layout)throw new Error('请选择六类新版模板之一');
+  return layout;
 }

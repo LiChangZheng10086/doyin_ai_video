@@ -28,7 +28,8 @@
  */
 
 import OpenAI from "openai";
-import { applyWechatLayout, wechatLayout } from './wechat-templates.js';
+import { renderDesignedWechatLayout } from "./wechat-layout-design.js";
+import { MODERN_WECHAT_LAYOUTS, applyWechatLayout, wechatLayout, type WechatLayoutOptions } from './wechat-templates.js';
 import { extractAiMessageText } from "./ai-response.js";
 import { toSimplifiedChinese } from "./chinese.js";
 import {
@@ -157,6 +158,8 @@ const IMAGE_SLOT_PATTERN = /\{\{wechat-image-(\d+)\}\}/gu;
 export interface WechatArticleRenderOptions {
   images?: WechatArticleImage[];
   layoutTemplate?: string;
+  layoutVersion?: 2;
+  layoutOptions?: WechatLayoutOptions;
   references?: string[];
 }
 
@@ -500,6 +503,22 @@ export function renderWechatArticleHtml(
   const sections = draft.sections ?? [];
   for (const image of images) if (image.afterSection !== undefined && (!Number.isInteger(image.afterSection) || image.afterSection < 0 || image.afterSection >= sections.length)) {
     throw new WechatArticleError("wechat_article_image_unsafe", "配图章节已失效，请重新选择位置");
+  }
+
+  const id = options.layoutTemplate ?? 'default';
+  const modern = options.layoutVersion === 2 || (!['default','minimal-read','business-brief','tutorial-steps','daily-news'].includes(id) && MODERN_WECHAT_LAYOUTS.some(t => t.id === id));
+  if (modern) {
+    const rendered = renderDesignedWechatLayout(id, options.layoutOptions ?? {}, sections.map((section,index) => ({
+      heading:sanitizeParagraphHtml(section.heading ?? ''),
+      paragraphs:section.paragraphs.map(text => {
+        const quote = text.trim().match(/^<blockquote\b[^>]*>([\s\S]*)<\/blockquote>$/i);
+        const code = text.trim().match(/^<pre\b[^>]*>([\s\S]*)<\/pre>$/i) ?? text.trim().match(/^```[^\n]*\n([\s\S]*?)\n```$/);
+        return code ? {kind:'code' as const,html:escapeAttribute(code[1]!.replace(/^<code\b[^>]*>|<\/code>$/gi,''))} : {kind:quote?'quote' as const:'body' as const,html:sanitizeParagraphHtml(quote?.[1] ?? text)};
+      }),
+      images:images.filter((image,i) => (image.afterSection ?? i) === index).map(image => renderImage(image).join('')),
+    })), (options.references ?? []).map(sanitizeParagraphHtml), images.filter((image,i) => image.afterSection === undefined && i >= sections.length).map(image => renderImage(image).join('')));
+    if (codePointLength(rendered) >= WECHAT_ARTICLE_LIMITS.contentChars) throw new WechatArticleError('wechat_article_too_long','排版后文章超过微信正文字符上限，请精简内容');
+    return rendered;
   }
 
   sections.forEach((section, index) => {

@@ -145,6 +145,9 @@ export class ApiClient {
     return (await this.publishingRequest<{ batch: AudioImportBatch }>({ url: `/api/online-audio/imports/${encodeURIComponent(id)}` })).batch;
   }
 
+  async getArticleLayoutDefaults():Promise<import('../../../src/lib/wechat-templates').WechatLayoutDefaults> { return (await this.publishingRequest<{defaults:import('../../../src/lib/wechat-templates').WechatLayoutDefaults}>({url:'/api/articles/layout-defaults'})).defaults; }
+  async saveArticleLayoutDefaults(input:Record<string,unknown>):Promise<import('../../../src/lib/wechat-templates').WechatLayoutDefaults> { return (await this.publishingRequest<{defaults:import('../../../src/lib/wechat-templates').WechatLayoutDefaults}>({url:'/api/articles/layout-defaults',method:'PUT',data:input})).defaults; }
+  async previewArticleLayout(id:string,input:Record<string,unknown>&{version:number}):Promise<{title:string;html:string;version:number}> { return (await this.publishingRequest<{preview:{title:string;html:string;version:number}}>({url:`/api/articles/${encodeURIComponent(id)}/layout-preview`,method:'POST',data:input})).preview; }
   async getArticles(): Promise<ArticleRecord[]> { return (await this.publishingRequest<{articles:ArticleRecord[]}>({url:'/api/articles'})).articles; }
   async getArticle(id: string): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}`})).article; }
   async createArticle(input: {keyword?:string;hotspot?:{sourceId:string;itemId:string};benchmarkId?:string;researchSelections?:ResearchSelection[]}): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:'/api/articles',method:'POST',data:input})).article; }
@@ -233,6 +236,11 @@ export class ApiClient {
     return (await this.publishingRequest<{ detail: PublishingPackageDetail }>({ method: 'POST', url: `/api/galleries/${id}/publishing/packages`, data: { previewRevision, rightsConfirmed } })).detail;
   }
 
+  async createArticleAuto(data:{input:string;requestId:string;hotspot?:{sourceId:string;itemId:string};requirements?:Partial<ArticleRecord['requirements']>;layoutTemplate?:string}):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:'/api/articles/auto',method:'POST',data})).article;}
+  async resumeArticleAuto(id:string,version:number):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${id}/automation/resume`,method:'POST',data:{version}})).article;}
+  async cancelArticleAuto(id:string,runId:string):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${id}/automation/cancel`,method:'POST',data:{runId}})).article;}
+  async articleCapabilities():Promise<{aiReady:boolean;automaticImages:boolean}>{return this.publishingRequest({url:'/api/articles/capabilities'});}
+  async saveArticleWechatDraft(id:string,version:number,previewRevision:string):Promise<{article:ArticleRecord;task:PublishTask}>{return this.publishingRequest({url:`/api/articles/${id}/wechat-drafts`,method:'POST',data:{version,previewRevision,confirmed:true}});}
   async initialize() {
     if (!this.serverPort) {
       // Electron 环境下获取后端端口，浏览器开发模式下使用 Vite 代理

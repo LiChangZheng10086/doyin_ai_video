@@ -1,3 +1,4 @@
+import type { WechatLayoutOptions } from './wechat-templates.js';
 import type { ArticleDraft } from './article-draft.js';
 import type { ArticleSourceRead } from './article-sources.js';
 
@@ -14,6 +15,14 @@ export interface ArticleOutline {
 export interface ResearchDraft extends ArticleDraft { sections: Array<ArticleDraft['sections'][number] & { factIds: string[] }> }
 export interface ArticleIllustration { purpose: string; section: number; caption: string; prompt: string }
 export interface ArticleMaterial extends ArticleSourceRead { id: string; included: boolean; kind: 'web' | 'text'; depth: 0 | 1 }
+export type ArticleAutoStage = 'config'|'read'|ArticleStep|'assets'|'preview';
+export interface ArticleAutomation {
+ runId:string;requestId:string;actorId:string;inputHash:string;
+ status:'queued'|'running'|'needs_input'|'failed'|'cancelling'|'cancelled'|'ready'|'interrupted';
+ stage:ArticleAutoStage;startedAt:string;finishedAt?:string;templateReason?:string;
+ checkpoints:Partial<Record<ArticleAutoStage,{status:'running'|'succeeded'|'failed';updatedAt:string}>>;
+ error?:{code:string;message:string;retryable:boolean};
+}
 export interface ArticleRecord {
   id: string; version: number; keyword: string; createdAt: string; updatedAt: string;
   requirements: { audience: string; purpose: string; viewpoint: string; styleSample: string; domain: string; structure: string; length: string };
@@ -24,7 +33,13 @@ export interface ArticleRecord {
   adopted: 'draft' | 'revision'; reviewed: boolean; materialConfirmed: boolean; outlineConfirmed: boolean;
   author: string; digest: string; coverAssetId: string; bodyImageAssetIds: string[];
   layoutTemplate?: string;
+  layoutVersion?: 2;
+  layoutOptions?: WechatLayoutOptions;
   bodyImagePlacements?: Array<{ section: number; caption?: string }>;
+  workflowMode?:'manual'|'auto';
+  input?:{kind:'idea'|'text'|'url'|'mixed';raw:string;hash:string};
+  automation?:ArticleAutomation;
+  wechatDelivery?:{state:'preparing'|'ready'|'succeeded'|'uncertain';fingerprint:string;packageId?:string;taskId?:string;mediaId?:string;message?:string};
   steps: Record<ArticleStep, 'pending' | 'running' | 'succeeded' | 'failed'>;
   running?: ArticleStep | 'read' | 'package'; error?: string;
   reference: Partial<Record<ArticleStep, unknown>>;

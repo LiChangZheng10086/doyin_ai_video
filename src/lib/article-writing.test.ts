@@ -29,3 +29,9 @@ test('AI configuration failure is explicit and never returns local fallback pros
   const writer = new ArticleWritingService({ resolveAiConfig: async () => null });
   await assert.rejects(writer.run('diagnose', article), /AI/);
 });
+
+test('DeepSeek writing disables thinking, obeys the configured output budget and forwards cancellation', async () => {
+ let request:any,options:any;const signal=new AbortController().signal;
+ const writer=new ArticleWritingService({resolveAiConfig:async()=>({provider:'deepseek',apiKey:'fixture',model:'fixture',maxOutputTokens:2400}),createClient:()=>({chat:{completions:{create:async(p:any,o:any)=>{request=p;options=o;return {choices:[{message:{content:JSON.stringify({facts:[{claim:'开放导出',sourceId:'s1',quote:'项目周三开放了导出'}],issues:[]})},finish_reason:'stop'}]};}}}}) as any});
+ await writer.run('evidence',article,signal);assert.equal(request.max_tokens,2400);assert.deepEqual(request.thinking,{type:'disabled'});assert.equal(options.signal,signal);
+});
