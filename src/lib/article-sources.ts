@@ -8,6 +8,7 @@ export interface ArticleSourceRead {
   readAt: string; hash: string; publishedAt?: string; truncated: boolean;
   links: Array<{ title: string; url: string }>; error?: string;
   readProvider?: 'direct' | 'jina'; sourceKind?: 'article' | 'topic' | 'unreadable';
+  discovery?: {provider:'exa';query:string;fetchedAt:string;reportedPublishedAt?:string};
 }
 const MAX_BYTES = 2 * 1024 * 1024;
 const denied = new BlockList();

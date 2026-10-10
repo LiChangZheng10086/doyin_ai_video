@@ -2,6 +2,23 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ResearchService } from './research-service.js';
 import { parseResearchContent } from './research-content.js';
+
+test('last cancelled consumer aborts the provider and never caches a late search result',async()=>{
+ let entered!:()=>void,release!:(value:any[])=>void;const started=new Promise<void>(r=>entered=r);let signal:AbortSignal|undefined;
+ const f=fixture({providers:{search:async(_q:string,s:AbortSignal)=>{signal=s;entered();return new Promise(r=>release=r);},readJina:async()=>article()}});
+ const controller=new AbortController();const pending=f.service.search('u','cancel',controller.signal);await started;controller.abort();await assert.rejects(pending);assert.equal(signal?.aborted,true);
+ release([]);await new Promise(r=>setImmediate(r));await assert.rejects(f.service.search('u','cancel'),(e:any)=>e.status===429);
+});
+test('cancelling a joined research consumer leaves another active reader intact',async()=>{
+ let entered!:()=>void,release!:(value:any[])=>void;const started=new Promise<void>(r=>entered=r);let signal:AbortSignal|undefined;
+ const f=fixture({providers:{search:async(_q:string,s:AbortSignal)=>{signal=s;entered();return new Promise(r=>release=r);},readJina:async()=>article()}});
+ const controller=new AbortController();const cancelled=f.service.search('u','shared',controller.signal);await started;const other=f.service.search('u','shared');await new Promise(r=>setImmediate(r));controller.abort();await assert.rejects(cancelled);assert.equal(signal?.aborted,false);release([]);assert.equal((await other).candidates.length,0);assert.equal((await f.service.search('u','shared')).cached,true);
+});
+test('cancelled direct reading never starts Jina fallback or stores a readable snapshot',async()=>{
+ let entered!:()=>void,release!:(value:any)=>void;const started=new Promise<void>(r=>entered=r);let signal:AbortSignal|undefined,jina=0;
+ const f=fixture({resolveConfig:async()=>({exaEnabled:true,jinaEnabled:true}),readDirect:async(_url:string,s:AbortSignal)=>{signal=s;entered();return new Promise(r=>release=r);},providers:{search:async()=>[],readJina:async()=>{jina++;return article();}}});
+ const controller=new AbortController();const pending=f.service.read('u',{url:'https://example.com/article'},controller.signal);await started;controller.abort();await assert.rejects(pending);assert.equal(signal?.aborted,true);release(article());await new Promise(r=>setImmediate(r));assert.equal(jina,0);await assert.rejects(f.service.read('u',{url:'https://example.com/article'}),(e:any)=>e.status===429);
+});
 const article=(url='https://news.example.com/article/1')=>parseResearchContent({url,provider:'direct',format:'html',body:`<title>原始报道</title><article><p>${'这份报道介绍技术与生活变化，也解释功能使用的条件和来源。'.repeat(12)}</p></article>`});
 function fixture(overrides:any={}){
   let now=0;let searches=0;let reads=0;

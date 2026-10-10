@@ -360,6 +360,13 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 - `research-http.ts` 使用公网DNS绑定与有界原生HTTPS流，禁止重定向；SDK响应桥不使用 `Readable.toWeb`（取消后迟到事件曾导致闭合控制器异常）。不要为了代理环境连通性绕过地址绑定。
 - `node --import tsx scripts/verify-content-research.ts` 隔离mock验收；`--serve` 启动3180隔离UI，`--live` 只读真实公开服务。真实Exa三领域查询有结果；本机Jina直连超时，不能宣称全部站点已读通。详见 `docs/research/2026-10-08-content-research-verification.md`。第二／三期尚未实现。
 
+### 文章自动检索增强（2026-10-10）
+
+- 自动文章复用现有 Exa/Jina 开关与 AI 配置，不静默启用或新增服务。无正文的灵感自动检索；链接先读取，缺正文才用公开链接线索补搜；完整粘贴默认直接写作，只有显式 `searchQuery` 才补搜，不从私人正文、风格样本或写作要求抽检索词。
+- 一次查询最多5候选、纳入3份正文、总检索阶段120秒。仅 article/readable 正文及正确哈希可入事实，摘要/话题不能冒充来源；按归一化URL和去空白的完整正文去重，近似转载保留数字/否定等差异，官方/文档偏好只为排序，不是真实性认证。
+- `automation.research` 持久化查询、候选与关联来源，取消前的有效正文保留，后续失败不重复检索；空候选恢复可重新查询，仍遵从现有缓存和60秒限流。共享请求最后一个消费者取消才终止底层读取，迟到结果不提交，不继续启动Jina。
+- 正文发布日期、搜索报告日期、检索与读取时间分别展示；未知日期不补造。无配置/限流/坏页面时有资料继续、无资料补正文；保持原文摘录引用校验和明确保存草稿边界。配套隔离浏览器脚本 `scripts/verify-article-auto-research-ui.mjs`，实现与边界见 `docs/superpowers/plans/2026-10-10-wechat-templates-auto-writing.md` 第17节。
+
 ### 外观主题（2026-09-30）
 
 - 右上角常驻 ThemeSwitcher 提供深色/浅色/跟随系统（桌面/移动端共用），立即全局生效；根元素 `data-theme` 驱动唯一 CSS 令牌表和原生 `color-scheme`，不逐页硬编码配色。用户要求直接切换，原「外观」设置分组已移除。媒体标题区使用 70% 黑遮罩与固定浅色 `on-media`，不是会随主题变色的 `ink`。

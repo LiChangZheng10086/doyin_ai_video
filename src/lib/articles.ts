@@ -9,6 +9,8 @@ import { ARTICLE_STEPS, type ArticleRecord, type ArticleStep, type ArticlePrevie
 import { renderWechatArticleHtml } from './wechat-article.js';
 import { wechatLayout, MODERN_WECHAT_LAYOUTS, FACTORY_WECHAT_LAYOUT, modernWechatLayout, validateWechatLayoutOptions, type WechatLayoutDefaults } from './wechat-templates.js';
 import type { ResolvedAssetFile } from './assets-store.js';
+import {articleResearchQuery,articleResearchCandidates,researchUrlKey,sameResearchText} from './article-auto-research.js';
+import {ResearchError,type ResearchSearchResult} from './research-types.js';
 
 const INDEX = 'cache/articles.json';
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -28,7 +30,8 @@ export type ArticlePackageInput = { article: ArticleRecord; draft: NonNullable<A
 type Deps = {
   storage: LocalStorage; writer: Pick<ArticleWritingService, 'run'>;
   readSource?: typeof readArticleSource;
-  readResearchSource?: (actorId:string,url:string) => Promise<ArticleSourceRead>;
+  readResearchSource?: (actorId:string,url:string,signal?:AbortSignal) => Promise<ArticleSourceRead>;
+  searchResearch?: (actorId:string,query:string,signal:AbortSignal) => Promise<ResearchSearchResult>;
   resolveResearchSelections?: (actorId:string,selections:unknown) => Promise<ArticleSourceRead[]>;
   resolveHotspot?: (sourceId: string, itemId: string) => Promise<ArticleRecord['hotspot']>;
   resolveAsset?: (id: string) => Promise<ResolvedAssetFile | null>;
@@ -154,7 +157,7 @@ export class ArticleService {
       } else if (p.bodyImageAssetIds !== undefined || p.draft !== undefined || p.revision !== undefined || p.adopted !== undefined) delete a.bodyImagePlacements;
   }
   private layoutHtml(a:ArticleRecord,draft:NonNullable<ArticleRecord['draft']>) {
-    const references=a.sources.filter(s=>s.included&&a.facts.some(f=>f.sourceId===s.id)).map(s=>`${s.title}${s.url?`：${s.url}`:'（用户提供）'}`);
+    const references=a.sources.filter(s=>s.included&&a.facts.some(f=>f.sourceId===s.id)).map(s=>`${s.title}${s.url?`：${s.url}`:'（用户提供）'}${s.discovery?`；发布日期：${s.publishedAt??'未知'}；检索：${s.discovery.fetchedAt}；正文读取：${s.readAt}`:''}`);
     return renderWechatArticleHtml(draft,{layoutTemplate:a.layoutTemplate,layoutVersion:a.layoutVersion,layoutOptions:a.layoutOptions,references,
       images:a.bodyImageAssetIds.map((_,i)=>({slot:i+1,...(a.bodyImagePlacements?.[i]?{afterSection:a.bodyImagePlacements[i]!.section,caption:a.bodyImagePlacements[i]!.caption}:{})}))});
   }
@@ -181,7 +184,7 @@ export class ArticleService {
       const data = object(input); let hotspot: ArticleRecord['hotspot'];
       if(automaticInput){
         const same=Object.values(await this.index()).find(a=>a.automation&&a.automation.actorId===actorId&&a.automation.requestId===automaticInput.requestId);
-        if(same){if(same.automation!.inputHash!==hash(automaticInput.parsed.raw))throw new ArticleError(409,'重复请求标识对应不同输入，请重新提交');return structuredClone(same);}
+        if(same){if(same.automation!.inputHash!==hash(automaticInput.parsed.raw)||same.input?.searchQuery!==request.searchQuery)throw new ArticleError(409,'重复请求标识对应不同输入，请重新提交');return structuredClone(same);}
       }
       if (data.hotspot) { const h = object(data.hotspot); hotspot = await this.deps.resolveHotspot?.(field(h.sourceId,100,true), field(h.itemId,2048,true)); if (!hotspot) throw new ArticleError(404, '热榜线索已失效，请刷新或从收藏创建'); }
       let benchmark: {domain:string;audience:string;styleSample:string}|undefined;
@@ -202,7 +205,7 @@ export class ArticleService {
       if (benchmark) Object.assign(a.requirements,benchmark);
       if(automaticInput){
         const {parsed,requestId}=automaticInput;
-        a.workflowMode='auto';a.input={kind:parsed.kind,raw:parsed.raw,hash:hash(parsed.raw)};
+        a.workflowMode='auto';a.input={kind:parsed.kind,raw:parsed.raw,hash:hash(parsed.raw),...(data.searchQuery?{searchQuery:data.searchQuery}:{})};
         if(parsed.text&&parsed.kind!=='idea')a.sources.push({id:randomUUID(),title:'用户提供的文字资料',text:parsed.text,url:'',status:'readable',hash:hash(parsed.text),readAt:now,included:true,kind:'text',depth:0,links:[],truncated:false});
         for(const url of parsed.urls)a.sources.push(this.newUrl(url));
         if(data.requirements!==undefined){for(const [key,value]of Object.entries(object(data.requirements))){if(!Object.hasOwn(a.requirements,key))throw new ArticleError(400,'写作要求字段无效');(a.requirements as any)[key]=field(value,key==='styleSample'?10000:2000);}}
@@ -216,10 +219,11 @@ export class ArticleService {
   }
   async capabilities(){return {aiReady:!!await this.deps.checkAi?.(),automaticImages:!!this.deps.illustrate};}
   async createAuto(input:unknown,actorId:string):Promise<ArticleRecord>{
-    const p=object(input);if(Object.keys(p).some(k=>!['input','requestId','requirements','layoutTemplate','hotspot'].includes(k)))throw new ArticleError(400,'自动创作包含未知字段');
+    const p=object(input);if(Object.keys(p).some(k=>!['input','requestId','requirements','layoutTemplate','hotspot','searchQuery'].includes(k)))throw new ArticleError(400,'自动创作包含未知字段');
+    const searchQuery=p.searchQuery===undefined?undefined:field(p.searchQuery,400)||undefined;
     let parsed;try{parsed=parseArticleInput(p.input);}catch(e){throw new ArticleError(422,(e as Error).message,'article_input_invalid');}
     const requestId=field(p.requestId,100,true);if(!/^[a-zA-Z0-9_-]+$/.test(requestId))throw new ArticleError(400,'请求标识无效');
-    const a=await this.create({keyword:parsed.keyword,requirements:p.requirements,layoutTemplate:p.layoutTemplate,hotspot:p.hotspot},actorId,{parsed,requestId});
+    const a=await this.create({keyword:parsed.keyword,requirements:p.requirements,layoutTemplate:p.layoutTemplate,hotspot:p.hotspot,searchQuery},actorId,{parsed,requestId});
     if(a.automation?.status==='queued')this.startAuto(a);
     return a;
   }
@@ -251,6 +255,55 @@ export class ArticleService {
     return this.serial(async()=>{signal.throwIfAborted();const a=await this.record(id);if(a.automation?.runId!==runId||!autoActive(a))throw new ArticleError(409,'自动创作任务已变化');
       a.automation.status='running';a.automation.stage=stage;a.automation.checkpoints[stage]={status,updatedAt:new Date().toISOString()};return this.persist(a);});
   }
+  private async autoResearchUpdate(id:string,runId:string,signal:AbortSignal,change:(a:ArticleRecord)=>void){
+    return this.serial(async()=>{signal.throwIfAborted();const a=await this.record(id);this.editable(a,a.version,runId);if(a.automation?.runId!==runId)throw new ArticleError(409,'自动创作任务已变化');change(a);return this.persist(a);});
+  }
+  private abortable<T>(promise:Promise<T>,signal:AbortSignal):Promise<T>{
+    return new Promise((resolve,reject)=>{const abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true});promise.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));if(signal.aborted)abort();});
+  }
+  private async searchAuto(a:ArticleRecord,runId:string,parentSignal:AbortSignal):Promise<ArticleRecord>{
+    if(a.automation?.research&&a.sources.some(s=>s.included&&s.status==='readable'&&s.text.trim())&&(a.automation.checkpoints.search?.status==='succeeded'||a.automation.research.status==='failed'))return a;
+    const query=a.automation?.research?.query??articleResearchQuery(a);if(!query)return a;
+    const signal=AbortSignal.any([parentSignal,AbortSignal.timeout(120000)]);
+    a=await this.autoCheckpoint(a.id,runId,'search','running',parentSignal);
+    if(a.automation?.research?.status!=='complete'||!a.automation?.research?.candidates.length){
+      a=await this.autoResearchUpdate(a.id,runId,parentSignal,a=>{a.automation!.research={query,status:'searching',candidates:[]};});
+      try{
+        if(!this.deps.searchResearch)throw new ResearchError(422,'disabled','当前未启用资料搜索');
+        const result=await this.abortable(this.deps.searchResearch(a.automation!.actorId,query,signal),signal);
+        a=await this.autoResearchUpdate(a.id,runId,parentSignal,a=>{a.automation!.research={query,status:'complete',fetchedAt:result.fetchedAt,candidates:articleResearchCandidates(result.candidates)};});
+      }catch(error){
+        parentSignal.throwIfAborted();
+        const message=error instanceof ResearchError?(error.code==='disabled'?'资料搜索尚未启用；可直接粘贴正文或公开链接继续':error.code==='rate_limited'?'资料搜索受限，请稍后继续或补充正文':'资料搜索暂不可用，可补充正文或公开链接继续'):'资料搜索未完成，可稍后继续或补充正文';
+        return this.autoResearchUpdate(a.id,runId,parentSignal,a=>{a.automation!.research!.status='failed';a.automation!.research!.message=message;a.automation!.checkpoints.search={status:'failed',updatedAt:new Date().toISOString()};});
+      }
+    }
+    const candidates=a.automation!.research!.candidates;
+    let imported=candidates.filter(c=>c.status==='readable'&&a.sources.some(s=>s.id===c.sourceId&&s.included)).length;
+    for(let i=0;i<candidates.length&&imported<3&&a.sources.length<10;i++){
+      const candidate=candidates[i]!;if(candidate.status==='readable'||candidate.status==='skipped')continue;
+      parentSignal.throwIfAborted();if(signal.aborted)break;
+      let source:ArticleSourceRead|undefined,message='';
+      try{
+        if(!this.deps.readResearchSource)throw new Error('no reader');
+        source=await this.abortable(this.deps.readResearchSource(a.automation!.actorId,candidate.url,signal),signal);
+        if(source.sourceKind!=='article'||source.status!=='readable'||source.text.trim().length<200||source.hash!==hash(source.text)||researchUrlKey(source.url)!==researchUrlKey(candidate.url))throw new Error('not a readable body');
+      }catch{parentSignal.throwIfAborted();message='未取得可用文章正文，搜索摘要未作为资料';}
+      a=await this.autoResearchUpdate(a.id,runId,parentSignal,a=>{
+        const c=a.automation!.research!.candidates[i]!;
+        if(message||!source){c.status='failed';c.message=message;return;}
+        const duplicate=a.sources.find(s=>s.status==='readable'&&s.text&&((s.url&&researchUrlKey(s.url)===researchUrlKey(source!.url))||sameResearchText(s.text,source!.text)));
+        if(duplicate){c.status='skipped';c.message='链接或正文重复，未重复采用';return;}
+        // A failed original URL is retained as reference; its recovered body is a new fact source.
+        for(const old of a.sources)if(old.status!=='readable'&&old.url&&researchUrlKey(old.url)===researchUrlKey(source.url))old.included=false;
+        const added:ArticleMaterial={...source,id:randomUUID(),included:true,kind:'web',depth:0,discovery:{provider:'exa',query,fetchedAt:a.automation!.research!.fetchedAt!,...(candidate.publishedAt?{reportedPublishedAt:candidate.publishedAt}:{})}};
+        a.sources.push(added);c.status='readable';c.sourceId=added.id;delete c.message;this.invalidate(a,'evidence');
+      });
+      imported=a.automation!.research!.candidates.filter(c=>c.status==='readable'&&a.sources.some(s=>s.id===c.sourceId&&s.included)).length;
+    }
+    a=await this.autoResearchUpdate(a.id,runId,parentSignal,a=>{const r=a.automation!.research!;r.message=r.candidates.some(c=>c.status==='failed')?'部分来源未读到正文，仅采用成功读取的资料':!r.candidates.length?'搜索未返回可读候选，请补充资料':signal.aborted?'资料读取达到时间上限，已保留成功读取的正文':undefined;});
+    return this.autoCheckpoint(a.id,runId,'search','succeeded',parentSignal);
+  }
   private async executeAuto(id:string,runId:string,signal:AbortSignal){
     let stage:ArticleAutoStage='config';
     try{
@@ -260,10 +313,11 @@ export class ArticleService {
       stage='read';let a=await this.autoCheckpoint(id,runId,stage,'running',signal);
       const unread=a.sources.filter(s=>s.included&&s.kind==='web'&&s.status!=='readable');
       for(let i=0;i<unread.length;i+=3){signal.throwIfAborted();a=await this.readSources(id,a.version,unread.slice(i,i+3).map(s=>s.id),a.automation!.actorId,runId,signal);}
+      await this.autoCheckpoint(id,runId,'read','succeeded',signal);
+      stage='search';a=await this.searchAuto(await this.get(id),runId,signal);
       const missing=a.sources.filter(s=>s.included&&s.status!=='readable');
-      if(missing.length)throw new ArticleError(422,'未读到正文：'+missing.map(s=>s.title).join('、')+'。请换公开链接，或粘贴正文后继续','source_unreadable');
-      if(!a.sources.some(s=>s.included&&s.status==='readable'&&s.text.trim()))throw new ArticleError(422,'灵感已保存。请补充事实资料、完整正文或公开链接，系统不会按关键词编造来源','needs_material');
-      await this.autoCheckpoint(id,runId,stage,'succeeded',signal);
+      if(!a.sources.some(s=>s.included&&s.status==='readable'&&s.text.trim()))throw new ArticleError(422,(a.automation?.research?.message?a.automation.research.message+'。':'')+(missing.length?'未读到链接正文。':'灵感已保存。')+'请补充事实资料、完整正文或公开链接，系统不会按关键词编造来源',missing.length?'source_unreadable':'needs_material');
+      if(missing.length)a=await this.autoResearchUpdate(id,runId,signal,a=>{for(const s of a.sources)if(s.included&&s.status!=='readable')s.included=false;});
       for(const step of ARTICLE_STEPS){
         signal.throwIfAborted();stage=step;a=await this.get(id);
         if(a.steps[step]!=='succeeded'){await this.autoCheckpoint(id,runId,step,'running',signal);a=await this.get(id);a=await this.run(id,step,a.version,runId,signal);}
@@ -411,7 +465,7 @@ export class ArticleService {
         a.steps[step] = 'succeeded'; delete a.running; return this.persist(a);
       });
     } catch (error) {
-      const failure=articleWritingFailure(error);
+      const failure=error instanceof ArticleError?error:articleWritingFailure(error);
       await this.serial(async () => { const a = await this.record(id); delete a.running; a.steps[step] = 'failed'; a.error = signal?.aborted?'自动创作已停止，已有成果保留':`生成失败：${failure.message}`; return this.persist(a); });
       if(signal?.aborted)throw error;
       throw new ArticleError(422, error instanceof ArticleError ? error.message : `生成失败：${failure.message}`,failure.code);
@@ -424,7 +478,10 @@ export class ArticleService {
       a.running = 'read'; return this.persist(a);
     });
     try {
-      const sources = await Promise.all(snapshot.sources.filter(s => (ids as string[]).includes(s.id)).map(async s => ({ ...s, ...await (this.deps.readSource ? this.deps.readSource(s.url) : actorId && this.deps.readResearchSource ? this.deps.readResearchSource(actorId,s.url) : readArticleSource(s.url)) })));
+      const sources = await Promise.all(snapshot.sources.filter(s => (ids as string[]).includes(s.id)).map(async s => {
+        const read=this.deps.readSource?this.deps.readSource(s.url):actorId&&this.deps.readResearchSource?this.deps.readResearchSource(actorId,s.url,signal):readArticleSource(s.url);
+        try{return {...s,...await(signal?this.abortable(read,signal):read)};}catch(error){signal?.throwIfAborted();if(!runId)throw error;return {...s,status:'needs_material' as const,error:'资料读取失败，请补充正文'};}
+      }));
       signal?.throwIfAborted();return await this.serial(async () => { const a = await this.record(id);signal?.throwIfAborted(); a.sources = a.sources.map(s => sources.find(n => n.id === s.id) ?? s); this.invalidate(a,'evidence'); delete a.running; return this.persist(a); });
     } catch (error) {
       await this.serial(async () => { const a = await this.record(id); delete a.running; a.error = '资料读取失败，请补充资料后重试'; return this.persist(a); }); throw new ArticleError(422,'资料读取失败');

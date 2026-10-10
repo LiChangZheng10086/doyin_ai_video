@@ -236,7 +236,7 @@ export class ApiClient {
     return (await this.publishingRequest<{ detail: PublishingPackageDetail }>({ method: 'POST', url: `/api/galleries/${id}/publishing/packages`, data: { previewRevision, rightsConfirmed } })).detail;
   }
 
-  async createArticleAuto(data:{input:string;requestId:string;hotspot?:{sourceId:string;itemId:string};requirements?:Partial<ArticleRecord['requirements']>;layoutTemplate?:string}):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:'/api/articles/auto',method:'POST',data})).article;}
+  async createArticleAuto(data:{input:string;requestId:string;searchQuery?:string;hotspot?:{sourceId:string;itemId:string};requirements?:Partial<ArticleRecord['requirements']>;layoutTemplate?:string}):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:'/api/articles/auto',method:'POST',data})).article;}
   async resumeArticleAuto(id:string,version:number):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${id}/automation/resume`,method:'POST',data:{version}})).article;}
   async cancelArticleAuto(id:string,runId:string):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${id}/automation/cancel`,method:'POST',data:{runId}})).article;}
   async articleCapabilities():Promise<{aiReady:boolean;automaticImages:boolean}>{return this.publishingRequest({url:'/api/articles/capabilities'});}

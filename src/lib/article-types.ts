@@ -15,13 +15,18 @@ export interface ArticleOutline {
 export interface ResearchDraft extends ArticleDraft { sections: Array<ArticleDraft['sections'][number] & { factIds: string[] }> }
 export interface ArticleIllustration { purpose: string; section: number; caption: string; prompt: string }
 export interface ArticleMaterial extends ArticleSourceRead { id: string; included: boolean; kind: 'web' | 'text'; depth: 0 | 1 }
-export type ArticleAutoStage = 'config'|'read'|ArticleStep|'assets'|'preview';
+export type ArticleAutoStage = 'config'|'read'|'search'|ArticleStep|'assets'|'preview';
+export interface ArticleAutoResearch {
+ query:string;status:'searching'|'complete'|'failed';fetchedAt?:string;message?:string;
+ candidates:Array<{url:string;title:string;domain:string;publishedAt?:string;status:'pending'|'readable'|'skipped'|'failed';sourceId?:string;message?:string}>;
+}
 export interface ArticleAutomation {
  runId:string;requestId:string;actorId:string;inputHash:string;
  status:'queued'|'running'|'needs_input'|'failed'|'cancelling'|'cancelled'|'ready'|'interrupted';
  stage:ArticleAutoStage;startedAt:string;finishedAt?:string;templateReason?:string;
  checkpoints:Partial<Record<ArticleAutoStage,{status:'running'|'succeeded'|'failed';updatedAt:string}>>;
  error?:{code:string;message:string;retryable:boolean};
+ research?:ArticleAutoResearch;
 }
 export interface ArticleRecord {
   id: string; version: number; keyword: string; createdAt: string; updatedAt: string;
@@ -37,7 +42,7 @@ export interface ArticleRecord {
   layoutOptions?: WechatLayoutOptions;
   bodyImagePlacements?: Array<{ section: number; caption?: string }>;
   workflowMode?:'manual'|'auto';
-  input?:{kind:'idea'|'text'|'url'|'mixed';raw:string;hash:string};
+  input?:{kind:'idea'|'text'|'url'|'mixed';raw:string;hash:string;searchQuery?:string};
   automation?:ArticleAutomation;
   wechatDelivery?:{state:'preparing'|'ready'|'succeeded'|'uncertain';fingerprint:string;packageId?:string;taskId?:string;mediaId?:string;message?:string};
   steps: Record<ArticleStep, 'pending' | 'running' | 'succeeded' | 'failed'>;

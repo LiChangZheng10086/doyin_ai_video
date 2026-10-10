@@ -425,8 +425,9 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     discardIllustrations:async ids=>{for(const id of ids)await assetStore.remove(id);},
     illustrate:(a,signal)=>(config.articleIllustrator??new ArticleIllustrations({assets:assetStore,rootDir:config.rootDir,browserBinary:config.hyperframesBrowserPath})).generate(a,signal),
     readSource:config.readArticleSource,
-    readResearchSource:async(actorId,url)=>{
-      const read=await research.read(actorId,{url});
+    searchResearch:(actorId,query,signal)=>research.search(actorId,query,signal),
+    readResearchSource:async(actorId,url,signal)=>{
+      const read=await research.read(actorId,{url},signal);
       return {url:read.url,title:read.title,text:read.text,status:read.status,readAt:read.readAt,hash:read.hash,publishedAt:read.publishedAt,truncated:read.truncated,
         links:read.candidates.map(c=>({title:c.title,url:c.url})),error:read.error?.message,readProvider:read.provider==='jina'?'jina':'direct',sourceKind:read.kind};
     },
