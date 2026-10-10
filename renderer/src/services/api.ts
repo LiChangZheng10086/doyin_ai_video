@@ -162,7 +162,7 @@ export class ApiClient {
   async removeWechatBenchmark(id:string,version:number): Promise<void> {await this.publishingRequest({url:`/api/wechat-benchmarks/${encodeURIComponent(id)}`,method:'DELETE',data:{version}});}
   async searchWechatBenchmarks(keyword:string): Promise<BenchmarkSearchResult> {return (await this.publishingRequest<{result:BenchmarkSearchResult}>({url:'/api/wechat-benchmarks/search',method:'POST',data:{keyword},timeout:25000})).result;}
   async saveArticle(id: string, input: Record<string,unknown> & {version:number}): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}`,method:'PATCH',data:input})).article; }
-  async runArticleStep(id: string, step: ArticleStep, version: number): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}/steps/${step}`,method:'POST',data:{version},timeout:200000})).article; }
+  async runArticleStep(id: string, step: ArticleStep, version: number): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}/steps/${step}`,method:'POST',data:{version},timeout:560000})).article; }
   async readArticleSources(id: string, sourceIds: string[], version: number): Promise<ArticleRecord> { return (await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${encodeURIComponent(id)}/sources/read`,method:'POST',data:{sourceIds,version},timeout:65000})).article; }
   async removeArticle(id: string, version: number): Promise<void> { await this.publishingRequest({url:`/api/articles/${encodeURIComponent(id)}`,method:'DELETE',data:{version}}); }
   async previewArticle(id: string, version: number): Promise<ArticlePreview> { return (await this.publishingRequest<{preview:ArticlePreview}>({url:`/api/articles/${encodeURIComponent(id)}/publishing/preview`,method:'POST',data:{version}})).preview; }
@@ -237,7 +237,7 @@ export class ApiClient {
   }
 
   async createArticleAuto(data:{input:string;requestId:string;searchQuery?:string;hotspot?:{sourceId:string;itemId:string};requirements?:Partial<ArticleRecord['requirements']>;layoutTemplate?:string}):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:'/api/articles/auto',method:'POST',data})).article;}
-  async resumeArticleAuto(id:string,version:number):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${id}/automation/resume`,method:'POST',data:{version}})).article;}
+  async resumeArticleAuto(id:string,version:number,recovery?:{inputMode:'idea'|'text';searchQuery?:string}):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${id}/automation/resume`,method:'POST',data:{version,...recovery}})).article;}
   async cancelArticleAuto(id:string,runId:string):Promise<ArticleRecord>{return(await this.publishingRequest<{article:ArticleRecord}>({url:`/api/articles/${id}/automation/cancel`,method:'POST',data:{runId}})).article;}
   async articleCapabilities():Promise<{aiReady:boolean;automaticImages:boolean}>{return this.publishingRequest({url:'/api/articles/capabilities'});}
   async saveArticleWechatDraft(id:string,version:number,previewRevision:string):Promise<{article:ArticleRecord;task:PublishTask}>{return this.publishingRequest({url:`/api/articles/${id}/wechat-drafts`,method:'POST',data:{version,previewRevision,confirmed:true}});}

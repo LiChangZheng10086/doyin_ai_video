@@ -12,7 +12,7 @@ import {ResearchError} from '../dist/lib/research-types.js';
 import {parseResearchContent} from '../dist/lib/research-content.js';
 import {resolveToutiaoBrowser} from '../dist/lib/toutiao-browser.js';
 const repo=process.cwd(),root=await mkdtemp(path.join(tmpdir(),'article-research-ui-'));
-const out=path.join(repo,'output/article-research-qa-2026-10-10');await mkdir(out,{recursive:true});
+const out=path.join(repo,'output/article-input-recovery-qa-2026-10-10');await mkdir(out,{recursive:true});
 const queries=[],reads=[],steps=[],errors=[];let wechatWrites=0,searchAborts=0;
 const config={exaEnabled:true,jinaEnabled:false};
 const body='项目支持导出，离线编辑仍未开放。'.repeat(20);
@@ -32,7 +32,33 @@ try{
  const page=await context.newPage();page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(/wechat-drafts/.test(r.url()))wechatWrites++;});
  const record=async id=>(await(await fetch(base+'/api/articles/'+id)).json()).article;
  const start=async(input,query)=>{await page.goto(base+'/articles');await page.getByLabel('灵感、资料或公开链接',{exact:true}).fill(input);if(query){await page.getByText('补充公开资料（可选）',{exact:true}).click();await page.getByLabel('补充搜索词',{exact:true}).fill(query);}await page.getByRole('button',{name:'自动创作',exact:true}).click();await page.waitForURL(/\/articles\/[a-z0-9-]+$/);return page.url().split('/').at(-1);};
- const waitStatus=async(id,status)=>{await page.waitForFunction(async({base,id,status})=>(await(await fetch(base+'/api/articles/'+id)).json()).article.automation?.status===status,{base,id,status},{timeout:45000});await page.getByRole('button',{name:'停止创作',exact:true}).waitFor({state:'hidden'});return record(id);};
+ // Async predicates are immediately truthy in this Playwright build; await API polling explicitly.
+ const waitRecord=async(base,id,status)=>{const deadline=Date.now()+45000;while(Date.now()<deadline){const a=(await(await fetch(base+'/api/articles/'+id)).json()).article;if(a.automation?.status===status)return a;if(a.automation?.status==='failed'&&status!=='failed')throw Error('fixture failed: '+a.automation.error?.code);await new Promise(r=>setTimeout(r,100));}throw Error('fixture timed out waiting for '+status);};
+ const waitStatus=async(id,status)=>{const a=await waitRecord(base,id,status);await page.getByRole('button',{name:'停止创作',exact:true}).waitFor({state:'hidden'});return a;};
+ const beforeQuestion=queries.length,beforeWriting=steps.length;
+ const question=await start('什么是skills？ 如何创造skills？ 如何使用skills');let waiting=await waitStatus(question,'needs_input');
+ assert.equal(waiting.automation.error.code,'needs_public_query');assert.equal(queries.length,beforeQuestion);assert.equal(steps.length,beforeWriting);
+ const recover=page.getByRole('button',{name:'按所选类型继续创作',exact:true});assert.equal(await recover.isEnabled(),false);
+ await page.getByLabel('恢复公开搜索关键词',{exact:true}).fill('Agent Skills 官方规范');assert.equal(await recover.isEnabled(),false);
+ await page.getByLabel('确认公开搜索词',{exact:true}).check();await page.setViewportSize({width:390,height:844});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.screenshot({path:path.join(out,'question-confirm-mobile.png'),fullPage:true});
+ await recover.click();const recovered=await waitStatus(question,'ready');assert.equal(recovered.input.kind,'idea');assert.equal(queries.at(-1),'Agent Skills 官方规范');assert.ok(queries.every(q=>!q.includes('什么是skills')));await page.setViewportSize({width:1440,height:1050});
+ // Read-only-style legacy fixture is synthesized exclusively in temporary storage.
+ const legacy=structuredClone(recovered);legacy.id='legacy-question';legacy.version=14;legacy.input={kind:'text',raw:'什么是skills？ 如何创造skills？ 如何使用skills',hash:'fixture'};legacy.keyword=legacy.input.raw;
+ legacy.sources=[{id:'original',kind:'text',depth:0,title:'旧输入',text:legacy.input.raw,url:'',status:'readable',included:true,hash:'fixture',readAt:'2026-10-10T11:46:36Z',links:[],truncated:false}];
+ legacy.facts=[];for(const key of ['outline','draft','revision','wechatDelivery'])delete legacy[key];legacy.steps={diagnose:'succeeded',evidence:'failed',outline:'pending',draft:'pending',review:'pending',illustrations:'pending'};legacy.automation={...legacy.automation,status:'failed',stage:'evidence',checkpoints:{diagnose:{status:'succeeded',updatedAt:'2026-10-10T11:46:42Z'}},error:{code:'ai_output_invalid',message:'旧校验失败',retryable:true}};delete legacy.automation.research;
+ // API service has already loaded its index, so install fixture through a separate
+ // ArticleService instance into the app only for this isolated browser check.
+ const {LocalStorage}=await import('../dist/lib/storage.js');
+ const storage=new LocalStorage(root),index=await storage.readJson('cache/articles.json');await storage.writeJsonAtomic('cache/articles.json',{...index,[legacy.id]:legacy});
+ // Fresh app is required to read persisted legacy state without touching a live cache.
+ const legacyApp=await createExpressApp({rootDir:repo,storagePath:root,articleWriter:writer,researchService:research});
+ legacyApp.use(express.static(path.join(repo,'dist-renderer')));legacyApp.get('*',(_req,res)=>res.type('html').send(entry));const legacyServer=legacyApp.listen(0);await new Promise(r=>legacyServer.once('listening',r));
+ try{
+  const legacyBase='http://localhost:'+legacyServer.address().port;await context.unroute('**/*');await context.route('**/*',route=>route.request().url().startsWith(base)||route.request().url().startsWith(legacyBase)||/^(blob:|data:)/.test(route.request().url())?route.continue():route.abort());
+  const legacyPage=await context.newPage();await legacyPage.addInitScript(p=>{window.electron={getServerPort:async()=>p};},legacyServer.address().port);legacyPage.on('pageerror',e=>errors.push(e.message));legacyPage.on('request',r=>{if(/wechat-drafts/.test(r.url()))wechatWrites++;});await legacyPage.goto(legacyBase+'/articles/'+legacy.id);
+  await legacyPage.getByLabel('恢复公开搜索关键词',{exact:true}).fill('Skills 公开创建教程');await legacyPage.getByLabel('确认公开搜索词',{exact:true}).check();await legacyPage.screenshot({path:path.join(out,'legacy-recovery-desktop.png'),fullPage:true});await legacyPage.getByRole('button',{name:'按所选类型继续创作',exact:true}).click();
+  const repaired=await waitRecord(legacyBase,legacy.id,'ready');assert.equal(repaired.sources[0].included,false);assert.equal(repaired.sources[0].text,legacy.input.raw);assert.equal(repaired.input.kind,'idea');assert.equal(repaired.input.searchQuery,'Skills 公开创建教程');assert.equal(repaired.automation.research?.query,'Skills 公开创建教程');assert.equal(queries.at(-1),'Skills 公开创建教程',JSON.stringify({input:repaired.input,research:repaired.automation.research,queries}));await legacyPage.close();
+ }finally{legacyServer.closeAllConnections();await new Promise(r=>legacyServer.close(r));}
  const idea=await start('想写一篇关于导出的文章');const a=await waitStatus(idea,'ready');assert.equal(a.sources.length,2);assert.ok(a.sources.every(s=>s.text&&!s.text.includes('不能作为证据')));assert.equal(a.reviewed,false);assert.equal(a.wechatDelivery,undefined);
  await page.getByText('公开资料检索 · 2份正文',{exact:true}).click();await page.getByText(/搜索报告日期：2026-09-01/).first().waitFor();await page.getByText(/正文发布日期：未知/).first().waitFor();await page.frameLocator('iframe[title="自动创作文章预览"]').getByText('功能与边界',{exact:true}).waitFor();await page.screenshot({path:path.join(out,'search-preview-desktop.png'),fullPage:true});
  await page.setViewportSize({width:390,height:844});await page.locator('iframe[title="自动创作文章预览"]').scrollIntoViewIfNeeded();await page.frameLocator('iframe[title="自动创作文章预览"]').getByText('功能与边界',{exact:true}).waitFor();await page.screenshot({path:path.join(out,'search-preview-mobile.png'),fullPage:true});await page.locator('iframe[title="自动创作文章预览"]').screenshot({path:path.join(out,'search-article-mobile.png')});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.setViewportSize({width:1440,height:1050});
@@ -42,6 +68,6 @@ try{
  const cancel=await start('想写一篇取消搜索测试文章');const searchDeadline=Date.now()+10000;while(!queries.some(q=>q.includes('取消'))){if(Date.now()>searchDeadline)throw Error('cancel fixture search did not start');await new Promise(r=>setTimeout(r,50));}await page.getByRole('button',{name:'停止创作',exact:true}).click();const stopped=await waitStatus(cancel,'cancelled');assert.equal(stopped.sources.length,0);assert.ok(searchAborts>0);
  config.exaEnabled=false;const disabled=await start('想写一篇尚未启用搜索的文章');await waitStatus(disabled,'needs_input');await page.getByText(/资料搜索尚未启用/).first().waitFor();await page.screenshot({path:path.join(out,'search-disabled-recovery.png'),fullPage:true});
  assert.equal(errors.length,0,errors.join('\n'));assert.equal(wechatWrites,0);
- const evidence={browser:await browser.version(),isolatedStorage:true,externalNetworkRequests:0,realAiRequests:0,wechatWrites,queries,reads,searchAborts,pageErrors:errors,articleIds:{idea,pasted,opted,limited,cancel,disabled},checks:['idea full-body sources and citations','published versus fetched dates','URL and reprint dedup','desktop/mobile no overflow','pasted body privacy','explicit public search opt-in','rate limit supplemental recovery','cancel abort','disabled configuration needs input']};
+ const evidence={browser:await browser.version(),isolatedStorage:true,externalNetworkRequests:0,realAiRequests:0,wechatWrites,queries,reads,searchAborts,pageErrors:errors,articleIds:{question,legacy:legacy.id,idea,pasted,opted,limited,cancel,disabled},checks:['question confirmation without automatic transmission','legacy persisted task recovery','idea full-body sources and citations','published versus fetched dates','URL and reprint dedup','desktop/mobile no overflow','pasted body privacy','explicit public search opt-in','rate limit supplemental recovery','cancel abort','disabled configuration needs input']};
  await writeFile(path.join(out,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence,null,2));
 }catch(error){console.error(error);throw error;}finally{await browser?.close();server.closeAllConnections();await new Promise(r=>server.close(r));await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}

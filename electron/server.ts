@@ -41,7 +41,7 @@ export async function startServer(): Promise<number> {
       // 创建 Express 应用
       const expressApp = await createExpressApp({
         storagePath: config.storagePath,
-        rootDir: isDev ? path.join(__dirname, '../..') : electronApp.getAppPath(),
+        rootDir: isDev ? path.join(__dirname, '..') : electronApp.getAppPath(),
         aiProvider: activeKey?.provider || 'deepseek',
         aiModel: activeKey?.model || 'deepseek-chat',
         aiApiKey: activeKey?.apiKey || '',

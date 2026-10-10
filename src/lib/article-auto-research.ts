@@ -6,6 +6,7 @@ import type { ResearchCandidate } from './research-types.js';
 // may enter search. Mixed/pasted body, requirements and style samples never do.
 export function articleResearchQuery(a:ArticleRecord):string|undefined {
  if(a.input?.searchQuery)return a.input.searchQuery;
+ if(a.input?.confirmPublicQuery)return;
  const hasMaterial=a.sources.some(s=>s.included&&s.status==='readable'&&s.text.trim());
  if(hasMaterial)return;
  if(a.input?.kind==='idea')return `${a.keyword.slice(0,360)} 官方 原始资料`;

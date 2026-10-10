@@ -101,10 +101,64 @@ test('later failure/resume retains searched material and never repeats successfu
 });
 test('existing exact-quote validation rejects a fact fabricated from a search summary',async t=>{
  const f=await fixture({writer:{run:async(step:ArticleStep,a:ArticleRecord)=>step==='evidence'?{facts:[{claim:'未核实说法',sourceId:a.sources[0].id,quote:'摘要中的未核实说法'}],issues:[]}:writer().run(step,a)}});t.after(f.close);
- const a=await f.s.createAuto({input:'想写一篇导出文章',requestId:'quote'},'actor');const done=await settled(f.s,a.id);assert.equal(done.automation?.error?.code,'ai_output_invalid');assert.equal(done.facts.length,0);assert.equal(done.draft,undefined);
+ const a=await f.s.createAuto({input:'想写一篇导出文章',requestId:'quote'},'actor');const done=await settled(f.s,a.id);assert.equal(done.automation?.error?.code,'ai_quote_invalid');assert.equal(done.facts.length,0);assert.equal(done.draft,undefined);
 });
 test('empty search results can be searched again on resume instead of remaining permanently stuck',async t=>{
  let searches=0;const f=await fixture({searchResearch:async()=>({query:'public topic',fetchedAt:'2026-10-10T08:00:00Z',candidates:++searches===1?[]:[candidate()]})});t.after(f.close);
  const a=await f.s.createAuto({input:'想写一篇导出文章',requestId:'empty-retry'},'actor');const missing=await settled(f.s,a.id);assert.equal(missing.automation?.status,'needs_input');assert.equal(missing.automation?.research?.candidates.length,0);
  await f.s.resumeAuto(a.id,missing.version,'actor');const done=await settled(f.s,a.id);assert.equal(done.automation?.status,'ready');assert.equal(searches,2);
+});
+
+const question='什么是skills？ 如何创造skills？ 如何使用skills';
+async function legacy(f:Awaited<ReturnType<typeof fixture>>,raw=question){
+ const a=await f.s.create({keyword:raw});
+ a.workflowMode='auto';a.input={kind:'text',raw,hash:hash(raw)};
+ a.sources=[{...read('',raw),id:'original',kind:'text',depth:0,included:true}];
+ a.automation={runId:'legacy-run',requestId:'legacy',actorId:'actor',inputHash:hash(raw),status:'failed',stage:'evidence',startedAt:'2026-10-10T11:46:36Z',checkpoints:{read:{status:'succeeded',updatedAt:'2026-10-10T11:46:36Z'}},error:{code:'ai_output_invalid',message:'旧错误',retryable:true}};
+ a.steps.evidence='failed';
+ await f.deps.storage.writeJsonAtomic('cache/articles.json',{[a.id]:a});
+ return {s:new ArticleService(f.deps),a};
+}
+test('inferred questions/private labels wait for explicit public terms before any search or model request',async t=>{
+ const f=await fixture();t.after(f.close);
+ for(const input of [question,'什么是skills。如何创造skills。','什么是skills\n如何使用skills','私人客户笔记','如何处理我的私人账单？']){
+  const a=await f.s.createAuto({input,requestId:'inferred-'+hash(input)},'actor');const done=await settled(f.s,a.id);
+  assert.equal(done.input?.kind,'idea');assert.equal(done.automation?.error?.code,'needs_public_query');assert.equal(done.automation?.status,'needs_input');assert.equal(done.sources.length,0);
+ }
+ assert.deepEqual(f.queries,[]);assert.deepEqual(f.steps,[]);
+});
+test('new questions resume with only explicit public terms, and body mode never searches',async t=>{
+ const f=await fixture();t.after(f.close);
+ const a=await f.s.createAuto({input:question,requestId:'question'},'actor');const wait=await settled(f.s,a.id);
+ await f.s.resumeAuto(a.id,wait.version,'actor',{inputMode:'idea',searchQuery:'Agent Skills 官方规范'});const done=await settled(f.s,a.id);
+ assert.equal(done.automation?.status,'ready');assert.deepEqual(f.queries,['Agent Skills 官方规范']);assert.equal(done.input?.raw,question);
+ const b=await f.s.createAuto({input:'项目支持导出',requestId:'short-note'},'actor');const pending=await settled(f.s,b.id);
+ await f.s.resumeAuto(b.id,pending.version,'actor',{inputMode:'text'});const note=await settled(f.s,b.id);
+ assert.equal(note.automation?.status,'ready');assert.equal(note.input?.kind,'text');assert.equal(note.sources[0].text,'项目支持导出');assert.equal(f.queries.length,1);
+});
+test('legacy misclassified task recovers atomically, preserves input reference, rejects invalid/unauthorized/stale requests',async t=>{
+ const f=await fixture();t.after(f.close);const {s,a}=await legacy(f);
+ for(const options of [{inputMode:'idea'},{inputMode:'idea',searchQuery:''},{inputMode:'other'},{inputMode:'text',searchQuery:'unexpected'},{inputMode:'idea',searchQuery:'x'.repeat(401)},{unknown:'x'}])await assert.rejects(s.resumeAuto(a.id,a.version,'actor',options));
+ await assert.rejects(s.resumeAuto(a.id,a.version,'other',{inputMode:'idea',searchQuery:'公开主题'}),/自己的/);
+ await assert.rejects(s.resumeAuto(a.id,a.version,undefined,{inputMode:'idea',searchQuery:'公开主题'}),/未成稿/);
+ assert.equal((await s.get(a.id)).version,a.version);assert.equal(f.queries.length,0);
+ await s.resumeAuto(a.id,a.version,'actor',{inputMode:'idea',searchQuery:'Agent Skills 官方规范'});
+ await assert.rejects(s.resumeAuto(a.id,a.version,'actor',{inputMode:'idea',searchQuery:'Agent Skills 官方规范'}),/正在|版本/);
+ const done=await settled(s,a.id);assert.equal(done.automation?.status,'ready');assert.equal(done.sources[0].included,false);assert.equal(done.sources[0].text,question);assert.equal(done.input?.raw,question);assert.equal(done.input?.kind,'idea');assert.equal(done.facts[0].sourceId,done.sources[1].id);assert.equal(f.queries.length,1);
+ await assert.rejects(s.resumeAuto(a.id,done.version,'actor',{inputMode:'text'}),/已完成/);
+});
+test('legacy recovery cancellation discards late search result, and resume uses confirmed terms only',async t=>{
+ let entered!:()=>void,release!:(v:any)=>void;let pending=true;const started=new Promise<void>(r=>entered=r);
+ const f=await fixture({searchResearch:async(_actor:string,query:string)=>{if(pending){entered();return new Promise(r=>release=r);}return{query,fetchedAt:'2026-10-10T08:00:00Z',candidates:[candidate()]};}});t.after(f.close);
+ const {s,a}=await legacy(f);await s.resumeAuto(a.id,a.version,'actor',{inputMode:'idea',searchQuery:'公开 Skills 文档'});await started;const current=await s.get(a.id);
+ await s.cancelAuto(a.id,current.automation!.runId,'actor');const stopped=await settled(s,a.id);assert.equal(stopped.automation?.status,'cancelled');assert.equal(stopped.sources[0].included,false);
+ release({query:'late',fetchedAt:'2026-10-10T08:00:00Z',candidates:[candidate()]});await new Promise(r=>setImmediate(r));assert.equal((await s.get(a.id)).sources.length,1);
+ pending=false;await s.resumeAuto(a.id,stopped.version,'actor');assert.equal((await settled(s,a.id)).automation?.status,'ready');
+});
+test('failed legacy recovery preserves independently added sources and never searches the original private body',async t=>{
+ const f=await fixture({searchResearch:async(_actor:string,query:string)=>{f.queries.push(query);throw new ResearchError(422,'disabled','private provider detail');}});t.after(f.close);
+ const {s,a}=await legacy(f,'客户私人资料。待补充。');
+ const extra=await s.update(a.id,{version:a.version,addText:{title:'公开正文',text:body}});
+ await s.resumeAuto(a.id,extra.version,'actor',{inputMode:'idea',searchQuery:'公开导出文档'});const done=await settled(s,a.id);
+ assert.equal(done.automation?.status,'ready');assert.equal(done.sources[0].included,false);assert.equal(done.sources[1].included,true);assert.deepEqual(f.queries,['公开导出文档']);assert.equal(done.automation?.research?.status,'failed');
 });

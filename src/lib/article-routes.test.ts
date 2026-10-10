@@ -39,6 +39,23 @@ export async function articleFixture(options:any={}) {
   return {root,base,request,upload,calls,token,close:async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(root,{recursive:true,force:true}); }};
 }
 
+test('HTTP input correction forwards explicit mode, requires session and validates recovery payload/version',async t=>{
+ const f=await articleFixture({articleIllustrator:{generate:async()=>({coverAssetId:'cover',bodyImageAssetIds:['image']})}});t.after(f.close);
+ const created=await f.request('/api/articles/auto','POST',{input:'项目支持导出',requestId:'input-correction'});assert.equal(created.status,202);let a=created.body.article;
+ for(let i=0;i<200;i++){a=(await f.request(`/api/articles/${a.id}`)).body.article;if(a.automation.status==='needs_input')break;await new Promise(r=>setTimeout(r,5));}
+ assert.equal(a.automation.error.code,'needs_public_query');const url=`/api/articles/${a.id}/automation/resume`;
+ assert.equal((await f.request(url,'POST',{version:a.version,inputMode:'text'},false)).status,401);
+ assert.equal((await f.request(url,'POST',{version:a.version,inputMode:'idea'})).status,422);
+ assert.equal((await f.request(url,'POST',{version:a.version,unexpected:'secret'})).status,400);
+ assert.equal((await f.request(url,'POST',{version:a.version-1,inputMode:'text'})).status,409);
+ const result=await f.request(url,'POST',{version:a.version,inputMode:'text'});assert.equal(result.status,202);assert.equal(result.body.article.input.kind,'text');
+ assert.equal((await f.request(url,'POST',{version:a.version,inputMode:'text'})).status,409);
+ assert.equal(result.body.article.sources[0].text,'项目支持导出');assert.equal(f.calls.length,0);
+ // The resumed run must finish writing before fixture cleanup removes its cache.
+ for(let i=0;i<200;i++){a=(await f.request(`/api/articles/${a.id}`)).body.article;if(!['queued','running','cancelling'].includes(a.automation.status))break;await new Promise(r=>setTimeout(r,5));}
+ assert.ok(!['queued','running','cancelling'].includes(a.automation.status));
+});
+
 test('independent article HTTP workflow builds an immutable package and submits only a WeChat draft',async () => {
   const f = await articleFixture();
   try {

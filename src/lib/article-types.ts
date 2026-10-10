@@ -42,7 +42,7 @@ export interface ArticleRecord {
   layoutOptions?: WechatLayoutOptions;
   bodyImagePlacements?: Array<{ section: number; caption?: string }>;
   workflowMode?:'manual'|'auto';
-  input?:{kind:'idea'|'text'|'url'|'mixed';raw:string;hash:string;searchQuery?:string};
+  input?:{kind:'idea'|'text'|'url'|'mixed';raw:string;hash:string;searchQuery?:string;confirmPublicQuery?:boolean};
   automation?:ArticleAutomation;
   wechatDelivery?:{state:'preparing'|'ready'|'succeeded'|'uncertain';fingerprint:string;packageId?:string;taskId?:string;mediaId?:string;message?:string};
   steps: Record<ArticleStep, 'pending' | 'running' | 'succeeded' | 'failed'>;

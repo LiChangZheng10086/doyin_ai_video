@@ -20,3 +20,13 @@ test('template recommendations preserve explicit preferences and identify common
 test('Chinese sentence boundaries after a link preserve all surrounding source text',()=>{
  const parsed=parseArticleInput('参考 https://example.com/article。该功能仍未开放。');assert.deepEqual(parsed.urls,['https://example.com/article']);assert.ok(parsed.text.includes('该功能仍未开放。'));
 });
+
+test('short questions and multiline outlines are ideas requiring public terms, while complete statements stay text',()=>{
+ for(const value of ['什么是skills？ 如何创造skills？ 如何使用skills','什么是skills。如何创造skills。如何使用skills。','什么是skills\n如何创造skills\n如何使用skills','What are skills? How to create skills?','私人备忘录','如何处理我的私人账单？']){
+  const p=parseArticleInput(value);assert.equal(p.kind,'idea',value);assert.equal(p.confirmPublicQuery,true);assert.equal(p.raw,value);
+ }
+ for(const value of ['今天与客户讨论预算。下周补充方案。','什么是skills？Skills 是可复用的能力包。','客户资料\n手机号与私人需求','这是完整正文。'.repeat(80)]){
+  const p=parseArticleInput(value);assert.equal(p.kind,'text',value);assert.equal(p.confirmPublicQuery,undefined);assert.equal(p.text,value);
+ }
+ assert.equal(parseArticleInput('想写一篇关于导出功能的文章').confirmPublicQuery,undefined);
+});

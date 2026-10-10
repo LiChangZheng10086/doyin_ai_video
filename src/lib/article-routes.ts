@@ -20,7 +20,7 @@ export function registerArticleRoutes(app: Express, deps: { articles: ArticleSer
   router.post('/',actor,handle(async (req,res) => res.status(201).json({article: await s.create(req.body,getActor(req).userId)})));
   router.get('/:id',handle(async (req,res) => res.json({article:await s.get(String(req.params.id))})));
   router.patch('/:id',actor,handle(async (req,res) => res.json({article:await s.update(String(req.params.id),req.body)})));
-  router.post('/:id/automation/resume',actor,handle(async(req,res)=>res.status(202).json({article:await s.resumeAuto(String(req.params.id),req.body?.version,getActor(req).userId)})));
+  router.post('/:id/automation/resume',actor,handle(async(req,res)=>{const {version,...recovery}=req.body??{};res.status(202).json({article:await s.resumeAuto(String(req.params.id),version,getActor(req).userId,recovery)});}));
   router.post('/:id/automation/cancel',actor,handle(async(req,res)=>res.json({article:await s.cancelAuto(String(req.params.id),req.body?.runId,getActor(req).userId)})));
   router.delete('/:id',actor,handle(async (req,res) => { await s.remove(String(req.params.id),req.body?.version); res.json({ok:true}); }));
   router.post('/:id/steps/:step',actor,handle(async (req,res) => res.json({article:await s.run(String(req.params.id),String(req.params.step) as ArticleStep,req.body?.version)})));
