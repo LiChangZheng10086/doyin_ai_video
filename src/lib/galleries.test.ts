@@ -223,11 +223,11 @@ test('automatic copy uses the full transcript, preserves manual copy and edits d
     const transcript = { transcript: '第一条原句。末尾没有选进图的核心信息。完整全文独有的末尾观点。',
       segments: [{ start: 0, end: 2, text: '第一条原句。' }, { start: 2, end: 4, text: '末尾没有选进图的核心信息。' }] };
     await storage.writeJsonAtomic('raw/transcripts/job.json', transcript);
-    let calls = 0; let fail = false; let changeSource = false;
+    let calls = 0; let fail = false; let changeSource = false; let missing = true;
     const result = { title: '完整图文标题', description: '背景。\n1. 内容与解释。\n你怎么看？', hashtags: ['写作'], notes: ['数字仍需核对'] };
     const service = new GalleryService({ storage, jobs: { get: async () => ({ id: 'job', topic: '来源', videoPath } as JobRecord) }, media: {
       probe: async () => ({ width: 320, height: 480, duration: 5 }), frame: async () => Buffer.from('frame'),
-      suggestSubtitle: async (_v, q) => q.start < 2 ? { time: .5, bandTop: .82, bandBottom: .85, recognizedText: '画面真实字幕', verification: 'ocr' as const } : null,
+      suggestSubtitle: async (_v, q) => q.start < 2 || !missing ? { time: q.start + .5, bandTop: .82, bandBottom: .85, recognizedText: q.start < 2 ? '画面真实字幕' : '末尾补齐字幕', verification: 'ocr' as const } : null,
       render: async (_v, _i, output) => { await writeFile(output, 'png'); },
     }, copyWriter: { write: async input => {
       calls++; assert.match(input.transcript, /末尾没有选进图的核心信息/); assert.ok(input.nativeSubtitles.includes('画面真实字幕'));
@@ -239,9 +239,11 @@ test('automatic copy uses the full transcript, preserves manual copy and edits d
     const draft = await service.create('job');
     const planned = await service.plan(draft.id, { version: draft.version });
     assert.equal(planned.description, result.description); assert.equal(calls, 1); assert.ok(planned.copyReference);
+    await assert.rejects(service.renderPlan(draft.id, { version: planned.version, planId: planned.plan!.id, subtitlesConfirmed: true }), /不完整|覆盖不足/);
     const edited = await service.update(draft.id, { ...planned, description: '用户自己的完整正文' });
     assert.equal(edited.plan!.id, planned.plan!.id);
     assert.equal((await service.planImage(draft.id, 0, edited.plan!.id, edited.version)).toString(), 'png');
+    missing = false;
     const replanned = await service.plan(draft.id, { version: edited.version });
     assert.equal(replanned.description, edited.description); assert.equal(calls, 1, 'replanning must not replace authored copy');
     const ready = await service.renderPlan(draft.id, { version: replanned.version, planId: replanned.plan!.id, subtitlesConfirmed: true });

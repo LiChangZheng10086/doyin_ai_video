@@ -102,7 +102,7 @@ test('translated gallery HTTP uses reviewed Chinese pixels, immutable originals 
   const translated=await request(url+'/translate','POST',{version:created.version,start:0,end:4});assert.equal(translated.status,200,JSON.stringify(translated.body));
   const g=translated.body.gallery;
   assert.equal((await request(url,'PATCH',{...g,translation:{...g.translation,cues:g.translation.cues.map((c:any)=>({...c,original:'forged'}))}})).status,422);
-  const planned=await request(url+'/plan','POST',{version:g.version,targetLines:8});assert.equal(planned.status,200,JSON.stringify(planned.body));
+  const planned=await request(url+'/plan','POST',{version:g.version,targetLines:8,fullVideo:false});assert.equal(planned.status,200,JSON.stringify(planned.body));
   const plan=planned.body.gallery;
   assert.equal((await request(url+'/plan/render','POST',{version:plan.version,planId:plan.plan.id,subtitlesConfirmed:false})).status,422);
   const rendered=await request(url+'/plan/render','POST',{version:plan.version,planId:plan.plan.id,subtitlesConfirmed:true});assert.equal(rendered.status,200,JSON.stringify(rendered.body));

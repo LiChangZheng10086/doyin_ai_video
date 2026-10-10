@@ -23,7 +23,9 @@ export function validateGalleryImage(value: GalleryImage, duration = Infinity): 
   if (!value || !time(value.mainTime) || !Array.isArray(value.times) || !value.times.every(time)) {
     throw new GalleryError(422, '画面时间必须在原视频时长范围内');
   }
-  if (value.times.length < 1 || value.times.length > 9) throw new GalleryError(422, '每张拼图需 1～9 条字幕');
+  // Filmstrip has 1008px for rows of at least 96px; legacy layouts retain their nine-row limit.
+  const maxRows = value.filmstrip === true ? 10 : 9;
+  if (value.times.length < 1 || value.times.length > maxRows) throw new GalleryError(422, `每张拼图需 1～${maxRows} 条字幕`);
   if (value.translatedCaptions !== undefined) validateTranslatedCaptions(value.translatedCaptions, value.times.length);
   if (value.compact !== undefined && typeof value.compact !== 'boolean') throw new GalleryError(422, '拼图排版配置无效');
   if (value.filmstrip !== undefined && typeof value.filmstrip !== 'boolean') throw new GalleryError(422, '拼图排版配置无效');

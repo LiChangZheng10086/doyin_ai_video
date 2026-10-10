@@ -202,7 +202,7 @@ export class ApiClient {
   async renderGallery(id: string, version: number): Promise<Gallery> {
     return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/render`, data: { version }, timeout: 0 })).gallery;
   }
-  async planGallery(id: string, input: { version: number; targetLines: number; bandTop?: number; bandBottom?: number }): Promise<Gallery> {
+  async planGallery(id: string, input: { version: number; targetLines: number; fullVideo?: boolean; bandTop?: number; bandBottom?: number }): Promise<Gallery> {
     return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/plan`, data: input, timeout: 0 })).gallery;
   }
   async renderGalleryPlan(id: string, version: number, planId: string, subtitlesConfirmed: boolean): Promise<Gallery> {

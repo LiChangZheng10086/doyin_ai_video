@@ -28,7 +28,7 @@ test('translated gallery preserves originals, confirms Chinese plan and invalida
  const translated=await s.translate(created.id,{version:created.version,start:0,end:4});
  assert.equal(translated.translation?.cues[0]?.original,'Keep going.');
  await assert.rejects(s.update(translated.id,{...translated,translation:{...translated.translation!,cues:translated.translation!.cues.map(c=>({...c,original:'forged'}))}}),/原文|译文/);
- const planned=await s.plan(translated.id,{version:translated.version,targetLines:8});
+ const planned=await s.plan(translated.id,{version:translated.version,targetLines:8,fullVideo:false});
  assert.equal(planned.plan?.mode,'translated'); assert.equal(planned.plan?.images[0]?.quotes[0]?.originalText,'Keep going.');
  assert.deepEqual(planned.plan?.images[0]?.image.translatedCaptions,['继续前行。','相信自己。']);
  await assert.rejects(s.renderPlan(planned.id,{version:planned.version,planId:planned.plan!.id,subtitlesConfirmed:false}),/核对/);

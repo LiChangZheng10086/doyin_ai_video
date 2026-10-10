@@ -10,6 +10,7 @@ export function GalleryPlanPanel({ plan, imageUrls, confirmed, disabled, onConfi
   const allLoaded = plan.images.length > 0 && imageUrls.length === plan.images.length && imageUrls.every(url => loaded.includes(url));
   return <section aria-label="自动图集方案" className="mb-6 rounded-lg border border-accent-line bg-panel p-5">
     <h2 className="text-lg font-semibold text-ink">建议生成 {plan.images.length} 张</h2>
+    {plan.coverage && <p className="mt-2 text-sm text-ink-muted">{plan.scope === 'range' ? '指定片段' : '完整视频'}范围：{plan.coverage.start.toFixed(1)}～{plan.coverage.end.toFixed(1)} 秒 / 原视频 {plan.coverage.duration.toFixed(1)} 秒。原视频共 {plan.coverage.totalSegments} 个有文字转录片段，当前匹配 {plan.coverage.selectedSegments} 个；图片按内容顺序分组。</p>}
     <p className="mt-2 text-sm text-ink-muted">{plan.mode === 'translated' ? '图片绘制中文译文，背景取自原视频。请逐句对照原文与时间，核对译文和画面。' : '按原内容顺序组织。文字来自画面识别或转录定位参考，图片取自原视频；请核对候选字幕是否完整、清楚并与文字相符。'}</p>
     {plan.warnings.map((warning, i) => <p key={i} className="mt-2 text-sm text-warning">{warning}</p>)}
     {plan.blockedReason && <p role="alert" className="mt-3 text-sm text-danger">{plan.blockedReason}</p>}

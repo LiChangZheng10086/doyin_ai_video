@@ -6,6 +6,37 @@ const transcript = (texts: string[]): TranscriptAsset => ({ segments: texts.map(
 const source = { width: 320, height: 480, duration: 100 };
 const candidate = async (quote: { start: number; end: number }) => ({ time: (quote.start + quote.end) / 2, bandTop: .82, bandBottom: .85 });
 
+test('long native videos retain all 534 captions across more than 35 images', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const texts = Array.from({ length: 534 }, (_, i) => `完整原句第${i}条。`);
+  const plan = await planGallery(transcript(texts), { ...source, duration: 1100 }, candidate);
+  assert.ok(plan.images.length > 35);
+  assert.equal(plan.images.flatMap(i => i.quotes).map(q => q.text).join(''), texts.join(''));
+});
+
+test('even a single missing native caption blocks a supposedly complete gallery', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const plan = await planGallery(transcript(['开头内容。', '中间未匹配内容。', '最后内容。']), source,
+    q => q.segmentIndex === 1 ? Promise.resolve(null) : candidate(q));
+  assert.equal(plan.excluded.length, 1);
+  assert.match(plan.blockedReason!, /未匹配|未纳入|不完整/);
+});
+
+test('custom targets preserve every caption, honor small targets and render ten readable filmstrip rows', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const { validateGalleryImage } = await import('./gallery-media.js');
+  for (const [targetLines, count, sizes] of [[1, 3, [1, 1, 1]], [4, 10, [4, 3, 3]], [12, 20, [10, 10]]] as const) {
+    const texts = Array.from({ length: count }, (_, i) => `不同原句${i}。`);
+    const plan = await planGallery(transcript(texts), source, candidate, { targetLines });
+    assert.deepEqual(plan.images.map(i => i.quotes.length), sizes);
+    assert.equal(plan.images.flatMap(i => i.quotes).map(q => q.text).join(''), texts.join(''));
+    for (const { image } of plan.images) assert.doesNotThrow(() => validateGalleryImage(image, source.duration));
+  }
+  for (const targetLines of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+    await assert.rejects(planGallery(transcript(['有效原句。']), source, candidate, { targetLines }), /条数/);
+  }
+});
+
 test('a proposal missing most source windows is not offered as a normal generation plan', async () => {
   const { planGallery } = await import('./gallery-planner.js');
   const asset = transcript(Array.from({ length: 16 }, (_, i) => `不同原句${i}。`));

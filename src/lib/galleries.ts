@@ -10,7 +10,6 @@ import { LocalStorage } from './storage.js';
 import { resolveSourceVideo } from './video-output.js';
 import { GalleryError, GalleryMedia, validateGalleryImage } from './gallery-media.js';
 import type { Gallery, GalleryDraft, GalleryPlanInput, GalleryPreview, GallerySource, GalleryTranslation } from './gallery-types.js';
-import { SAU_NOTE_MAX_IMAGES } from './sau-runner.js';
 import { galleryPlanBlockReason, planGallery } from './gallery-planner.js';
 import { PUBLISH_NOTE_POLICIES, validateNoteCopy } from './publishing-platforms.js';
 import type { GalleryCopyWriter } from './gallery-copy.js';
@@ -122,8 +121,8 @@ export class GalleryService {
       || typeof input.description !== 'string' || input.description.length > 20_000
       || !Array.isArray(input.hashtags) || input.hashtags.length > 50
       || !input.hashtags.every(t => typeof t === 'string' && t.length <= 200)
-      || !Array.isArray(input.images) || input.images.length < 1 || input.images.length > SAU_NOTE_MAX_IMAGES) {
-      throw new GalleryError(422, `标题、文案或图片数量不合法（图集需 1～${SAU_NOTE_MAX_IMAGES} 张）`);
+      || !Array.isArray(input.images) || input.images.length < 1) {
+      throw new GalleryError(422, '标题、文案或图片数量不合法（图集至少需 1 张）');
     }
     const images = input.images.map(image => {
       if (image.translatedCaptions !== undefined && !translated) throw new GalleryError(422, '原生字幕图集不能注入译文字幕');
@@ -144,7 +143,8 @@ export class GalleryService {
   async get(id: string): Promise<Gallery> {
     return this.serial(async () => {
       const gallery = structuredClone(await this.record(id));
-      if (gallery.plan) gallery.plan.blockedReason = galleryPlanBlockReason(gallery.plan);
+      if (gallery.plan) gallery.plan.blockedReason = galleryPlanBlockReason(gallery.plan)
+        || (gallery.mode === 'translated' && !gallery.plan.scope ? '旧方案缺少完整视频范围校验，请重新自动创作；原图保留供参考。' : undefined);
       if (gallery.translation) {
         try { await this.checkedTranslation(gallery); }
         catch { gallery.error = '译文依据的转录或来源已变化，请重新翻译。'; }
@@ -214,7 +214,7 @@ export class GalleryService {
 
   async inspectSource(id: string): Promise<GallerySource> {
     const gallery = await this.get(id); const policy = PUBLISH_NOTE_POLICIES.douyin!;
-    return this.withSource(gallery.sourceJobId, async source => ({ ...source.info, imageLimit: SAU_NOTE_MAX_IMAGES,
+    return this.withSource(gallery.sourceJobId, async source => ({ ...source.info,
       copyLimits: { titleMax: policy.titleMax, descriptionMax: policy.descriptionMax, hashtagMax: policy.hashtagMax } }));
   }
 
@@ -247,10 +247,16 @@ export class GalleryService {
 
   private async checkedTranslation(gallery: Gallery): Promise<void> {
     if (!gallery.translation) throw new GalleryError(422, '请先生成中文译文并核对');
-    if (gallery.translation.transcriptHash !== (await this.transcript(gallery.sourceJobId)).hash
+    const transcript = await this.transcript(gallery.sourceJobId);
+    if (gallery.translation.transcriptHash !== transcript.hash
       || gallery.translation.sourceFingerprint !== await this.sourceFingerprint(gallery.sourceJobId)) {
       throw new GalleryError(409, '转录或原视频已变化，请重新翻译');
     }
+    validateGalleryTranslationCues(gallery.translation.cues);
+    const expected = transcript.asset.segments?.flatMap((s, segmentIndex) => s.end! > gallery.translation!.start
+      && s.start! < gallery.translation!.end && s.text.trim() ? [{ segmentIndex, original: s.text, start: s.start }] : []);
+    const actual = gallery.translation.cues.map(({ segmentIndex, original, start }) => ({ segmentIndex, original, start }));
+    if (!expected || JSON.stringify(actual) !== JSON.stringify(expected)) throw new GalleryError(409, '译文存在遗漏或与原文不一致，请重新全文翻译');
   }
 
   async translate(id: string, input: { version: number; start: number; end: number }): Promise<Gallery> {
@@ -270,7 +276,6 @@ export class GalleryService {
           && s.end > input.start && s.start < input.end && s.text.trim()
           ? [{ segmentIndex, original: s.text, text: '', start: s.start, end: Math.min(s.end, source.info.duration) }] : []);
         if (!cues.length) throw new GalleryError(422, '所选范围没有文字，请调整片段');
-        if (cues.length > 315) throw new GalleryError(422, '所选片段超过 35 张图集的容量，请缩小翻译范围；原文全文已保留');
         validateGalleryTranslationCues(cues, false, source.info.duration);
         const translated = await this.deps.translator!.translate(cues);
         validateGalleryTranslationCues(translated, true, source.info.duration);
@@ -289,10 +294,16 @@ export class GalleryService {
   async plan(id: string, input: GalleryPlanInput): Promise<Gallery> {
     return this.serial(async () => {
       const current = await this.record(id); this.editable(current, input?.version);
+      if (input.fullVideo !== undefined && typeof input.fullVideo !== 'boolean') throw new GalleryError(422, '视频范围选择无效');
       if (current.mode !== 'translated' && !this.media.suggestSubtitle && !this.media.suggestSubtitles) throw new GalleryError(503, '字幕候选检测未就绪');
       return this.withSource(current.sourceJobId, async source => {
         const transcript = await this.transcript(current.sourceJobId);
-        if (current.mode === 'translated') await this.checkedTranslation(current);
+        if (current.mode === 'translated') {
+          await this.checkedTranslation(current);
+          if (input.fullVideo !== false && (current.translation!.start !== 0 || current.translation!.end < source.info.duration - .001)) {
+            throw new GalleryError(422, '当前译文未覆盖完整视频，请先全文翻译再自动分图；指定片段须明确选择片段模式。');
+          }
+        }
         const proposal = current.mode === 'translated'
           ? planTranslatedGallery(current.translation!, input.targetLines ?? 8, source.info.duration)
           : await planGallery(transcript.asset, source.info,
@@ -301,7 +312,14 @@ export class GalleryService {
               .filter(segment => typeof segment.end === 'number' && typeof segment.start === 'number'
                 && segment.end > quote.start && segment.start < quote.end).map(segment => segment.text).join('') }, input)
             : this.media.suggestSubtitle!(source.path, quote, input), input);
-        const plan = { id: randomUUID(), previewHashes: [] as string[], transcriptHash: transcript.hash, sourceFingerprint: source.fingerprint, ...proposal };
+        const segments = transcript.asset.segments!.filter(s => s.text.trim());
+        const quotes = proposal.images.flatMap(i => i.quotes);
+        const scope = current.mode === 'translated' && input.fullVideo === false ? 'range' as const : 'full' as const;
+        const coverage = { start: current.mode === 'translated' ? current.translation!.start : 0,
+          end: current.mode === 'translated' ? current.translation!.end : source.info.duration, duration: source.info.duration,
+          totalSegments: segments.length, selectedSegments: current.mode === 'translated' ? current.translation!.cues.length
+            : segments.filter(s => quotes.some(q => q.start < s.end! && q.end > s.start!)).length };
+        const plan = { id: randomUUID(), previewHashes: [] as string[], transcriptHash: transcript.hash, sourceFingerprint: source.fingerprint, ...proposal, scope, coverage };
         const dir = path.join(await this.outputRoot(), current.id, `plan-${plan.id}`);
         await mkdir(dir, { recursive: true });
         try {
@@ -369,6 +387,7 @@ export class GalleryService {
 
   private async checkedPlan(gallery: Gallery, planId: string): Promise<void> {
     if (!gallery.plan || typeof planId !== 'string' || gallery.plan.id !== planId) throw new GalleryError(409, '图集方案已变化，请重新规划');
+    if (gallery.mode === 'translated' && !gallery.plan.scope) throw new GalleryError(409, '旧译文方案缺少完整视频范围校验，请重新自动创作；原图保留。');
     if ((await this.transcript(gallery.sourceJobId)).hash !== gallery.plan.transcriptHash) throw new GalleryError(409, '转录已变化，请重新规划');
     if (await this.sourceFingerprint(gallery.sourceJobId) !== gallery.plan.sourceFingerprint) throw new GalleryError(409, '原视频已变化，请重新规划');
   }

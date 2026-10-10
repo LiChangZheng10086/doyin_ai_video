@@ -11,6 +11,8 @@ import { GalleryMedia } from '../src/lib/gallery-media.js';
 import { runCommand } from '../src/lib/command.js';
 
 const translatedMode = process.argv.includes('--translated');
+const segmentCount = process.argv.includes('--long') ? 400 : 32;
+const duration = segmentCount * 2;
 const root = await mkdtemp(path.join(tmpdir(), 'subtitle-gallery-ui-'));
 const storage = new LocalStorage(root);
 await storage.ensureBaseDirs();
@@ -27,8 +29,8 @@ for (let char = 0; char < 20; char++) for (let y = 0; y < 7; y++) for (let x = 0
 }
 const raster = path.join(root, 'caption.ppm');
 await writeFile(raster, Buffer.concat([Buffer.from('P6\n320 480\n255\n'), pixels]));
-await runCommand('ffmpeg', ['-y', '-loop', '1', '-i', raster, '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', '64', '-r', '5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', videoPath], { captureStderr: true });
-const segments = Array.from({ length: 32 }, (_, i) => ({ start: i * 2, end: (i + 1) * 2, text: translatedMode ? `Sentence ${i + 1}. Keep going.` : `第${i + 1}段合成验收标记。` }));
+await runCommand('ffmpeg', ['-y', '-loop', '1', '-i', raster, '-f', 'lavfi', '-i', 'anullsrc=r=16000:cl=mono', '-t', String(duration), '-r', '5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', videoPath], { captureStderr: true });
+const segments = Array.from({ length: segmentCount }, (_, i) => ({ start: i * 2, end: (i + 1) * 2, text: translatedMode ? `Sentence ${i + 1}. Keep going.` : `第${i + 1}段合成验收标记。` }));
 await storage.writeJson('cache/jobs-index.json', { 'gallery-demo': {
   id: 'gallery-demo', topic: '图集自动规划验收（合成画面）', sourceUrl: translatedMode ? 'https://www.youtube.com/watch?v=synthetic-demo' : 'https://example.com/demo', videoPath,
   status: 'queued', stage: 'transcribed', workflowMode: 'manual',
@@ -36,7 +38,7 @@ await storage.writeJson('cache/jobs-index.json', { 'gallery-demo': {
   storagePath: 'processed/scripts/gallery-demo.json', createdAt: now, updatedAt: now,
 } });
 await storage.writeJson('raw/transcripts/gallery-demo.json', {
-  transcript: segments.map(s => s.text).join('\n'), segments, duration: 64, provider: 'whisper.cpp', model: 'test-fixture',
+  transcript: segments.map(s => s.text).join('\n'), segments, duration, provider: 'whisper.cpp', model: 'test-fixture',
 });
 // A command double makes historical repair reproducible; synthetic audio is not evidence of ASR accuracy.
 const cli = path.join(root, 'whisper-fixture.mjs');
@@ -54,7 +56,7 @@ let copyRuns = 0;
 const app = await createExpressApp({ storagePath: root, rootDir: root, whisperCliPath: cli, whisperModelPath: model,
   galleryTranslator: { translate: async cues => cues.map(c => ({ ...c, text: `第${c.segmentIndex + 1}段译文：坚持前行。` })) },
   galleryCopyWriter: { write: async input => {
-    assert.match(input.transcript, translatedMode ? /Sentence 32/ : /第32段合成验收标记/);
+    assert.ok(input.transcript.includes(translatedMode ? `Sentence ${segmentCount}` : `第${segmentCount}段合成验收标记`));
     return { title: '合成图文验收', description: `这是隔离测试生成的配套文案（第${++copyRuns}次）。\n1. 按完整内容组织核心观点。\n2. 保留最后一段的信息。\n你想先调整哪一点？`, hashtags: ['合成验收'], notes: ['测试夹具不证明真实文案语义准确'] };
   } } });
 const serve = process.argv.includes('--serve');
@@ -91,21 +93,22 @@ else try {
   const created = await fetch(base + '/api/galleries', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Local-Session': token }, body: JSON.stringify({ sourceJobId: 'gallery-demo' }) });
   assert.equal(created.status, 201); const gallery = (await created.json()).gallery;
   const url = `/api/galleries/${gallery.id}`;
-  const sourceGallery = translatedMode ? (await request(url + '/translate', { version: gallery.version, start: 0, end: 64 })).gallery : gallery;
+  const sourceGallery = translatedMode ? (await request(url + '/translate', { version: gallery.version, start: 0, end: duration })).gallery : gallery;
   const planned = (await request(url + '/plan', { version: sourceGallery.version, targetLines: 8 })).gallery;
-  assert.deepEqual(planned.plan.images.map((i: any) => i.quotes.length), [8, 8, 8, 8]);
+  assert.deepEqual(planned.plan.images.map((i: any) => i.quotes.length), Array(segmentCount / 8).fill(8));
+  assert.equal(planned.plan.images.flatMap((i: any) => i.quotes).length, segmentCount);
   assert.match(planned.description, /核心观点/);
   assert.ok(planned.copyReference);
   const candidate = await fetch(base + url + `/plan/images/0?planId=${planned.plan.id}&version=${planned.version}`);
   assert.equal(candidate.status, 200); assert.equal(Buffer.from(await candidate.arrayBuffer()).readUInt32BE(20), 1440);
   const rendered = (await request(url + '/plan/render', { version: planned.version, planId: planned.plan.id, subtitlesConfirmed: true })).gallery;
-  assert.equal(rendered.status, 'ready'); assert.equal(rendered.generated.hashes.length, 4);
+  assert.equal(rendered.status, 'ready'); assert.equal(rendered.generated.hashes.length, segmentCount / 8);
   const recopy = (await request(url + '/copy', { version: rendered.version })).gallery;
   assert.equal(recopy.status, 'ready'); assert.deepEqual(recopy.generated, rendered.generated); assert.equal(recopy.plan.id, rendered.plan.id);
   assert.match(recopy.description, /第2次/);
-  assert.equal((await request(url + '/publishing/preview', { version: recopy.version })).preview.imageCount, 4);
+  assert.equal((await request(url + '/publishing/preview', { version: recopy.version })).preview.imageCount, segmentCount / 8);
   assert.equal((await request('/api/jobs/gallery-demo/retranscribe', {})).job.steps.clean.status, 'pending');
   const stale = await fetch(base + url + '/publishing/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: recopy.version }) });
   assert.equal(stale.status, 409);
-  console.log('PASS: isolated full transcript → four image previews + copy → confirm/render → regenerate copy preserves pixels → publish preview → retranscribe rejects stale copy/images. No real data or publishing writes.');
+  console.log(`PASS: isolated ${segmentCount} source cues → ${segmentCount / 8} image previews + copy → confirm/render → regenerate copy preserves pixels → publish preview → retranscribe rejects stale copy/images. No real data or publishing writes.`);
 } finally { await close(); }

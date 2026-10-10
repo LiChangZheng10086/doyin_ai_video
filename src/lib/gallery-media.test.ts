@@ -33,6 +33,16 @@ test('filmstrip fills the main width and retains each timestamp background aroun
     assert.equal(glyphRows.filter((white, y) => white && !glyphRows[y - 1]).length, 7, 'native captions appear once per row');
     assert.ok(glyphRows.filter(Boolean).length >= 7 * 24, 'native glyphs are not squeezed');
     assert.equal(pixels.length, 1080 * 1440 * 3);
+    const ten = path.join(root, 'ten-rows.png');
+    await media.render(video, { ...image, times: Array(10).fill(.5), bandTop: .86, bandBottom: .9 }, ten);
+    const tenPixels = path.join(root, 'ten-pixels');
+    await runCommand('ffmpeg', ['-y', '-i', ten, '-pix_fmt', 'rgb24', '-f', 'rawvideo', tenPixels], { captureStderr: true });
+    const rows = await readFile(tenPixels);
+    assert.equal(rows.length, 1080 * 1440 * 3);
+    for (let i = 0; i < 10; i++) {
+      const y = 480 + i * 96 + 48;
+      assert.ok(rows[(y * 1080 + 540) * 3]! > 220, `caption ${i} remains visible in ten-row layout`);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

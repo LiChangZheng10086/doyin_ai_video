@@ -5,6 +5,15 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { GalleryWorkspace } from './GalleryDetailPage.js';
 import type { Gallery } from '../../../src/lib/gallery-types.js';
+import { GalleryTranslationPanel } from '../components/GalleryTranslationPanel.js';
+
+test('translation defaults to the entire long video instead of the first two minutes', () => {
+  const gallery = { id: 'g', translation: undefined } as Gallery;
+  const html = renderToStaticMarkup(<GalleryTranslationPanel gallery={gallery} duration={948.834} disabled={false} dirty={false} onTranslate={() => {}} onEdit={() => {}} />);
+  assert.match(html, /value="948.834"/);
+  assert.match(html, /完整视频/);
+  assert.doesNotMatch(html, /默认选取前两分钟/);
+});
 
 test('gallery workspace exposes independent copy generation, source warnings and server character limits', () => {
   const gallery: Gallery = { id: 'g', sourceJobId: 'job', version: 1, title: '标题', description: '文📝案', hashtags: [], status: 'draft',
@@ -14,6 +23,7 @@ test('gallery workspace exposes independent copy generation, source warnings and
   const render = (g: Gallery) => renderToStaticMarkup(<RouterProvider router={createMemoryRouter([{ path: '/', element: <GalleryWorkspace initial={g} source={source} transcript={{ segments: [{ start: 0, end: 2, text: '原句' }], transcript: '原句' }} /> }])} />);
   const html = render(gallery);
   assert.match(html, /自动创作整套图文/);
+  assert.match(html, /<option value="custom">自定义<\/option>/);
   assert.match(html, /重新生成文案/);
   assert.match(html, /3\s*\/\s*1000/);
   assert.match(html, /文案来源变化/);
@@ -25,5 +35,5 @@ test('gallery workspace exposes independent copy generation, source warnings and
 test('translated workspace exposes range, bilingual editable text and a distinct gallery mode', () => {
  const g: Gallery = {id:'g',sourceJobId:'job',version:2,mode:'translated',title:'中文',description:'',hashtags:[],status:'draft',images:[{mainTime:1,times:[1],bandTop:.8,bandBottom:.9,mainFraction:.5}],createdAt:'',updatedAt:'',translation:{start:0,end:4,transcriptHash:'h',sourceFingerprint:'s',cues:[{segmentIndex:0,original:'Never give up.',text:'永不放弃。',start:0,end:4}]}};
  const html=renderToStaticMarkup(<RouterProvider router={createMemoryRouter([{path:'/',element:<GalleryWorkspace initial={g} source={{width:640,height:360,duration:3600}} transcript={{transcript:'Never give up.',segments:[{start:0,end:4,text:'Never give up.'}]}}/>}])}/>);
- assert.match(html,/中文译文图集/); assert.match(html,/翻译开始/); assert.match(html,/Never give up/); assert.match(html,/永不放弃/); assert.match(html,/翻译所选片段/); assert.doesNotMatch(html,/高级调整 · 手动换句/);
+ assert.match(html,/中文译文图集/); assert.match(html,/翻译开始/); assert.match(html,/Never give up/); assert.match(html,/永不放弃/); assert.match(html,/翻译完整视频/); assert.match(html,/当前译文仅覆盖部分视频/); assert.doesNotMatch(html,/高级调整 · 手动换句/);
 });

@@ -2,19 +2,18 @@ import type { TranscriptAsset } from '../types.js';
 import type { GalleryImage, GalleryPlan, GalleryPlanInput, GalleryQuote, GallerySource } from './gallery-types.js';
 import { GalleryError, galleryFilmstripHeight } from './gallery-media.js';
 import { inspectTranscriptQuality } from './transcript-quality.js';
-import { SAU_NOTE_MAX_IMAGES } from './sau-runner.js';
 
 export type SubtitleCandidate = { time: number; bandTop: number; bandBottom: number; recognizedText?: string; verification?: 'ocr' | 'pixels' };
 
 function balancedGroupSize(remaining: number, target: number): number {
   let groups = Math.ceil(remaining / target);
-  while (groups > 1 && remaining / groups < 6 && Math.ceil(remaining / (groups - 1)) <= 9) groups--;
+  while (target >= 6 && target <= 9 && groups > 1 && remaining / groups < 6 && Math.ceil(remaining / (groups - 1)) <= 9) groups--;
   return Math.ceil(remaining / groups);
 }
 
 export function galleryPlanBlockReason(plan: Pick<GalleryPlan, 'images' | 'excluded'>): string | undefined {
   const matched = new Set(plan.images.flatMap(image => image.quotes.map(quote => `${quote.segmentIndex}:${quote.start}:${quote.end}`))).size;
-  if (plan.excluded.length > matched) return `大部分内容未匹配（${matched} 个定位片段可用，${plan.excluded.length} 个未匹配），覆盖不足，不能生成；请重新转录或校准后重新规划。`;
+  if (plan.excluded.length) return `内容不完整（${matched} 个定位片段可用，${plan.excluded.length} 个未匹配），覆盖不足，不能生成完整图集；请重新转录或校准后重新规划。`;
   return undefined;
 }
 
@@ -25,7 +24,7 @@ export async function planGallery(
   options: Omit<GalleryPlanInput, 'version'> = {},
 ): Promise<Pick<GalleryPlan, 'images' | 'warnings' | 'excluded' | 'blockedReason'>> {
   const target = options.targetLines ?? 8;
-  if (![6, 7, 8, 9].includes(target)) throw new GalleryError(422, '建议条数须为 6～9 条');
+  if (!Number.isSafeInteger(target) || target < 1) throw new GalleryError(422, '每张目标条数须为正整数');
   if ((options.bandTop === undefined) !== (options.bandBottom === undefined)
     || (options.bandTop !== undefined && (!Number.isFinite(options.bandTop) || !Number.isFinite(options.bandBottom)
       || options.bandTop < 0 || options.bandBottom! > 1 || options.bandBottom! - options.bandTop < .01))) {
@@ -46,7 +45,7 @@ export async function planGallery(
       || start < 0 || end <= start || start >= source.duration || end > source.duration + .5) {
       throw new GalleryError(422, '转录时间不完整或超出原视频，请重新转录');
     }
-    if (!segment.text.trim()) { excluded.push({ segmentIndex, reason: '该段没有可定位文字' }); continue; }
+    if (!segment.text.trim()) continue;
     const readableEnd = Math.min(end, source.duration - .001);
     if (readableEnd <= start) {
       flush(); excluded.push({ segmentIndex, reason: '尾段没有可读取的有效时间范围，请核对原视频' }); continue;
@@ -122,7 +121,6 @@ export async function planGallery(
     group.push(item);
   }
   finish();
-  if (images.length > SAU_NOTE_MAX_IMAGES) throw new GalleryError(422, `方案超过 ${SAU_NOTE_MAX_IMAGES} 张，请缩小内容范围或调整字幕区域`);
   if (images.some(i => i.quotes.length < target)) warnings.push('内容边界、长句或字幕区域高度使部分图片少于建议条数；保留完整文字并优先保证可读性。');
   if (!images.length) warnings.push('没有可用原生字幕候选，当前方案不能生成。');
   return { images, warnings, excluded, blockedReason: galleryPlanBlockReason({ images, excluded }) };

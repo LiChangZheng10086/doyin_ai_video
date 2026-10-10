@@ -66,6 +66,8 @@ export interface GalleryQuote {
 
 export interface GalleryPlan {
   mode?: 'native' | 'translated';
+  scope?: 'full' | 'range';
+  coverage?: { start: number; end: number; duration: number; totalSegments: number; selectedSegments: number };
   id: string;
   transcriptHash: string;
   previewHashes?: string[];
@@ -94,7 +96,8 @@ export interface GalleryTranslation {
 
 export interface GalleryPlanInput {
   version: number;
-  targetLines?: 6 | 7 | 8 | 9;
+  fullVideo?: boolean;
+  targetLines?: number;
   bandTop?: number;
   bandBottom?: number;
 }

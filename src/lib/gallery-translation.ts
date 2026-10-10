@@ -7,7 +7,6 @@ import { toSimplifiedChinese } from './chinese.js';
 import { diagnoseAiError } from './ai-errors.js';
 import { GalleryError } from './gallery-media.js';
 import { translatedCaptionHeight, validateTranslatedCaptions } from './translated-gallery-media.js';
-import { SAU_NOTE_MAX_IMAGES } from './sau-runner.js';
 
 export function validateGalleryTranslationCues(cues: GalleryTranslationCue[], requireText = true, duration = Infinity): void {
   if (!Array.isArray(cues) || !cues.length) throw new GalleryError(422, '所选时间范围没有可翻译的转录分段');
@@ -79,7 +78,7 @@ export class GalleryTranslator {
 }
 
 export function planTranslatedGallery(translation: GalleryTranslation, targetLines: number, duration: number): Omit<GalleryPlan, 'id' | 'transcriptHash' | 'sourceFingerprint' | 'previewHashes'> {
-  if (![6, 7, 8, 9].includes(targetLines)) throw new GalleryError(422, '建议条数须为 6～9 条');
+  if (!Number.isSafeInteger(targetLines) || targetLines < 1) throw new GalleryError(422, '每张目标条数须为正整数');
   if (!Number.isFinite(duration) || duration <= 0) throw new GalleryError(422, '原视频时长无效');
   validateGalleryTranslationCues(translation?.cues, true, duration);
   if (!Number.isFinite(translation.start) || !Number.isFinite(translation.end) || translation.start < 0 || translation.end <= translation.start
@@ -90,7 +89,7 @@ export function planTranslatedGallery(translation: GalleryTranslation, targetLin
   for (let index = 0; index < cues.length;) {
     const remaining = cues.length - index;
     let groups = Math.ceil(remaining / targetLines);
-    while (groups > 1 && remaining / groups < 6 && Math.ceil(remaining / (groups - 1)) <= 9) groups--;
+    while (targetLines >= 6 && targetLines <= 9 && groups > 1 && remaining / groups < 6 && Math.ceil(remaining / (groups - 1)) <= 9) groups--;
     const limit = Math.ceil(remaining / groups);
     const group: GalleryTranslationCue[] = [];
     let height = 0;
@@ -106,9 +105,8 @@ export function planTranslatedGallery(translation: GalleryTranslation, targetLin
     });
     images.push({ title: group[0]!.text.slice(0, 36), quotes: group.map(c => ({ segmentIndex: c.segmentIndex, originalText: c.original, text: c.text, start: c.start, end: c.end, verification: 'translation' })),
       image: { mainTime: times[0]!, times, translatedCaptions: group.map(c => c.text), bandTop: .75, bandBottom: .95, mainFraction: .48 } });
-    if (images.length > SAU_NOTE_MAX_IMAGES) throw new GalleryError(422, `中文方案超过 ${SAU_NOTE_MAX_IMAGES} 张，请缩小翻译时间范围；不会截断内容`);
   }
   const warnings = ['中文译文为 AI 翻译，请逐条对照原文核对；图片使用对应时间画面与中文绘制字幕。'];
-  if (images.some(image => image.quotes.length < 6)) warnings.push('长译文或内容边界使部分图片少于建议条数，已保留完整文字并保证可读性。');
+  if (images.some(image => image.quotes.length < targetLines)) warnings.push('长译文或内容边界使部分图片少于建议条数，已保留完整文字并保证可读性。');
   return { mode: 'translated', images, warnings, excluded: [] };
 }

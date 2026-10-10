@@ -45,6 +45,11 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   const [tagText, setTagText] = useState(initial.hashtags.join(' '));
   const [activeTranscript, setActiveTranscript] = useState(transcript);
   const [targetLines, setTargetLines] = useState(8);
+  const [customTarget, setCustomTarget] = useState(false);
+  const [customLines, setCustomLines] = useState('8');
+  const [fullVideo, setFullVideo] = useState(true);
+  const planningTarget = customTarget ? Number(customLines) : targetLines;
+  const targetValid = Number.isSafeInteger(planningTarget) && planningTarget > 0;
   const [calibrate, setCalibrate] = useState(false);
   const [bandTop, setBandTop] = useState(0.78);
   const [bandBottom, setBandBottom] = useState(0.96);
@@ -131,7 +136,13 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     catch (e) { accept(await apiClient.getGallery(g.id)); throw e; }
   };
   const plan = async () => {
-    const g = await apiClient.planGallery(saved.id, { version: saved.version, targetLines, ...(calibrate ? { bandTop, bandBottom } : {}) });
+    if (!targetValid) throw new Error('每张目标条数须为正整数');
+    let current = saved;
+    if (translated && fullVideo && (!current.translation || current.translation.start !== 0 || current.translation.end < source.duration - .001)) {
+      current = await apiClient.translateGallery(current.id, current.version, 0, source.duration);
+      accept(current);
+    }
+    const g = await apiClient.planGallery(current.id, { version: current.version, targetLines: planningTarget, fullVideo, ...(calibrate ? { bandTop, bandBottom } : {}) });
     accept(g); select(0); setNotice('图片方案已准备，请核对整套候选和配套文案。已有文案会保留。');
   };
   const generateCopy = async () => {
@@ -170,19 +181,23 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     {notice && <p role="status" className="mb-4 text-sm text-success">{notice}</p>}
     {saved.error && <p role="alert" className="mb-4 text-sm text-danger">上次生成：{saved.error}</p>}
     {working && <p role="status" className="mb-4 text-sm text-ink-muted">{busy || '图集生成中'}…请等待操作完成，避免关闭应用。</p>}
-    {translated && <GalleryTranslationPanel gallery={draft} duration={source.duration} disabled={locked} dirty={dirty}
+    {translated && <GalleryTranslationPanel gallery={draft} duration={source.duration} disabled={locked} dirty={dirty} fullVideo={fullVideo}
+      onFullVideoChange={value => { setFullVideo(value); setPlanConfirmed(false); }}
       onEdit={translation => edit({ translation })} onTranslate={(start, end) => void action('翻译中', async () => {
         accept(await apiClient.translateGallery(saved.id, saved.version, start, end)); setNotice('译文已保存，请对照原文核对，再规划图片。');
       })} />}
     <section className="mb-5 rounded-lg border border-line bg-panel p-5">
       <h2 className="font-semibold text-ink">先规划整套图文，再一键生成</h2>
-      <p className="mt-2 text-sm text-ink-muted">{translated ? '按已保存译文规划图片，根据所选片段整理文案。长句会减少每张条数，超出 35 张时请缩小片段。' : '自动规划字幕图片，并根据完整视频内容整理标题、正文和话题。'}你只需核对图片与文案，无须逐张创建或逐句输入时间。</p>
+      <p className="mt-2 text-sm text-ink-muted">{translated ? (fullVideo ? '按完整视频翻译并规划全部图片。' : '按明确选择的片段译文规划图片。') : '按完整视频规划字幕图片，并整理标题、正文和话题。'}长句会减少每张条数并增加图片，创作不限制图片总数。你只需核对整套方案，无须逐张创建或逐句输入时间。</p>
       {!!activeTranscript?.qualityIssues?.length && <div role="alert" className="mt-3 text-sm text-warning"><p>转录存在异常，请先重新转录：</p>{activeTranscript.qualityIssues.map((issue, i) => <p key={i}>{issue}</p>)}</div>}
-      <div className="mt-4 flex flex-wrap items-center gap-3"><label className="text-sm text-ink">每张目标条数 <select aria-label="每张目标条数" value={targetLines} disabled={locked}
-        onChange={e => { setTargetLines(Number(e.target.value)); setPlanConfirmed(false); }} className="ml-2 rounded-lg border border-line bg-canvas px-3 py-2">{[6, 7, 8, 9].map(n => <option key={n} value={n}>{n} 条{n === 8 ? '（默认）' : ''}</option>)}</select></label>
-        <button disabled={locked || dirty || !!activeTranscript?.qualityIssues?.length || !segments.length || (translated && !saved.translation)} className="rounded-lg bg-accent px-4 py-2 text-sm text-on-accent disabled:opacity-50" onClick={() => void action('规划图片与文案中', plan)}>{busy === '规划图片与文案中' && <Loader2 size={16} className="mr-2 inline animate-spin" />}自动创作整套图文</button>
+      <div className="mt-4 flex flex-wrap items-center gap-3"><label className="text-sm text-ink">每张目标条数 <select aria-label="每张目标条数" value={customTarget ? 'custom' : targetLines} disabled={locked}
+        onChange={e => { setCustomTarget(e.target.value === 'custom'); if (e.target.value !== 'custom') setTargetLines(Number(e.target.value)); setPlanConfirmed(false); }} className="ml-2 rounded-lg border border-line bg-canvas px-3 py-2">{[6, 7, 8, 9].map(n => <option key={n} value={n}>{n} 条{n === 8 ? '（默认）' : ''}</option>)}<option value="custom">自定义</option></select></label>
+        {customTarget && <label className="text-sm text-ink">自定义条数 <input aria-label="自定义条数" type="number" min={1} step={1} value={customLines} disabled={locked} aria-invalid={!targetValid}
+          onChange={e => { setCustomLines(e.target.value); setPlanConfirmed(false); }} className="ml-2 w-24 rounded-lg border border-line bg-canvas px-3 py-2" /> 条</label>}
+        <button disabled={locked || dirty || !targetValid || !!activeTranscript?.qualityIssues?.length || !segments.length || (translated && !fullVideo && !saved.translation)} className="rounded-lg bg-accent px-4 py-2 text-sm text-on-accent disabled:opacity-50" onClick={() => void action('规划图片与文案中', plan)}>{busy === '规划图片与文案中' && <Loader2 size={16} className="mr-2 inline animate-spin" />}自动创作整套图文</button>
         <button disabled={locked || dirty} className={buttonClass} onClick={() => setRetranscribeOpen(true)}>重新转录来源视频</button>
       </div>
+      {customTarget && <p role={targetValid ? undefined : 'alert'} className={`mt-2 text-sm ${targetValid ? 'text-ink-muted' : 'text-danger'}`}>{targetValid ? '条数为每张目标；文字较长或字幕区域较高时会自动减少条数并增加图片，保留已选内容。调整后请重新规划。' : '请输入大于 0 的整数条数。'}</p>}
       {dirty && <p className="mt-2 text-sm text-warning">请先保存现有修改，再重新规划。新方案在确认前不会替换当前图片。</p>}
       {!segments.length && <p className="mt-2 text-sm text-ink-muted">自动规划需要带时间的转录，请先重新转录来源视频；已有手动草稿可在高级调整中继续编辑。</p>}
       {!translated && <details className="mt-4"><summary className="cursor-pointer text-sm text-ink-muted">整套字幕区域校准（可选）</summary>
