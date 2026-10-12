@@ -4,6 +4,25 @@ import { validateWritingResult, ArticleWritingService, ArticleWritingError } fro
 
 const article: any = { keyword: '项目变化', requirements: {}, selectedTopic: 'topic-1', topics: [], sources: [{ id: 's1', text: '项目周三开放了导出，离线编辑仍在开发。', included: true, status: 'readable' }], facts: [{ id: 'f1', sourceId: 's1', quote: '项目周三开放了导出', claim: '项目已开放导出' }], outline: { thesis: '变化', sections: [] } };
 
+test('default article client uses native fetch and still validates the JSON response', async () => {
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    calls++;
+    const request = JSON.parse(String(options?.body));
+    assert.equal(request.model, 'fixture');
+    assert.equal(request.response_format.type, 'json_object');
+    assert(options?.signal, 'SDK cancellation must reach the transport');
+    return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ facts: [{ claim: '开放导出', sourceId: 's1', quoteId: 'excerpt-1' }], issues: [] }) } }] }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const writer = new ArticleWritingService({ resolveAiConfig: async () => ({ apiKey: 'fixture', model: 'fixture', baseURL: 'http://127.0.0.1:1' }) });
+    const result = await writer.run('evidence', article);
+    assert.equal(calls, 1);
+    assert.equal(result.facts[0].quote, article.sources[0].text);
+  } finally { globalThis.fetch = original; }
+});
+
 test('evidence must quote its actual included source', () => {
   const valid = validateWritingResult('evidence', { facts: [{ claim: '开放导出', sourceId: 's1', quote: '项目周三开放了导出' }], issues: [] }, article);
   assert.equal(valid.facts[0].id, 'fact-1');

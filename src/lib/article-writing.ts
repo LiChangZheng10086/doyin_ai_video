@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI, { type ClientOptions } from 'openai';
 import { extractAiMessageText } from './ai-response.js';
 import { toSimplifiedChinese } from './chinese.js';
 import type { ArticleAiConfig, ArticleChatClient } from './article-draft.js';
@@ -116,7 +116,8 @@ export class ArticleWritingService {
     signal?.throwIfAborted();
     const config = await this.deps.resolveAiConfig();
     if (!config?.apiKey || !config.model) throw new ArticleWritingError('ai_missing','请先在设置中配置可用的 AI，资料与正文已保留');
-    const client = this.deps.createClient?.(config) ?? new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 180000, maxRetries: 0 });
+    // The SDK's node-fetch prematurely closes real DeepSeek responses in Electron.
+    const client = this.deps.createClient?.(config) ?? new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 180000, maxRetries: 0, fetch: globalThis.fetch as unknown as ClientOptions['fetch'] });
     // Every source character remains available; the model selects an ID instead of retyping evidence.
     const evidenceSources = step === 'evidence' ? article.sources.filter(source => source.included && source.status === 'readable').map(({id,title,text,publishedAt}) => ({
       id, title, publishedAt, excerpts: (text.match(/[\s\S]{1,500}/gu) ?? []).map((text,index) => ({id:`excerpt-${index+1}`,text})),
