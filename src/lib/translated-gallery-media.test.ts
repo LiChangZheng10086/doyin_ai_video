@@ -14,6 +14,9 @@ test('translated caption alignment, plaintext and length are validated at render
     assert.throws(() => validateGalleryImage({ ...image, translatedCaptions }, 2), /译文|字幕/);
   }
   assert.doesNotThrow(() => validateGalleryImage(image, 2));
+  assert.doesNotThrow(() => validateGalleryImage({ ...image, times: Array(10).fill(.5), translatedCaptions: Array(10).fill('完整中文。') }, 2));
+  assert.throws(() => validateGalleryImage({ ...image, times: Array(11).fill(.5), translatedCaptions: Array(11).fill('完整中文。') }, 2), /字幕/);
+  assert.throws(() => validateGalleryImage({ ...image, times: Array(10).fill(.5), translatedCaptions: undefined }, 2), /字幕/);
 });
 
 test('translated gallery escapes text and embeds only image data URLs', () => {
@@ -47,6 +50,11 @@ test('actual FFmpeg plus isolated Chromium produces deterministic readable Chine
     for (let y = 1100; y < 1440; y++) for (let x = 48; x < 1032; x++) if (pixel(x, y).every(v => v > 220)) white++;
     assert.ok(white > 1000, 'Chinese captions are visibly drawn');
     assert.ok(pixel(10, 1410)[2]! > pixel(10, 1410)[0]!, 'last caption retains its own timestamp background');
+    const ten = { ...image, times: Array(10).fill(1.3), translatedCaptions: Array.from({ length: 10 }, (_, i) => `第${i + 1}条完整中文译文。`) };
+    const tenPath = path.join(root, 'ten.png');
+    await media.render(video, ten, tenPath);
+    const tenPng = await readFile(tenPath);
+    assert.equal(tenPng.readUInt32BE(16), 1080); assert.equal(tenPng.readUInt32BE(20), 1440);
     const crowded = { ...image, times: Array(9).fill(.5), translatedCaptions: Array(9).fill('中文'.repeat(120)) };
     const invalid = path.join(root, 'invalid.png');
     await assert.rejects(renderTranslatedGallery(crowded, t => media.frame(video, t), invalid), /溢出|拆分|可读/);

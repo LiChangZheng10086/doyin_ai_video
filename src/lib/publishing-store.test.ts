@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -967,6 +967,10 @@ test("package preview revision covers ordered note images, note copy, and task c
   assert.match(base, /^[0-9a-f]{64}$/u);
   // 同输入同输出
   assert.equal(packagePreviewRevision(notePackageRecord(), [taskRecord()]), base);
+  assert.equal(packagePreviewRevision(notePackageRecord({ bgm: '' }), [taskRecord()]), base, 'empty music preserves the existing revision');
+  const music = packagePreviewRevision(notePackageRecord({ bgm: 'Whatever Happens' }), [taskRecord()]);
+  assert.notEqual(music, base);
+  assert.notEqual(packagePreviewRevision(notePackageRecord({ bgm: '另一首歌' }), [taskRecord()]), music);
   // 图片顺序参与指纹（发错顺序事后只能删稿重发）
   assert.notEqual(
     packagePreviewRevision(notePackageRecord({ imagePaths: ["images/02.png", "images/01.png"] }), [taskRecord()]),
@@ -985,6 +989,33 @@ test("package preview revision covers ordered note images, note copy, and task c
     packagePreviewRevision(packageRecord(), [taskRecord()]),
     packagePreviewRevision(packageRecord({ videoSha256: "c".repeat(64) }), [taskRecord()]),
   );
+});
+
+test('persisted note music is retained; invalid names make the index read-only', async () => {
+  for (const bgm of ['Whatever Happens', 42, 'bad\nname', 'x'.repeat(121)]) {
+    const root = await mkdtemp(path.join(tmpdir(), 'publishing-store-music-'));
+    const storage = new LocalStorage(root);
+    const index = seededIndex([notePackageRecord({ bgm: bgm as string })], [taskRecord()]);
+    await storage.writeJsonAtomic('cache/publishing-index.json', index);
+    const before = await readFile(storage.resolve('cache/publishing-index.json'));
+    const store = new PublishingStore(storage, () => new Date(NOW));
+    await store.init();
+    if (bgm === 'Whatever Happens') {
+      assert.equal((await store.getPackage('package-1'))?.package.bgm, bgm);
+    } else {
+      await assert.rejects(store.reserveVersion('job-1'), isPublishingError('publish_index_corrupt'));
+      assert.deepEqual(await readFile(storage.resolve('cache/publishing-index.json')), before);
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+  const root = await mkdtemp(path.join(tmpdir(), 'publishing-store-video-music-'));
+  try {
+    const storage = new LocalStorage(root);
+    await storage.writeJsonAtomic('cache/publishing-index.json', seededIndex([packageRecord({ bgm: 'Whatever Happens' })], [taskRecord()]));
+    const store = new PublishingStore(storage);
+    await store.init();
+    await assert.rejects(store.reserveVersion('job-1'), isPublishingError('publish_index_corrupt'));
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("reads the current package preview revision from the index", async () => {

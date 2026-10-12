@@ -22,6 +22,7 @@ import type {
 import { LocalStorage } from "./storage.js";
 import { SYSTEM_ACTOR } from "./local-users.js";
 import { PUBLISH_PLATFORMS, resolveAutoPublishEngine } from "./publishing-platforms.js";
+import { normalizeNoteBgm } from "./sau-runner.js";
 
 const PUBLISHING_INDEX = "cache/publishing-index.json";
 const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -1117,6 +1118,7 @@ export function packagePreviewRevision(
     hash.update(`noteTitle:${packageRecord.noteCopy?.title ?? ""}\0`);
     hash.update(`noteBody:${packageRecord.noteCopy?.description ?? ""}\0`);
     hash.update(`noteTags:${(packageRecord.noteCopy?.hashtags ?? []).join(",")}\0`);
+    if (packageRecord.bgm) hash.update(`noteBgm:${packageRecord.bgm}\0`);
     // ⚠️ **只在存在时参与哈希**：无条件追加（哪怕只多一个 `\0` 参数）会改掉**所有既有抖音
     // 图文包**的 `previewRevision` —— 于是「预览过、还没提交」的包会突然全部 409。
     // 那种红是「指纹口径被悄悄改了」，不是「功能坏了」，所以有用例把改动前的哈希写死当 baseline。
@@ -1239,6 +1241,7 @@ function isDeliveryPackage(value: unknown, key: string): value is DeliveryPackag
     (value.imagePaths === undefined
       || (Array.isArray(value.imagePaths) && value.imagePaths.every(isString))) &&
     (value.noteCopy === undefined || isPlatformCopyShape(value.noteCopy)) &&
+    (value.bgm === undefined || (value.contentType === "note" && isNoteBgmShape(value.bgm))) &&
     (value.articleCopy === undefined || isWechatArticleCopyShape(value.articleCopy))
     && (value.toutiaoOptions === undefined || isToutiaoOptionsShape(value.toutiaoOptions))
     && (value.xhsOptions === undefined || isXhsNoteOptionsShape(value.xhsOptions))
@@ -1249,6 +1252,11 @@ function isPlatformCopyShape(value: unknown): boolean {
   if (!isRecord(value)) return false;
   return isString(value.title) && isString(value.description)
     && Array.isArray(value.hashtags) && value.hashtags.every(isString);
+}
+
+function isNoteBgmShape(value: unknown): boolean {
+  try { return typeof value === 'string' && normalizeNoteBgm(value) === value; }
+  catch { return false; }
 }
 
 /**

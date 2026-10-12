@@ -97,6 +97,7 @@ export interface DeliveryPackage {
   imagePaths?: string[];
   /** 仅图文包：抖音图文口径的文案（title ≤20 / note ≤1000）。 */
   noteCopy?: PlatformCopy;
+  bgm?: string;
   /** 仅文章包：文章文案 + 包内 `article.html` 的哈希。 */
   articleCopy?: { title: string; digest?: string; author?: string; htmlSha256: string };
   /**
@@ -296,6 +297,7 @@ export interface PublishingPackagePreview {
   video?: { path: string; sha256: string; size: number; method: PackageVideoMethod; hasCover: boolean };
   imagePaths?: string[];
   noteCopy?: PlatformCopy;
+  bgm?: string;
   /**
    * 仅文章包：将被提交的文章（标题 + **从包内 article.html 提取的正文纯文本**）。
    * 正文以纯文本下发而不是原样 HTML：预览弹窗只负责渲染文字，不做 HTML 注入。

@@ -49,7 +49,7 @@ export const APPROVED_PLATFORMS = new Set([
 ]);
 const TEMP_STALE_MS = 60 * 60 * 1000;
 const MAX_COVER_BYTES = 20 * 1024 * 1024;
-/** 抖音图文单次图片上限（spec §4：images 非空且 ≤35 张）。导出给服务层与预览共用同一份数字。 */
+/** 普通图文素材入口的数量上限；已核验图集的本地交付包保留全部图片。 */
 export const MAX_NOTE_IMAGES = 35;
 /** 文章 HTML 的大小上限（我们自己的渲染产物，正常只有几十 KB；超过必然是异常文件）。 */
 const MAX_ARTICLE_HTML_BYTES = 2 * 1024 * 1024;
@@ -116,6 +116,7 @@ export interface NotePackageAssetInput {
    */
   sourceImagePaths?: string[];
   noteCopy: PlatformCopy;
+  bgm?: string;
   title: string;
   tasks: PublishTask[];
   actor: ActorSnapshot;
@@ -359,7 +360,7 @@ export class PublishingAssetService {
    * 错误码与必需字段都不同，混在一起会让两套规则互相纠缠。
    * 共同的部分（锁、临时目录、目录身份校验、原子提升、回滚）只有一份实现 —— `withStagedPackage`。
    */
-  async createNotePackageAssets(input: NotePackageAssetInput): Promise<NotePackageAssetResult> {
+  async createNotePackageAssets(input: NotePackageAssetInput, preserveAllGalleryImages = false): Promise<NotePackageAssetResult> {
     validateSegment(input.packageId);
     validateSegment(input.sourceJobId);
     validateVersion(input.version);
@@ -368,8 +369,8 @@ export class PublishingAssetService {
     return this.withAssetLock(async (context) => {
       const sourceImagePaths = input.sourceImagePaths
         ?? await collectSceneSnapshots(context.storageRoot, input.sourceJobId);
-      // 平台硬限制（≤35 张）在写盘前就拦掉，不产生任何包目录。
-      if (sourceImagePaths.length > MAX_NOTE_IMAGES) {
+      // 已核验图集的本地交付包保留全部图片，执行器独立检查提交数量。
+      if (!preserveAllGalleryImages && sourceImagePaths.length > MAX_NOTE_IMAGES) {
         throw new PublishingAssetError("publish_too_many_images");
       }
 
@@ -643,6 +644,7 @@ export class PublishingAssetService {
         title: input.noteCopy.title,
         description: input.noteCopy.description,
         hashtags: [...input.noteCopy.hashtags],
+        ...(input.bgm ? { bgm: input.bgm } : {}),
       },
       assetHealth,
       tasks: input.tasks.map((task) => ({

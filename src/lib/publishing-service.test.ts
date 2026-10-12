@@ -43,6 +43,59 @@ const ADMIN: ActorSnapshot = {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
+test('gallery music survives packaging, preview and upload while old notes omit music', async () => {
+  const f = await fixture();
+  try {
+    const file = path.join(f.storageRoot, 'gallery-music.png');
+    await writeFile(file, 'gallery-image');
+    const input = { sourceJobId: 'job-1', title: '字幕图集', noteCopy: { title: '字幕图集', description: '', hashtags: [] },
+      sourceImagePaths: [file], expectedImageHashes: [createHash('sha256').update('gallery-image').digest('hex')] };
+    const calls: unknown[] = [];
+    const sau = fakeSau(async () => ({ ok: true, exitCode: 0, output: 'valid' }))!;
+    sau.runUploadNote = async value => { calls.push(value); return { ok: true, exitCode: 0, output: 'success', needsVerificationCode: false }; };
+    const service = serviceWith(f, { sau });
+    for (const bgm of ['  Whatever Happens  ', '']) {
+      const detail = await service.createGalleryNote({ ...input, bgm }, ACTOR);
+      assert.equal(detail.package.bgm, bgm.trim() || undefined);
+      const manifest = JSON.parse(await readFile(path.join(detail.package.packagePath, 'manifest.json'), 'utf8'));
+      assert.equal(manifest.note.bgm, bgm.trim() || undefined);
+      const preview = await service.packagePreview(detail.package.id);
+      assert.equal(preview.bgm, bgm.trim() || undefined);
+      const task = await service.autoPublish(detail.tasks[0]!.id, { previewRevision: preview.previewRevision }, ACTOR);
+      assert.equal(task.autoPublish?.status, 'succeeded');
+    }
+    assert.equal((calls[0] as { bgm: string }).bgm, 'Whatever Happens');
+    assert.equal(Object.hasOwn(calls[1] as object, 'bgm'), false);
+    await assert.rejects(service.createGalleryNote({ ...input, bgm: 'bad\nname' }, ACTOR), /背景音乐/);
+  } finally { await rm(f.storageRoot, { recursive: true, force: true }); }
+});
+
+test('gallery packaging preserves all 42 ordered images beyond the general note limit', async () => {
+  const f = await fixture();
+  try {
+    const sourceImagePaths = Array.from({ length: 42 }, (_, i) => path.join(f.storageRoot, `gallery-${i}.png`));
+    const bytes = sourceImagePaths.map((_, i) => Buffer.from(`gallery-image-${i}`));
+    await Promise.all(sourceImagePaths.map((file, i) => writeFile(file, bytes[i]!)));
+    const detail = await f.service.createGalleryNote({ sourceJobId: 'job-1', title: '完整字幕图集',
+      noteCopy: { title: '完整字幕图集', description: '完整内容', hashtags: [] }, sourceImagePaths,
+      expectedImageHashes: bytes.map(b => createHash('sha256').update(b).digest('hex')),
+    }, ACTOR);
+    assert.equal(detail.package.imagePaths?.length, 42);
+    for (const [i, file] of detail.package.imagePaths!.entries()) {
+      assert.deepEqual(await readFile(path.join(detail.package.packagePath, file)), bytes[i], `packaged image ${i + 1} keeps its order and bytes`);
+    }
+    assert.equal((await f.service.packagePreview(detail.package.id)).imagePaths?.length, 42);
+    const packageRoot = path.join(f.storageRoot, 'output/publishing/job-1');
+    const before = await readdir(packageRoot);
+    await writeFile(sourceImagePaths[41]!, 'changed-last-image');
+    await assert.rejects(f.service.createGalleryNote({ sourceJobId: 'job-1', title: '完整字幕图集',
+      noteCopy: { title: '完整字幕图集', description: '完整内容', hashtags: [] }, sourceImagePaths,
+      expectedImageHashes: bytes.map(b => createHash('sha256').update(b).digest('hex')),
+    }, ACTOR), /图片已变化/);
+    assert.deepEqual(await readdir(packageRoot), before);
+  } finally { await rm(f.storageRoot, { recursive: true, force: true }); }
+});
+
 test('gallery packaging rejects changed ordered image bytes and rolls back staged files', async () => {
   const f = await fixture();
   try {

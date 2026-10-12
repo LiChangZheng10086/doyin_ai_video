@@ -120,6 +120,7 @@ export function OnlineAudioPanel({ assets, onImported }: { assets: AssetRecord[]
   };
   const refreshDisabled = loading || !!board?.refreshAfter && clock < Date.parse(board.refreshAfter);
   const stale = board?.status === 'stale' || !!board?.expiresAt && clock >= Date.parse(board.expiresAt);
+  const previewDownloading = submitting || !!batch?.items.some(item => item.track.key === preview?.track.key && (item.status === 'queued' || item.status === 'downloading'));
 
   return <div className="mb-6 rounded-xl border border-line bg-panel p-4 sm:p-5">
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -173,8 +174,15 @@ export function OnlineAudioPanel({ assets, onImported }: { assets: AssetRecord[]
       </> : <p className="py-7 text-center text-sm text-ink-muted">{mode === 'search' ? '输入歌曲或歌手名称，搜索后选择音频。' : '榜单暂不可用，请稍后重试或切换来源。'}</p>}
     {previewError && <p role="alert" className="mt-3 text-sm text-warning">{previewError}</p>}
     {preview && <div className="mt-4 rounded-lg border border-line bg-elevated p-3">
-      <p className="text-sm font-medium text-ink">{preview.track.title} <span className={preview.previewOnly ? 'text-warning' : 'text-success'}>· {preview.previewOnly ? '试听片段' : '完整音频'}</span></p>
-      <audio key={preview.token} ref={audioRef} src={preview.url} controls autoPlay preload="none" className="mt-2 w-full" onError={() => setPreviewError('试听失败或已过期，请重新点击试听')} aria-label={`正在试听 ${preview.track.title}`} />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium text-ink">{preview.track.title} <span className={preview.previewOnly ? 'text-warning' : 'text-success'}>· {preview.previewOnly ? '试听片段' : '完整音频'}</span></p>
+        <Button size="sm" variant="primary" disabled={imported.has(preview.track.key) || submitting || batchBusy} aria-busy={previewDownloading}
+          onClick={() => void download([preview.track.key])}>
+          {previewDownloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+          {imported.has(preview.track.key) ? '已入库' : previewDownloading ? '下载中…' : '下载到素材库'}
+        </Button>
+      </div>
+      <audio key={preview.token} ref={audioRef} src={preview.url} controls controlsList="nodownload" autoPlay preload="none" className="mt-2 w-full" onError={() => setPreviewError('试听失败或已过期，请重新点击试听')} aria-label={`正在试听 ${preview.track.title}`} />
     </div>}
     {batch && <div className="mt-4 border-t border-line pt-3" aria-live="polite">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium text-ink">下载进度 · {batch.items.filter(item => item.status === 'succeeded').length}/{batch.items.length} 已入库</p>

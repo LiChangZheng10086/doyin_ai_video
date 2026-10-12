@@ -362,6 +362,7 @@ export function PublishPreviewDialog({
             </section>
           ) : pkg.contentType === 'note' ? (
             <section>
+              {preview.tasks.some(task => task.platform === 'douyin') && <p className="mb-3 text-sm text-ink">背景音乐：{preview.bgm || '未指定配乐'}</p>}
               {imageCount === 0 ? (
                 <p className="rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning">包内没有图片</p>
               ) : (

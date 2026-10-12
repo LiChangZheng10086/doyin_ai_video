@@ -107,6 +107,16 @@ test('preview dialog shows the note copy text, not just the counters', () => {
   assert.match(html, /#内容创作/);
 });
 
+test('Douyin note preview shows the chosen music or an explicit empty selection', () => {
+  const withMusic = renderToStaticMarkup(<PublishPreviewDialog open preview={notePreview({ bgm: 'Whatever Happens' })} onClose={noop} />);
+  assert.match(withMusic, /背景音乐：Whatever Happens/);
+  assert.match(renderToStaticMarkup(<PublishPreviewDialog open preview={notePreview()} onClose={noop} />), /背景音乐：未指定配乐/);
+  assert.doesNotMatch(renderToStaticMarkup(<PublishPreviewDialog open preview={videoPreview()} onClose={noop} />), /背景音乐：/);
+  const xhs = notePreview({ bgm: '不应展示' });
+  xhs.tasks = xhs.tasks.map(task => ({ ...task, platform: 'xiaohongshu' }));
+  assert.doesNotMatch(renderToStaticMarkup(<PublishPreviewDialog open preview={xhs} onClose={noop} />), /背景音乐：/);
+});
+
 test('preview dialog shows the per-platform task copy for a video package', () => {
   const html = renderToStaticMarkup(<PublishPreviewDialog open preview={videoPreview()} onClose={noop} />);
 

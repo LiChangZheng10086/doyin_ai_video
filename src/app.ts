@@ -452,6 +452,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       noteCopy: { title: gallery.title, description: gallery.description, hashtags: gallery.hashtags },
       sourceImagePaths: paths,
       expectedImageHashes: gallery.generated!.hashes,
+      bgm: gallery.bgm,
     }, actor),
   }) });
 

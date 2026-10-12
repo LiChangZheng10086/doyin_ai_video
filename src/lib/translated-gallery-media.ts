@@ -5,7 +5,7 @@ import { GalleryError, validateGalleryImage } from './gallery-media.js';
 import { requireToutiaoBrowserTarget } from './toutiao-browser.js';
 
 export function validateTranslatedCaptions(captions: string[], count: number): void {
-  if (!Array.isArray(captions) || captions.length !== count || !captions.length || captions.length > 9
+  if (!Array.isArray(captions) || captions.length !== count || !captions.length || captions.length > 10
     || captions.some(text => typeof text !== 'string' || !text.trim() || Array.from(text).length > 240
       || /[\u0000-\u0008\u000b-\u001f\u007f]/u.test(text)
       || (/[\p{L}]/u.test(text) && !/\p{Script=Han}/u.test(text)))) {
@@ -16,7 +16,7 @@ export function validateTranslatedCaptions(captions: string[], count: number): v
 export function translatedCaptionHeight(text: string): number {
   // shortcut: conservative character widths reserve room for system Chinese fonts; Chromium rejects actual overflow before saving.
   const lines = text.split('\n').reduce((sum, line) => sum + Math.max(1, Math.ceil(Array.from(line).length / 26)), 0);
-  return Math.max(112, lines * 48 + 32);
+  return Math.max(96, lines * 48 + 32);
 }
 
 const escapeText = (text: string) => text.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);

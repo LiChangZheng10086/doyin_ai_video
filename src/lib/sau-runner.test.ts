@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { getCookiePath } from "./douyin-cookie.js";
+import { runCommand } from "./command.js";
 import {
   SauRunner,
   SauRunnerError,
   cookieHeaderToStorageState,
   storageStateToCookieHeader,
   type SauRunnerConfig,
+  normalizeNoteBgm,
 } from "./sau-runner.js";
 
 /** 假凭据，形状与真实 Cookie 头一致（59 段量级），但值全是假的。 */
@@ -26,6 +28,45 @@ const COOKIE_HEADER = [
 const MAX_TITLE = 20;
 const MAX_NOTE = 1000;
 const MAX_IMAGES = 35;
+
+test('note music names accept optional plain text and reject control characters or oversized values', () => {
+  assert.equal(normalizeNoteBgm(undefined), '');
+  assert.equal(normalizeNoteBgm('  Whatever Happens  '), 'Whatever Happens');
+  for (const value of [null, 1, {}, 'a'.repeat(121), '音乐\n名称', '音乐\u0000名称']) {
+    assert.throws(() => normalizeNoteBgm(value), /背景音乐/);
+  }
+});
+
+test('music upload uses a scoped Python adapter and stops before publication on missing, wrong or failed music', async t => {
+  const { stdout } = await runCommand('python3', ['-c', 'import sys; print(sys.executable)'], { captureStdout: true });
+  const python = stdout.trim();
+  const { workDir, sauBaseDir, config } = await sauFixture();
+  t.after(() => rm(workDir, { recursive: true, force: true }));
+  await mkdir(path.join(sauBaseDir, 'uploader/douyin_uploader'), { recursive: true });
+  const fakeModule = path.join(sauBaseDir, 'uploader/douyin_uploader/main.py');
+  await writeFile(fakeModule, `class DouYinNote:\n    async def select_bgm(self, page, name):\n        return False\n`);
+  const sauBinary = path.join(sauBaseDir, 'sau');
+  await writeFile(sauBinary, `#!${python}\nimport asyncio, json, sys\nfrom pathlib import Path\nfrom uploader.douyin_uploader.main import DouYinNote\nscenario = Path('scenario').read_text()\nname = sys.argv[sys.argv.index('--bgm')+1]\nclass Locator:\n    def __init__(self, kind): self.kind=kind\n    @property\n    def first(self): return self\n    def nth(self, n): return self\n    def filter(self, **kwargs): return self\n    async def count(self): return 1\n    async def wait_for(self, **kwargs):\n        if scenario in ('missing', 'wrong') and self.kind=='card': raise RuntimeError('no result')\n        if scenario=='failed' and self.kind=='sheet' and kwargs.get('state')=='hidden': raise RuntimeError('music not applied')\n    def locator(self, selector):\n        return Locator('card' if 'card-container' in selector else 'title' if 'song-name' in selector else 'apply' if 'apply-btn' in selector else 'input')\n    async def fill(self, value): pass\n    async def press(self, value): pass\n    async def inner_text(self): return '另一首歌' if scenario=='wrong' else name\n    async def all_text_contents(self): return ['另一首歌'] if scenario=='wrong' else []\n    async def evaluate(self, expression): Path('applied').write_text(name)\n    async def click(self): pass\nclass Page:\n    def locator(self, selector, **kwargs): return Locator('sheet' if 'sidesheet-content' in selector else 'entry')\nasyncio.run(DouYinNote().select_bgm(Page(), name))\nPath('published').write_text(json.dumps(sys.argv, ensure_ascii=False))\nprint('published')\n`);
+  await chmod(sauBinary, 0o755);
+  const before = await readFile(fakeModule);
+  for (const scenario of ['missing', 'wrong', 'failed', 'success']) {
+    await writeFile(path.join(sauBaseDir, 'scenario'), scenario);
+    await rm(path.join(sauBaseDir, 'published'), { force: true });
+    const runner = new SauRunner({ ...config, sauBinary, commandRunner: { run: (command, args, options) => runCommand(command, args, { ...options, cwd: sauBaseDir }) } });
+    const result = await runner.runUploadNote({ imagePaths: ['/pkg/a.png'], title: '测试', note: '', tags: [], bgm: 'Whatever Happens' });
+    if (scenario === 'success') {
+      assert.equal(result.ok, true, result.output);
+      const argv = JSON.parse(await readFile(path.join(sauBaseDir, 'published'), 'utf8'));
+      assert.equal(argv[argv.indexOf('--bgm') + 1], 'Whatever Happens');
+      assert.equal(await readFile(path.join(sauBaseDir, 'applied'), 'utf8'), 'Whatever Happens');
+    } else {
+      assert.equal(result.ok, false);
+      assert.match(result.output, /配乐/);
+      await assert.rejects(readFile(path.join(sauBaseDir, 'published')));
+    }
+  }
+  assert.deepEqual(await readFile(fakeModule), before, 'adapter does not modify the external uploader');
+});
 
 let stubCounter = 0;
 
@@ -309,6 +350,16 @@ test("runUploadNote reports a clear failure when the binary cannot be launched",
   assert.equal(result.exitCode, -1);
   assert.equal(result.needsVerificationCode, false);
   assert.ok(result.output.length > 0);
+});
+
+test('music upload rejects an unsupported entry without running the CLI', async t => {
+  const { workDir, config } = await sauFixture();
+  t.after(() => rm(workDir, { recursive: true, force: true }));
+  const sauBinary = await stubSau(workDir);
+  let calls = 0;
+  const runner = new SauRunner({ ...config, sauBinary, commandRunner: { run: async () => { calls++; return { stdout: 'published', stderr: '' }; } } });
+  const result = await runner.runUploadNote({ imagePaths: ['/pkg/a.png'], title: '测试', note: '', tags: [], bgm: '背景音乐' });
+  assert.equal(result.ok, false); assert.match(result.output, /配乐模式需要 Python/); assert.equal(calls, 0);
 });
 
 test("runUploadNote assembles the upstream argv with every image and flag", async () => {

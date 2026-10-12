@@ -106,10 +106,14 @@ test('translated gallery HTTP uses reviewed Chinese pixels, immutable originals 
   const plan=planned.body.gallery;
   assert.equal((await request(url+'/plan/render','POST',{version:plan.version,planId:plan.plan.id,subtitlesConfirmed:false})).status,422);
   const rendered=await request(url+'/plan/render','POST',{version:plan.version,planId:plan.plan.id,subtitlesConfirmed:true});assert.equal(rendered.status,200,JSON.stringify(rendered.body));
-  const ready=rendered.body.gallery;
+  const musicSaved=await request(url,'PATCH',{...rendered.body.gallery,bgm:'Whatever Happens'});assert.equal(musicSaved.status,200);
+  const ready=musicSaved.body.gallery;assert.equal(ready.status,'ready');assert.deepEqual(ready.generated,rendered.body.gallery.generated);
   const preview=await request(url+'/publishing/preview','POST',{version:ready.version});assert.equal(preview.status,200);
+  assert.equal(preview.body.preview.bgm,'Whatever Happens');
   const packaged=await request(url+'/publishing/packages','POST',{previewRevision:preview.body.preview.previewRevision,rightsConfirmed:true});assert.equal(packaged.status,201,JSON.stringify(packaged.body));
   const pkg=packaged.body.detail.package;const bytes=await readFile(path.join(pkg.packagePath,pkg.imagePaths[0]));assert.equal(bytes.readUInt32BE(16),1080);assert.equal(bytes.readUInt32BE(20),1440);
+  assert.equal(pkg.bgm,'Whatever Happens');
+  assert.equal((await request(`/api/publishing/packages/${pkg.id}/preview`)).body.preview.bgm,'Whatever Happens');
   const edit=await request(url,'PATCH',{...ready,translation:{...ready.translation,cues:ready.translation.cues.map((c:any,i:number)=>({...c,text:i===0?'坚持向前。':c.text}))}});assert.equal(edit.status,200);assert.equal(edit.body.gallery.plan,undefined);assert.match(edit.body.gallery.copyError,/译文.*文案/);
   assert.equal((await request(url+'/publishing/preview','POST',{version:edit.body.gallery.version})).status,409);
   assert.deepEqual(await readFile(path.join(pkg.packagePath,pkg.imagePaths[0])),bytes);

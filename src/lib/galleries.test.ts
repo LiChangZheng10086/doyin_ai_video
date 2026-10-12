@@ -40,7 +40,17 @@ test('gallery persists independent drafts and blocks stale versions, files and p
     const preview = await service.preview(draft.id, ready.version);
     assert.equal(preview.imageCount, 1);
     assert.equal(preview.violations.length, 0);
-    const edited = await service.update(draft.id, { ...ready, title: '新标题' });
+    const withMusic = await service.update(draft.id, { ...ready, bgm: '  Whatever Happens  ' });
+    assert.equal(withMusic.bgm, 'Whatever Happens');
+    assert.deepEqual(withMusic.generated, ready.generated, 'music never invalidates rendered images');
+    assert.notEqual((await service.preview(draft.id, withMusic.version)).previewRevision, preview.previewRevision);
+    assert.equal((await service.preview(draft.id, withMusic.version)).bgm, 'Whatever Happens');
+    assert.equal((await new GalleryService(deps).get(draft.id)).bgm, 'Whatever Happens');
+    await assert.rejects(service.update(draft.id, { ...withMusic, bgm: 'bad\nname' }), /背景音乐/);
+    const withoutMusic = await service.update(draft.id, { ...withMusic, bgm: '' });
+    assert.equal(withoutMusic.bgm, undefined);
+    assert.deepEqual(withoutMusic.generated, ready.generated);
+    const edited = await service.update(draft.id, { ...withoutMusic, title: '新标题' });
     assert.notEqual((await service.preview(draft.id, edited.version)).previewRevision, preview.previewRevision);
     // Editing a timestamp invalidates finished images even when the old generation is retained.
     const dirty = await service.update(draft.id, { ...edited, images: [{ ...edited.images[0]!, mainTime: 3 }] });

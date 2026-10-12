@@ -355,7 +355,7 @@ export function AssetsPage() {
                       </button>
                     </div>
                     {rawUrls[record.id] && (
-                      <audio src={rawUrls[record.id]} controls preload="none" className="mt-3 w-full" />
+                      <audio src={rawUrls[record.id]} controls controlsList="nodownload" preload="none" className="mt-3 w-full" />
                     )}
                   </li>
                 ))}

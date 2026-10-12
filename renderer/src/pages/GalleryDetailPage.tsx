@@ -42,6 +42,8 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   const [notice, setNotice] = useState('');
   const [preview, setPreview] = useState<GalleryPreview | null>(null);
   const [previewError, setPreviewError] = useState('');
+  const [packageError, setPackageError] = useState('');
+  const [saveFeedback, setSaveFeedback] = useState<{ message: string; failed: boolean; atBottom: boolean } | null>(null);
   const previewFeedback = useRef<HTMLDivElement>(null);
   const [rights, setRights] = useState(false);
   const [tagText, setTagText] = useState(initial.hashtags.join(' '));
@@ -81,12 +83,18 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
       else blocker.reset();
     }
   }, [blocker]);
-  const accept = (g: Gallery) => { setSaved(g); setDraft(g); setTagText(g.hashtags.join(' ')); setPreview(null); setPreviewError(''); setRights(false); setPlanConfirmed(false); };
-  const edit = (patch: Partial<Gallery>) => { setDraft(g => ({ ...g, ...patch })); setPreview(null); setPreviewError(''); setRights(false); setPlanConfirmed(false); setNotice(''); };
+  const accept = (g: Gallery) => { setSaved(g); setDraft(g); setTagText(g.hashtags.join(' ')); setPreview(null); setPreviewError(''); setPackageError(''); setSaveFeedback(null); setRights(false); setPlanConfirmed(false); };
+  const edit = (patch: Partial<Gallery>) => { setDraft(g => ({ ...g, ...patch })); setPreview(null); setPreviewError(''); setPackageError(''); setSaveFeedback(null); setRights(false); setPlanConfirmed(false); setNotice(''); };
   const editImage = (patch: Partial<GalleryImage>) => edit({ images: draft.images.map((item, i) => i === selected ? { ...item, ...patch } : item) });
   const save = async () => {
     const g = dirty ? await apiClient.saveGallery(draft.id, { ...draft, version: saved.version }) : saved;
     accept(g); return g;
+  };
+  const saveDraft = async (atBottom = false) => {
+    setSaveFeedback(null);
+    try {
+      await save(); setNotice('创作草稿已保存'); setSaveFeedback({ message: '创作草稿已保存', failed: false, atBottom });
+    } catch (e) { setSaveFeedback({ message: parseApiError(e).message, failed: true, atBottom }); throw e; }
   };
   const action = async (label: string, fn: () => Promise<void>) => {
     setBusy(label); setError(''); setNotice('');
@@ -95,8 +103,11 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     finally { setBusy(''); }
   };
   useEffect(() => {
-    if (preview || previewError) previewFeedback.current?.scrollIntoView({ block: 'nearest' });
-  }, [preview, previewError]);
+    if (preview || previewError || packageError) previewFeedback.current?.scrollIntoView({ block: 'nearest' });
+  }, [preview, previewError, packageError]);
+  useEffect(() => {
+    if (saveFeedback?.atBottom) previewFeedback.current?.scrollIntoView({ block: 'nearest' });
+  }, [saveFeedback]);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; frameRequest.current++; if (frameUrl.current) URL.revokeObjectURL(frameUrl.current); };
@@ -173,15 +184,18 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   };
   const publish = async () => {
     if (!preview || dirty) return;
-    await apiClient.createGalleryPackage(draft.id, preview.previewRevision, rights);
-    navigate(`/publishing?channel=douyin&contentType=note&status=all`);
+    setPackageError('');
+    try {
+      await apiClient.createGalleryPackage(draft.id, preview.previewRevision, rights);
+      navigate(`/publishing?channel=douyin&contentType=note&status=all`);
+    } catch (e) { setPackageError(parseApiError(e).message); }
   };
   const select = (index: number) => { setSelected(index); setFrame(null); frameRequest.current++; setFrameBusy(false); };
   return <div>
     <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
       <div><Link to="/galleries" className="text-sm text-accent">← 图集创作</Link><h1 className="mt-2 text-2xl font-semibold text-ink">{translated ? '中文译文图集工作台' : '字幕图集工作台'}</h1>
         <p className="mt-2 text-sm text-ink-muted">{translated ? '原文与时间轴保留供核对，图片绘制经确认的中文译文。' : '保留原视频字幕，不绘制转录文字。'}{!sourceError && <>原视频 {source.width}×{source.height} · {source.duration.toFixed(1)} 秒 · </>}<Link className="text-accent" to={`/jobs/${draft.sourceJobId}`}>查看来源</Link></p></div>
-      <div className="flex flex-wrap gap-2"><button disabled={locked} className={buttonClass} onClick={() => void action('保存中', async () => { await save(); setNotice('创作草稿已保存'); })}>保存草稿{dirty ? ' *' : ''}</button>
+      <div className="flex flex-wrap gap-2"><button disabled={locked} aria-busy={busy === '保存中'} className={buttonClass} onClick={() => void action('保存中', saveDraft)}>{busy === '保存中' ? '保存中…' : `保存草稿${dirty ? ' *' : ''}`}</button>
       </div>
     </div>
     {error && <div role="alert" className="mb-4 rounded-lg border border-danger-line bg-danger-soft p-4 text-sm text-danger">{error}</div>}
@@ -279,14 +293,19 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
       }}>{draft.description.trim() ? '重新生成文案' : '生成图文文案'}</button>
       <fieldset disabled={locked} className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2"><div className="space-y-4"><label className="block text-sm text-ink">标题 · {[...draft.title].length}{source.copyLimits ? ` / ${source.copyLimits.titleMax}` : ''}<input value={draft.title} onChange={e => edit({ title: e.target.value })} className={`${fieldClass} mt-2`} /></label>
         <label className="block text-sm text-ink">话题（空格分隔）· {draft.hashtags.length}{source.copyLimits ? ` / ${source.copyLimits.hashtagMax}` : ''}<input value={tagText} onChange={e => { setTagText(e.target.value); edit({ hashtags: e.target.value.split(/\s+/).filter(Boolean) }); }} className={`${fieldClass} mt-2`} /></label></div>
-        <label className="block text-sm text-ink">正文 · {[...draft.description].length}{source.copyLimits ? ` / ${source.copyLimits.descriptionMax}` : ''}<textarea value={draft.description} onChange={e => edit({ description: e.target.value })} rows={12} className={`${fieldClass} mt-2`} /></label></fieldset>
-      <div className="mt-4 flex flex-wrap items-center gap-3"><button disabled={locked} aria-busy={busy === '预览检查中'} onClick={() => void action('预览检查中', viewPreview)} className={buttonClass}>{busy === '预览检查中' ? <><Loader2 size={16} className="animate-spin" />预览检查中…</> : '检查发布预览'}</button><p className="text-xs text-ink-muted">{saved.status !== 'ready' || !saved.generated || imagesDirty ? '整套图片尚未准备好，请先在上方核对方案并生成整套图集，再检查发布预览。' : '点击后自动保存文案，并检查图片和发布限额。'}</p></div>
+        <label className="block text-sm text-ink">正文 · {[...draft.description].length}{source.copyLimits ? ` / ${source.copyLimits.descriptionMax}` : ''}<textarea value={draft.description} onChange={e => edit({ description: e.target.value })} rows={12} className={`${fieldClass} mt-2`} /></label>
+        <div className="lg:col-span-2"><label className="block text-sm text-ink">背景音乐（抖音音乐名称）<input value={draft.bgm ?? ''} maxLength={120} onChange={e => edit({ bgm: e.target.value })} placeholder="留空不配乐" aria-describedby="gallery-bgm-help" className={`${fieldClass} mt-2`} /></label>
+          <p id="gallery-bgm-help" className="mt-2 text-xs text-ink-muted">填写抖音音乐库中的完整名称，发布时按名称选曲。网易云和素材库音频不能直接作为抖音图文配乐文件上传。修改音乐无需重新生成图片，保存后重新检查发布预览。</p></div></fieldset>
+      <div className="mt-4 flex flex-wrap items-center gap-3"><button disabled={locked} aria-busy={busy === '保存中'} onClick={() => void action('保存中', () => saveDraft(true))} className={buttonClass}>{busy === '保存中' ? '保存中…' : `保存草稿${dirty ? ' *' : ''}`}</button><button disabled={locked} aria-busy={busy === '预览检查中'} onClick={() => void action('预览检查中', viewPreview)} className={buttonClass}>{busy === '预览检查中' ? <><Loader2 size={16} className="animate-spin" />预览检查中…</> : '检查发布预览'}</button><p className="text-xs text-ink-muted">{saved.status !== 'ready' || !saved.generated || imagesDirty ? '整套图片尚未准备好，请先在上方核对方案并生成整套图集，再检查发布预览。' : '点击后自动保存文案，并检查图片和发布限额。'}</p></div>
       <div ref={previewFeedback}>
+      {saveFeedback && <p role={saveFeedback.failed ? 'alert' : 'status'} className={`mt-3 text-sm ${saveFeedback.failed ? 'text-danger' : 'text-success'}`}>{saveFeedback.message}</p>}
       {previewError && <p role="alert" className="mt-3 rounded-lg border border-danger-line bg-danger-soft p-3 text-sm text-danger">{previewError}</p>}
       {preview && <div className="mt-4 space-y-3 text-sm text-ink"><p role="status">发布预览检查完成：{preview.imageCount} 张图片 · 标题上限 {preview.copyLimits.titleMax} · 正文上限 {preview.copyLimits.descriptionMax} · 话题上限 {preview.copyLimits.hashtagMax}</p>
+        <p>背景音乐：{preview.bgm || '未指定配乐'}</p>
         {preview.violations.map((v, i) => <p key={i} role="alert" className="text-danger">{v.message}</p>)}
         <label className="flex items-start gap-2"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} disabled={locked} className="mt-1" />我已逐张核对{translated ? '中文译文与原文' : '原生字幕'}，确认拥有原视频及生成图集的发布使用权。</label>
-        <button disabled={locked || !rights || dirty || preview.violations.length > 0} onClick={() => void action('创建发布包中', publish)} className="rounded-lg bg-accent px-4 py-2.5 text-on-accent disabled:opacity-50">创建抖音图文发布包</button>
+        <button disabled={locked || !rights || dirty || preview.violations.length > 0} aria-busy={busy === '创建发布包中'} onClick={() => void action('创建发布包中', publish)} className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-on-accent disabled:opacity-50">{busy === '创建发布包中' ? <><Loader2 size={16} className="animate-spin" />创建发布包中…</> : '创建抖音图文发布包'}</button>
+        {packageError && <p role="alert" className="rounded-lg border border-danger-line bg-danger-soft p-3 text-danger">{packageError}</p>}
         <p className="text-xs text-ink-muted">此操作只准备发布包。到「发布 → 抖音 → 图文」再次预览后，由你点击提交；不会自动向抖音发送内容。</p>
       </div>}
       </div>

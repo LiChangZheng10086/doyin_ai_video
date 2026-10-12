@@ -32,6 +32,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { CommandError, runCommand } from "./command.js";
 import { getCookiePath } from "./douyin-cookie.js";
+import { STRICT_NOTE_BGM_SCRIPT } from './sau-bgm.js';
 
 /** 上游 `DouYinNote.validate_upload_args()` 的三条硬限制。 */
 export const SAU_NOTE_MAX_TITLE = 20;
@@ -105,6 +106,14 @@ export class SauRunnerError extends Error {
   }
 }
 
+export function normalizeNoteBgm(value: unknown): string {
+  if (value === undefined) return '';
+  if (typeof value !== 'string' || [...value].length > 120 || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new SauRunnerError('sau_invalid_arguments', '背景音乐须为 120 字以内的抖音音乐名称，不能包含换行或控制字符。');
+  }
+  return value.trim();
+}
+
 export interface SauCommandRunner {
   run(
     command: string,
@@ -147,6 +156,7 @@ export interface SauUploadNoteInput {
   title: string;
   note: string;
   tags: string[];
+  bgm?: string;
 }
 
 export interface SauStorageStateCookie {
@@ -257,6 +267,7 @@ export class SauRunner {
    */
   async runUploadNote(input: SauUploadNoteInput): Promise<SauResult> {
     this.requireBinary();
+    const bgm = normalizeNoteBgm(input.bgm);
     const imagePaths = input.imagePaths.filter((imagePath) => isNonBlankString(imagePath));
     if (imagePaths.length === 0) {
       throw new SauRunnerError("sau_invalid_arguments", "图文发布至少需要一张图片。");
@@ -290,14 +301,27 @@ export class SauRunner {
     if (note.length > 0) args.push(...optionArg("--note", note));
     const tags = input.tags.filter((tag) => isNonBlankString(tag));
     if (tags.length > 0) args.push(...optionArg("--tags", tags.join(",")));
+    if (bgm) args.push(...optionArg('--bgm', bgm));
 
-    return this.run(args, UPLOAD_TIMEOUT_MS);
+    return this.run(args, UPLOAD_TIMEOUT_MS, !!bgm);
   }
 
-  private async run(args: string[], timeoutMs: number): Promise<SauResult> {
+  private async run(args: string[], timeoutMs: number, requireMusic = false): Promise<SauResult> {
     const sauBinary = this.requireBinary();
     try {
-      const { stdout, stderr } = await this.runner.run(sauBinary, args, {
+      let command = sauBinary;
+      let commandArgs = args;
+      if (requireMusic) {
+        const entry = (await readFile(sauBinary, 'utf8')).split('\n')[0]!;
+        const python = entry.startsWith('#!') ? entry.slice(2).trim() : '';
+        if (!path.isAbsolute(python) || !/^python(?:\d+(?:\.\d+)*)?$/.test(path.basename(python))) {
+          throw new SauRunnerError('sau_invalid_arguments', '配乐模式需要 Python 入口的 sau，请配置安装目录中 .venv/bin/sau；当前入口无法保证选曲失败时阻止发布。');
+        }
+        command = python;
+        commandArgs = ['-c', STRICT_NOTE_BGM_SCRIPT, sauBinary, ...args];
+      }
+      const { stdout, stderr } = await this.runner.run(command, commandArgs, {
+        ...(requireMusic ? { cwd: this.requireBaseDir() } : {}),
         captureStdout: true,
         captureStderr: true,
         timeoutMs,

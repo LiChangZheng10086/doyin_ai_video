@@ -8,7 +8,7 @@ const cue = (segmentIndex: number, text = ''): GalleryTranslationCue => ({ segme
 const translation = (cues: GalleryTranslationCue[]) => ({ transcriptHash: 'transcript', sourceFingerprint: 'source', start: 0, end: cues.length, cues });
 
 test('custom translation targets retain all cues and reduce crowded pages without raising small targets', () => {
-  for (const [target, count, sizes] of [[1, 3, [1, 1, 1]], [4, 10, [4, 3, 3]], [12, 20, [9, 9, 2]]] as const) {
+  for (const [target, count, sizes] of [[1, 3, [1, 1, 1]], [4, 10, [4, 3, 3]], [10, 20, [10, 10]], [12, 20, [10, 10]]] as const) {
     const cues = Array.from({ length: count }, (_, i) => cue(i, `完整中文第${i}句。`));
     const plan = planTranslatedGallery(translation(cues), target, 30);
     assert.deepEqual(plan.images.map(i => i.quotes.length), sizes);

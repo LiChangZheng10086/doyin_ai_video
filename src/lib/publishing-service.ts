@@ -54,7 +54,7 @@ import {
   packagePreviewRevision,
   type RestorePackageResult,
 } from "./publishing-store.js";
-import { SAU_INSTALL_GUIDANCE, SAU_NOTE_MAX_TITLE, SauRunner, SauRunnerError } from "./sau-runner.js";
+import { normalizeNoteBgm, SAU_INSTALL_GUIDANCE, SAU_NOTE_MAX_TITLE, SauRunner, SauRunnerError } from "./sau-runner.js";
 import {
   TOUTIAO_ARTICLE_LIMITS,
   articleBodyToDraft,
@@ -1611,6 +1611,7 @@ export class PublishingService {
         hashtags: [],
       };
       preview.noteCopy = { ...noteCopy, hashtags: [...noteCopy.hashtags] };
+      if (packageRecord.bgm) preview.bgm = packageRecord.bgm;
       const platform = detail.tasks[0]?.platform ?? "douyin";
       preview.copyChecks.push(copyCheck(platform, "package", preview.noteCopy, undefined, "note"));
     } else if (contentType === "article") {
@@ -2022,6 +2023,7 @@ export class PublishingService {
         title: noteCopy?.title ?? task.title,
         note: noteCopy?.description ?? task.description,
         tags: noteCopy?.hashtags ?? task.hashtags,
+        ...(detail.package.bgm ? { bgm: detail.package.bgm } : {}),
       });
 
       if (upload.ok) {
@@ -2304,6 +2306,7 @@ export class PublishingService {
     sourceJobId: string;
     title: string;
     noteCopy: PlatformCopy;
+    bgm?: string;
     drafts: ValidatedDraft[];
     actor: ActorSnapshot;
     /** 仅素材库来源：按选择顺序的绝对路径；省略即按场景序自动收集静帧。 */
@@ -2324,10 +2327,11 @@ export class PublishingService {
           version,
           ...(input.sourceImagePaths ? { sourceImagePaths: input.sourceImagePaths } : {}),
           noteCopy: input.noteCopy,
+          ...(input.bgm ? { bgm: input.bgm } : {}),
           title: input.title,
           tasks,
           actor: input.actor,
-        });
+        }, input.expectedImageHashes !== undefined);
         if (input.expectedImageHashes && assets.imageManifestSha256 !== imageManifestHash(input.expectedImageHashes)) {
           await assets.rollback();
           throw new PublishingServiceError(409, "publish_validation_failed", "图集图片已变化，请重新生成并预览");
@@ -2347,6 +2351,7 @@ export class PublishingService {
             contentType: "note",
             imagePaths: [...assets.imagePaths],
             noteCopy: { ...input.noteCopy, hashtags: [...input.noteCopy.hashtags] },
+            ...(input.bgm ? { bgm: input.bgm } : {}),
             // 只在给出时落库：`undefined` 与「压根没有这个字段」在指纹里必须完全等价（Task 3 的基线用例）。
             ...(input.xhsOptions
               ? { xhsOptions: { aiDeclaration: input.xhsOptions.aiDeclaration, submit: input.xhsOptions.submit } }
@@ -2364,17 +2369,21 @@ export class PublishingService {
   /** Internal gallery boundary: paths are resolved and hash-checked by GalleryService, never from HTTP. */
   async createGalleryNote(input: {
     sourceJobId: string; title: string; noteCopy: PlatformCopy; sourceImagePaths: string[]; expectedImageHashes: string[];
+    bgm?: string;
   }, actor: ActorSnapshot): Promise<PublishingPackageDetail> {
     validateSafeId(input.sourceJobId);
     const job = await this.deps.jobs.get(input.sourceJobId);
     if (!job || job.deletedAt) throw new PublishingServiceError(404, "publish_job_not_found");
     const copy = normalizePlatformCopy(input.noteCopy);
     const violations = validateNoteCopy("douyin", copy);
-    if (!copy.title.trim() || violations.length || input.sourceImagePaths.length < 1 || input.sourceImagePaths.length > MAX_NOTE_IMAGES
+    if (!copy.title.trim() || violations.length || input.sourceImagePaths.length < 1
       || input.expectedImageHashes.length !== input.sourceImagePaths.length) {
       throw new PublishingServiceError(422, "publish_validation_failed", violations[0]?.message ?? "字幕图集需有效标题和图片");
     }
-    return this.createNotePackage({ ...input, noteCopy: copy, actor,
+    let bgm: string;
+    try { bgm = normalizeNoteBgm(input.bgm); }
+    catch (error) { throw new PublishingServiceError(422, 'publish_validation_failed', error instanceof Error ? error.message : '配乐名称不合法'); }
+    return this.createNotePackage({ ...input, bgm: bgm || undefined, noteCopy: copy, actor,
       drafts: validateDrafts([{ platform: "douyin", copy, copySource: "user_edited" }], this.now()),
     });
   }

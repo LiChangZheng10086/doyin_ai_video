@@ -14,6 +14,7 @@ export interface GalleryDraft {
   title: string;
   description: string;
   hashtags: string[];
+  bgm?: string;
   images: GalleryImage[];
 }
 
@@ -42,6 +43,7 @@ export interface Gallery extends GalleryDraft {
 
 export interface GalleryPreview {
   previewRevision: string;
+  bgm?: string;
   imageCount: number;
   violations: { message: string }[];
   copyLimits: { titleMax: number; descriptionMax: number; hashtagMax: number };

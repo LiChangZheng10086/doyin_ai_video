@@ -25,9 +25,11 @@ test('full-video translation, planning, rendering and saving retain more than 31
     assert.equal(selected.plan?.scope, 'range');
     const full = await service.translate(draft.id, { version: selected.version, start: 0, end: 400 });
     assert.equal(full.translation?.cues.length, 400);
-    const planned = await service.plan(draft.id, { version: full.version });
+    const planned = await service.plan(draft.id, { version: full.version, targetLines: 10 });
     assert.equal(planned.plan?.scope, 'full');
     assert.ok(planned.plan!.images.length > 35);
+    assert.equal(planned.plan!.images.length, 40);
+    assert.ok(planned.plan!.images.every(i => i.quotes.length === 10));
     assert.deepEqual(planned.plan!.images.flatMap(i => i.quotes.map(q => q.segmentIndex)), segments.map((_, i) => i));
     assert.equal((await service.inspectSource(draft.id)).imageLimit, undefined);
     const ready = await service.renderPlan(draft.id, { version: planned.version, planId: planned.plan!.id, subtitlesConfirmed: true });

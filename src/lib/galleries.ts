@@ -16,6 +16,7 @@ import type { GalleryCopyWriter } from './gallery-copy.js';
 import { isYouTubeUrl } from './youtube.js';
 import { GalleryTranslator, planTranslatedGallery, validateGalleryTranslationCues } from './gallery-translation.js';
 import { inspectTranscriptQuality } from './transcript-quality.js';
+import { normalizeNoteBgm } from './sau-runner.js';
 
 const INDEX = 'cache/galleries.json';
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -133,7 +134,10 @@ export class GalleryService {
         ...(image.filmstrip ? { filmstrip: true } : {}),
         ...(image.mainCrop ? { mainCrop: { left: image.mainCrop.left, right: image.mainCrop.right, top: image.mainCrop.top, bottom: image.mainCrop.bottom } } : {}) };
     });
-    return { title: input.title.trim(), description: input.description, hashtags: input.hashtags.map(t => t.trim().replace(/^#+/, '')).filter(Boolean), images };
+    let bgm: string;
+    try { bgm = normalizeNoteBgm(input.bgm); }
+    catch (error) { throw new GalleryError(422, error instanceof Error ? error.message : '配乐名称不合法'); }
+    return { title: input.title.trim(), description: input.description, hashtags: input.hashtags.map(t => t.trim().replace(/^#+/, '')).filter(Boolean), bgm: bgm || undefined, images };
   }
 
   async list(): Promise<Gallery[]> {
@@ -517,7 +521,11 @@ export class GalleryService {
     for (let i = 0; i < g.images.length; i++) paths.push((await this.readImage(g, i)).file);
     const policy = PUBLISH_NOTE_POLICIES.douyin!;
     const copy = { title: g.title, description: g.description, hashtags: g.hashtags };
-    return { paths, preview: { previewRevision: hash(JSON.stringify([g.id, g.version, g.generated, copy, 'douyin'])), imageCount: paths.length,
+    let bgm: string;
+    try { bgm = normalizeNoteBgm(g.bgm); }
+    catch (error) { throw new GalleryError(422, error instanceof Error ? error.message : '配乐名称不合法'); }
+    const revision = [g.id, g.version, g.generated, copy, 'douyin', ...(bgm ? [bgm] : [])];
+    return { paths, preview: { previewRevision: hash(JSON.stringify(revision)), ...(bgm ? { bgm } : {}), imageCount: paths.length,
       violations: validateNoteCopy('douyin', copy), copyLimits: { titleMax: policy.titleMax, descriptionMax: policy.descriptionMax, hashtagMax: policy.hashtagMax } } };
   }
 
