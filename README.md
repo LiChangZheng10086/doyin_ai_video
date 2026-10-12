@@ -692,29 +692,56 @@ AppSecret 由 Electron `safeStorage` 加密保存，不回显；加密或解密�
 
 本项目区分三种用法：开发助手按需读取的项目级 Skills、应用规则已参考的社区 Skills，以及尚未接入的候选项目。安装 Skill 到 Codex / Claude 不会自动增加应用按钮或 API；应用运行时使用后端提示词、确定性服务和 HyperFrames CLI，不自动执行下面的第三方 Skill 脚本。由合集生成的 `douyin-{id}` 是用户自己的知识产物，另在「Skills 管理」中查看。
 
-### 项目级 Skills（仓库内全部 15 个）
+### 项目级 Skills（仓库内全部 17 个）
 
-以下文件随仓库保存，供开发助手按任务选用；文件存在不代表每次任务都调用，更不代表应用已经具备该 Skill 描述的所有功能。
+以下文件随仓库保存，供开发助手按任务选用；文件存在不代表每次任务都调用，更不代表应用已经具备该 Skill 描述的所有功能。来源按 `skills-lock.json` 和项目记录核对，未记录的来源明确标注。
 
-| Skill | 用途与适用范围 | 入口文件 |
+| Skill | 用途与适用范围 | GitHub 来源 | 入口文件 |
+| --- | --- | --- | --- |
+| `agent-browser` | 浏览器操作、页面采集与 UI 验证 | [brianlovin/claude-config](https://github.com/brianlovin/claude-config/tree/main/skills/agent-browser) | [SKILL.md](.agents/skills/agent-browser/SKILL.md) |
+| `claude-api` | Claude / Anthropic API 与 SDK 参考；当前应用 AI 主链路仍使用 OpenAI-compatible SDK | [anthropics/skills](https://github.com/anthropics/skills/tree/main/skills/claude-api) | [SKILL.md](.agents/skills/claude-api/SKILL.md) |
+| `cy-carousel` | AI/科技图文轮播的手排、渲染、视觉检查和交付；已安装，应用自动创作集成仍待完成 | [chengyi-ai/cy-carousel-skill](https://github.com/chengyi-ai/cy-carousel-skill) | [SKILL.md](.agents/skills/cy-carousel/SKILL.md) |
+| `docx` | Word 文档读取、生成与编辑 | [anthropics/skills](https://github.com/anthropics/skills/tree/main/skills/docx) | [SKILL.md](.agents/skills/docx/SKILL.md) |
+| `electron-wrapper` | Bun Web 应用的 Electron 封装、窗口与分发参考；按技术栈适配后选用 | [brianlovin/claude-config](https://github.com/brianlovin/claude-config/tree/main/skills/electron-wrapper) | [skill.md](.agents/skills/electron-wrapper/skill.md) |
+| `frontend-design` | 前端视觉方向、排版与界面设计 | [anthropics/skills](https://github.com/anthropics/skills/tree/main/skills/frontend-design) | [SKILL.md](.agents/skills/frontend-design/SKILL.md) |
+| `grilling` | `loop-me` 配套的逐轮问答与规格梳理依赖；按用户需求选用 | [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/productivity/grilling) | [SKILL.md](.agents/skills/grilling/SKILL.md) |
+| `loop-me` | 工作流规格梳理；需显式调用 | [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/in-progress/loop-me) | [SKILL.md](.agents/skills/loop-me/SKILL.md) |
+| `pdf` | PDF 读取、生成、合并与表单处理 | [anthropics/skills](https://github.com/anthropics/skills/tree/main/skills/pdf) | [SKILL.md](.agents/skills/pdf/SKILL.md) |
+| `ppt-generator-skill`（PPT Generator Skill） | 内容大纲、配图与多风格 PPT 生成 | [xuanxuan1983/baoyu-xuanyi-skills](https://github.com/xuanxuan1983/baoyu-xuanyi-skills/tree/main/skills/baoyu-ppt-generator) | [SKILL.md](.agents/skills/ppt-generator-skill/SKILL.md) |
+| `pptx` | PowerPoint 文件读取、编辑、模板与结构处理 | [anthropics/skills](https://github.com/anthropics/skills/tree/main/skills/pptx) | [SKILL.md](.agents/skills/pptx/SKILL.md) |
+| `react-doctor` | React 代码质量、性能与健康检查 | [brianlovin/claude-config](https://github.com/brianlovin/claude-config/tree/main/skills/react-doctor) | [SKILL.md](.agents/skills/react-doctor/SKILL.md) |
+| `sentry` | Next.js 的错误监控与性能跟踪参考；不是本应用已接入 Sentry 的声明 | [brianlovin/claude-config](https://github.com/brianlovin/claude-config/tree/main/skills/sentry) | [SKILL.md](.agents/skills/sentry/SKILL.md) |
+| `simplify` | 修改后精简代码、保持功能与项目风格 | [brianlovin/claude-config](https://github.com/brianlovin/claude-config/tree/main/skills/simplify) | [SKILL.md](.agents/skills/simplify/SKILL.md) |
+| `tech-blogger-narration` | 科技博主口播风格改写参考；不是运行时自动加载的洗稿器 | 项目内自定义；未记录外部 GitHub 来源 | [SKILL.md](.agents/skills/tech-blogger-narration/SKILL.md) |
+| `video-master` | 视频场景、动态效果、转场与运镜方案参考；当前成片由 HyperFrames 生成 | [huangserva/skill-prompt-generator](https://github.com/huangserva/skill-prompt-generator/tree/main/.claude/skills/video-master) | [skill.md](.agents/skills/video-master/skill.md) |
+| `xlsx` | Excel / CSV 数据读取、编辑、分析与制表 | [anthropics/skills](https://github.com/anthropics/skills/tree/main/skills/xlsx) | [SKILL.md](.agents/skills/xlsx/SKILL.md) |
+
+### 2026-10-12 Skills 更新与版本
+
+本次更新3个已有 Skill，并把之前仅在临时目录试跑的 `cy-carousel` 保存为完整项目级 Skill（含脚本、字体和许可）；另补齐 `loop-me` 引用的同源 `grilling` 依赖。固定以下检查时最新提交；目录内容哈希保存在 [skills-lock.json](skills-lock.json)。
+
+| Skill | 来源与固定提交 | 使用及兼容边界 |
 | --- | --- | --- |
-| `agent-browser` | 浏览器操作、页面采集与 UI 验证 | [SKILL.md](.agents/skills/agent-browser/SKILL.md) |
-| `claude-api` | Claude / Anthropic API 与 SDK 参考；当前应用 AI 主链路仍使用 OpenAI-compatible SDK | [SKILL.md](.agents/skills/claude-api/SKILL.md) |
-| `docx` | Word 文档读取、生成与编辑 | [SKILL.md](.agents/skills/docx/SKILL.md) |
-| `electron-wrapper` | Bun Web 应用的 Electron 封装、窗口与分发参考；按技术栈适配后选用 | [skill.md](.agents/skills/electron-wrapper/skill.md) |
-| `frontend-design` | 前端视觉方向、排版与界面设计 | [SKILL.md](.agents/skills/frontend-design/SKILL.md) |
-| `loop-me` | 工作流规格梳理；需显式调用 | [SKILL.md](.agents/skills/loop-me/SKILL.md) |
-| `pdf` | PDF 读取、生成、合并与表单处理 | [SKILL.md](.agents/skills/pdf/SKILL.md) |
-| `ppt-generator-skill`（PPT Generator Skill） | 内容大纲、配图与多风格 PPT 生成 | [SKILL.md](.agents/skills/ppt-generator-skill/SKILL.md) |
-| `pptx` | PowerPoint 文件读取、编辑、模板与结构处理 | [SKILL.md](.agents/skills/pptx/SKILL.md) |
-| `react-doctor` | React 代码质量、性能与健康检查 | [SKILL.md](.agents/skills/react-doctor/SKILL.md) |
-| `sentry` | Next.js 的错误监控与性能跟踪参考；不是本应用已接入 Sentry 的声明 | [SKILL.md](.agents/skills/sentry/SKILL.md) |
-| `simplify` | 修改后精简代码、保持功能与项目风格 | [SKILL.md](.agents/skills/simplify/SKILL.md) |
-| `tech-blogger-narration` | 科技博主口播风格改写参考；不是运行时自动加载的洗稿器 | [SKILL.md](.agents/skills/tech-blogger-narration/SKILL.md) |
-| `video-master` | 视频场景、动态效果、转场与运镜方案参考；当前成片由 HyperFrames 生成 | [skill.md](.agents/skills/video-master/skill.md) |
-| `xlsx` | Excel / CSV 数据读取、编辑、分析与制表 | [SKILL.md](.agents/skills/xlsx/SKILL.md) |
+| `claude-api` | [anthropics/skills · dbd4588](https://github.com/anthropics/skills/commit/dbd4588f9e1033efb41dad4bef2f7947c8993d44) | Claude API/SDK 开发参考；当前应用仍使用 OpenAI-compatible SDK，不切换提供商 |
+| `frontend-design` | [anthropics/skills · dbd4588](https://github.com/anthropics/skills/commit/dbd4588f9e1033efb41dad4bef2f7947c8993d44) | 界面与排版设计参考；已有设计方向、已授权范围和用户协作约定优先 |
+| `loop-me` | [mattpocock/skills · 49dd158](https://github.com/mattpocock/skills/commit/49dd158d1076134a641b33efb035946536778336) | 显式调用的工作流规格梳理；引用的 `/grilling` 已随同一提交安装；显式调用，不后台执行 |
+| `cy-carousel` | [chengyi-ai/cy-carousel-skill · be1a9f1](https://github.com/chengyi-ai/cy-carousel-skill/commit/be1a9f1d35cf87b92fe34d172851060b1a4a35b1) | 本地生成文件；Python 依赖见其 requirements.txt。扫描书页 OCR 依赖 macOS/Swift。严格视觉检查默认关闭，仅适用于暗色正式稿，技术通过不代表视觉或事实验收 |
 
-开发环境还可提供全局或插件 Skills；本次 README 维护使用 `documentation-generator`，它不随本仓库分发，也不是应用运行依赖。项目级第三方 Skills 的许可分别以其目录内声明为准，不统一套用本项目 MIT 许可。
+为通过本机校验，精简了 `claude-api` 描述中的冗余措辞，使其不超过1024字符；cy-carousel 的脱敏测试假值用分段字符串构造，保留测试语义并避免凭据扫描误报。另移除上游文本的行尾空白，不改许可条款或脚本逻辑，并同步字体许可证清单的文件哈希。`grilling` 与 `loop-me` 同样固定在 `49dd158`。
+
+[本次兼容性验收](docs/research/2026-10-12-skills-update-verification.md)。cy-carousel 的上游固定封面/内页格式只用于其自身体裁，不把项目现有字幕图集改回固定8张或限定片段；应用正式接入进度仍跟踪 [Issue #15](https://github.com/LiChangZheng10086/doyin_ai_video/issues/15)。[2026-10-09 试跑记录](docs/research/2026-10-09-cy-carousel-probe.md)保留当时使用的旧提交，不能当作本次更新验收。
+
+### 开发过程使用的全局与插件 Skills
+
+| Skills | 来源 | 使用范围 |
+| --- | --- | --- |
+| Superpowers：`writing-plans`、`test-driven-development`、`systematic-debugging`、`verification-before-completion`、`using-git-worktrees`、`dispatching-parallel-agents`、`finishing-a-development-branch`、`using-superpowers` 等 | [obra/superpowers](https://github.com/obra/superpowers)，当前插件7.0.0 | 开发工作流；按任务与授权选用，不随本仓库分发 |
+| `ponytail` 与其 review/audit 技能 | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail)，当前插件5.1.0 | 最小完整实现与审查；开发辅助，不是应用运行依赖 |
+| 独立的 `brainstorming`、`requesting-code-review` | 本机 cc-switch 管理的副本，独立安装提交未记录；与 Superpowers 7.0.0 的入口文本不一致 | 历史开发记录中的需求梳理与审查技能，不能据插件版本断言副本最新 |
+| `playwright` | 本机全局 Skill；当前副本缺少安装提交记录 | 浏览器与界面验收，不宣称已核对该副本的上游版本 |
+| `documentation-generator`、`skill-installer` | 前者为本机文档 Skill（外部来源未记录）；后者为 Codex 内置系统 Skill，来自 [openai/skills](https://github.com/openai/skills/tree/main/skills/.system/skill-installer) | README 来源与用途核对、固定提交下载及安装；不随本仓库分发 |
+
+项目级第三方 Skills 的许可分别以目录内声明为准，不统一套用本项目 MIT 许可；cy-carousel 的字体许可随 `assets/fonts/` 保存。
 
 ### 应用规则已经参考的社区 Skills
 

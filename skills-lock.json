@@ -17,7 +17,7 @@
       "source": "anthropics/skills",
       "sourceType": "github",
       "skillPath": "skills/claude-api/SKILL.md",
-      "computedHash": "7688fe71c809c208542ddf6b5d222eb5af4ed979ab0a93740bb666c946d484fa"
+      "computedHash": "fbe57602bce87597c7bebd5e090933cd3785202d19e102676e1b20d31f297d1d"
     },
     "docx": {
       "source": "anthropics/skills",
@@ -35,13 +35,13 @@
       "source": "anthropics/skills",
       "sourceType": "github",
       "skillPath": "skills/frontend-design/SKILL.md",
-      "computedHash": "4eabc66183767153e404b39d1b839b1c37f2d82d86f0a0d7e880a579d8d62336"
+      "computedHash": "89496d5dd00f4810205f351759594fc2742bf8eea85a2f2b2d1de59f4bd91576"
     },
     "loop-me": {
       "source": "mattpocock/skills",
       "sourceType": "github",
       "skillPath": "skills/in-progress/loop-me/SKILL.md",
-      "computedHash": "e1fcab9b531b338eb540c9d57ee089e2660e4bba1d7623ec566c6f32f77f2d26"
+      "computedHash": "72e01a16929dbf6583afc469a49d64b28b1be4a6034c900decd94cd5a69ba6e6"
     },
     "pdf": {
       "source": "anthropics/skills",
@@ -84,6 +84,18 @@
       "sourceType": "github",
       "skillPath": "skills/xlsx/SKILL.md",
       "computedHash": "f5945e6e76dc7c178375e5cdf3140959b30cbcd4570ec3dc62296812259fc38d"
+    },
+    "cy-carousel": {
+      "source": "chengyi-ai/cy-carousel-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "acd864f8b9c9c211b21abec6d17213016fca2c6894e4154cd7abf14428d6bc3b"
+    },
+    "grilling": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/productivity/grilling/SKILL.md",
+      "computedHash": "ef1641a2047b71b60f1942cd35efb47d3afc9d584dff5a0b01f8c7db923aaa08"
     }
   }
 }
