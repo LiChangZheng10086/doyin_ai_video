@@ -41,6 +41,8 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [preview, setPreview] = useState<GalleryPreview | null>(null);
+  const [previewError, setPreviewError] = useState('');
+  const previewFeedback = useRef<HTMLDivElement>(null);
   const [rights, setRights] = useState(false);
   const [tagText, setTagText] = useState(initial.hashtags.join(' '));
   const [activeTranscript, setActiveTranscript] = useState(transcript);
@@ -79,8 +81,8 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
       else blocker.reset();
     }
   }, [blocker]);
-  const accept = (g: Gallery) => { setSaved(g); setDraft(g); setTagText(g.hashtags.join(' ')); setPreview(null); setRights(false); setPlanConfirmed(false); };
-  const edit = (patch: Partial<Gallery>) => { setDraft(g => ({ ...g, ...patch })); setPreview(null); setRights(false); setPlanConfirmed(false); setNotice(''); };
+  const accept = (g: Gallery) => { setSaved(g); setDraft(g); setTagText(g.hashtags.join(' ')); setPreview(null); setPreviewError(''); setRights(false); setPlanConfirmed(false); };
+  const edit = (patch: Partial<Gallery>) => { setDraft(g => ({ ...g, ...patch })); setPreview(null); setPreviewError(''); setRights(false); setPlanConfirmed(false); setNotice(''); };
   const editImage = (patch: Partial<GalleryImage>) => edit({ images: draft.images.map((item, i) => i === selected ? { ...item, ...patch } : item) });
   const save = async () => {
     const g = dirty ? await apiClient.saveGallery(draft.id, { ...draft, version: saved.version }) : saved;
@@ -92,6 +94,9 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     catch (e) { setError(parseApiError(e).message); }
     finally { setBusy(''); }
   };
+  useEffect(() => {
+    if (preview || previewError) previewFeedback.current?.scrollIntoView({ block: 'nearest' });
+  }, [preview, previewError]);
   useEffect(() => {
     mounted.current = true;
     return () => { mounted.current = false; frameRequest.current++; if (frameUrl.current) URL.revokeObjectURL(frameUrl.current); };
@@ -161,7 +166,10 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     setRetranscribeOpen(false); setNotice('转录已更新，请重新规划；原有图集与发布包已保留。');
   };
   const viewPreview = async () => {
-    const g = await save(); const result = await apiClient.previewGallery(g.id, g.version); setPreview(result);
+    setPreview(null); setPreviewError('');
+    try {
+      const g = await save(); const result = await apiClient.previewGallery(g.id, g.version); setPreview(result);
+    } catch (e) { setPreviewError(parseApiError(e).message); }
   };
   const publish = async () => {
     if (!preview || dirty) return;
@@ -272,13 +280,16 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
       <fieldset disabled={locked} className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2"><div className="space-y-4"><label className="block text-sm text-ink">标题 · {[...draft.title].length}{source.copyLimits ? ` / ${source.copyLimits.titleMax}` : ''}<input value={draft.title} onChange={e => edit({ title: e.target.value })} className={`${fieldClass} mt-2`} /></label>
         <label className="block text-sm text-ink">话题（空格分隔）· {draft.hashtags.length}{source.copyLimits ? ` / ${source.copyLimits.hashtagMax}` : ''}<input value={tagText} onChange={e => { setTagText(e.target.value); edit({ hashtags: e.target.value.split(/\s+/).filter(Boolean) }); }} className={`${fieldClass} mt-2`} /></label></div>
         <label className="block text-sm text-ink">正文 · {[...draft.description].length}{source.copyLimits ? ` / ${source.copyLimits.descriptionMax}` : ''}<textarea value={draft.description} onChange={e => edit({ description: e.target.value })} rows={12} className={`${fieldClass} mt-2`} /></label></fieldset>
-      <div className="mt-4 flex flex-wrap items-center gap-3"><button disabled={locked} onClick={() => void action('预览检查中', viewPreview)} className={buttonClass}>检查发布预览</button><p className="text-xs text-ink-muted">整套图片准备好后，保存文案并检查发布限额。</p></div>
-      {preview && <div className="mt-4 space-y-3 text-sm text-ink"><p>{preview.imageCount} 张图片 · 标题上限 {preview.copyLimits.titleMax} · 正文上限 {preview.copyLimits.descriptionMax} · 话题上限 {preview.copyLimits.hashtagMax}</p>
+      <div className="mt-4 flex flex-wrap items-center gap-3"><button disabled={locked} aria-busy={busy === '预览检查中'} onClick={() => void action('预览检查中', viewPreview)} className={buttonClass}>{busy === '预览检查中' ? <><Loader2 size={16} className="animate-spin" />预览检查中…</> : '检查发布预览'}</button><p className="text-xs text-ink-muted">{saved.status !== 'ready' || !saved.generated || imagesDirty ? '整套图片尚未准备好，请先在上方核对方案并生成整套图集，再检查发布预览。' : '点击后自动保存文案，并检查图片和发布限额。'}</p></div>
+      <div ref={previewFeedback}>
+      {previewError && <p role="alert" className="mt-3 rounded-lg border border-danger-line bg-danger-soft p-3 text-sm text-danger">{previewError}</p>}
+      {preview && <div className="mt-4 space-y-3 text-sm text-ink"><p role="status">发布预览检查完成：{preview.imageCount} 张图片 · 标题上限 {preview.copyLimits.titleMax} · 正文上限 {preview.copyLimits.descriptionMax} · 话题上限 {preview.copyLimits.hashtagMax}</p>
         {preview.violations.map((v, i) => <p key={i} role="alert" className="text-danger">{v.message}</p>)}
         <label className="flex items-start gap-2"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} disabled={locked} className="mt-1" />我已逐张核对{translated ? '中文译文与原文' : '原生字幕'}，确认拥有原视频及生成图集的发布使用权。</label>
         <button disabled={locked || !rights || dirty || preview.violations.length > 0} onClick={() => void action('创建发布包中', publish)} className="rounded-lg bg-accent px-4 py-2.5 text-on-accent disabled:opacity-50">创建抖音图文发布包</button>
         <p className="text-xs text-ink-muted">此操作只准备发布包。到「发布 → 抖音 → 图文」再次预览后，由你点击提交；不会自动向抖音发送内容。</p>
       </div>}
+      </div>
     </section>
     <ConfirmDialog open={copyReplaceOpen} title="重新生成配套文案" description="将替换当前标题、正文和话题。图片及候选方案会保留；生成失败保留原文案。" confirmLabel="重新生成并替换" busy={working}
       onConfirm={() => { setCopyReplaceOpen(false); void action('生成文案中', generateCopy); }} onClose={() => setCopyReplaceOpen(false)} />
