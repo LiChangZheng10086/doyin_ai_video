@@ -46,10 +46,64 @@ test('music upload uses a scoped Python adapter and stops before publication on 
   const fakeModule = path.join(sauBaseDir, 'uploader/douyin_uploader/main.py');
   await writeFile(fakeModule, `class DouYinNote:\n    async def select_bgm(self, page, name):\n        return False\n`);
   const sauBinary = path.join(sauBaseDir, 'sau');
-  await writeFile(sauBinary, `#!${python}\nimport asyncio, json, sys\nfrom pathlib import Path\nfrom uploader.douyin_uploader.main import DouYinNote\nscenario = Path('scenario').read_text()\nname = sys.argv[sys.argv.index('--bgm')+1]\nclass Locator:\n    def __init__(self, kind): self.kind=kind\n    @property\n    def first(self): return self\n    def nth(self, n): return self\n    def filter(self, **kwargs): return self\n    async def count(self): return 1\n    async def wait_for(self, **kwargs):\n        if scenario in ('missing', 'wrong') and self.kind=='card': raise RuntimeError('no result')\n        if scenario=='failed' and self.kind=='sheet' and kwargs.get('state')=='hidden': raise RuntimeError('music not applied')\n    def locator(self, selector):\n        return Locator('card' if 'card-container' in selector else 'title' if 'song-name' in selector else 'apply' if 'apply-btn' in selector else 'input')\n    async def fill(self, value): pass\n    async def press(self, value): pass\n    async def inner_text(self): return '另一首歌' if scenario=='wrong' else name\n    async def all_text_contents(self): return ['另一首歌'] if scenario=='wrong' else []\n    async def evaluate(self, expression): Path('applied').write_text(name)\n    async def click(self): pass\nclass Page:\n    def locator(self, selector, **kwargs): return Locator('sheet' if 'sidesheet-content' in selector else 'entry')\nasyncio.run(DouYinNote().select_bgm(Page(), name))\nPath('published').write_text(json.dumps(sys.argv, ensure_ascii=False))\nprint('published')\n`);
+  await writeFile(sauBinary, `#!${python}
+import asyncio, json, sys
+from pathlib import Path
+from types import SimpleNamespace
+from uploader.douyin_uploader.main import DouYinNote
+scenario = Path('scenario').read_text()
+name = sys.argv[sys.argv.index('--bgm')+1]
+class Response:
+    status = 503 if scenario == 'http_failed' else 200
+    async def finished(self): pass
+    async def json(self): return {'status_code': 8 if scenario == 'business_failed' else 0}
+class Pending:
+    async def __aenter__(self):
+        self.value = asyncio.get_running_loop().create_future()
+        page.pending = self
+        return self
+    async def __aexit__(self, *args): pass
+class Locator:
+    def __init__(self, kind): self.kind=kind
+    @property
+    def first(self): return self
+    def nth(self, n): return self
+    def filter(self, **kwargs): return self
+    async def count(self): return 1
+    async def wait_for(self, **kwargs):
+        if scenario in ('missing', 'wrong') and self.kind=='card': raise RuntimeError('no result')
+        if scenario=='failed' and self.kind=='sheet' and kwargs.get('state')=='hidden': raise RuntimeError('music not applied')
+    def locator(self, selector):
+        return Locator('card' if 'card-container' in selector else 'title' if 'song-name' in selector else 'apply' if 'apply-btn' in selector else 'input')
+    def get_by_text(self, *args, **kwargs): return Locator('loading')
+    async def fill(self, value):
+        if value:
+            request = SimpleNamespace(url='https://tsearch.amemv.com/openapi/aweme/v1/music/search/?keyword='+value)
+            page.listeners['request'](request)
+            response = Response()
+            response.request = request
+            if page.predicate(response): page.pending.value.set_result(response)
+    async def press(self, value): pass
+    async def inner_text(self): return '另一首歌' if scenario=='wrong' else name
+    async def all_text_contents(self): return ['另一首歌'] if scenario=='wrong' else []
+    async def evaluate(self, expression): Path('applied').write_text(name)
+    async def click(self): pass
+class Page:
+    def __init__(self): self.listeners = {}
+    def locator(self, selector, **kwargs): return Locator('sheet' if 'sidesheet-content' in selector else 'entry')
+    def on(self, event, handler): self.listeners[event] = handler
+    def remove_listener(self, event, handler): del self.listeners[event]
+    def expect_response(self, predicate, **kwargs):
+        self.predicate = predicate
+        return Pending()
+page = Page()
+asyncio.run(DouYinNote().select_bgm(page, name))
+Path('published').write_text(json.dumps(sys.argv, ensure_ascii=False))
+print('published')
+`);
   await chmod(sauBinary, 0o755);
   const before = await readFile(fakeModule);
-  for (const scenario of ['missing', 'wrong', 'failed', 'success']) {
+  for (const scenario of ['missing', 'wrong', 'failed', 'http_failed', 'business_failed', 'success']) {
     await writeFile(path.join(sauBaseDir, 'scenario'), scenario);
     await rm(path.join(sauBaseDir, 'published'), { force: true });
     const runner = new SauRunner({ ...config, sauBinary, commandRunner: { run: (command, args, options) => runCommand(command, args, { ...options, cwd: sauBaseDir }) } });
