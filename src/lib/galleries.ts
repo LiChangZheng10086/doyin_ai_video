@@ -141,24 +141,23 @@ export class GalleryService {
   }
 
   async list(): Promise<Gallery[]> {
-    return this.serial(async () => structuredClone(Object.values(await this.index()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))));
+    // Read committed snapshots without waiting for OCR or translation; writes remain serialized.
+    return structuredClone(Object.values(await this.index()).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)));
   }
 
   async get(id: string): Promise<Gallery> {
-    return this.serial(async () => {
-      const gallery = structuredClone(await this.record(id));
-      if (gallery.plan) gallery.plan.blockedReason = galleryPlanBlockReason(gallery.plan)
-        || (gallery.mode === 'translated' && !gallery.plan.scope ? '旧方案缺少完整视频范围校验，请重新自动创作；原图保留供参考。' : undefined);
-      if (gallery.translation) {
-        try { await this.checkedTranslation(gallery); }
-        catch { gallery.error = '译文依据的转录或来源已变化，请重新翻译。'; }
-      }
-      if (gallery.copyReference) {
-        try { await this.checkedCopy(gallery); }
-        catch { gallery.copyError = '文案依据的转录或来源已变化，请重新生成图文文案并核对。'; }
-      }
-      return gallery;
-    });
+    const gallery = structuredClone(await this.record(id));
+    if (gallery.plan) gallery.plan.blockedReason = galleryPlanBlockReason(gallery.plan)
+      || (gallery.mode === 'translated' && !gallery.plan.scope ? '旧方案缺少完整视频范围校验，请重新自动创作；原图保留供参考。' : undefined);
+    if (gallery.translation) {
+      try { await this.checkedTranslation(gallery); }
+      catch { gallery.error = '译文依据的转录或来源已变化，请重新翻译。'; }
+    }
+    if (gallery.copyReference) {
+      try { await this.checkedCopy(gallery); }
+      catch { gallery.copyError = '文案依据的转录或来源已变化，请重新生成图文文案并核对。'; }
+    }
+    return gallery;
   }
 
   async create(sourceJobId: string, mode?: 'native' | 'translated'): Promise<Gallery> {

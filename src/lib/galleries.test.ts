@@ -6,6 +6,53 @@ import { tmpdir } from 'node:os';
 import { LocalStorage } from './storage.js';
 import type { JobRecord } from '../types.js';
 
+test('gallery reads return committed drafts and images while a slow write keeps later writes serialized', async () => {
+  const { GalleryService } = await import('./galleries.js');
+  const root = await mkdtemp(path.join(tmpdir(), 'gallery-read-queue-'));
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let slow = false;
+  let writing: Promise<unknown> | undefined;
+  try {
+    const videoPath = path.join(root, 'source.mp4');
+    await writeFile(videoPath, 'local-video');
+    const png = Buffer.alloc(30); Buffer.from('89504e470d0a1a0a', 'hex').copy(png);
+    png.writeUInt32BE(1080, 16); png.writeUInt32BE(1440, 20);
+    const service = new GalleryService({ storage: new LocalStorage(root),
+      jobs: { get: async () => ({ id: 'source', topic: '已保存图集', videoPath } as JobRecord) },
+      media: {
+        probe: async () => { if (slow) { entered(); await gate; } return { width: 320, height: 480, duration: 10 }; },
+        frame: async () => png, render: async (_video, _image, output) => { await writeFile(output, png); },
+      } });
+    const draft = await service.create('source');
+    const ready = await service.render(draft.id, draft.version);
+    slow = true;
+    writing = service.update(ready.id, { ...ready, title: '修改后的标题' });
+    await started;
+    const staleWrite = service.update(ready.id, { ...ready, title: '旧版本修改' }).then(() => null, error => error);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const [list, detail, image] = await Promise.race([
+        Promise.all([service.list(), service.get(ready.id), service.image(ready.id, 0, ready.generated!.id)]),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('read waited for the write queue')), 1000); }),
+      ]);
+      assert.equal(list[0]!.title, ready.title);
+      assert.equal(detail.version, ready.version);
+      assert.deepEqual(image, png);
+      list[0]!.title = '客户端修改';
+      assert.equal((await service.get(ready.id)).title, ready.title, 'reads must remain detached snapshots');
+    } finally { clearTimeout(timer); release(); }
+    await writing;
+    assert.match((await staleWrite).message, /版本/, 'writes must still reject stale concurrent edits');
+    assert.equal((await service.get(ready.id)).title, '修改后的标题');
+  } finally {
+    release(); await writing?.catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('gallery persists independent drafts and blocks stale versions, files and previews', async () => {
   const { GalleryService } = await import('./galleries.js');
   const root = await mkdtemp(path.join(tmpdir(), 'galleries-test-'));
