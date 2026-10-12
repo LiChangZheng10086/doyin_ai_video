@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { LocalStorage } from './storage.js';
 import { HOTSPOT_SOURCES, fetchHotspotSource, validHotspotItem } from './hotspot-sources.js';
-export interface HotspotItem { sourceId: string; itemId: string; title: string; url: string; rank: number; heat?: string; summary?: string }
+export interface HotspotItem { sourceId: string; itemId: string; title: string; url: string; rank: number; heat?: string; summary?: string; publishedAt?: string }
 export interface HotspotBoard {
-  source: { id: string; name: string; label: string; home: string };
+  source: { id: string; name: string; label: string; home: string; category?: 'ai-tech' };
   items: HotspotItem[];
   fetchedAt?: string;
   checkedAt?: string;
@@ -71,7 +71,7 @@ export class HotspotService {
       try { await this.storage.writeJsonAtomic(`cache/hotspots/${source.id}.json`, snapshot); }
       catch { snapshot = { ...snapshot, error: '本地缓存保存失败，本次数据未持久化，请检查存储目录权限' }; this.memory.set(source.id, snapshot); }
     }
-    return { source: { id: source.id, name: source.name, label: source.label, home: source.home }, ...snapshot, delivery,
+    return { source: { id: source.id, name: source.name, label: source.label, home: source.home, ...('category' in source ? {category: source.category} : {}) }, ...snapshot, delivery,
       refreshAfter: snapshot.checkedAt ? new Date(time(snapshot.checkedAt) + REFRESH_MS).toISOString() : undefined,
       expiresAt: snapshot.fetchedAt ? new Date(time(snapshot.fetchedAt) + CACHE_MS).toISOString() : undefined,
       status: snapshot.items.length ? snapshot.error || this.now() - time(snapshot.fetchedAt) >= CACHE_MS ? 'stale' : 'fresh' : 'unavailable' };

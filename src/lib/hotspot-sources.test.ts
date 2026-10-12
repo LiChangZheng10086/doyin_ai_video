@@ -1,6 +1,55 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fetchHotspotSource, parseHotspotSource, validHotspotItem } from './hotspot-sources.js';
+import { HOTSPOT_SOURCES, fetchHotspotSource, parseHotspotSource, validHotspotItem } from './hotspot-sources.js';
+
+const rssItem = (link: string, date = '2026-10-10T10:00:00Z', title = 'Official &amp; AI') => `<item><title>${title}</title><link>${link}</link><pubDate>${date}</pubDate><description><![CDATA[<p>Original <b>summary</b></p><script>bad()</script>]]></description></item>`;
+const rss = (items: string) => `<?xml version="1.0"?><rss version="2.0"><channel>${items}</channel></rss>`;
+
+test('official RSS sorts by publication time, keeps stable URL IDs, plain summaries and no invented heat', () => {
+  const newer = rssItem('https://openai.com/index/new/', '2026-10-11T10:00:00Z');
+  const items = parseHotspotSource('openai', rss(rssItem('https://openai.com/index/old/') + newer + newer));
+  assert.equal(items.length, 2);
+  assert.equal(items[0].itemId, 'https://openai.com/index/new/');
+  assert.equal(items[0].title, 'Official & AI');
+  assert.equal(items[0].summary, 'Original summary');
+  assert.equal(items[0].publishedAt, '2026-10-11T10:00:00.000Z');
+  assert.deepEqual(items.map(item => item.rank), [1, 2]);
+  assert.ok(items.every(item => !item.heat));
+  assert.equal(HOTSPOT_SOURCES.filter(source => !('category' in source)).length, 5);
+});
+
+test('Atom chooses alternate article links and original published time rather than update time', () => {
+  const items = parseHotspotSource('deepmind', '<feed xmlns="http://www.w3.org/2005/Atom"><entry><title>HF</title><link rel="self" href="https://deepmind.google/api/entry"/><link rel="alternate" href="https://deepmind.google/blog/article"/><published>2026-10-10T18:00:00+08:00</published><updated>2026-10-12T10:00:00Z</updated><summary type="html">&lt;p&gt;Hello&lt;/p&gt;</summary></entry></feed>');
+  assert.equal(items[0].url, 'https://deepmind.google/blog/article');
+  assert.equal(items[0].publishedAt, '2026-10-10T10:00:00.000Z');
+  assert.equal(items[0].summary, 'Hello');
+});
+
+test('RSS rejects DTD, challenge pages, missing dates, unsafe/off-domain links and invalid persisted metadata', () => {
+  for (const raw of ['<!DOCTYPE rss SYSTEM "file:///etc/passwd">' + rss(rssItem('https://openai.com/index/a/')), '<html>Verify</html>', rss(rssItem('http://openai.com/a')), rss(rssItem('https://openai.com.evil.example/a')), rss(rssItem('https://user:pass@openai.com/a')), rss(rssItem('https://openai.com/a', 'not a date')), rss(rssItem('https://openai.com/a').replace(/<pubDate>.*?<\/pubDate>/, ''))]) assert.throws(() => parseHotspotSource('openai', raw));
+  const valid = { sourceId: 'openai', itemId: 'https://openai.com/a', title: 'Article', url: 'https://openai.com/a', rank: 1, publishedAt: '2026-10-10T10:00:00.000Z' };
+  assert.equal(validHotspotItem(valid, 'openai'), true);
+  assert.equal(validHotspotItem({ ...valid, publishedAt: undefined }, 'openai'), false);
+  assert.equal(validHotspotItem({ ...valid, heat: '100' }, 'openai'), false);
+  const items = parseHotspotSource('openai', rss(Array.from({length: 120}, (_, i) => rssItem(`https://openai.com/a/${i}`)).join('')));
+  assert.equal(items.length, 100);
+});
+
+test('official RSS fetch uses fixed source, bounded XML response, no cookies and no redirects', async () => {
+  const items = await fetchHotspotSource('openai', async (url, init) => {
+    assert.equal(String(url), 'https://openai.com/news/rss.xml');
+    assert.equal(init?.redirect, 'error'); assert.ok(init?.signal);
+    assert.equal(new Headers(init?.headers).get('cookie'), null);
+    assert.equal(new Headers(init?.headers).get('user-agent'), 'Mozilla/5.0');
+    return new Response(rss(rssItem('https://openai.com/a')));
+  });
+  assert.equal(items.length, 1);
+  await fetchHotspotSource('microsoft-research', async (_url, init) => {
+    assert.equal(new Headers(init?.headers).get('user-agent'), null);
+    return new Response(rss(rssItem('https://www.microsoft.com/en-us/research/blog/qa/')));
+  });
+  await assert.rejects(fetchHotspotSource('openai', async () => new Response('x'.repeat(1024 * 1024 + 1))));
+});
 
 test('five upstream formats keep ranking, original heat and links without mixing platform metrics', () => {
   const fixtures: [string, unknown, string, string][] = [

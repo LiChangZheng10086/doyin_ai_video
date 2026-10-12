@@ -27,7 +27,7 @@ if (process.argv.includes('--live')) {
     return {images:[{section:0,purpose:'解释功能边界',caption:'支持导出，尚未支持离线编辑',prompt:'绘制两个并列功能格：导出可用、离线编辑待开放。简洁图标，无虚构现场。'}]};
   }};
   const now = new Date().toISOString();
-  for (const source of HOTSPOT_SOURCES) await storage.writeJsonAtomic(`cache/hotspots/${source.id}.json`,{items:[{sourceId:source.id,itemId:'fixture',title:'导出功能正式开放',url:source.home,rank:1}],fetchedAt:now,checkedAt:now});
+  for (const source of HOTSPOT_SOURCES) await storage.writeJsonAtomic(`cache/hotspots/${source.id}.json`,{items:[{sourceId:source.id,itemId:'category' in source ? source.home : 'fixture',title:'导出功能正式开放',url:source.home,rank:1,...('category' in source ? {publishedAt:now} : {})}],fetchedAt:now,checkedAt:now});
   const app = await createExpressApp({rootDir:process.cwd(),storagePath:root,articleWriter:writer,
     readArticleSource:async url => ({url,title:'公开功能说明',text:'项目支持导出，离线编辑仍未开放。',status:'readable',readAt:now,hash:'fixture',links:[],truncated:false}),
     wechatMedia:{prepareCoverImage:async src => ({path:src,bytes:8}),prepareContentImage:async src => ({path:src,bytes:8})},

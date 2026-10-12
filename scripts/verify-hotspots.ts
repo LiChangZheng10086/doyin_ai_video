@@ -23,7 +23,7 @@ if (process.argv.includes('--live')) {
   const root = await mkdtemp(path.join(tmpdir(), 'hotspots-ui-'));
   const storage = new LocalStorage(root); const now = new Date().toISOString();
   for (const source of HOTSPOT_SOURCES) {
-    const items = Array.from({ length: 15 }, (_, index) => ({ sourceId: source.id, itemId: String(index + 1), title: `验收选题 ${index + 1} · ${source.name}`, url: source.home, rank: index + 1, heat: '测试热度' }));
+    const items = Array.from({ length: 15 }, (_, index) => ({ sourceId: source.id, itemId: 'category' in source ? `${source.home}qa-${index + 1}` : String(index + 1), title: `验收选题 ${index + 1} · ${source.name}`, url: 'category' in source ? `${source.home}qa-${index + 1}` : source.home, rank: index + 1, ...('category' in source ? {publishedAt:now} : {heat:'测试热度'}) }));
     await storage.writeJsonAtomic(`cache/hotspots/${source.id}.json`, { items, fetchedAt: now, checkedAt: now });
   }
   const app = await createExpressApp({ rootDir: root, storagePath: root });

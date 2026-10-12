@@ -5,10 +5,14 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { LocalStorage } from './storage.js';
 import { HotspotService, type HotspotItem } from './hotspots.js';
+import { HOTSPOT_SOURCES } from './hotspot-sources.js';
 
 const item: HotspotItem = { sourceId: 'toutiao', itemId: '123', title: '测试选题', url: 'https://www.toutiao.com/trending/123/', rank: 1, heat: '456' };
 const urls: Record<string, string> = { douyin: 'https://www.douyin.com/hot/123', toutiao: item.url, baidu: 'https://www.baidu.com/s?wd=news', zhihu: 'https://www.zhihu.com/question/123', bilibili: 'https://search.bilibili.com/all?keyword=news' };
-const sourceItem = (sourceId: string): HotspotItem => ({ ...item, sourceId, url: urls[sourceId] });
+const sourceItem = (sourceId: string): HotspotItem => {
+  const source = HOTSPOT_SOURCES.find(source => source.id === sourceId)!;
+  return 'category' in source ? {sourceId,itemId:source.home,title:source.name,url:source.home,rank:1,publishedAt:'2026-10-10T10:00:00.000Z'} : {...item,sourceId,url:urls[sourceId]};
+};
 async function fixture(fn: (storage: LocalStorage) => Promise<void>) {
   const root = await mkdtemp(path.join(tmpdir(), 'hotspots-test-'));
   try { await fn(new LocalStorage(root)); } finally { await rm(root, { recursive: true, force: true }); }
@@ -18,8 +22,8 @@ test('cache survives restart; manual refresh is rate limited and stale failures 
   let now = 1_800_000_000_000; let calls = 0;
   const service = new HotspotService(storage, { now: () => now, fetchSource: async source => { calls++; return [sourceItem(source)]; } });
   const first = await service.list(); assert.ok(first.every(board => board.status === 'fresh' && board.delivery === 'network'));
-  assert.equal(calls, 5);
-  await service.list(true); assert.equal(calls, 5);
+  assert.equal(calls, HOTSPOT_SOURCES.length);
+  await service.list(true); assert.equal(calls, HOTSPOT_SOURCES.length);
   const restarted = new HotspotService(storage, { now: () => now, fetchSource: async () => { throw new Error('offline'); } });
   assert.ok((await restarted.list()).every(board => board.delivery === 'cache' && board.status === 'fresh'));
   now += 600_001;
@@ -34,7 +38,7 @@ test('parallel refresh coalesces each source; one source failure does not blank 
   const [a, b] = await Promise.all([service.list(true), service.list(true)]);
   assert.deepEqual(a, b); assert.ok([...counts.values()].every(count => count === 1));
   assert.equal(a.find(board => board.source.id === 'douyin')?.status, 'unavailable');
-  assert.equal(a.filter(board => board.status === 'fresh').length, 4);
+  assert.equal(a.filter(board => board.status === 'fresh').length, HOTSPOT_SOURCES.length - 1);
 }));
 
 test('failed sources are rate limited and corrupted caches are not advertised as fresh', () => fixture(async storage => {
@@ -42,7 +46,7 @@ test('failed sources are rate limited and corrupted caches are not advertised as
   let calls = 0;
   const service = new HotspotService(storage, { fetchSource: async () => { calls++; throw new Error('offline'); } });
   assert.ok((await service.list()).every(board => board.status === 'unavailable'));
-  await service.list(true); assert.equal(calls, 5);
+  await service.list(true); assert.equal(calls, HOTSPOT_SOURCES.length);
 }));
 
 test('favorites snapshot real cached items, survive restart, keep notes on duplicate save, and guard old edits', () => fixture(async storage => {
@@ -67,4 +71,29 @@ test('concurrent distinct favorites persist without lost updates', () => fixture
   const service = new HotspotService(storage, { fetchSource: async source => [sourceItem(source)] }); await service.list();
   await Promise.all(['toutiao', 'douyin', 'zhihu'].map(source => service.save(source, '123')));
   assert.equal((await new HotspotService(storage).favorites()).length, 3);
+}));
+
+// Each RSS reuses the same persistence and rate limit without sharing failure state.
+test('RSS failures retain only their own cache and favorites remain readable after an article leaves the feed', () => fixture(async storage => {
+  let now = Date.now();
+  const service = new HotspotService(storage, {now:()=>now,fetchSource:async source => [sourceItem(source)]});
+  await service.list();
+  const original = sourceItem('openai');
+  const saved = await service.save('openai', original.itemId);
+  assert.equal(saved.publishedAt, original.publishedAt);
+  now += 600_001;
+  const next = new HotspotService(storage, {now:()=>now,fetchSource:async source => {
+    if (source === 'deepmind') throw new Error('来源返回 HTTP 503');
+    const item = sourceItem(source);
+    if (source === 'openai') {item.url='https://openai.com/index/next/';item.itemId=item.url;}
+    return [item];
+  }});
+  const boards = await next.list();
+  assert.equal(boards.find(b=>b.source.id==='deepmind')?.status,'stale');
+  assert.equal(boards.filter(b=>b.source.category!== 'ai-tech' && b.status==='fresh').length,5);
+  assert.equal(boards.find(b=>b.source.id==='openai')?.source.category,'ai-tech');
+  const restarted = new HotspotService(storage);
+  assert.equal((await restarted.resolveDetail('openai', original.itemId))?.item.publishedAt,original.publishedAt);
+  assert.equal((await restarted.resolveForArticle('openai', original.itemId))?.url,original.url);
+  assert.equal((await restarted.favorites())[0].id,saved.id);
 }));

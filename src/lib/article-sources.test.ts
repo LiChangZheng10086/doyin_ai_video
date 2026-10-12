@@ -1,8 +1,27 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { extractArticlePage, resolveArticleAddress, readArticleSource } from './article-sources.js';
+import { test, mock } from 'node:test';
+import https from 'node:https';
+import dns from 'node:dns/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
+import { downloadArticleHtml, extractArticlePage, resolveArticleAddress, readArticleSource } from './article-sources.js';
 
 const prose = '公开材料说明了项目的具体变化，保留事实、日期和条件，方便读者核对原始依据。'.repeat(10);
+
+test('Microsoft Research reads without the browser UA that triggers 403; other readers retain headers and pinned DNS', async () => {
+  const dnsMock=mock.method(dns,'lookup',async()=>[{address:'93.184.216.34',family:4}]);
+  const requestMock=mock.method(https,'request',(_url:URL,options:any,callback:any)=>{
+    const microsoft=_url.hostname==='www.microsoft.com'&&_url.pathname.startsWith('/en-us/research/');
+    assert.equal(options.headers['User-Agent'],microsoft?undefined:'Mozilla/5.0');
+    assert.equal(options.headers['Accept-Encoding'],'identity');assert.equal(options.agent,false);assert.ok(options.signal);
+    options.lookup(_url.hostname,{all:true},(_error:any,addresses:any)=>assert.deepEqual(addresses,[{address:'93.184.216.34',family:4}]));
+    const req=new EventEmitter() as any;req.end=()=>{const response=Readable.from([Buffer.from('<article><p>'+prose+'</p></article>')]) as any;response.statusCode=200;response.headers={'content-type':'text/html'};callback(response);};return req;
+  });
+  syncBuiltinESMExports();
+  try {for(const url of ['https://www.microsoft.com/en-us/research/blog/agent/','https://www.toutiao.com/article/123/','https://www.microsoft.com/other/'])assert.match(await downloadArticleHtml(url),/公开材料/);}
+  finally{requestMock.mock.restore();dnsMock.mock.restore();syncBuiltinESMExports();}
+});
 
 test('extracts actual article text and leaves scripts outside the material', () => {
   const page = extractArticlePage(`<title>原始报道</title><nav>菜单</nav><article><h1>原始报道</h1><p>${prose}</p><script>执行发布</script></article>`, 'https://example.com/story');

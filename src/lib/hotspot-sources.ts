@@ -1,4 +1,5 @@
 import type { HotspotItem } from './hotspots.js';
+import { OFFICIAL_RSS_SOURCES, parseOfficialRss } from './hotspot-rss.js';
 
 // Source formats/endpoints adapted from MIT ourongxing/newsnow; see docs/third-party/newsnow-LICENSE.txt.
 export const HOTSPOT_SOURCES = [
@@ -7,6 +8,7 @@ export const HOTSPOT_SOURCES = [
   { id: 'baidu', name: '百度', label: '热搜榜', home: 'https://top.baidu.com/board?tab=realtime', url: 'https://top.baidu.com/board?tab=realtime' },
   { id: 'zhihu', name: '知乎', label: '热榜', home: 'https://www.zhihu.com/hot', url: 'https://www.zhihu.com/api/v3/feed/topstory/hot-list-web?limit=20&desktop=true' },
   { id: 'bilibili', name: 'B站', label: '热搜榜', home: 'https://www.bilibili.com/', url: 'https://s.search.bilibili.com/main/hotword?limit=30' },
+  ...OFFICIAL_RSS_SOURCES,
 ] as const;
 
 const obj = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -23,6 +25,10 @@ export function validHotspotItem(value: unknown, sourceId: string): value is Hot
   try {
     if (typeof item.url !== 'string' || item.url.length > 4096) return false;
     const url = new URL(item.url);
+    const rss = OFFICIAL_RSS_SOURCES.find(source => source.id === sourceId);
+    if (rss) return url.protocol === 'https:' && !url.username && !url.password && !url.port && url.hostname === rss.domain
+      && item.itemId === item.url && typeof item.publishedAt === 'string' && Number.isFinite(Date.parse(item.publishedAt))
+      && new Date(item.publishedAt).toISOString() === item.publishedAt && item.heat === undefined;
     return !!domain[sourceId] && url.protocol === 'https:' && !url.username && !url.password && !url.port
       && (url.hostname === domain[sourceId] || url.hostname.endsWith(`.${domain[sourceId]}`));
   } catch { return false; }
@@ -30,6 +36,7 @@ export function validHotspotItem(value: unknown, sourceId: string): value is Hot
 
 export function parseHotspotSource(sourceId: string, payload: unknown): HotspotItem[] {
   if (!HOTSPOT_SOURCES.some(source => source.id === sourceId)) throw new Error('未知热点来源');
+  if (OFFICIAL_RSS_SOURCES.some(source => source.id === sourceId)) return parseOfficialRss(sourceId, payload, validHotspotItem);
   let data = obj(payload); let rows: unknown;
   if (sourceId === 'baidu') {
     const match = typeof payload === 'string' ? payload.match(/<!--s-data:(.*?)-->/s) : null;
@@ -83,6 +90,11 @@ export async function fetchHotspotSource(sourceId: string, fetcher: typeof fetch
   const source = HOTSPOT_SOURCES.find(source => source.id === sourceId);
   if (!source) throw new Error('未知热点来源');
   const headers: Record<string, string> = { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json,text/html' };
+  if ('category' in source) {
+    // Microsoft Research rejects the generic browser UA; use the runtime's RSS request defaults.
+    if (source.id === 'microsoft-research') delete headers['User-Agent'];
+    headers.Accept = 'application/rss+xml,application/atom+xml,application/xml,text/xml';
+  }
   if (sourceId === 'douyin') {
     const response = await fetcher('https://login.douyin.com/', { redirect: 'error', signal: AbortSignal.timeout(8000), headers });
     if (!response.ok) { await response.body?.cancel(); throw new Error(`匿名会话获取失败 HTTP ${response.status}`); }
@@ -91,5 +103,5 @@ export async function fetchHotspotSource(sourceId: string, fetcher: typeof fetch
   }
   const response = await fetcher(source.url, { redirect: 'error', signal: AbortSignal.timeout(8000), headers });
   const raw = await readBounded(response);
-  return parseHotspotSource(sourceId, sourceId === 'baidu' ? raw : JSON.parse(raw));
+  return parseHotspotSource(sourceId, sourceId === 'baidu' || 'category' in source ? raw : JSON.parse(raw));
 }

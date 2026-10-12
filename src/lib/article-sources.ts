@@ -48,10 +48,13 @@ export async function downloadArticleHtml(input: string, externalSignal?: AbortS
   const signal = externalSignal ? AbortSignal.any([externalSignal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000);
   signal.throwIfAborted();
   const pinned = await Promise.race([resolveArticleAddress(input), new Promise<never>((_,reject) => { signal.addEventListener('abort', () => reject(new Error('资料读取超时')), { once: true }); })]);
+  // Microsoft Research returns 403 for this browser UA, while the native request succeeds.
+  const headers: Record<string,string> = { Accept: 'text/html,application/xhtml+xml', 'Accept-Encoding': 'identity' };
+  if (pinned.url.hostname !== 'www.microsoft.com' || !pinned.url.pathname.startsWith('/en-us/research/')) headers['User-Agent'] = 'Mozilla/5.0';
   return new Promise((resolve, reject) => {
     const req = request(pinned.url, {
       agent: false, signal,
-      headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html,application/xhtml+xml', 'Accept-Encoding': 'identity' },
+      headers,
       // DNS is checked once, and that address is the only address the socket can use.
       lookup: ((_hostname: string, options: { all?: boolean }, callback: (...args: any[]) => void) => {
         const address = { address: pinned.address, family: pinned.family };

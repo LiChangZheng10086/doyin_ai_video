@@ -5,6 +5,14 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { HotspotBoardCard } from './HotspotsPage.js';
 import type { HotspotBoard } from '../../../src/lib/hotspots.js';
 
+test('RSS cards distinguish publication time, cached retrieval and reading order from platform heat', () => {
+  const board: HotspotBoard = {source:{id:'openai',name:'OpenAI',label:'官方 RSS',home:'https://openai.com/news/',category:'ai-tech'},items:[{sourceId:'openai',itemId:'https://openai.com/a',title:'AI update',url:'https://openai.com/a',rank:1,publishedAt:'2026-10-10T10:00:00.000Z'}],fetchedAt:'2026-10-12T10:00:00.000Z',status:'stale',delivery:'cache',error:'来源暂不可用'};
+  const html = renderToStaticMarkup(<HotspotBoardCard board={board} favorites={[]} busy={false} onToggle={()=>{}} onSelectSource={()=>{}} onCreate={()=>{}} onDetail={()=>{}}/>);
+  assert.match(html, /旧资讯/); assert.match(html, /资讯获取于/); assert.match(html, /发布于/);
+  assert.match(html, /2026-10-10T10:00:00.000Z/); assert.match(html, /以此创作公众号文章/); assert.match(html, /查看详情/); assert.match(html, /收藏/);
+  assert.doesNotMatch(html, /原始热度|榜单获取于/);
+});
+
 test('stale board shows original fetch time, error, safe source link and escapes upstream titles', () => {
   const board: HotspotBoard = { source: { id: 'toutiao', name: '今日头条', label: '热榜', home: 'https://www.toutiao.com/' }, items: [{ sourceId: 'toutiao', itemId: '123', title: '<script>上游内容</script>', url: 'https://www.toutiao.com/trending/123/', rank: 3, heat: '456' }], fetchedAt: '2026-09-30T01:00:00.000Z', checkedAt: '2026-09-30T02:00:00.000Z', status: 'stale', delivery: 'cache', error: '来源暂不可用' };
   const html = renderToStaticMarkup(<HotspotBoardCard board={board} favorites={[]} busy={false} onToggle={() => {}} onSelectSource={() => {}} />);

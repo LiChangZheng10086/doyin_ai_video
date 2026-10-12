@@ -34,7 +34,7 @@ if(process.argv.includes('--live')){
     providers:{search:async query=>[{id:'fixture',title:query+' · 公开报道',url,domain:'news.example.com',provider:'exa',snippet:'这是搜索摘录，读取后才能作为资料。'}],
       readJina:async input=>parseResearchContent({url:input,provider:'jina',format:'markdown',body:`Title: 验收话题\nMarkdown Content:\n## 事件详情\n这是话题描述。[公开报道与来源条件](${url})`})},
   });
-  for(const source of HOTSPOT_SOURCES)await storage.writeJsonAtomic(`cache/hotspots/${source.id}.json`,{items:[{sourceId:source.id,itemId:'1',title:`验收热点 · ${source.name}`,url:source.id==='toutiao'?'https://www.toutiao.com/trending/1/':source.home,rank:1,summary:'已有榜单摘要，打开详情不需要联网。'}],fetchedAt:now,checkedAt:now});
+  for(const source of HOTSPOT_SOURCES)await storage.writeJsonAtomic(`cache/hotspots/${source.id}.json`,{items:[{sourceId:source.id,itemId:'category' in source ? source.home : '1',title:`验收热点 · ${source.name}`,url:source.id==='toutiao'?'https://www.toutiao.com/trending/1/':source.home,rank:1,...('category' in source ? {publishedAt:now} : {}),summary:'已有榜单摘要，打开详情不需要联网。'}],fetchedAt:now,checkedAt:now});
   const hotspotService=new HotspotService(storage,{fetchSource:async sourceId=>(await storage.readJson<{items:any[]}>(`cache/hotspots/${sourceId}.json`)).items});
   const app=await createExpressApp({rootDir:root,storagePath:root,researchService:research,hotspotService});
   const serve=process.argv.includes('--serve');const port=serve?Number(process.env.CONTENT_RESEARCH_PORT??3180):0;
