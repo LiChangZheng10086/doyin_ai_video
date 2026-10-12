@@ -19,3 +19,13 @@ test('whole gallery plan shows all source quotes and exclusions before confirmat
   const blocked = renderToStaticMarkup(<GalleryPlanPanel plan={{ ...plan, blockedReason: '大部分内容未匹配，不能生成' }} imageUrls={[]} confirmed={true} disabled={false} onConfirmChange={() => {}} onGenerate={() => {}} />);
   assert.match(blocked, /大部分内容未匹配，不能生成/);
 });
+
+test('legacy candidate plans over 35 remain viewable but cannot be confirmed or rendered', async () => {
+  const { GalleryPlanPanel } = await import('./GalleryPlanPanel.js');
+  const image = { mainTime: 1, times: [1], bandTop: .8, bandBottom: .9, mainFraction: .5 };
+  const plan = { id: 'p', sourceFingerprint: 's', transcriptHash: 't', warnings: [], excluded: [], images: Array.from({ length: 36 }, () => ({ title: '原句', image, quotes: [] })) };
+  const html = renderToStaticMarkup(<GalleryPlanPanel plan={plan} imageUrls={[]} confirmed={true} disabled={false} onConfirmChange={() => {}} onGenerate={() => {}} />);
+  assert.match(html, /超过 35 张/);
+  assert.match(html, /第 36 张/);
+  assert.match(html, /disabled=""[^>]*>按此方案生成整套图集/);
+});

@@ -4,6 +4,8 @@ import { ArrowDown, ArrowUp, Copy, Loader2, Plus, Trash2 } from 'lucide-react';
 import { Layout } from '../components/Layout';
 import { GalleryTranslationPanel } from '../components/GalleryTranslationPanel';
 import { GalleryPlanPanel } from '../components/GalleryPlanPanel';
+import { GalleryContentPanel } from '../components/GalleryContentPanel';
+import { GalleryOperationPanel } from '../components/GalleryOperationPanel';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { apiClient, parseApiError } from '../services/api';
 import type { Gallery, GalleryImage, GalleryPreview, GallerySource } from '../../../src/lib/gallery-types';
@@ -39,6 +41,7 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   const [selected, setSelected] = useState(0);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [progressError, setProgressError] = useState('');
   const [notice, setNotice] = useState('');
   const [preview, setPreview] = useState<GalleryPreview | null>(null);
   const [previewError, setPreviewError] = useState('');
@@ -48,16 +51,18 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   const [rights, setRights] = useState(false);
   const [tagText, setTagText] = useState(initial.hashtags.join(' '));
   const [activeTranscript, setActiveTranscript] = useState(transcript);
-  const [targetLines, setTargetLines] = useState(8);
-  const [customTarget, setCustomTarget] = useState(false);
-  const [customLines, setCustomLines] = useState('8');
-  const [fullVideo, setFullVideo] = useState(true);
+  const [targetLines, setTargetLines] = useState(initial.contentPlan?.targetLines ?? 8);
+  const [customTarget, setCustomTarget] = useState(!!initial.contentPlan && ![6, 7, 8, 9].includes(initial.contentPlan.targetLines));
+  const [customLines, setCustomLines] = useState(String(initial.contentPlan?.targetLines ?? 8));
+  const [fullVideo, setFullVideo] = useState(!(initial.mode === 'translated' && initial.contentPlan && initial.translation
+    && (initial.translation.start > 0 || initial.translation.end < source.duration - .001)));
   const planningTarget = customTarget ? Number(customLines) : targetLines;
   const targetValid = Number.isSafeInteger(planningTarget) && planningTarget > 0;
   const [calibrate, setCalibrate] = useState(false);
   const [bandTop, setBandTop] = useState(0.78);
   const [bandBottom, setBandBottom] = useState(0.96);
   const [planConfirmed, setPlanConfirmed] = useState(false);
+  const [contentDirty, setContentDirty] = useState(false);
   const [planImageUrls, setPlanImageUrls] = useState<string[]>([]);
   const [retranscribeOpen, setRetranscribeOpen] = useState(false);
   const [copyReplaceOpen, setCopyReplaceOpen] = useState(false);
@@ -74,16 +79,18 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     && Number.isFinite(s.start) && Number.isFinite(s.end) ? [{ start: s.start, end: s.end, text: s.text }] : []);
   const dirty = JSON.stringify(draft) !== JSON.stringify(saved);
   const imagesDirty = JSON.stringify(draft.images) !== JSON.stringify(saved.images) || JSON.stringify(draft.translation) !== JSON.stringify(saved.translation);
-  const working = !!busy || saved.status === 'running';
-  const locked = working || !!sourceError;
-  const blocker = useBlocker(dirty);
+  const operationActive = !!saved.operation && ['running', 'pausing', 'paused'].includes(saved.operation.status);
+  const working = !!busy || operationActive || saved.status === 'running';
+  const contentLocked = working || !!sourceError;
+  const locked = contentLocked || contentDirty;
+  const blocker = useBlocker(dirty || contentDirty);
   useEffect(() => {
     if (blocker.state === 'blocked') {
       if (window.confirm('还有未保存的图集修改，确定离开？')) blocker.proceed();
       else blocker.reset();
     }
   }, [blocker]);
-  const accept = (g: Gallery) => { setSaved(g); setDraft(g); setTagText(g.hashtags.join(' ')); setPreview(null); setPreviewError(''); setPackageError(''); setSaveFeedback(null); setRights(false); setPlanConfirmed(false); };
+  const accept = (g: Gallery) => { setSaved(g); setDraft(g); setTagText(g.hashtags.join(' ')); setPreview(null); setPreviewError(''); setPackageError(''); setSaveFeedback(null); setRights(false); setPlanConfirmed(false); setContentDirty(false); };
   const edit = (patch: Partial<Gallery>) => { setDraft(g => ({ ...g, ...patch })); setPreview(null); setPreviewError(''); setPackageError(''); setSaveFeedback(null); setRights(false); setPlanConfirmed(false); setNotice(''); };
   const editImage = (patch: Partial<GalleryImage>) => edit({ images: draft.images.map((item, i) => i === selected ? { ...item, ...patch } : item) });
   const save = async () => {
@@ -113,10 +120,10 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     return () => { mounted.current = false; frameRequest.current++; if (frameUrl.current) URL.revokeObjectURL(frameUrl.current); };
   }, []);
   useEffect(() => {
-    const warn = (event: BeforeUnloadEvent) => { if (dirty) { event.preventDefault(); event.returnValue = ''; } };
+    const warn = (event: BeforeUnloadEvent) => { if (dirty || contentDirty) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
-  }, [dirty]);
+  }, [dirty, contentDirty]);
   useEffect(() => {
     let active = true;
     if (saved.generated) void Promise.all(saved.generated.hashes.map((_, i) => apiClient.getGalleryImageUrl(saved.id, i, saved.generated!.id))).then(urls => { if (active) setImageUrls(urls); });
@@ -129,12 +136,27 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     return () => { active = false; };
   }, [saved.id, saved.version, saved.plan?.id]);
   useEffect(() => {
-    if (saved.status !== 'running') return;
-    const timer = window.setInterval(() => {
-      void apiClient.getGallery(saved.id).then(g => { if (g.status !== 'running') accept(g); }).catch(e => setError(parseApiError(e).message));
-    }, 2500);
-    return () => window.clearInterval(timer);
-  }, [saved.id, saved.status]);
+    if (!operationActive && saved.status !== 'running') return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const g = await apiClient.getGallery(saved.id);
+        if (!active) return;
+        setProgressError('');
+        if (g.operation && ['running', 'pausing', 'paused'].includes(g.operation.status)) {
+          setSaved(g); setDraft(g);
+        } else if (g.status !== 'running') {
+          accept(g);
+          if (g.operation?.status === 'completed') { setSelected(0); setNotice(g.operation.kind === 'content' ? '内容建议已整理，请核对保留和剔除项。' : g.operation.kind === 'candidates' ? '候选方案已准备，请核对整套字幕后再生成成品。' : '整套图集已生成，请逐张核对后准备发布。'); }
+          return;
+        }
+      } catch (e) { if (active) setProgressError(`读取进度失败：${parseApiError(e).message}，将继续重试。`); }
+      if (active) timer = setTimeout(() => void poll(), 1000);
+    };
+    timer = setTimeout(() => void poll(), 1000);
+    return () => { active = false; clearTimeout(timer); };
+  }, [saved.id, operationActive, saved.status, saved.operation?.id]);
   const showFrame = async (time: number) => {
     const token = ++frameRequest.current;
     setFrameBusy(true); setFrameError('');
@@ -148,8 +170,7 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
   };
   const generate = async () => {
     const g = await save();
-    try { accept(await apiClient.renderGallery(g.id, g.version)); setNotice('整套图集已生成，请逐张核对字幕，再准备发布。'); }
-    catch (e) { accept(await apiClient.getGallery(g.id)); throw e; }
+    accept(await apiClient.startGalleryOperation(g.id, { version: g.version, kind: 'render' }));
   };
   const plan = async () => {
     if (!targetValid) throw new Error('每张目标条数须为正整数');
@@ -158,8 +179,22 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
       current = await apiClient.translateGallery(current.id, current.version, 0, source.duration);
       accept(current);
     }
-    const g = await apiClient.planGallery(current.id, { version: current.version, targetLines: planningTarget, fullVideo, ...(calibrate ? { bandTop, bandBottom } : {}) });
-    accept(g); select(0); setNotice('图片方案已准备，请核对整套候选和配套文案。已有文案会保留。');
+    accept(await apiClient.prepareGalleryContent(current.id, current.version, planningTarget, fullVideo));
+    setNotice('文字清单已准备，请核对原句与时间。超过35张时请先整理内容；确认文字后才会识别字幕和制作候选。');
+  };
+  const saveContent = async (selectedIds: string[]) => {
+    if (!saved.contentPlan) return;
+    accept(await apiClient.updateGalleryContent(saved.id, saved.version, saved.contentPlan.id, selectedIds));
+  };
+  const organizeContent = async () => {
+    if (!saved.contentPlan) return;
+    accept(await apiClient.startGalleryOperation(saved.id, { version: saved.version, kind: 'content', contentPlanId: saved.contentPlan.id, targetLines: planningTarget }));
+  };
+  const generateCandidates = async (selectedIds: string[]) => {
+    if (!saved.contentPlan || dirty || saved.contentPlan.estimatedImages > 35) return;
+    const g = await apiClient.updateGalleryContent(saved.id, saved.version, saved.contentPlan.id, selectedIds);
+    accept(g);
+    accept(await apiClient.startGalleryOperation(g.id, { version: g.version, kind: 'candidates', contentPlanId: g.contentPlan!.id, contentConfirmed: true, targetLines: planningTarget, fullVideo, ...(calibrate ? { bandTop, bandBottom } : {}) }));
   };
   const generateCopy = async () => {
     const g = await save();
@@ -167,9 +202,8 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     setNotice('配套文案已生成，图片与方案已保留。请核对人物、数字和来源事实。');
   };
   const generatePlan = async () => {
-    if (!saved.plan || dirty || !planConfirmed) return;
-    try { accept(await apiClient.renderGalleryPlan(saved.id, saved.version, saved.plan.id, true)); select(0); setNotice(translated ? '中文图集已生成，可准备发布。修改译文后请重新规划。' : '整套图集已生成，可继续局部微调或准备发布。'); }
-    catch (e) { accept(await apiClient.getGallery(saved.id)); throw e; }
+    if (!saved.plan || dirty || !planConfirmed || saved.plan.images.length > 35) return;
+    accept(await apiClient.startGalleryOperation(saved.id, { version: saved.version, kind: 'render', planId: saved.plan.id, subtitlesConfirmed: true }));
   };
   const retranscribe = async () => {
     await apiClient.retranscribeJob(saved.sourceJobId);
@@ -202,7 +236,10 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
     {sourceError && <p role="alert" className="mb-4 text-sm text-danger">{sourceError}。已保存的文案与成品仍可查看；恢复来源后才能编辑、生成或建包。</p>}
     {notice && <p role="status" className="mb-4 text-sm text-success">{notice}</p>}
     {saved.error && <p role="alert" className="mb-4 text-sm text-danger">上次生成：{saved.error}</p>}
-    {working && <p role="status" className="mb-4 text-sm text-ink-muted">{busy || '图集生成中'}…请等待操作完成，避免关闭应用。</p>}
+    {!!busy && <p role="status" className="mb-4 text-sm text-ink-muted">{busy || '图集生成中'}…请等待操作完成，避免关闭应用。</p>}
+    {progressError && <p role="alert" className="mb-4 text-sm text-warning">{progressError}</p>}
+    {saved.operation && <GalleryOperationPanel operation={saved.operation} disabled={!!busy} onPause={() => void action('暂停中', async () => { accept(await apiClient.pauseGalleryOperation(saved.id, saved.operation!.id)); })}
+      onResume={() => void action('继续中', async () => { accept(await apiClient.resumeGalleryOperation(saved.id, saved.operation!.id)); })} />}
     {translated && <GalleryTranslationPanel gallery={draft} duration={source.duration} disabled={locked} dirty={dirty} fullVideo={fullVideo}
       onFullVideoChange={value => { setFullVideo(value); setPlanConfirmed(false); }}
       onEdit={translation => edit({ translation })} onTranslate={(start, end) => void action('翻译中', async () => {
@@ -210,13 +247,13 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
       })} />}
     <section className="mb-5 rounded-lg border border-line bg-panel p-5">
       <h2 className="font-semibold text-ink">先规划整套图文，再一键生成</h2>
-      <p className="mt-2 text-sm text-ink-muted">{translated ? (fullVideo ? '按完整视频翻译并规划全部图片。' : '按明确选择的片段译文规划图片。') : '按完整视频规划字幕图片，并整理标题、正文和话题。'}长句会减少每张条数并增加图片，创作不限制图片总数。你只需核对整套方案，无须逐张创建或逐句输入时间。</p>
+      <p className="mt-2 text-sm text-ink-muted">{translated ? (fullVideo ? '按完整视频翻译并规划全部图片。' : '按明确选择的片段译文规划图片。') : '按完整视频规划字幕图片，并整理标题、正文和话题。'}先列出文字并估算张数；自动生成最多35张，超量时先整理内容。你只需核对整套方案，无须逐张创建或逐句输入时间。</p>
       {!!activeTranscript?.qualityIssues?.length && <div role="alert" className="mt-3 text-sm text-warning"><p>转录存在异常，请先重新转录：</p>{activeTranscript.qualityIssues.map((issue, i) => <p key={i}>{issue}</p>)}</div>}
       <div className="mt-4 flex flex-wrap items-center gap-3"><label className="text-sm text-ink">每张目标条数 <select aria-label="每张目标条数" value={customTarget ? 'custom' : targetLines} disabled={locked}
         onChange={e => { setCustomTarget(e.target.value === 'custom'); if (e.target.value !== 'custom') setTargetLines(Number(e.target.value)); setPlanConfirmed(false); }} className="ml-2 rounded-lg border border-line bg-canvas px-3 py-2">{[6, 7, 8, 9].map(n => <option key={n} value={n}>{n} 条{n === 8 ? '（默认）' : ''}</option>)}<option value="custom">自定义</option></select></label>
         {customTarget && <label className="text-sm text-ink">自定义条数 <input aria-label="自定义条数" type="number" min={1} step={1} value={customLines} disabled={locked} aria-invalid={!targetValid}
           onChange={e => { setCustomLines(e.target.value); setPlanConfirmed(false); }} className="ml-2 w-24 rounded-lg border border-line bg-canvas px-3 py-2" /> 条</label>}
-        <button disabled={locked || dirty || !targetValid || !!activeTranscript?.qualityIssues?.length || !segments.length || (translated && !fullVideo && !saved.translation)} className="rounded-lg bg-accent px-4 py-2 text-sm text-on-accent disabled:opacity-50" onClick={() => void action('规划图片与文案中', plan)}>{busy === '规划图片与文案中' && <Loader2 size={16} className="mr-2 inline animate-spin" />}自动创作整套图文</button>
+        <button disabled={locked || dirty || !targetValid || !!activeTranscript?.qualityIssues?.length || !segments.length || (translated && !fullVideo && !saved.translation)} className="rounded-lg bg-accent px-4 py-2 text-sm text-on-accent disabled:opacity-50" onClick={() => void action('准备文字清单中', plan)}>{busy === '准备文字清单中' && <Loader2 size={16} className="mr-2 inline animate-spin" />}自动创作整套图文</button>
         <button disabled={locked || dirty} className={buttonClass} onClick={() => setRetranscribeOpen(true)}>重新转录来源视频</button>
       </div>
       {customTarget && <p role={targetValid ? undefined : 'alert'} className={`mt-2 text-sm ${targetValid ? 'text-ink-muted' : 'text-danger'}`}>{targetValid ? '条数为每张目标；文字较长或字幕区域较高时会自动减少条数并增加图片，保留已选内容。调整后请重新规划。' : '请输入大于 0 的整数条数。'}</p>}
@@ -224,13 +261,17 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
       {!segments.length && <p className="mt-2 text-sm text-ink-muted">自动规划需要带时间的转录，请先重新转录来源视频；已有手动草稿可在高级调整中继续编辑。</p>}
       {!translated && <details className="mt-4"><summary className="cursor-pointer text-sm text-ink-muted">整套字幕区域校准（可选）</summary>
         <label className="mt-3 flex gap-2 text-sm text-ink"><input type="checkbox" checked={calibrate} disabled={locked} onChange={e => { setCalibrate(e.target.checked); setPlanConfirmed(false); }} />用统一区域重新规划；关闭时自动建议区域。</label>
-        {calibrate && <div className="mt-3 flex flex-wrap gap-3"><NumberField label="整套字幕上边界（0～1）" value={bandTop} max={1} step={0.01} onChange={n => { setBandTop(n); setPlanConfirmed(false); }} /><NumberField label="整套字幕下边界（0～1）" value={bandBottom} max={1} step={0.01} onChange={n => { setBandBottom(n); setPlanConfirmed(false); }} /></div>}
+        {calibrate && <fieldset disabled={locked} className="mt-3 flex flex-wrap gap-3"><NumberField label="整套字幕上边界（0～1）" value={bandTop} max={1} step={0.01} onChange={n => { setBandTop(n); setPlanConfirmed(false); }} /><NumberField label="整套字幕下边界（0～1）" value={bandBottom} max={1} step={0.01} onChange={n => { setBandBottom(n); setPlanConfirmed(false); }} /></fieldset>}
       </details>}
     </section>
-    {saved.plan && <GalleryPlanPanel key={`${saved.plan.id}-${saved.version}`} plan={saved.plan} imageUrls={planImageUrls} confirmed={planConfirmed} disabled={locked || dirty}
+    {saved.contentPlan && <GalleryContentPanel key={`${saved.contentPlan.id}-${saved.version}`} plan={saved.contentPlan} disabled={contentLocked || dirty || saved.contentPlan.targetLines !== planningTarget}
+      onSelectionChange={value => { setContentDirty(value); setPlanConfirmed(false); }}
+      onSave={ids => action('保存内容选择中', () => saveContent(ids))} onOrganize={() => void action('整理内容中', organizeContent)} onGenerate={ids => void action('准备候选中', () => generateCandidates(ids))} />}
+    {saved.contentPlan && saved.contentPlan.targetLines !== planningTarget && <p role="alert" className="mb-4 text-sm text-warning">目标条数已改变，请重新点击自动创作准备文字方案。</p>}
+    {saved.plan && <GalleryPlanPanel key={`${saved.plan.id}-${saved.version}`} plan={saved.plan} imageUrls={planImageUrls} confirmed={planConfirmed} disabled={locked || dirty || (!!saved.contentPlan && saved.contentPlan.targetLines !== planningTarget)}
       onConfirmChange={setPlanConfirmed} onGenerate={() => void action('生成中', generatePlan)} />}
     {!translated && <details className="mb-6 rounded-lg border border-line bg-panel p-4"><summary className="cursor-pointer font-semibold text-ink">高级调整 · 手动换句、拆图、合图与时间微调</summary>
-    <div className="my-4"><button disabled={locked} className={buttonClass} onClick={() => void action('生成中', generate)}>按高级设置重新生成整套图集</button></div>
+    <div className="my-4">{draft.images.length > 35 && <p role="alert" className="mb-3 text-sm text-danger">当前设置超过 35 张，请先减少图片数量后再生成。</p>}<button disabled={locked || draft.images.length > 35} className={buttonClass} onClick={() => void action('生成中', generate)}>按高级设置重新生成整套图集</button></div>
     <fieldset disabled={locked} className="grid min-w-0 grid-cols-1 gap-5 xl:grid-cols-[220px_minmax(0,1fr)_300px]">
       <section className="min-w-0 rounded-lg border border-line bg-panel p-4"><h2 className="mb-3 font-semibold text-ink">图片顺序 · {draft.images.length} 张</h2>
         <div className="space-y-3">{draft.images.map((item, i) => <div key={i} className={`rounded-lg border p-3 ${i === selected ? 'border-accent-line bg-accent-soft' : 'border-line'}`}>

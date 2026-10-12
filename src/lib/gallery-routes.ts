@@ -25,6 +25,11 @@ export function registerGalleryRoutes(app: Express, deps: { galleries: GallerySe
     if (typeof req.query.time !== 'string' || !req.query.time.trim()) throw new GalleryError(400, '请选择画面时间');
     res.type('png').set('Cache-Control', 'no-store').send(await service.frame(String(req.params.id), Number(req.query.time)));
   }));
+  router.post('/:id/content-plan', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.prepareContent(String(req.params.id), req.body) })));
+  router.patch('/:id/content-plan', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.updateContent(String(req.params.id), req.body) })));
+  router.post('/:id/operation', requireActor(deps.sessions), handle(async (req, res) => res.status(202).json({ gallery: await service.startOperation(String(req.params.id), req.body, getActor(req).userId) })));
+  router.post('/:id/operation/pause', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.pauseOperation(String(req.params.id), req.body?.operationId, getActor(req).userId) })));
+  router.post('/:id/operation/resume', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.resumeOperation(String(req.params.id), req.body?.operationId, getActor(req).userId) })));
   router.post('/:id/plan', requireActor(deps.sessions), handle(async (req, res) => res.json({ gallery: await service.plan(String(req.params.id), req.body) })));
   router.post('/:id/translate', requireActor(deps.sessions), handle(async (req, res) => {
     res.json({ gallery: await service.translate(String(req.params.id), req.body) });

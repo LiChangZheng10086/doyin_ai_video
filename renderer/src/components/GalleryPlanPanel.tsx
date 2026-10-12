@@ -5,14 +5,16 @@ export function GalleryPlanPanel({ plan, imageUrls, confirmed, disabled, onConfi
   plan: GalleryPlan; imageUrls: string[]; confirmed: boolean; disabled: boolean;
   onConfirmChange: (value: boolean) => void; onGenerate: () => void;
 }) {
+  const overLimit = plan.images.length > 35;
   const [loaded, setLoaded] = useState<string[]>([]);
   const [failed, setFailed] = useState(false);
   const allLoaded = plan.images.length > 0 && imageUrls.length === plan.images.length && imageUrls.every(url => loaded.includes(url));
   return <section aria-label="自动图集方案" className="mb-6 rounded-lg border border-accent-line bg-panel p-5">
     <h2 className="text-lg font-semibold text-ink">建议生成 {plan.images.length} 张</h2>
-    {plan.coverage && <p className="mt-2 text-sm text-ink-muted">{plan.scope === 'range' ? '指定片段' : '完整视频'}范围：{plan.coverage.start.toFixed(1)}～{plan.coverage.end.toFixed(1)} 秒 / 原视频 {plan.coverage.duration.toFixed(1)} 秒。原视频共 {plan.coverage.totalSegments} 个有文字转录片段，当前匹配 {plan.coverage.selectedSegments} 个；图片按内容顺序分组。</p>}
+    {plan.coverage && <p className="mt-2 text-sm text-ink-muted">{plan.scope === 'range' ? '指定片段' : plan.scope === 'selection' ? '已确认内容' : '完整视频'}范围：{plan.coverage.start.toFixed(1)}～{plan.coverage.end.toFixed(1)} 秒 / 原视频 {plan.coverage.duration.toFixed(1)} 秒。方案包含 {plan.coverage.totalSegments} 个文字定位片段，当前匹配 {plan.coverage.selectedSegments} 个；图片按内容顺序分组。</p>}
     <p className="mt-2 text-sm text-ink-muted">{plan.mode === 'translated' ? '图片绘制中文译文，背景取自原视频。请逐句对照原文与时间，核对译文和画面。' : '按原内容顺序组织。文字来自画面识别或转录定位参考，图片取自原视频；请核对候选字幕是否完整、清楚并与文字相符。'}</p>
     {plan.warnings.map((warning, i) => <p key={i} className="mt-2 text-sm text-warning">{warning}</p>)}
+    {overLimit && <p role="alert" className="mt-3 text-sm text-danger">候选方案超过 35 张，请返回文字方案整理内容后重新规划。原有候选保留供参考。</p>}
     {plan.blockedReason && <p role="alert" className="mt-3 text-sm text-danger">{plan.blockedReason}</p>}
     {plan.excluded.length > 0 && <details className="mt-3 text-sm text-warning"><summary className="cursor-pointer">{plan.excluded.length} 个片段未纳入方案</summary>
       <ul className="mt-2 list-inside list-disc">{plan.excluded.map((item, i) => <li key={i}>第 {item.segmentIndex + 1} 个转录片段：{item.reason}</li>)}</ul>
@@ -32,9 +34,9 @@ export function GalleryPlanPanel({ plan, imageUrls, confirmed, disabled, onConfi
     </div>
     </details>
     {failed && <p role="alert" className="mt-4 text-sm text-danger">候选图片加载失败，请重新规划或刷新后重试。未能核对图片前不能确认生成。</p>}
-    <label className="mt-5 flex items-start gap-2 text-sm text-ink"><input type="checkbox" className="mt-1" checked={confirmed} disabled={disabled || !allLoaded || failed || !!plan.blockedReason}
+    <label className="mt-5 flex items-start gap-2 text-sm text-ink"><input type="checkbox" className="mt-1" checked={confirmed} disabled={disabled || overLimit || !allLoaded || failed || !!plan.blockedReason}
       onChange={e => onConfirmChange(e.target.checked)} />我已核对整套候选字幕，认可图片数量与内容安排。</label>
-    <button disabled={disabled || !confirmed || !allLoaded || failed || !!plan.blockedReason} onClick={onGenerate}
+    <button disabled={disabled || overLimit || !confirmed || !allLoaded || failed || !!plan.blockedReason} onClick={onGenerate}
       className="mt-4 rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-on-accent disabled:opacity-50">按此方案生成整套图集</button>
     <p className="mt-2 text-xs text-ink-muted">{plan.mode === 'translated' ? '译文修改须保存并重新规划。此操作不会发布内容。' : '生成完成后仍可局部拆图、合图或换句。此操作不会发布内容。'}</p>
   </section>;

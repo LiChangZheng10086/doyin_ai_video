@@ -19,6 +19,8 @@ export interface GalleryDraft {
 }
 
 export interface Gallery extends GalleryDraft {
+  contentPlan?: GalleryContentPlan;
+  operation?: GalleryOperation;
   mode?: 'native' | 'translated';
   translation?: GalleryTranslation;
   id: string;
@@ -68,7 +70,7 @@ export interface GalleryQuote {
 
 export interface GalleryPlan {
   mode?: 'native' | 'translated';
-  scope?: 'full' | 'range';
+  scope?: 'full' | 'range' | 'selection';
   coverage?: { start: number; end: number; duration: number; totalSegments: number; selectedSegments: number };
   id: string;
   transcriptHash: string;
@@ -102,4 +104,48 @@ export interface GalleryPlanInput {
   targetLines?: number;
   bandTop?: number;
   bandBottom?: number;
+  contentPlanId?: string;
+  contentConfirmed?: boolean;
+}
+
+export interface GalleryContentItem extends GalleryQuote {
+  id: string;
+  selected: boolean;
+  reason: string;
+}
+
+export interface GalleryContentPlan {
+  id: string;
+  transcriptHash: string;
+  sourceFingerprint: string;
+  targetLines: number;
+  items: GalleryContentItem[];
+  estimatedImages: number;
+  method: 'manual' | 'ai';
+  createdAt: string;
+  confirmedAt?: string;
+}
+
+export interface GalleryOperation {
+  id: string;
+  actorId?: string;
+  kind: 'content' | 'candidates' | 'render';
+  status: 'running' | 'pausing' | 'paused' | 'completed' | 'failed' | 'interrupted';
+  stage: 'content' | 'ocr' | 'candidates' | 'render' | 'copy';
+  completed: number;
+  total: number;
+  error?: string;
+  startedAt: string;
+  updatedAt: string;
+}
+
+export interface GalleryOperationInput extends GalleryPlanInput {
+  kind: GalleryOperation['kind'];
+  planId?: string;
+  subtitlesConfirmed?: boolean;
+}
+
+export interface GalleryWorkControl {
+  checkpoint?: () => Promise<void>;
+  progress?: (completed: number, total: number) => Promise<void>;
 }

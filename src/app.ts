@@ -33,6 +33,7 @@ import { isYouTubeUrl } from './lib/youtube.js';
 import { GalleryService } from "./lib/galleries.js";
 import { GalleryTranslator } from './lib/gallery-translation.js';
 import { GalleryCopyWriter } from './lib/gallery-copy.js';
+import { GalleryContentPlanner } from './lib/gallery-content.js';
 import { GalleryMedia } from "./lib/gallery-media.js";
 import { registerGalleryRoutes } from "./lib/gallery-routes.js";
 import { HotspotService } from "./lib/hotspots.js";
@@ -116,6 +117,7 @@ export interface ServerConfig {
   planArticle?: ArticlePlanner;
   galleryTranslator?: Pick<GalleryTranslator, 'translate'>;
   galleryCopyWriter?: Pick<GalleryCopyWriter, 'write'>;
+  galleryContentPlanner?: Pick<GalleryContentPlanner, 'plan'>;
   transcriptProofreader?: Pick<TranscriptProofreader, 'proofread'>;
   articleWriter?: Pick<ArticleWritingService, 'run'>;
   articleIllustrator?:{generate:(a:ArticleRecord,signal:AbortSignal)=>Promise<Pick<ArticleRecord,'coverAssetId'|'bodyImageAssetIds'|'bodyImagePlacements'>>};
@@ -446,6 +448,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     storage, jobs,
     translator: config.galleryTranslator ?? new GalleryTranslator({ resolveAiConfig: resolvePublishingAiConfig }),
     copyWriter: config.galleryCopyWriter ?? new GalleryCopyWriter({ resolveAiConfig: resolvePublishingAiConfig }),
+    contentPlanner: config.galleryContentPlanner ?? new GalleryContentPlanner({ resolveAiConfig: resolvePublishingAiConfig }),
     media: new GalleryMedia({ ffmpegBinary: config.ffmpegBinary, ffprobeBinary: config.ffprobeBinary, browserBinary: config.hyperframesBrowserPath ?? config.toutiaoBrowserBinary }),
     createPackage: (gallery, paths, actor) => publishingService.createGalleryNote({
       sourceJobId: gallery.sourceJobId, title: gallery.title,

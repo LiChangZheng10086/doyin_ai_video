@@ -1,11 +1,11 @@
 import type { TranscriptAsset } from '../types.js';
-import type { GalleryImage, GalleryPlan, GalleryPlanInput, GalleryQuote, GallerySource } from './gallery-types.js';
+import type { GalleryImage, GalleryPlan, GalleryPlanInput, GalleryQuote, GallerySource, GalleryWorkControl } from './gallery-types.js';
 import { GalleryError, galleryFilmstripHeight } from './gallery-media.js';
 import { inspectTranscriptQuality } from './transcript-quality.js';
 
 export type SubtitleCandidate = { time: number; bandTop: number; bandBottom: number; recognizedText?: string; verification?: 'ocr' | 'pixels' };
 
-function balancedGroupSize(remaining: number, target: number): number {
+export function balancedGroupSize(remaining: number, target: number): number {
   let groups = Math.ceil(remaining / target);
   while (target >= 6 && target <= 9 && groups > 1 && remaining / groups < 6 && Math.ceil(remaining / (groups - 1)) <= 9) groups--;
   return Math.ceil(remaining / groups);
@@ -17,25 +17,12 @@ export function galleryPlanBlockReason(plan: Pick<GalleryPlan, 'images' | 'exclu
   return undefined;
 }
 
-export async function planGallery(
-  transcript: TranscriptAsset,
-  source: GallerySource,
-  candidate: (quote: GalleryQuote) => Promise<SubtitleCandidate | SubtitleCandidate[] | null>,
-  options: Omit<GalleryPlanInput, 'version'> = {},
-): Promise<Pick<GalleryPlan, 'images' | 'warnings' | 'excluded' | 'blockedReason'>> {
-  const target = options.targetLines ?? 8;
-  if (!Number.isSafeInteger(target) || target < 1) throw new GalleryError(422, '每张目标条数须为正整数');
-  if ((options.bandTop === undefined) !== (options.bandBottom === undefined)
-    || (options.bandTop !== undefined && (!Number.isFinite(options.bandTop) || !Number.isFinite(options.bandBottom)
-      || options.bandTop < 0 || options.bandBottom! > 1 || options.bandBottom! - options.bandTop < .01))) {
-    throw new GalleryError(422, '请提供完整且有效的字幕区域');
-  }
+export function galleryTranscriptQuotes(transcript: TranscriptAsset, source: GallerySource): GalleryQuote[] {
+  if (!Number.isFinite(source.duration) || source.duration <= 0) throw new GalleryError(422, '原视频时长无效');
   if (!Array.isArray(transcript?.segments) || !transcript.segments.length) throw new GalleryError(422, '请先完成有效视频转录');
   if (transcript.segments.some(s => !s || typeof s.text !== 'string')) throw new GalleryError(422, '转录分段格式异常，请重新转录');
   const issues = inspectTranscriptQuality({ segments: transcript.segments, text: transcript.transcript ?? transcript.text, duration: source.duration });
   if (issues.length) throw new GalleryError(422, `转录存在异常，请重新转录：${issues.join('；')}`);
-  const warnings = ['系统自动选取的画面可能误选。请核对字幕完整、清楚且与原视频一致；转录文字仅供定位。'];
-  const excluded: GalleryPlan['excluded'] = [];
   const quotes: GalleryQuote[] = [];
   let pending: GalleryQuote | undefined;
   const flush = () => { if (pending) quotes.push(pending); pending = undefined; };
@@ -48,17 +35,18 @@ export async function planGallery(
     if (!segment.text.trim()) continue;
     const readableEnd = Math.min(end, source.duration - .001);
     if (readableEnd <= start) {
-      flush(); excluded.push({ segmentIndex, reason: '尾段没有可读取的有效时间范围，请核对原视频' }); continue;
+      flush(); quotes.push({ segmentIndex, text: segment.text, start, end }); continue;
     }
     const text = segment.text;
     const parts = text.match(/[^。！？!?\n]+[。！？!?\n]*|[。！？!?\n]+/gu) ?? [text];
     let offset = 0;
     for (const part of parts) {
-      // ponytail: character interpolation is a fallback; use valid word timestamps when the recognizer supplies them.
+      // shortcut: character interpolation is a fallback; use valid word timestamps when the recognizer supplies them.
       const matchingWords = transcript.words?.filter(w => typeof w.start === 'number' && typeof w.end === 'number'
         && w.start >= start && w.end <= readableEnd && Number.isFinite(w.start) && Number.isFinite(w.end) && w.end > w.start);
       for (let at = 0; at < part.length; at += 36) {
         const chunk = part.slice(at, at + 36);
+        if (!chunk.trim()) continue;
         const from = offset + at; const to = from + chunk.length;
         let chunkStart = start + (readableEnd - start) * from / text.length;
         let chunkEnd = start + (readableEnd - start) * to / text.length;
@@ -77,12 +65,44 @@ export async function planGallery(
     }
   }
   flush();
+  return quotes;
+}
+
+export async function planGallery(
+  transcript: TranscriptAsset,
+  source: GallerySource,
+  candidate: (quote: GalleryQuote) => Promise<SubtitleCandidate | SubtitleCandidate[] | null>,
+  options: Omit<GalleryPlanInput, 'version'> = {},
+  control: GalleryWorkControl & { quotes?: GalleryQuote[] } = {},
+): Promise<Pick<GalleryPlan, 'images' | 'warnings' | 'excluded' | 'blockedReason'>> {
+  const target = options.targetLines ?? 8;
+  if (!Number.isSafeInteger(target) || target < 1) throw new GalleryError(422, '每张目标条数须为正整数');
+  if ((options.bandTop === undefined) !== (options.bandBottom === undefined)
+    || (options.bandTop !== undefined && (!Number.isFinite(options.bandTop) || !Number.isFinite(options.bandBottom)
+      || options.bandTop < 0 || options.bandBottom! > 1 || options.bandBottom! - options.bandTop < .01))) {
+    throw new GalleryError(422, '请提供完整且有效的字幕区域');
+  }
+  const originalQuotes = galleryTranscriptQuotes(transcript, source);
+  const quotes = control.quotes ?? originalQuotes;
+  if (!Array.isArray(quotes) || quotes.some(q => !q || typeof q.text !== 'string' || !q.text.trim()
+    || !Number.isInteger(q.segmentIndex) || q.segmentIndex < 0 || q.segmentIndex >= transcript.segments.length
+    || !Number.isFinite(q.start) || !Number.isFinite(q.end) || q.start < 0 || q.end <= q.start
+    || q.start >= source.duration || q.end > source.duration + .5)) throw new GalleryError(422, '所选转录文字或时间无效，请重新规划');
+  const warnings = ['系统自动选取的画面可能误选。请核对字幕完整、清楚且与原视频一致；转录文字仅供定位。'];
+  const excluded: GalleryPlan['excluded'] = [];
   const selected: { quote: GalleryQuote; candidate: SubtitleCandidate }[] = [];
-  for (const quote of quotes) {
+  for (const [index, quote] of quotes.entries()) {
+    await control.checkpoint?.();
+    if (Math.min(quote.end, source.duration - .001) <= quote.start) {
+      excluded.push({ segmentIndex: quote.segmentIndex, reason: '尾段没有可读取的有效时间范围，请核对原视频' });
+      await control.progress?.(index + 1, quotes.length);
+      continue;
+    }
     const result = await candidate(quote);
     const found = (Array.isArray(result) ? result : result ? [result] : []).sort((a, b) => a.time - b.time);
     if (!found.length) {
       excluded.push({ segmentIndex: quote.segmentIndex, reason: `「${quote.text}」附近未找到与定位文字匹配的可读原生字幕，可能是横幅、转录偏差或字幕切换；请校准字幕区域或使用高级调整` });
+      await control.progress?.(index + 1, quotes.length);
       continue;
     }
     for (const item of found) {
@@ -95,6 +115,7 @@ export async function planGallery(
         warnings.push('本地 OCR 未就绪，当前仅为像素候选，稳定横幅也可能入选。请逐条核对原画面或统一校准区域；macOS 可运行 npm run prepare:subtitle-ocr 启用本地文字核对。');
       }
     }
+    await control.progress?.(index + 1, quotes.length);
   }
   const images: GalleryPlan['images'] = [];
   let group: { quote: GalleryQuote; candidate: SubtitleCandidate }[] = [];

@@ -9,13 +9,14 @@ import type { ActorSnapshot, JobRecord, PublishingPackageDetail, TranscriptAsset
 import { LocalStorage } from './storage.js';
 import { resolveSourceVideo } from './video-output.js';
 import { GalleryError, GalleryMedia, validateGalleryImage } from './gallery-media.js';
-import type { Gallery, GalleryDraft, GalleryPlanInput, GalleryPreview, GallerySource, GalleryTranslation } from './gallery-types.js';
+import type { Gallery, GalleryDraft, GalleryPlanInput, GalleryPreview, GallerySource, GalleryTranslation, GalleryContentPlan, GalleryOperationInput, GalleryWorkControl, GalleryOperation } from './gallery-types.js';
 import { galleryPlanBlockReason, planGallery } from './gallery-planner.js';
 import { PUBLISH_NOTE_POLICIES, validateNoteCopy } from './publishing-platforms.js';
 import type { GalleryCopyWriter } from './gallery-copy.js';
 import { isYouTubeUrl } from './youtube.js';
 import { GalleryTranslator, planTranslatedGallery, validateGalleryTranslationCues } from './gallery-translation.js';
 import { inspectTranscriptQuality } from './transcript-quality.js';
+import { galleryContentItems, estimateGalleryContent, type GalleryContentPlanner } from './gallery-content.js';
 import { normalizeNoteBgm } from './sau-runner.js';
 
 const INDEX = 'cache/galleries.json';
@@ -33,14 +34,15 @@ type Deps = {
   createPackage?: (gallery: Gallery, paths: string[], actor: ActorSnapshot) => Promise<PublishingPackageDetail>;
   copyWriter?: Pick<GalleryCopyWriter, 'write'>;
   translator?: Pick<GalleryTranslator, 'translate'>;
+  contentPlanner?: Pick<GalleryContentPlanner, 'plan'>;
 };
 
 export class GalleryService {
   private readonly media: Pick<GalleryMedia, 'probe' | 'frame' | 'render'> & Partial<Pick<GalleryMedia, 'suggestSubtitle' | 'suggestSubtitles' | 'suggestMainCrop'>>;
   private loaded?: Promise<Record<string, Gallery>>;
   private tail: Promise<unknown> = Promise.resolve();
-  // ponytail: one local render at a time; use a bounded queue if parallel production is needed.
-  private rendering = false;
+  private readonly busy = new Set<string>();
+  private readonly operations = new Map<string, { id: string; sourceFingerprint: string; resume?: () => void }>();
 
   constructor(private readonly deps: Deps) { this.media = deps.media ?? new GalleryMedia(); }
 
@@ -54,6 +56,10 @@ export class GalleryService {
       }
       let recovered = false;
       for (const record of Object.values(records)) {
+        if (record.operation && ['running', 'pausing', 'paused'].includes(record.operation.status)) {
+          record.operation.status = 'interrupted'; record.operation.error = '应用退出导致任务中断，请重新发起';
+          record.operation.updatedAt = new Date().toISOString(); record.version++; recovered = true;
+        }
         if (record.status === 'running') {
           record.status = 'failed'; record.error = '上次生成被中断，请重新生成'; record.version++; recovered = true;
         }
@@ -85,9 +91,190 @@ export class GalleryService {
     return structuredClone(record);
   }
 
-  private editable(record: Gallery, version: number): void {
-    if (record.status === 'running') throw new GalleryError(409, '图集生成中，请等待完成');
+  private editable(record: Gallery, version: number, owned = false): void {
+    if (!owned && (record.status === 'running' || this.busy.has(record.id))) throw new GalleryError(409, '图集生成中，请等待完成');
     if (!Number.isInteger(version) || record.version !== version) throw new GalleryError(409, '图集版本已变化，请刷新后重试');
+  }
+
+  private async exclusive<T>(id: string, version: number, work: (gallery: Gallery) => Promise<T>): Promise<T> {
+    const gallery = await this.serial(async () => {
+      const current = await this.record(id); this.editable(current, version);
+      this.busy.add(id); return structuredClone(current);
+    });
+    try { return await work(gallery); }
+    finally { this.busy.delete(id); }
+  }
+
+  private commit(gallery: Gallery): Promise<Gallery> {
+    return this.serial(async () => {
+      const current = await this.record(gallery.id);
+      return this.persist({ ...gallery, operation: current.operation });
+    });
+  }
+
+  private imageLimit(count: number): void {
+    if (count > 35) throw new GalleryError(422, `预计或实际需要 ${count} 张图片，超过自动生成上限 35 张；请先整理并确认保留内容`, 'gallery_image_limit');
+  }
+
+  private async contentSource(current: Gallery, targetLines = 8, fullVideo = true): Promise<GalleryContentPlan> {
+    return this.withSource(current.sourceJobId, async source => {
+      const transcript = await this.transcript(current.sourceJobId);
+      if (current.mode === 'translated') {
+        await this.checkedTranslation(current);
+        if (fullVideo && (current.translation!.start !== 0 || current.translation!.end < source.info.duration - .001)) throw new GalleryError(422, '请先全文翻译，再选择图集内容');
+      }
+      const items = galleryContentItems(transcript.asset, source.info, current.mode === 'translated' ? current.translation : undefined);
+      return { id: randomUUID(), transcriptHash: transcript.hash, sourceFingerprint: source.fingerprint, targetLines, items,
+        estimatedImages: estimateGalleryContent(items, targetLines, source.info, current.mode === 'translated'), method: 'manual', createdAt: new Date().toISOString() };
+    });
+  }
+
+  private async checkedContent(gallery: Gallery, contentPlanId: string): Promise<GalleryContentPlan> {
+    const content = gallery.contentPlan;
+    if (!content || content.id !== contentPlanId) throw new GalleryError(409, '文字内容方案已变化，请重新确认');
+    if ((await this.transcript(gallery.sourceJobId)).hash !== content.transcriptHash
+      || await this.sourceFingerprint(gallery.sourceJobId) !== content.sourceFingerprint) throw new GalleryError(409, '文字依据的转录或来源已变化，请重新规划');
+    if (gallery.mode === 'translated') {
+      await this.checkedTranslation(gallery);
+      if (JSON.stringify(gallery.translation!.cues.map(cue => [cue.segmentIndex, cue.original, cue.text, cue.start, cue.end]))
+        !== JSON.stringify(content.items.map(item => [item.segmentIndex, item.originalText, item.text, item.start, item.end]))) throw new GalleryError(409, '译文已变化，请重新规划文字');
+    }
+    return content;
+  }
+
+  async prepareContent(id: string, input: { version: number; targetLines?: number; fullVideo?: boolean }): Promise<Gallery> {
+    return this.exclusive(id, input?.version, async current => {
+      if (input.fullVideo !== undefined && typeof input.fullVideo !== 'boolean') throw new GalleryError(422, '视频范围选择无效');
+      const contentPlan = await this.contentSource(current, input.targetLines ?? 8, input.fullVideo !== false);
+      return this.commit({ ...current, contentPlan, plan: undefined, appliedPlanId: undefined, version: current.version + 1, updatedAt: new Date().toISOString() });
+    });
+  }
+
+  async updateContent(id: string, input: { version: number; contentPlanId: string; selectedIds: string[] }): Promise<Gallery> {
+    return this.exclusive(id, input?.version, async current => {
+      const content = await this.checkedContent(current, input.contentPlanId);
+      if (!Array.isArray(input.selectedIds) || !input.selectedIds.length || new Set(input.selectedIds).size !== input.selectedIds.length
+        || input.selectedIds.some(id => typeof id !== 'string' || !content.items.some(item => item.id === id))) throw new GalleryError(422, '保留内容编号无效、重复或为空');
+      const items = content.items.map(item => ({ ...item, selected: input.selectedIds.includes(item.id) }));
+      const info = await this.inspectSource(id);
+      const contentPlan = { ...content, items, estimatedImages: estimateGalleryContent(items, content.targetLines, info, current.mode === 'translated'), confirmedAt: new Date().toISOString() };
+      return this.commit({ ...current, contentPlan, plan: undefined, appliedPlanId: undefined, version: current.version + 1, updatedAt: new Date().toISOString() });
+    });
+  }
+
+  async startOperation(id: string, input: GalleryOperationInput, actorId?: string): Promise<Gallery> {
+    const started = await this.serial(async () => {
+      const current = await this.record(id); this.editable(current, input?.version);
+      if (!['content', 'candidates', 'render'].includes(input?.kind)) throw new GalleryError(422, '生成任务类型无效');
+      if (input.kind === 'content') {
+        await this.checkedContent(current, input.contentPlanId ?? '');
+        if (!this.deps.contentPlanner) throw new GalleryError(503, 'AI 内容整理服务未就绪');
+      }
+      if (input.kind === 'candidates') {
+        if (input.contentConfirmed !== true || !input.contentPlanId) throw new GalleryError(422, '请先确认文字内容');
+        const content = await this.checkedContent(current, input.contentPlanId);
+        if (!content.confirmedAt) throw new GalleryError(422, '请先保存并确认文字内容');
+        if (input.targetLines !== undefined && input.targetLines !== content.targetLines) throw new GalleryError(409, '目标条数已变化，请重新确认文字');
+        this.imageLimit(content.estimatedImages);
+      }
+      if (input.kind === 'render') {
+        if (input.planId !== undefined) {
+          if (input.subtitlesConfirmed !== true) throw new GalleryError(422, '请先核对整套字幕候选');
+          await this.checkedPlan(current, input.planId);
+          this.imageLimit(current.plan!.images.length);
+          const reason = galleryPlanBlockReason(current.plan!); if (reason) throw new GalleryError(422, reason);
+        } else this.imageLimit(current.images.length);
+      }
+      const now = new Date().toISOString();
+      const total = input.kind === 'content' ? current.contentPlan!.items.length
+        : input.kind === 'candidates' ? current.contentPlan!.items.filter(item => item.selected).length
+        : input.planId ? current.plan!.images.length : current.images.length;
+      const operation: GalleryOperation = { id: randomUUID(), actorId, kind: input.kind, status: 'running',
+        stage: input.kind === 'candidates' ? 'ocr' : input.kind, completed: 0, total, startedAt: now, updatedAt: now };
+      const sourceFingerprint = await this.sourceFingerprint(current.sourceJobId);
+      const saved = await this.persist({ ...current, operation, error: undefined });
+      this.busy.add(id); this.operations.set(id, { id: operation.id, sourceFingerprint }); return saved;
+    });
+    // The detached closure retains completed units while its cooperative gate is paused.
+    void this.executeOperation(started, input).finally(() => { this.operations.delete(id); this.busy.delete(id); }).catch(error => console.error('[gallery operation]', error));
+    return started;
+  }
+
+  private async operationPatch(id: string, operationId: string, patch: Partial<GalleryOperation>): Promise<Gallery> {
+    return this.serial(async () => {
+      const current = await this.record(id);
+      if (current.operation?.id !== operationId) throw new GalleryError(409, '生成任务已变化');
+      if (patch.status === 'pausing' && current.operation.status !== 'running') throw new GalleryError(409, '任务已结束或暂停状态已变化');
+      if (patch.status === 'running' && current.operation.status !== 'paused') throw new GalleryError(409, '任务暂停状态已变化');
+      return this.persist({ ...current, operation: { ...current.operation, ...patch, updatedAt: new Date().toISOString() } });
+    });
+  }
+
+  private operationControl(id: string, operationId: string, stage: GalleryOperation['stage']): GalleryWorkControl {
+    return {
+      checkpoint: async () => {
+        const running = this.operations.get(id);
+        if (running?.id !== operationId) throw new GalleryError(409, '生成任务已变化');
+        const current = await this.record(id);
+        if (current.operation?.status === 'pausing') {
+          const gate = new Promise<void>(resolve => { running.resume = resolve; });
+          await this.operationPatch(id, operationId, { status: 'paused' });
+          await gate;
+          const latest = await this.record(id);
+          if (await this.sourceFingerprint(latest.sourceJobId) !== running.sourceFingerprint) throw new GalleryError(409, '原视频来源在暂停期间已变化，请重新生成');
+          if (latest.operation!.kind === 'render') {
+            if (latest.appliedPlanId) await this.checkedPlan(latest, latest.appliedPlanId);
+          }
+          else await this.checkedContent(latest, latest.contentPlan?.id ?? '');
+        }
+      },
+      progress: async (completed, total) => { await this.operationPatch(id, operationId, { stage, completed, total }); },
+    };
+  }
+
+  private async executeOperation(started: Gallery, input: GalleryOperationInput): Promise<void> {
+    const operationId = started.operation!.id;
+    try {
+      if (input.kind === 'content') {
+        const content = started.contentPlan!;
+        const control = this.operationControl(started.id, operationId, 'content');
+        const items = await this.deps.contentPlanner!.plan(content.items, control);
+        await control.checkpoint?.();
+        await this.checkedContent(started, content.id);
+        const source = await this.inspectSource(started.id);
+        await this.commit({ ...started, contentPlan: { ...content, items, method: 'ai', confirmedAt: undefined, estimatedImages: estimateGalleryContent(items, content.targetLines, source, started.mode === 'translated') }, plan: undefined, appliedPlanId: undefined, version: started.version + 1 });
+      } else if (input.kind === 'candidates') {
+        await this.planWork(started, { ...input, targetLines: started.contentPlan!.targetLines }, this.operationControl(started.id, operationId, 'ocr'), this.operationControl(started.id, operationId, 'candidates'), this.operationControl(started.id, operationId, 'copy'));
+      } else {
+        await this.renderInternal(started.id, started.version, input.planId, this.operationControl(started.id, operationId, 'render'), true);
+      }
+      await this.operationControl(started.id, operationId, input.kind === 'candidates' ? 'candidates' : input.kind).checkpoint?.();
+      const current = await this.record(started.id);
+      await this.operationPatch(started.id, operationId, { status: 'completed', completed: current.operation!.total });
+    } catch (error) {
+      await this.operationPatch(started.id, operationId, { status: 'failed', error: error instanceof Error ? error.message : '图集生成失败' });
+    }
+  }
+
+  private async controlOperation(id: string, operationId: string, actorId?: string): Promise<Gallery> {
+    const current = await this.record(id);
+    if (typeof operationId !== 'string' || current.operation?.id !== operationId || this.operations.get(id)?.id !== operationId) throw new GalleryError(409, '生成任务不存在、已中断或已变化');
+    if (current.operation.actorId !== actorId) throw new GalleryError(403, '只有发起任务的操作者可以控制任务');
+    return current;
+  }
+
+  async pauseOperation(id: string, operationId: string, actorId?: string): Promise<Gallery> {
+    const current = await this.controlOperation(id, operationId, actorId);
+    if (!['running', 'pausing', 'paused'].includes(current.operation!.status)) throw new GalleryError(409, '任务已经结束');
+    if (current.operation!.status !== 'running') return structuredClone(current);
+    return this.operationPatch(id, operationId, { status: 'pausing' });
+  }
+
+  async resumeOperation(id: string, operationId: string, actorId?: string): Promise<Gallery> {
+    const current = await this.controlOperation(id, operationId, actorId);
+    if (current.operation!.status !== 'paused') throw new GalleryError(409, '任务尚未暂停或已经结束');
+    const saved = await this.operationPatch(id, operationId, { status: 'running' });
+    const running = this.operations.get(id)!; const resume = running.resume; running.resume = undefined; resume?.(); return saved;
   }
 
   private async openSource(jobId: string) {
@@ -196,6 +383,7 @@ export class GalleryService {
       if (sameImages) draft.images = current.images;
       const ready = sameImages && current.generated?.draftHash === imageHash({ ...draft, translation }) && current.generated.sourceFingerprint === source.fingerprint;
       const saved = await this.persist({ ...current, ...draft, translation,
+        contentPlan: sameImages ? current.contentPlan : undefined,
         copyError: !sameImages && translated && current.copyReference?.translationHash ? '译文已修改，请重新生成配套文案并核对。' : current.copyError, plan: sameImages ? current.plan : undefined, appliedPlanId: sameImages ? current.appliedPlanId : undefined,
         version: current.version + 1, status: ready ? 'ready' : 'draft', error: undefined, updatedAt: new Date().toISOString() });
       if (current.plan && !sameImages) { safeId(current.plan.id); await rm(path.join(await this.outputRoot(), current.id, `plan-${current.plan.id}`), { recursive: true, force: true }).catch(() => undefined); }
@@ -263,8 +451,7 @@ export class GalleryService {
   }
 
   async translate(id: string, input: { version: number; start: number; end: number }): Promise<Gallery> {
-    return this.serial(async () => {
-      const current = await this.record(id); this.editable(current, input?.version);
+    return this.exclusive(id, input?.version, async current => {
       if (current.mode !== 'translated') throw new GalleryError(422, '当前图集使用原生字幕，请新建中文译文图集');
       if (!this.deps.translator) throw new GalleryError(503, '翻译服务未就绪');
       return this.withSource(current.sourceJobId, async source => {
@@ -285,7 +472,7 @@ export class GalleryService {
         if (JSON.stringify(translated.map(({text: _text,...cue})=>cue)) !== JSON.stringify(cues.map(({text: _text,...cue})=>cue))) throw new GalleryError(422, '翻译结果原文或时间不一致，请重试');
         if ((await this.transcript(current.sourceJobId)).hash !== transcript.hash
           || await this.sourceFingerprint(current.sourceJobId) !== source.fingerprint) throw new GalleryError(409, '翻译期间来源已变化，请重新翻译');
-        const saved = await this.persist({ ...current, translation: { start: input.start, end: input.end, cues: translated,
+        const saved = await this.commit({ ...current, contentPlan: undefined, translation: { start: input.start, end: input.end, cues: translated,
           transcriptHash: transcript.hash, sourceFingerprint: source.fingerprint }, plan: undefined, appliedPlanId: undefined,
           status: 'draft', error: undefined, version: current.version + 1, updatedAt: new Date().toISOString() });
         if (current.plan) { safeId(current.plan.id); await rm(path.join(await this.outputRoot(), current.id, `plan-${current.plan.id}`), {recursive:true,force:true}).catch(()=>undefined); }
@@ -295,56 +482,75 @@ export class GalleryService {
   }
 
   async plan(id: string, input: GalleryPlanInput): Promise<Gallery> {
-    return this.serial(async () => {
-      const current = await this.record(id); this.editable(current, input?.version);
-      if (input.fullVideo !== undefined && typeof input.fullVideo !== 'boolean') throw new GalleryError(422, '视频范围选择无效');
-      if (current.mode !== 'translated' && !this.media.suggestSubtitle && !this.media.suggestSubtitles) throw new GalleryError(503, '字幕候选检测未就绪');
-      return this.withSource(current.sourceJobId, async source => {
-        const transcript = await this.transcript(current.sourceJobId);
-        if (current.mode === 'translated') {
-          await this.checkedTranslation(current);
-          if (input.fullVideo !== false && (current.translation!.start !== 0 || current.translation!.end < source.info.duration - .001)) {
-            throw new GalleryError(422, '当前译文未覆盖完整视频，请先全文翻译再自动分图；指定片段须明确选择片段模式。');
-          }
-        }
-        const proposal = current.mode === 'translated'
-          ? planTranslatedGallery(current.translation!, input.targetLines ?? 8, source.info.duration)
-          : await planGallery(transcript.asset, source.info,
+    return this.exclusive(id, input?.version, current => this.planWork(current, input));
+  }
+
+  private async planWork(current: Gallery, input: GalleryPlanInput, ocrControl: GalleryWorkControl = {}, imageControl: GalleryWorkControl = {}, copyControl: GalleryWorkControl = imageControl): Promise<Gallery> {
+    if (input.fullVideo !== undefined && typeof input.fullVideo !== 'boolean') throw new GalleryError(422, '视频范围选择无效');
+    if (current.mode !== 'translated' && !this.media.suggestSubtitle && !this.media.suggestSubtitles) throw new GalleryError(503, '字幕候选检测未就绪');
+    return this.withSource(current.sourceJobId, async source => {
+      const transcript = await this.transcript(current.sourceJobId);
+      let content: GalleryContentPlan | undefined;
+      if (input.contentPlanId !== undefined) {
+        if (input.contentConfirmed !== true) throw new GalleryError(422, '请先确认文字内容');
+        content = await this.checkedContent(current, input.contentPlanId);
+        if (!content.confirmedAt || content.targetLines !== (input.targetLines ?? 8)) throw new GalleryError(409, '文字选择或目标条数未确认，请重新确认');
+      }
+      if (current.mode === 'translated') {
+        await this.checkedTranslation(current);
+        if (input.fullVideo !== false && (current.translation!.start !== 0 || current.translation!.end < source.info.duration - .001)) throw new GalleryError(422, '当前译文未覆盖完整视频，请先全文翻译再自动分图；指定片段须明确选择片段模式。');
+      }
+      const items = content?.items ?? galleryContentItems(transcript.asset, source.info, current.mode === 'translated' ? current.translation : undefined);
+      const selected = items.filter(item => item.selected);
+      if (!selected.length) throw new GalleryError(422, '请选择至少一条文字内容');
+      this.imageLimit(estimateGalleryContent(items, input.targetLines ?? 8, source.info, current.mode === 'translated'));
+      await ocrControl.progress?.(0, selected.length);
+      await ocrControl.checkpoint?.();
+      const proposal = current.mode === 'translated'
+        ? planTranslatedGallery({ ...current.translation!, cues: current.translation!.cues.filter(cue => selected.some(item => item.segmentIndex === cue.segmentIndex)) }, input.targetLines ?? 8, source.info.duration)
+        : await planGallery(transcript.asset, source.info,
           quote => this.media.suggestSubtitles
             ? this.media.suggestSubtitles(source.path, { ...quote, text: transcript.asset.segments!
               .filter(segment => typeof segment.end === 'number' && typeof segment.start === 'number'
-                && segment.end > quote.start && segment.start < quote.end).map(segment => segment.text).join('') }, input)
-            : this.media.suggestSubtitle!(source.path, quote, input), input);
-        const segments = transcript.asset.segments!.filter(s => s.text.trim());
-        const quotes = proposal.images.flatMap(i => i.quotes);
-        const scope = current.mode === 'translated' && input.fullVideo === false ? 'range' as const : 'full' as const;
-        const coverage = { start: current.mode === 'translated' ? current.translation!.start : 0,
-          end: current.mode === 'translated' ? current.translation!.end : source.info.duration, duration: source.info.duration,
-          totalSegments: segments.length, selectedSegments: current.mode === 'translated' ? current.translation!.cues.length
-            : segments.filter(s => quotes.some(q => q.start < s.end! && q.end > s.start!)).length };
-        const plan = { id: randomUUID(), previewHashes: [] as string[], transcriptHash: transcript.hash, sourceFingerprint: source.fingerprint, ...proposal, scope, coverage };
-        const dir = path.join(await this.outputRoot(), current.id, `plan-${plan.id}`);
-        await mkdir(dir, { recursive: true });
-        try {
-          if (!(await realpath(dir)).startsWith((await this.outputRoot()) + path.sep)) throw new GalleryError(422, '方案目录不安全');
-          for (const [i, image] of plan.images.entries()) {
-            if (current.mode !== 'translated' && this.media.suggestMainCrop) image.image.mainCrop = await this.media.suggestMainCrop(source.path, image.image);
-            const file = path.join(dir, `${i}.png`);
-            await this.media.render(source.path, image.image, file);
-            plan.previewHashes.push(hash(await readFile(file)));
-          }
-          let copy: Partial<Gallery> = {};
-          if (!current.description.trim() && this.deps.copyWriter) {
-            try { copy = await this.writeCopy(current, source, transcript, plan.images.flatMap(i => i.quotes).filter(q => q.verification === 'ocr').map(q => q.text)); }
-            catch (error) { copy = { copyError: error instanceof Error ? error.message : '图文文案生成失败，请单独重试' }; }
-          }
-          if (await this.sourceFingerprint(current.sourceJobId) !== source.fingerprint) throw new GalleryError(409, '原视频在规划期间发生变化，请重新规划');
-          if ((await this.transcript(current.sourceJobId)).hash !== transcript.hash) throw new GalleryError(409, '转录在规划期间发生变化，请重新规划');
-          const saved = await this.persist({ ...current, ...copy, plan, version: current.version + 1, updatedAt: new Date().toISOString() });
-          if (current.plan) { safeId(current.plan.id); await rm(path.join(await this.outputRoot(), current.id, `plan-${current.plan.id}`), { recursive: true, force: true }).catch(() => undefined); }
-          return saved;
-        } catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
-      });
+                && segment.end > quote.start && segment.start < quote.end).map(segment => segment.text).join('') }, input, ocrControl)
+            : this.media.suggestSubtitle!(source.path, quote, input), input, { ...ocrControl, quotes: selected });
+      this.imageLimit(proposal.images.length);
+      const segments = transcript.asset.segments!.filter(segment => segment.text.trim());
+      const quotes = proposal.images.flatMap(image => image.quotes);
+      const scope = content && selected.length < items.length ? 'selection' as const : current.mode === 'translated' && input.fullVideo === false ? 'range' as const : 'full' as const;
+      const coverage = { start: scope === 'selection' ? Math.min(...selected.map(q => q.start)) : current.mode === 'translated' ? current.translation!.start : 0,
+        end: scope === 'selection' ? Math.max(...selected.map(q => q.end)) : current.mode === 'translated' ? current.translation!.end : source.info.duration, duration: source.info.duration,
+        totalSegments: content ? new Set(selected.map(item => item.segmentIndex)).size : segments.length,
+        selectedSegments: new Set(quotes.map(q => q.segmentIndex)).size };
+      const plan = { id: randomUUID(), previewHashes: [] as string[], transcriptHash: transcript.hash, sourceFingerprint: source.fingerprint, ...proposal, scope, coverage };
+      const dir = path.join(await this.outputRoot(), current.id, `plan-${plan.id}`);
+      await mkdir(dir, { recursive: true });
+      try {
+        if (!(await realpath(dir)).startsWith((await this.outputRoot()) + path.sep)) throw new GalleryError(422, '方案目录不安全');
+        await imageControl.progress?.(0, plan.images.length);
+        for (const [i, image] of plan.images.entries()) {
+          await imageControl.checkpoint?.();
+          if (current.mode !== 'translated' && this.media.suggestMainCrop) image.image.mainCrop = await this.media.suggestMainCrop(source.path, image.image);
+          const file = path.join(dir, `${i}.png`);
+          await this.media.render(source.path, image.image, file);
+          plan.previewHashes.push(hash(await readFile(file)));
+          await imageControl.progress?.(i + 1, plan.images.length);
+        }
+        let copy: Partial<Gallery> = {};
+        if (!current.description.trim() && this.deps.copyWriter) {
+          await copyControl.checkpoint?.();
+          await copyControl.progress?.(0, 1);
+          try { copy = await this.writeCopy(current, source, transcript, quotes.filter(q => q.verification === 'ocr').map(q => q.text)); }
+          catch (error) { copy = { copyError: error instanceof Error ? error.message : '图文文案生成失败，请单独重试' }; }
+          await copyControl.progress?.(1, 1);
+        }
+        await imageControl.checkpoint?.();
+        if (await this.sourceFingerprint(current.sourceJobId) !== source.fingerprint) throw new GalleryError(409, '原视频在规划期间发生变化，请重新规划');
+        if ((await this.transcript(current.sourceJobId)).hash !== transcript.hash) throw new GalleryError(409, '转录在规划期间发生变化，请重新规划');
+        const saved = await this.commit({ ...current, ...copy, plan, version: current.version + 1, updatedAt: new Date().toISOString() });
+        if (current.plan) { safeId(current.plan.id); await rm(path.join(await this.outputRoot(), current.id, `plan-${current.plan.id}`), { recursive: true, force: true }).catch(() => undefined); }
+        return saved;
+      } catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
     });
   }
 
@@ -367,14 +573,13 @@ export class GalleryService {
   }
 
   async generateCopy(id: string, version: number): Promise<Gallery> {
-    return this.serial(async () => {
-      const current = await this.record(id); this.editable(current, version);
+    return this.exclusive(id, version, async current => {
       return this.withSource(current.sourceJobId, async source => {
         const transcript = await this.transcript(current.sourceJobId);
         const nativeSubtitles = current.plan?.transcriptHash === transcript.hash && current.plan.sourceFingerprint === source.fingerprint
           ? current.plan.images.flatMap(i => i.quotes).filter(q => q.verification === 'ocr').map(q => q.text) : [];
         const copy = await this.writeCopy(current, source, transcript, nativeSubtitles);
-        return this.persist({ ...current, ...copy, version: current.version + 1, updatedAt: new Date().toISOString() });
+        return this.commit({ ...current, ...copy, version: current.version + 1, updatedAt: new Date().toISOString() });
       });
     });
   }
@@ -422,22 +627,24 @@ export class GalleryService {
   async renderPlan(id: string, input: { version: number; planId: string; subtitlesConfirmed: boolean }): Promise<Gallery> {
     if (typeof input?.planId !== 'string' || !input.planId) throw new GalleryError(422, '请选择有效图集方案');
     if (input?.subtitlesConfirmed !== true) throw new GalleryError(422, '请先逐张核对整套字幕预览');
-    return this.renderInternal(id, input.version, input.planId);
+    return this.exclusive(id, input.version, () => this.renderInternal(id, input.version, input.planId, {}, true));
   }
 
-  async render(id: string, version: number): Promise<Gallery> { return this.renderInternal(id, version); }
+  async render(id: string, version: number): Promise<Gallery> { return this.exclusive(id, version, () => this.renderInternal(id, version, undefined, {}, true)); }
 
-  private async renderInternal(id: string, version: number, planId?: string): Promise<Gallery> {
+  private async renderInternal(id: string, version: number, planId?: string, control: GalleryWorkControl = {}, owned = false): Promise<Gallery> {
     let generationDir = '';
     let previousImages: Gallery['images'] | undefined;
-    const current = await this.serial(async () => {
-      let g = await this.record(id); this.editable(g, version);
+    const current = await (async () => {
+      let g = await this.record(id); this.editable(g, version, owned);
+      if (!planId) this.imageLimit(g.images.length);
       if (g.mode === 'translated') {
         await this.checkedTranslation(g);
         if (!planId && !g.appliedPlanId) throw new GalleryError(422, '请先核对译文方案后生成');
       }
       if (planId !== undefined) {
         await this.checkedPlan(g, planId);
+        this.imageLimit(g.plan!.images.length);
         if (!g.plan!.images.length) throw new GalleryError(422, '没有可用原生字幕候选，请重新规划');
         for (let i = 0; i < g.plan!.images.length; i++) await this.readPlanImage(g, i);
         previousImages = g.images;
@@ -445,16 +652,14 @@ export class GalleryService {
       }
       if (g.appliedPlanId) {
         await this.checkedPlan(g, g.appliedPlanId);
+        this.imageLimit(g.plan!.images.length);
         const blockedReason = galleryPlanBlockReason(g.plan!);
         if (blockedReason) throw new GalleryError(422, blockedReason);
         if (imageHash(g) !== imageHash({ ...g, images: g.plan!.images.map(i => i.image) })) throw new GalleryError(409, '请重新确认整套方案后生成');
       }
-      if (this.rendering) throw new GalleryError(409, '其它图集生成中，请稍后重试');
       await this.withSource(g.sourceJobId, async source => { this.normalize(g, source.info.duration, g.mode === 'translated'); });
-      this.rendering = true;
-      try { return await this.persist({ ...g, status: 'running', error: undefined, version: g.version + 1 }); }
-      catch (error) { this.rendering = false; throw error; }
-    });
+      return this.commit({ ...g, status: 'running', error: undefined, version: g.version + 1 });
+    })();
     try {
       return await this.withSource(current.sourceJobId, async source => {
       if (current.appliedPlanId) {
@@ -466,17 +671,21 @@ export class GalleryService {
       await mkdir(generationDir, { recursive: true });
       if (!(await realpath(generationDir)).startsWith((await this.outputRoot()) + path.sep)) throw new GalleryError(422, '图集目录不安全');
       const hashes: string[] = [];
+      await control.progress?.(0, current.images.length);
       for (const [i, image] of current.images.entries()) {
+        await control.checkpoint?.();
         const file = path.join(generationDir, `${i}.png`);
         await this.media.render(source.path, image, file);
         const renderedHash = hash(await readFile(file));
         if (current.appliedPlanId && renderedHash !== current.plan!.previewHashes?.[i]) throw new GalleryError(409, '生成图片与已确认的方案预览不一致，请重新规划');
         hashes.push(renderedHash);
+        await control.progress?.(i + 1, current.images.length);
       }
+      await control.checkpoint?.();
       if (await this.sourceFingerprint(current.sourceJobId) !== source.fingerprint) throw new GalleryError(409, '原视频在生成期间发生变化，请重新生成');
       const ready = await this.serial(async () => {
         if (current.appliedPlanId) await this.checkedPlan(current, current.appliedPlanId);
-        return this.persist({ ...current, status: 'ready', version: current.version + 1,
+        return this.persist({ ...current, operation: (await this.record(id)).operation, status: 'ready', version: current.version + 1,
           generated: { id: generation, draftHash: imageHash(current), sourceFingerprint: source.fingerprint, hashes,
             ...(current.appliedPlanId ? { transcriptHash: current.plan!.transcriptHash } : {}) }, updatedAt: new Date().toISOString() });
       });
@@ -484,10 +693,10 @@ export class GalleryService {
       return ready;
       });
     } catch (error) {
-      await this.serial(() => this.persist({ ...current, ...(previousImages ? { images: previousImages } : {}), status: 'failed', version: current.version + 1, error: error instanceof Error ? error.message : '图集生成失败' }));
+      await this.serial(async () => this.persist({ ...current, operation: (await this.record(id)).operation, ...(previousImages ? { images: previousImages } : {}), status: 'failed', version: current.version + 1, error: error instanceof Error ? error.message : '图集生成失败' }));
       if (generationDir) await rm(generationDir, { recursive: true, force: true });
       throw error;
-    } finally { this.rendering = false; }
+    }
   }
 
   private async readImage(g: Gallery, index: number): Promise<{ bytes: Buffer; file: string }> {

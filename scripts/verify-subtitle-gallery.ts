@@ -94,6 +94,15 @@ else try {
   assert.equal(created.status, 201); const gallery = (await created.json()).gallery;
   const url = `/api/galleries/${gallery.id}`;
   const sourceGallery = translatedMode ? (await request(url + '/translate', { version: gallery.version, start: 0, end: duration })).gallery : gallery;
+  if (segmentCount > 280) {
+    const content = (await request(url + '/content-plan', { version: sourceGallery.version, targetLines: 8 })).gallery;
+    assert.equal(content.contentPlan.items.length, segmentCount);
+    assert.equal(content.contentPlan.estimatedImages, 50);
+    const oversized = await fetch(base + url + '/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Local-Session': token }, body: JSON.stringify({ version: content.version, targetLines: 8 }) });
+    assert.equal(oversized.status, 422); assert.equal((await oversized.json()).code, 'gallery_image_limit');
+    assert.equal((await storage.readJson<any>('raw/transcripts/gallery-demo.json')).segments.length, segmentCount);
+    console.log('PASS: all400 source cues retained;50-image plan intercepted before OCR or drawing. No real data or publishing writes.');
+  } else {
   const planned = (await request(url + '/plan', { version: sourceGallery.version, targetLines: 8 })).gallery;
   assert.deepEqual(planned.plan.images.map((i: any) => i.quotes.length), Array(segmentCount / 8).fill(8));
   assert.equal(planned.plan.images.flatMap((i: any) => i.quotes).length, segmentCount);
@@ -111,4 +120,5 @@ else try {
   const stale = await fetch(base + url + '/publishing/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version: recopy.version }) });
   assert.equal(stale.status, 409);
   console.log(`PASS: isolated ${segmentCount} source cues → ${segmentCount / 8} image previews + copy → confirm/render → regenerate copy preserves pixels → publish preview → retranscribe rejects stale copy/images. No real data or publishing writes.`);
+  }
 } finally { await close(); }

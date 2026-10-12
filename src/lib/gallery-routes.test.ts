@@ -119,3 +119,46 @@ test('translated gallery HTTP uses reviewed Chinese pixels, immutable originals 
   assert.deepEqual(await readFile(path.join(pkg.packagePath,pkg.imagePaths[0])),bytes);
  }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));await rm(root,{recursive:true,force:true});}
 });
+
+test('content and operation HTTP routes return 202 before image work ends and protect controls', async () => {
+  const [{ default: express }, { GalleryService }, { registerGalleryRoutes }, { LocalSessionStore }, { LocalUserStore }] = await Promise.all([
+    import('express'), import('./galleries.js'), import('./gallery-routes.js'), import('./local-auth.js'), import('./local-users.js'),
+  ]);
+  const root = await mkdtemp(path.join(tmpdir(), 'gallery-operation-api-'));
+  let server: ReturnType<typeof createServer> | undefined; let release!: () => void;
+  try {
+    const storage = new LocalStorage(root); await storage.ensureBaseDirs(); const videoPath = storage.resolve('raw/videos/source.mp4'); await writeFile(videoPath, 'video');
+    await storage.writeJsonAtomic('raw/transcripts/source.json', { segments: [{ start: 0, end: 1, text: '完整内容。' }] });
+    const users = new LocalUserStore(storage); await users.init(); const user = await users.ensureLocalOperator(); const sessions = new LocalSessionStore(users);
+    const token = (await sessions.openLocalOperator(user.id)).token;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const service = new GalleryService({ storage, jobs: { get: async () => ({ id: 'source', videoPath } as any) }, media: {
+      probe: async () => ({ width: 320, height: 480, duration: 3 }), frame: async () => Buffer.from('frame'), render: async (_v, _i, out) => { await gate; await writeFile(out, 'pixels'); },
+      suggestSubtitles: async () => [{ time: .5, bandTop: .8, bandBottom: .85, verification: 'ocr', recognizedText: '完整内容' }],
+    } });
+    const app = express(); app.use(express.json()); registerGalleryRoutes(app, { galleries: service, sessions });
+    server = createServer(app); await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve)); const address = server.address(); assert.ok(address && typeof address === 'object');
+    const base = `http://127.0.0.1:${address.port}`;
+    const request = async (url: string, method = 'GET', body?: unknown, authorized = true) => {
+      const r = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json', ...(authorized ? { 'X-Local-Session': token } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      return { status: r.status, body: await r.json() as any };
+    };
+    const g = (await request('/api/galleries', 'POST', { sourceJobId: 'source' })).body.gallery; const url = `/api/galleries/${g.id}`;
+    assert.equal((await request(url + '/content-plan', 'POST', { version: g.version }, false)).status, 401);
+    const c = (await request(url + '/content-plan', 'POST', { version: g.version, targetLines: 8 })).body.gallery;
+    assert.equal((await request(url + '/operation', 'POST', { version: c.version, kind: 'candidates', contentPlanId: c.contentPlan.id, contentConfirmed: true })).status, 422);
+    const selected = (await request(url + '/content-plan', 'PATCH', { version: c.version, contentPlanId: c.contentPlan.id, selectedIds: c.contentPlan.items.map((i: any) => i.id) })).body.gallery;
+    const running = await request(url + '/operation', 'POST', { version: selected.version, kind: 'candidates', contentPlanId: selected.contentPlan.id, contentConfirmed: true });
+    assert.equal(running.status, 202); assert.equal(running.body.gallery.operation.status, 'running');
+    assert.equal((await request(url + '/operation/pause', 'POST', { operationId: running.body.gallery.operation.id }, false)).status, 401);
+    assert.equal((await request(url + '/operation/pause', 'POST', { operationId: 'stale' })).status, 409);
+    assert.equal((await request(url + '/operation/pause', 'POST', { operationId: running.body.gallery.operation.id })).status, 200);
+    release();
+    let state = (await request(url)).body.gallery;
+    for (let i = 0; i < 100 && state.operation.status !== 'paused'; i++) { await new Promise(r => setTimeout(r, 5)); state = (await request(url)).body.gallery; }
+    assert.equal(state.operation.status, 'paused');
+    assert.equal((await request(url + '/operation/resume', 'POST', { operationId: state.operation.id })).status, 200);
+    for (let i = 0; i < 100 && state.operation.status !== 'completed'; i++) { await new Promise(r => setTimeout(r, 5)); state = (await request(url)).body.gallery; }
+    assert.equal(state.operation.status, 'completed'); assert.equal(state.plan.images.length, 1);
+  } finally { release?.(); if (server) await new Promise<void>(resolve => server!.close(() => resolve())); await rm(root, { recursive: true, force: true }); }
+});

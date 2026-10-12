@@ -157,3 +157,31 @@ test('unpunctuated changing ASR segments do not merge into ten-second candidate 
   assert.ok(seen.every(q => q.end - q.start <= 4));
   assert.equal(plan.images.flatMap(i => i.quotes).map(q => q.text).join(''), asset.transcript);
 });
+
+test('selected quotes alone reach OCR and checkpoint/progress pauses before the next quote', async () => {
+  const { planGallery, galleryTranscriptQuotes } = await import('./gallery-planner.js');
+  const input = transcript(['第一条。', '用户删除条。', '最后条。']);
+  const quotes = galleryTranscriptQuotes(input, source).filter(quote => quote.segmentIndex !== 1);
+  const seen: number[] = []; const progress: number[][] = [];
+  let reached!: () => void; const atPause = new Promise<void>(resolve => { reached = resolve; });
+  let resume!: () => void; const paused = new Promise<void>(resolve => { resume = resolve; });
+  const running = planGallery(input, source, async quote => { seen.push(quote.segmentIndex); return candidate(quote); }, {}, {
+    quotes, checkpoint: async () => { if (seen.length === 1) { reached(); await paused; } },
+    progress: async (completed, total) => { progress.push([completed, total]); },
+  });
+  await atPause; assert.deepEqual(seen, [0]); assert.deepEqual(progress, [[1, 2]]);
+  resume(); const result = await running;
+  assert.deepEqual(seen, [0, 2]); assert.deepEqual(progress, [[1, 2], [2, 2]]);
+  assert.deepEqual(result.images.flatMap(image => image.quotes).map(quote => quote.text), ['第一条。', '最后条。']);
+});
+
+test('quote overrides cannot bypass transcript quality, invalid times or selected unreadable tails', async () => {
+  const { planGallery } = await import('./gallery-planner.js');
+  const input = transcript(['有效原句。']);
+  await assert.rejects(planGallery(input, source, candidate, {}, { quotes: [{ segmentIndex: 0, text: '坏时间。', start: 5, end: 1 }] }), /时间|转录/);
+  await assert.rejects(planGallery({ ...input, segments: [{ start: 5, end: 1, text: '异常' }] }, source, candidate, {}, { quotes: [] }), /转录/);
+  const tail = { segmentIndex: 0, start: 9.9998, end: 10.2, text: '最后原句。' };
+  let calls = 0;
+  const result = await planGallery(input, { ...source, duration: 10 }, async q => { calls++; return candidate(q); }, {}, { quotes: [tail] });
+  assert.equal(calls, 0); assert.match(result.blockedReason!, /不完整/);
+});

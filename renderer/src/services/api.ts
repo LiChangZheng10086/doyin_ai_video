@@ -3,7 +3,7 @@ import type { BenchmarkView, BenchmarkSearchResult } from '../../../src/lib/wech
 import axios, { AxiosInstance, type AxiosRequestConfig } from 'axios';
 import type { ImagePromptInput, ImagePromptRecord } from '../../../src/lib/image-prompts';
 import type { ImageAssetMetadata } from '../../../src/lib/assets-store';
-import type { Gallery, GalleryDraft, GalleryPreview, GallerySource, GalleryTranslation } from '../../../src/lib/gallery-types';
+import type { Gallery, GalleryDraft, GalleryPreview, GallerySource, GalleryTranslation, GalleryOperationInput } from '../../../src/lib/gallery-types';
 import type { HotspotBoard, HotspotFavorite } from '../../../src/lib/hotspots';
 import type { HotspotItem } from '../../../src/lib/hotspots';
 import type { ResearchReadInput, ResearchReadResult, ResearchSearchResult, ResearchSelection, ResearchStatus } from '../../../src/lib/research-types';
@@ -210,6 +210,21 @@ export class ApiClient {
   }
   async renderGalleryPlan(id: string, version: number, planId: string, subtitlesConfirmed: boolean): Promise<Gallery> {
     return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/plan/render`, data: { version, planId, subtitlesConfirmed }, timeout: 0 })).gallery;
+  }
+  async prepareGalleryContent(id: string, version: number, targetLines: number, fullVideo?: boolean): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/content-plan`, data: { version, targetLines, ...(fullVideo === undefined ? {} : { fullVideo }) } })).gallery;
+  }
+  async updateGalleryContent(id: string, version: number, contentPlanId: string, selectedIds: string[]): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'PATCH', url: `/api/galleries/${id}/content-plan`, data: { version, contentPlanId, selectedIds } })).gallery;
+  }
+  async startGalleryOperation(id: string, input: GalleryOperationInput): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/operation`, data: input })).gallery;
+  }
+  async pauseGalleryOperation(id: string, operationId: string): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/operation/pause`, data: { operationId } })).gallery;
+  }
+  async resumeGalleryOperation(id: string, operationId: string): Promise<Gallery> {
+    return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/operation/resume`, data: { operationId } })).gallery;
   }
   async generateGalleryCopy(id: string, version: number): Promise<Gallery> {
     return (await this.publishingRequest<{ gallery: Gallery }>({ method: 'POST', url: `/api/galleries/${id}/copy`, data: { version }, timeout: 0 })).gallery;

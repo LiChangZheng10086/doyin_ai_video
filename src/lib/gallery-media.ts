@@ -4,7 +4,7 @@ import path from 'node:path';
 import { recognizeNativeText, nativeSubtitleOcrAvailable, selectNativeSubtitle, type SubtitleRecognizer } from './subtitle-ocr.js';
 import { runCommand } from './command.js';
 import { renderTranslatedGallery, validateTranslatedCaptions } from './translated-gallery-media.js';
-import type { GalleryImage, GallerySource } from './gallery-types.js';
+import type { GalleryImage, GallerySource, GalleryWorkControl } from './gallery-types.js';
 import type { SubtitleCandidate } from './gallery-planner.js';
 
 export class GalleryError extends Error {
@@ -81,11 +81,11 @@ export class GalleryMedia {
     return (await this.detectSubtitles(video, quote, region, false))[0] ?? null;
   }
 
-  async suggestSubtitles(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number } = {}): Promise<SubtitleCandidate[]> {
-    return this.detectSubtitles(video, quote, region, true);
+  async suggestSubtitles(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number } = {}, control: GalleryWorkControl = {}): Promise<SubtitleCandidate[]> {
+    return this.detectSubtitles(video, quote, region, true, control);
   }
 
-  private async detectSubtitles(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number }, collect: boolean): Promise<SubtitleCandidate[]> {
+  private async detectSubtitles(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number }, collect: boolean, control: GalleryWorkControl = {}): Promise<SubtitleCandidate[]> {
     const info = await this.probe(video);
     if (!Number.isFinite(quote.start) || !Number.isFinite(quote.end) || quote.start < 0 || quote.end <= quote.start || quote.start >= info.duration) {
       throw new GalleryError(422, '转录时间无法用于字幕候选');
@@ -101,10 +101,12 @@ export class GalleryMedia {
         const count = Math.max(7, Math.min(80, Math.ceil((quote.end - quote.start) / .5)));
         const fractions = collect ? Array.from({ length: count }, (_, i) => (i + .5) / count) : [.15, .25, .35, .5, .65, .75, .85];
         for (const fraction of fractions) {
+          await control.checkpoint?.();
           const time = Math.min(info.duration - .001, quote.start + (Math.min(quote.end, info.duration) - quote.start) * fraction);
           const file = path.join(dir, `ocr-${fraction}.png`);
           // Keep the native fine glyphs; OCR handles camera motion outside the text.
           await this.execute(['-ss', String(time), '-i', video, '-vf', 'crop=iw:ih*0.48:0:ih*0.5,scale=2560:1280:force_original_aspect_ratio=decrease', '-frames:v', '1', '-threads', '1', file]);
+          await control.checkpoint?.();
           let lines;
           try { lines = await (this.config.recognizeSubtitles ?? recognizeNativeText)(file); }
           catch (error) { throw new GalleryError(503, `原生字幕识别不可用：${error instanceof Error ? error.message : String(error)}`, 'gallery_ocr_unavailable'); }
@@ -120,6 +122,7 @@ export class GalleryMedia {
       }
       const candidates: { time: number; edges: Set<number>; top: number; bottom: number; strength: number }[] = [];
       for (const fraction of [.25, .5, .75]) {
+        await control.checkpoint?.();
         const time = Math.min(info.duration - .001, quote.start + (quote.end - quote.start) * fraction);
         const file = path.join(dir, `${fraction}.gray`);
         await this.execute(['-ss', String(time), '-i', video, '-vf', `scale=${width}:${height}`, '-frames:v', '1', '-pix_fmt', 'gray', '-threads', '1', '-f', 'rawvideo', file]);
