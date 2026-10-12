@@ -24,6 +24,11 @@ export function registerArticleRoutes(app: Express, deps: { articles: ArticleSer
   router.post('/:id/automation/cancel',actor,handle(async(req,res)=>res.json({article:await s.cancelAuto(String(req.params.id),req.body?.runId,getActor(req).userId)})));
   router.delete('/:id',actor,handle(async (req,res) => { await s.remove(String(req.params.id),req.body?.version); res.json({ok:true}); }));
   router.post('/:id/steps/:step',actor,handle(async (req,res) => res.json({article:await s.run(String(req.params.id),String(req.params.step) as ArticleStep,req.body?.version)})));
+  router.post('/:id/illustrations/:index/asset',actor,handle(async(req,res)=>{
+    const index=String(req.params.index);
+    if(!/^(0|[1-9]\d*)$/.test(index))throw new ArticleError(400,'配图位置无效');
+    res.json({article:await s.bindIllustration(String(req.params.id),Number(index),req.body)});
+  }));
   router.post('/:id/sources/read',actor,handle(async (req,res) => res.json({article:await s.readSources(String(req.params.id),req.body?.version,req.body?.sourceIds,getActor(req).userId)})));
   router.post('/:id/sources/import',actor,handle(async(req,res)=>res.json({article:await s.importResearchSources(String(req.params.id),req.body?.version,req.body?.selections,getActor(req).userId)})));
   router.post('/:id/layout-preview',actor,handle(async(req,res)=>res.json({preview:await s.previewLayout(String(req.params.id),req.body)})));

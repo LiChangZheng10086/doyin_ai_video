@@ -705,6 +705,7 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 
 ### 热点到公众号文章创作（2026-09-30）
 
+- 中文编辑规则（2026-10-10）：选题与事实整理均读取完整已纳入可读正文并按资料消歧，自动选题首项应最匹配资料和读者。选题／提纲／初稿／审校共享主线、段落功能、中文节奏、具体开场与收尾规则；审校对照事实与原稿，允许将资料获取／验证状态说明移至备注，操作条件与技术限制仍留相关正文，不用机械禁词或自评分。创建页高级设置可填读者、观点、篇幅及文风示例，手动／自动均校验保存到 requirements；示例只影响表达，不移植事实，不进入公开搜索。详见 `docs/specs/2026-10-10-article-editorial-quality.md` 和 `docs/research/2026-10-10-article-editorial-verification.md`。
 - 自动创作恢复（2026-10-10）：`POST /api/articles/:id/automation/resume` 接受 `version`，可选 `inputMode:"idea"|"text"`；`idea` 必须带独立公开 `searchQuery`（最多400字符），界面须确认可外传。短提问／不明确短笔记先等待公开关键词，不默认搜索；完整正文默认直接使用。只允许未成稿、未微信交付任务更正，保留原输入及其它资料，复用归属／版本／互斥／取消保护。旧 `ai_output_invalid` 文字任务只有缺少独立可读资料时显示恢复入口，已有资料的请求失败直接续跑。
 - 事实整理将完整已纳入正文分为每片最多500个Unicode字符的有序摘录，模型选来源及摘录编号，服务端回填原文；逐字校验和对外 `claim/sourceId/quote` 不变。文章AI共用最多三次总尝试，覆盖空输出、截断、格式/引用错误、已识别网络中断、超时及HTTP 5xx；鉴权／限流／未知错误不自动重试，取消立即停止。错误只存固定分类，不持久化原始异常／模型响应／私密正文。编号存在不证明语义或事实已核实。
 
@@ -718,6 +719,8 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 
 
 ### 图片提示词与素材复用（2026-09-30）
+
+- 公众号独立文章（2026-10-12）：自动流程默认不创建统一文字卡片，缺图停在 `needs_input/images_required`，正文可预览。自动／高级编辑共用 `ArticleImageBindings`，上传经已有 metadata 保存 `generationPrompt`；`POST /api/articles/:id/illustrations/:index/asset` 校验 version、有效计划、素材类型与完整提示词快照后直接用于封面／对应章节。绑定保存 `illustrations[].assetId`；替换保留旧素材，上传成功而绑定失败先刷新素材再绑定，不自动重传。人工选图与既有恢复通路保留；正文图只在有必要的计划中要求，不强凑装饰图。
 
 - 素材页及头条／公众号文章向导内联生成／优化提示词，复用已有 AI 配置。生成 1～6 条、优化 1 条；优化设置可保留原文。草稿在 `cache/image-prompts.json`，编辑、删除与绑定带版本；409 保留输入，先刷新核对。
 - 图片保存 description／tags／generationPrompt 快照；修改或删除提示词草稿不改变已入库图片。上传逐图描述／标签；单张超限独立失败，不阻断合法同批图片；返回原文件 index，客户端只保留失败项。没有收到响应时先核对入库结果，不自动重传。

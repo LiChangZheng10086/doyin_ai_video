@@ -12,6 +12,16 @@ async function fixture(writer?: any) {
   return { root, service, dispose: () => rm(root, { recursive: true, force: true }) };
 }
 
+test('manual creation persists writing requirements with the same field limits as automatic creation', async t => {
+  const f=await fixture();t.after(f.dispose);
+  const requirements={audience:'AI 工具新用户',viewpoint:'先从重复任务入手',styleSample:'示例只参考表达。',length:'1000～1500字'};
+  const a=await f.service.create({keyword:'Skills',requirements});
+  for(const [key,value] of Object.entries(requirements))assert.equal((a.requirements as any)[key],value);
+  assert.equal(a.sources.length,0);
+  await assert.rejects(f.service.create({keyword:'Skills',requirements:{styleSample:'字'.repeat(10001)}}),/超限/);
+  await assert.rejects(f.service.create({keyword:'Skills',requirements:{unknown:'不能注入新字段'}}),/字段/);
+});
+
 test('layout changes preserve writing results and benchmark references enter only writing requirements', async t => {
   const f=await fixture();t.after(f.dispose);
   let a=await f.service.create({keyword:'自行选择的话题'});

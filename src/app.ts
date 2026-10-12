@@ -1,5 +1,4 @@
 import { ArticleService } from './lib/articles.js';
-import {ArticleIllustrations} from './lib/article-illustrations.js';
 import type {ArticleRecord} from './lib/article-types.js';
 import { WechatBenchmarkService } from './lib/wechat-benchmarks.js';
 import { registerWechatBenchmarkRoutes } from './lib/wechat-benchmark-routes.js';
@@ -425,7 +424,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
     writer:config.articleWriter ?? new ArticleWritingService({resolveAiConfig:resolvePublishingAiConfig}),
     checkAi:async()=>{if(config.articleWriter)return true;const ai=await resolvePublishingAiConfig();return !!ai?.apiKey?.trim()&&!!ai.model?.trim();},
     discardIllustrations:async ids=>{for(const id of ids)await assetStore.remove(id);},
-    illustrate:(a,signal)=>(config.articleIllustrator??new ArticleIllustrations({assets:assetStore,rootDir:config.rootDir,browserBinary:config.hyperframesBrowserPath})).generate(a,signal),
+    illustrate:config.articleIllustrator ? (a,signal)=>config.articleIllustrator!.generate(a,signal) : undefined,
     readSource:config.readArticleSource,
     searchResearch:(actorId,query,signal)=>research.search(actorId,query,signal),
     readResearchSource:async(actorId,url,signal)=>{

@@ -23,6 +23,28 @@ test('default article client uses native fetch and still validates the JSON resp
   } finally { globalThis.fetch = original; }
 });
 
+test('topic diagnosis receives complete included material to disambiguate a keyword without using excluded sources', async () => {
+  const input = { ...article, keyword: 'Skills', requirements: { audience: '刚使用 AI 工具的人', styleSample: '这段只参考表达，不作为事实。' }, sources: [
+    { ...article.sources[0], title: 'Agent Skills 官方说明', text: '这里讲的是 Agent Skills。' + '完整正文📝'.repeat(130) + '末尾限制仍未开放。' },
+    { id: 'excluded', included: false, status: 'readable', text: 'excluded-private-sentinel' },
+    { id: 'unread', included: true, status: 'failed', text: 'unread-summary-sentinel' },
+  ] };
+  let payload: any;
+  const writer = new ArticleWritingService({ resolveAiConfig: async () => ({ apiKey: 'fixture', model: 'fixture' }), createClient: () => ({ chat: { completions: { create: async (params: any) => {
+    payload = JSON.parse(params.messages.find((m: any) => m.role === 'user').content);
+    return { choices: [{ message: { content: JSON.stringify({ topics: [1,2,3].map(n => ({ title: `方向${n}`, audience: '新用户', question: '怎样用 Agent Skills？', thesis: '复用指令', hook: '重复要求', angle: '实际问题', researchQuestions: [] })) }) }, finish_reason: 'stop' }] };
+  } } } }) as any });
+  const result = await writer.run('diagnose', input);
+  assert.equal(result.topics.length, 3);
+  assert.ok(payload.sources, 'diagnosis must receive readable source context');
+  assert.equal(payload.sources.length, 1);
+  assert.equal(payload.sources[0].title, input.sources[0].title);
+  assert.equal(payload.sources[0].excerpts.map((e: any) => e.text).join(''), input.sources[0].text);
+  assert.deepEqual(payload.requirements, input.requirements);
+  assert.ok(!JSON.stringify(payload).includes('private-sentinel'));
+  assert.ok(!JSON.stringify(payload).includes('unread-summary-sentinel'));
+});
+
 test('evidence must quote its actual included source', () => {
   const valid = validateWritingResult('evidence', { facts: [{ claim: '开放导出', sourceId: 's1', quote: '项目周三开放了导出' }], issues: [] }, article);
   assert.equal(valid.facts[0].id, 'fact-1');
@@ -150,6 +172,25 @@ test('diagnosis needs three distinct usable directions', () => {
   assert.throws(() => validateWritingResult('diagnose', { topics: [] }, article), /三个/);
   const result = validateWritingResult('diagnose', { topics: [1, 2, 3].map(n => ({ title: `方向${n}`, audience: '读者', question: '关心什么', thesis: '主张', hook: '开头', angle: '解释', researchQuestions: ['查证'] })) }, article);
   assert.equal(result.topics[2].id, 'topic-3');
+});
+
+test('illustration plans require exactly one cover and cannot provide asset bindings',()=>{
+  const a={...article,adopted:'draft',draft:{sections:[{}]}};
+  const cover={section:0,purpose:'封面',caption:'插画',prompt:'街道插画',assetId:'untrusted'};
+  assert.throws(()=>validateWritingResult('illustrations',{images:[{...cover,section:1}]},a),/封面/);
+  assert.throws(()=>validateWritingResult('illustrations',{images:[cover,cover]},a),/封面/);
+  assert.equal(validateWritingResult('illustrations',{images:[cover]},a).images[0].assetId,undefined);
+});
+
+test('illustrations use the adopted final sections without the superseded outline',async()=>{
+  const revision={title:'定稿',sections:[{heading:'',paragraphs:['导出已开放。'],factIds:['f1']}]};
+  let payload:any;
+  const writer=new ArticleWritingService({resolveAiConfig:async()=>({apiKey:'fixture',model:'fixture'}),createClient:()=>({chat:{completions:{create:async(params:any)=>{
+    payload=JSON.parse(params.messages.find((m:any)=>m.role==='user').content);
+    return {choices:[{message:{content:JSON.stringify({images:[{section:0,purpose:'封面',caption:'插画',prompt:'打开的文件夹'}]})},finish_reason:'stop'}]};
+  }}}}) as any});
+  await writer.run('illustrations',{...article,adopted:'revision',revision,outline:{sections:[{heading:'旧标题'}]}});
+  assert.deepEqual(payload.draft,revision);assert.equal(payload.outline,undefined);
 });
 
 test('AI configuration failure is explicit and never returns local fallback prose', async () => {

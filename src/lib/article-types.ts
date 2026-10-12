@@ -13,7 +13,7 @@ export interface ArticleOutline {
   thesis: string; opening: string; sections: Array<{ heading: string; points: string[]; factIds: string[] }>; gaps: string[];
 }
 export interface ResearchDraft extends ArticleDraft { sections: Array<ArticleDraft['sections'][number] & { factIds: string[] }> }
-export interface ArticleIllustration { purpose: string; section: number; caption: string; prompt: string }
+export interface ArticleIllustration { purpose: string; section: number; caption: string; prompt: string; assetId?: string }
 export interface ArticleMaterial extends ArticleSourceRead { id: string; included: boolean; kind: 'web' | 'text'; depth: 0 | 1 }
 export type ArticleAutoStage = 'config'|'read'|'search'|ArticleStep|'assets'|'preview';
 export interface ArticleAutoResearch {
@@ -50,3 +50,7 @@ export interface ArticleRecord {
   reference: Partial<Record<ArticleStep, unknown>>;
 }
 export interface ArticlePreview { version: number; previewRevision: string; html: string; title: string; sourceCount: number }
+
+export function hasIncompleteArticleImageBindings(a:Pick<ArticleRecord,'illustrations'|'coverAssetId'|'bodyImageAssetIds'>):boolean {
+  return a.illustrations.some(i=>i.assetId!==undefined)&&a.illustrations.some(i=>!i.assetId||(i.section===0?a.coverAssetId!==i.assetId:!a.bodyImageAssetIds.includes(i.assetId)));
+}

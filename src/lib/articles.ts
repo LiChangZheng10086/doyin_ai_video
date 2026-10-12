@@ -5,7 +5,7 @@ import { LocalStorage } from './storage.js';
 import { articlePublicUrl, readArticleSource, type ArticleSourceRead } from './article-sources.js';
 import { articleWritingFailure, writingValidationFailure, validateWritingResult, type ArticleWritingService } from './article-writing.js';
 import {parseArticleInput,recommendArticleLayout} from './article-input.js';
-import { ARTICLE_STEPS, type ArticleRecord, type ArticleStep, type ArticlePreview, type ArticleMaterial, type ArticleAutoStage } from './article-types.js';
+import { ARTICLE_STEPS, hasIncompleteArticleImageBindings, type ArticleRecord, type ArticleStep, type ArticlePreview, type ArticleMaterial, type ArticleAutoStage } from './article-types.js';
 import { renderWechatArticleHtml } from './wechat-article.js';
 import { wechatLayout, MODERN_WECHAT_LAYOUTS, FACTORY_WECHAT_LAYOUT, modernWechatLayout, validateWechatLayoutOptions, type WechatLayoutDefaults } from './wechat-templates.js';
 import type { ResolvedAssetFile } from './assets-store.js';
@@ -91,13 +91,14 @@ export class ArticleService {
   }
   private invalidate(a: ArticleRecord, from: ArticleStep) {
     if(a.automation){for(const step of ARTICLE_STEPS.slice(ARTICLE_STEPS.indexOf(from)))delete a.automation.checkpoints[step];delete a.automation.checkpoints.assets;delete a.automation.checkpoints.preview;if(!autoActive(a)){a.automation.status='interrupted';delete a.automation.error;}}
-    const fields: Record<ArticleStep, Array<keyof ArticleRecord>> = { diagnose: ['topics', 'selectedTopic'], evidence: ['facts', 'issues'], outline: ['outline'], draft: ['draft'], review: ['revision', 'reviewNotes'], illustrations: ['illustrations'] };
+    const fields: Record<ArticleStep, Array<keyof ArticleRecord>> = { diagnose: ['topics', 'selectedTopic'], evidence: ['facts', 'issues'], outline: ['outline'], draft: ['draft'], review: ['revision', 'reviewNotes'], illustrations: ['illustrations','coverAssetId','bodyImageAssetIds','bodyImagePlacements'] };
     for (const step of ARTICLE_STEPS.slice(ARTICLE_STEPS.indexOf(from))) {
       const previous = Object.fromEntries(fields[step].filter(key => a[key] !== undefined).map(key => [key, a[key]]));
       if (a.steps[step] !== 'pending' && Object.keys(previous).length) a.reference[step] = previous;
       a.steps[step] = 'pending';
       for (const key of fields[step]) {
-        if (['topics','facts','issues','reviewNotes','illustrations'].includes(key)) (a as any)[key] = []; else delete (a as any)[key];
+        if (['topics','facts','issues','reviewNotes','illustrations','bodyImageAssetIds'].includes(key)) (a as any)[key] = [];
+        else if(key==='coverAssetId')a.coverAssetId='';else delete (a as any)[key];
       }
     }
     a.reviewed = false; if (ARTICLE_STEPS.indexOf(from) <= 4) a.adopted = 'draft';
@@ -203,12 +204,12 @@ export class ArticleService {
       if (hotspot && !materials.some(material=>material.url===publicUrl(hotspot.url).href)) a.sources.push(this.newUrl(hotspot.url));
       if(materials.length)this.appendMaterials(a,materials);
       if (benchmark) Object.assign(a.requirements,benchmark);
+      if(data.requirements!==undefined){for(const [key,value]of Object.entries(object(data.requirements))){if(!Object.hasOwn(a.requirements,key))throw new ArticleError(400,'写作要求字段无效');(a.requirements as any)[key]=field(value,key==='styleSample'?10000:2000);}}
       if(automaticInput){
         const {parsed,requestId}=automaticInput;
         a.workflowMode='auto';a.input={kind:parsed.kind,raw:parsed.raw,hash:hash(parsed.raw),...(parsed.confirmPublicQuery?{confirmPublicQuery:true}:{}),...(data.searchQuery?{searchQuery:data.searchQuery}:{})};
         if(parsed.text&&parsed.kind!=='idea')a.sources.push({id:randomUUID(),title:'用户提供的文字资料',text:parsed.text,url:'',status:'readable',hash:hash(parsed.text),readAt:now,included:true,kind:'text',depth:0,links:[],truncated:false});
         for(const url of parsed.urls)a.sources.push(this.newUrl(url));
-        if(data.requirements!==undefined){for(const [key,value]of Object.entries(object(data.requirements))){if(!Object.hasOwn(a.requirements,key))throw new ArticleError(400,'写作要求字段无效');(a.requirements as any)[key]=field(value,key==='styleSample'?10000:2000);}}
         let templateReason='沿用已保存的新文章默认排版';
         if(data.layoutTemplate!==undefined){this.applyLayout(a,{layoutTemplate:data.layoutTemplate,layoutVersion:2});templateReason='采用你选择的模板';}
         else if(defaults.version===0){const recommended=recommendArticleLayout(parsed.text);a.layoutTemplate=recommended.id;a.layoutOptions={};templateReason=recommended.reason;}
@@ -344,8 +345,8 @@ export class ArticleService {
         await this.autoCheckpoint(id,runId,step,'succeeded',signal);
       }
       stage='assets';a=await this.get(id);const assetsReady=a.automation?.checkpoints.assets?.status==='succeeded';a=await this.autoCheckpoint(id,runId,stage,'running',signal);
-      if(!a.coverAssetId||!a.bodyImageAssetIds.length||!assetsReady){
-        if(!this.deps.illustrate)throw new ArticleError(422,'自动配图未就绪，正文已保存；可在高级编辑选择封面与正文图','asset_failed');
+      if(!a.coverAssetId||(a.illustrations.some(i=>i.section>0)&&!a.bodyImageAssetIds.length)||!assetsReady){
+        if(!this.deps.illustrate)throw new ArticleError(422,'配图提示词已准备好，请在下方复制提示词，生成图片后上传绑定；正文已保存并可预览','images_required');
         const images=await this.deps.illustrate(a,signal);
         try{signal.throwIfAborted();a=await this.update(id,{version:a.version,...images},runId);}
         catch(error){await this.deps.discardIllustrations?.([images.coverAssetId,...images.bodyImageAssetIds].filter(Boolean)).catch(()=>{});throw error;}
@@ -359,7 +360,7 @@ export class ArticleService {
       await this.serial(async()=>{const a=await this.record(id);if(a.automation?.runId!==runId)return;
         delete a.running;const known=error instanceof ArticleError?error:stage==='assets'?new ArticleError(422,'本地配图未完成，请检查内置浏览器与图片存储；正文已保留，可重试配图或在高级编辑选图','asset_failed'):articleWritingFailure(error);
         const code=signal.aborted?'cancelled':known.code,message=signal.aborted?'自动创作已停止，已有成果保留，可继续':known.message;
-        a.automation.status=signal.aborted?'cancelled':['ai_missing','source_unreadable','needs_material','needs_public_query'].includes(code)?'needs_input':'failed';
+        a.automation.status=signal.aborted?'cancelled':['ai_missing','source_unreadable','needs_material','needs_public_query','images_required'].includes(code)?'needs_input':'failed';
         a.automation.stage=stage;a.automation.error={code,message,retryable:!signal.aborted};a.automation.checkpoints[stage]={status:'failed',updatedAt:new Date().toISOString()};a.error=message;await this.persist(a);
       });
     }
@@ -439,14 +440,15 @@ export class ArticleService {
       }
       if (p.materialConfirmed !== undefined) { if (typeof p.materialConfirmed !== 'boolean' || (p.materialConfirmed && !a.sources.some(s => s.included && s.status === 'readable'))) throw new ArticleError(422,'先补充可读资料'); a.materialConfirmed = p.materialConfirmed; }
       if (p.outlineConfirmed !== undefined) { if (typeof p.outlineConfirmed !== 'boolean' || (p.outlineConfirmed && a.steps.outline !== 'succeeded')) throw new ArticleError(422,'先完成提纲'); a.outlineConfirmed = p.outlineConfirmed; }
-      if (p.adopted !== undefined) { if (!['draft','revision'].includes(p.adopted) || !a[p.adopted as 'draft'|'revision'] || a.steps[p.adopted === 'draft' ? 'draft' : 'review'] !== 'succeeded') throw new ArticleError(422,'请选择当前有效稿件'); a.adopted = p.adopted; a.reviewed = false; a.illustrations = []; a.steps.illustrations = 'pending'; }
+      if (p.adopted !== undefined) { if (!['draft','revision'].includes(p.adopted) || !a[p.adopted as 'draft'|'revision'] || a.steps[p.adopted === 'draft' ? 'draft' : 'review'] !== 'succeeded') throw new ArticleError(422,'请选择当前有效稿件'); a.adopted = p.adopted; this.invalidate(a,'illustrations'); }
       if (p.reviewed !== undefined) { if (typeof p.reviewed !== 'boolean' || (p.reviewed && (a.steps.review !== 'succeeded' || !a[a.adopted]))) throw new ArticleError(422,'先完成审校并检查稿件'); a.reviewed = p.reviewed; }
       for (const k of ['author','digest','coverAssetId'] as const) if (p[k] !== undefined) a[k] = field(p[k], k === 'author' ? 16 : k === 'digest' ? 120 : 100);
       this.applyLayout(a,p);
       if (p.bodyImageAssetIds !== undefined) { if (!Array.isArray(p.bodyImageAssetIds) || p.bodyImageAssetIds.length > 10 || new Set(p.bodyImageAssetIds).size !== p.bodyImageAssetIds.length) throw new ArticleError(422,'正文图片最多10张，不可重复'); a.bodyImageAssetIds = p.bodyImageAssetIds.map((v: unknown) => field(v,100,true)); }
       this.applyImagePlacements(a,p);
+      if(p.coverAssetId!==undefined||p.bodyImageAssetIds!==undefined)for(const image of a.illustrations)delete image.assetId;
       if(a.automation&&!runId&&(p.coverAssetId!==undefined||p.bodyImageAssetIds!==undefined)){
-        if(a.coverAssetId&&a.bodyImageAssetIds.length){
+        if(a.coverAssetId&&(!a.illustrations.some(i=>i.section>0)||a.bodyImageAssetIds.length)){
           if(!this.deps.resolveAsset)throw new ArticleError(422,'图片素材校验不可用');
           for(const id of [a.coverAssetId,...a.bodyImageAssetIds]){const asset=await this.deps.resolveAsset(id);if(!asset||asset.record.kind!=='image')throw new ArticleError(422,'选择的图片不存在，请重新选择');}
           a.automation.checkpoints.assets={status:'succeeded',updatedAt:new Date().toISOString()};
@@ -454,6 +456,33 @@ export class ArticleService {
         delete a.automation.checkpoints.preview;
       }
       delete a.error; return this.persist(a);
+    });
+  }
+  async bindIllustration(id:string,index:unknown,input:unknown):Promise<ArticleRecord> {
+    return this.serial(async()=>{
+      const p=object(input),a=await this.record(id);this.editable(a,p.version);
+      if(Object.keys(p).some(k=>!['version','assetId'].includes(k)))throw new ArticleError(400,'配图绑定包含未知字段');
+      if(a.steps.illustrations!=='succeeded'||!Number.isInteger(index)||(index as number)<0||!a.illustrations[index as number])throw new ArticleError(422,'配图方案已变化，请重新规划并核对提示词');
+      const image=a.illustrations[index as number]!,assetId=field(p.assetId,100,true),asset=await this.deps.resolveAsset?.(assetId);
+      if(!asset||asset.record.kind!=='image'||asset.record.generationPrompt!==image.prompt)throw new ArticleError(422,'图片不存在或提示词不匹配，请选择绑定当前提示词的图片');
+      if(image.section===0)a.coverAssetId=assetId;
+      else {
+        const previous=image.assetId?a.bodyImageAssetIds.indexOf(image.assetId):-1;
+        if(a.bodyImageAssetIds.some((id,i)=>id===assetId&&i!==previous))throw new ArticleError(422,'此图片已用于其他正文位置，请选择另一张图片');
+        const positions:NonNullable<ArticleRecord['bodyImagePlacements']>=a.bodyImagePlacements??a.bodyImageAssetIds.map((_,i)=>({section:Math.min(i,(a[a.adopted]?.sections.length??1)-1)}));
+        if(previous>=0){a.bodyImageAssetIds[previous]=assetId;positions[previous]={section:image.section-1,caption:image.caption.slice(0,200)};}
+        else {if(a.bodyImageAssetIds.length>=10)throw new ArticleError(422,'正文图片最多10张');a.bodyImageAssetIds.push(assetId);positions.push({section:image.section-1,caption:image.caption.slice(0,200)});}
+        // Keep article order even when the user uploads later sections first.
+        const ordered=a.bodyImageAssetIds.map((id,i)=>({id,position:positions[i]!})).sort((x,y)=>x.position.section-y.position.section);
+        a.bodyImageAssetIds=ordered.map(x=>x.id);this.applyImagePlacements(a,{bodyImagePlacements:ordered.map(x=>x.position)});
+      }
+      image.assetId=assetId;
+      if(a.automation){
+        delete a.automation.checkpoints.preview;
+        if(a.coverAssetId&&a.illustrations.every(i=>i.assetId&&(i.section===0?a.coverAssetId===i.assetId:a.bodyImageAssetIds.includes(i.assetId))))a.automation.checkpoints.assets={status:'succeeded',updatedAt:new Date().toISOString()};
+        else delete a.automation.checkpoints.assets;
+      }
+      delete a.error;return this.persist(a);
     });
   }
   private guard(a: ArticleRecord, step: ArticleStep,automatic=false) {
@@ -480,7 +509,11 @@ export class ArticleService {
         if (step === 'outline') { a.outline = result; a.outlineConfirmed = false; }
         if (step === 'draft') a.draft = result;
         if (step === 'review') { a.revision = result.revision; a.reviewNotes = result.notes; a.adopted = 'revision'; a.reviewed = false; }
-        if (step === 'illustrations') a.illustrations = result.images;
+        if (step === 'illustrations') {
+          if(a.illustrations.length)a.reference.illustrations={illustrations:a.illustrations,coverAssetId:a.coverAssetId,bodyImageAssetIds:a.bodyImageAssetIds,bodyImagePlacements:a.bodyImagePlacements};
+          a.illustrations = result.images;a.coverAssetId='';a.bodyImageAssetIds=[];delete a.bodyImagePlacements;
+          if(a.automation){delete a.automation.checkpoints.assets;delete a.automation.checkpoints.preview;}
+        }
         a.steps[step] = 'succeeded'; delete a.running; return this.persist(a);
       });
     } catch (error) {
@@ -511,6 +544,7 @@ export class ArticleService {
   }
   private async prepared(a: ArticleRecord) {
     this.guard(a,'illustrations');
+    if(hasIncompleteArticleImageBindings(a))throw new ArticleError(422,'配图尚未绑定齐，请完成每个配图位置，或在高级编辑明确改用手动选图','images_required');
     const chosen = a[a.adopted]; if (!chosen) throw new ArticleError(422,'没有有效定稿');
     const draft = { ...structuredClone(chosen), author: a.author, digest: a.digest,
       sections: structuredClone(chosen.sections) };

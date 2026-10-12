@@ -519,6 +519,10 @@ npx playwright install chromium  # 或装一个完整的 Playwright chromium
 
 ### 从选题与对标到公众号文章
 
+文章默认采用自然、具体的叙述：从已有资料提取动作、条件与细节，减少重复定义、整齐编号和空泛升华；不虚构作者经历或案例。已有稿件不会自动改写，可在高级编辑调整要求后重新生成初稿与审校。
+
+配图沿用「提示词 → 在你的生图工具生成图片 → 上传并绑定 → 文章直接使用」：自动创作完成配图规划后缺图时等待你上传，不自动制作统一文字卡片。在「按提示词绑定配图」复制每条提示词，上传图片并可填写实际画面描述；封面直接成为文章封面，正文图落到对应章节。同提示词快照的已有素材可以直接复用。替换图片不删除旧素材；上传成功但绑定失败时先载入最新文章、刷新图片再绑定，不必重新上传。全部图片绑定后点「继续自动创作」完成预览，已有写作步骤不会重跑。
+
 1. 进入「文章创作」输入关键词，或在「热点」选择线索开始写作；这条流程独立于视频任务。
 2. 起号研究可先进入「寻找同赛道对标账号」，自由填写领域、目标读者和关键词。公开搜索返回文章标题、账号名及链接；验证码、限频或页面变化会明确报错，不绕过验证。
 3. 核对账号身份与赛道相关性，录入样本阅读量、来源和观察时间；未知值留空，`10万+` 保留下界。阅读门槛默认 1000、可调整，至少 10 个有效对标后可将参考信息带入新文章；不会据此承诺增长或生成未经核对的事实。
@@ -757,8 +761,13 @@ AppSecret 由 Electron `safeStorage` 加密保存，不回显；加密或解密�
 | --- | --- | --- |
 | [PromptSkill4image](https://github.com/TanShilongMario/PromptSkill4image) | 文本扩写、按需求控制复杂度、自然语言提示词 | 自行编写简短后端规则，没有打包完整 Skill |
 | [openai-image-prompt-writer](https://github.com/gnipbao/openai-image-prompt-writer) | 保留未要求修改的约束、精确文字、用途与参数分离 | 同上；不据此宣称特定生图模型兼容或效果已验证 |
+| [Humanizer-zh（op7418）](https://github.com/op7418/Humanizer-zh/blob/main/SKILL.md) | 保留事实与作者声音，按上下文处理空话和模板表达 | 归纳为公众号后端编辑规则，不运行第三方脚本 |
+| [humanizer-zh（ai-zixun）](https://github.com/ai-zixun/humanizer-zh/blob/main/SKILL.md) | 文章主线、段落作用、中文节奏与结尾回应 | 同上；不加载作者人格或机械禁词表 |
+| [stop-slop](https://github.com/hardikpandya/stop-slop) | 结构与节奏检查 | 同上；不以模型自评分作为质量门禁 |
 
 实现见 [image-prompts.ts](src/lib/image-prompts.ts)，固定来源提交与许可见[规则归属](docs/third-party/image-prompt-rules.md)，取舍见[图片 Skills 评估](docs/research/2026-09-30-image-prompt-skills-review.md)。当前仅生成和保存提示词，成图由用户自行生成后上传素材库。
+
+公众号编辑规则的适配范围见[表达改善规格](docs/specs/2026-10-10-article-editorial-quality.md)；当前配置模型的文章及配图提示词验收见[真实模型验收](docs/research/2026-10-12-公众号真实模型验收.md)。参考上述方法不代表保证文风或生图质量。
 
 ### 已评估、尚未接入的内容生产候选
 
