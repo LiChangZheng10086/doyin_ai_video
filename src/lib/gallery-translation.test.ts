@@ -92,3 +92,20 @@ test('a submillisecond source produces a valid nonnegative frame timestamp', () 
   const plan = planTranslatedGallery({ transcriptHash: 't', sourceFingerprint: 's', start: 0, end: .0001, cues: [{ ...cue(0, '中文'), end: .0001 }] }, 8, .0001);
   assert.deepEqual(plan.images[0].image.times, [.00005]);
 });
+
+test('fragment translation supplies bounded read-only context across batch boundaries and forbids moving meaning between cue timings', async () => {
+  const input = Array.from({ length: 18 }, (_, i) => ({ ...cue(i), original: `Fragment ${i}` }));
+  const requests: any[] = [];
+  const writer = new GalleryTranslator({ resolveAiConfig: async () => config, createClient: () => ({ chat: { completions: { create: async (request: any) => {
+    requests.push(request);
+    const source = JSON.parse(request.messages[1].content).cues;
+    return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ cues: source.map((c: any) => ({ segmentIndex: c.segmentIndex, text: '对应片段。' })) }) } }] };
+  } } } }) });
+  await writer.translate(input);
+  const payloads = requests.map(request => JSON.parse(request.messages[1].content));
+  assert.deepEqual(payloads.map(p => p.contextBefore.map((c: any) => c.segmentIndex)), [[], [6, 7], [14, 15]]);
+  assert.deepEqual(payloads.map(p => p.contextAfter.map((c: any) => c.segmentIndex)), [[8, 9], [16, 17], []]);
+  assert.deepEqual(payloads.flatMap(p => p.cues.map((c: any) => c.segmentIndex)), input.map(c => c.segmentIndex));
+  assert.match(requests[0].messages[0].content, /不把相邻条目的含义移入当前编号/);
+  assert.match(requests[0].messages[0].content, /contextBefore.*contextAfter.*只读/);
+});
