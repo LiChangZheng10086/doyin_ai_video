@@ -15,6 +15,7 @@ import { AssetsPage } from './pages/AssetsPage';
 import { PublishingPage } from './pages/PublishingPage';
 import { GalleriesPage } from './pages/GalleriesPage';
 import { GalleryDetailPage } from './pages/GalleryDetailPage';
+import { YoutubePage } from './pages/YoutubePage';
 import { HotspotsPage } from './pages/HotspotsPage';
 import { PublishingDuePoller } from './components/PublishingDuePoller';
 import { AppShell } from './components/shell/AppShell';
@@ -27,6 +28,7 @@ const router = createAppRouter([{
     { path: '/articles', element: <ArticlesPage /> },
     { path: '/articles/benchmarks', element: <WechatBenchmarksPage /> },
     { path: '/articles/:id', element: <ArticleDetailPage /> },
+    { path: '/youtube', element: <YoutubePage /> },
     { path: '/hotspots', element: <HotspotsPage /> },
     { path: '/jobs/:id', element: <JobDetailPage /> },
     { path: '/galleries', element: <GalleriesPage /> },

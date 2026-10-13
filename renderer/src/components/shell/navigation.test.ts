@@ -8,6 +8,13 @@ import {
   isNavigationItemActive,
 } from './navigation.js';
 
+test('YouTube browsing is reachable on desktop and mobile more without adding a bottom navigation slot',()=>{
+  const item=PRIMARY_NAV_ITEMS.find(i=>i.to==='/youtube');assert.ok(item);
+  assert.equal(item.label,'油管');assert.equal(isNavigationItemActive('/youtube',item),true);
+  assert.equal(getPageContext('/youtube').title,'油管');assert.ok(MOBILE_MORE_ITEMS.some(i=>i.to==='/youtube'));
+  assert.equal(MOBILE_NAV_ITEMS.length,6);
+});
+
 test('hotspots is a primary destination and remains reachable through mobile more without crowding the bar', () => {
   const hotspot = PRIMARY_NAV_ITEMS.find(item => item.to === '/hotspots');
   assert.ok(hotspot);

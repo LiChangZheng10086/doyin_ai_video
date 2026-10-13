@@ -3,10 +3,12 @@
  * 在 Electron 环境中由 preload 脚本注入真正的实现；
  * 在纯浏览器开发时，此 polyfill 通过 REST API 桥接后端功能。
  */
+import type { YoutubeBrowserAPI } from '../../electron/youtube-browser';
 
 declare global {
   interface Window {
     electron: {
+      youtubeBrowser?: YoutubeBrowserAPI;
       getServerPort: () => Promise<number>;
       getConfig: () => Promise<any>;
       setConfig: (config: any) => Promise<void>;

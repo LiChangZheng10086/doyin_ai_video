@@ -1,5 +1,7 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain, WebContentsView } from 'electron';
 import path from 'path';
+import { pathToFileURL } from 'url';
+import { YoutubeBrowser, registerYoutubeBrowserHandlers } from './youtube-browser';
 import { startServer } from './server';
 import { registerConfigHandlers } from './handlers/config-handler';
 import { registerStorageHandlers } from './handlers/storage-handler';
@@ -49,6 +51,20 @@ async function createWindow() {
   // 开发环境：加载 Vite 开发服务器
   // 生产环境：加载构建后的文件
   const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
+  const rendererPath = path.join(__dirname, '../dist-renderer/index.html');
+  const youtube = new YoutubeBrowser(mainWindow, () => {
+    const view = new WebContentsView({ webPreferences: {
+      partition: 'persist:youtube-browser', nodeIntegration: false, contextIsolation: true, sandbox: true,
+    } });
+    const session = view.webContents.session;
+    session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    session.setPermissionCheckHandler(() => false);
+    const denyDownload = (event: Electron.Event) => event.preventDefault();
+    session.on('will-download', denyDownload);
+    view.webContents.once('destroyed', () => session.removeListener('will-download', denyDownload));
+    return view;
+  });
+  const disposeYoutube = registerYoutubeBrowserHandlers(ipcMain, mainWindow, youtube, process.env.NODE_ENV === 'development' ? devUrl : pathToFileURL(rendererPath).href);
 
   try {
     if (process.env.NODE_ENV === 'development') {
@@ -61,7 +77,6 @@ async function createWindow() {
         mainWindow.webContents.openDevTools();
       }
     } else {
-      const rendererPath = path.join(__dirname, '../dist-renderer/index.html');
       console.log('[Main] Loading file:', rendererPath);
       await mainWindow.loadFile(rendererPath);
       console.log('[Main] File loaded');
@@ -101,6 +116,7 @@ async function createWindow() {
 
   // 窗口关闭时清理
   mainWindow.on('closed', () => {
+    disposeYoutube();
     console.log('[Main] Window closed');
     mainWindow = null;
   });

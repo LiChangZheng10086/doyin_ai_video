@@ -1,10 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { AiProvider } from './utils/ai-config';
+import type { YoutubeBrowserAPI, YoutubeBrowserState } from './youtube-browser';
 
 export type { AiProvider } from './utils/ai-config';
 
 // 定义暴露给渲染进程的 API
 export interface ElectronAPI {
+  youtubeBrowser: YoutubeBrowserAPI;
   // 存储管理
   selectDirectory: () => Promise<string | null>;
   getStoragePath: () => Promise<string>;
@@ -78,6 +80,17 @@ export interface AppConfig {
 
 // 暴露安全的 API 到 window.electron
 contextBridge.exposeInMainWorld('electron', {
+  youtubeBrowser: {
+    setBounds: bounds => ipcRenderer.invoke('youtube-browser-bounds', bounds),
+    command: (action,value) => ipcRenderer.invoke('youtube-browser-command', action,value),
+    getState: () => ipcRenderer.invoke('youtube-browser-state'),
+    capture: () => ipcRenderer.invoke('youtube-browser-capture'),
+    onState: listener => {
+      const handler = (_event: Electron.IpcRendererEvent, state: YoutubeBrowserState) => listener(state);
+      ipcRenderer.on('youtube-browser-state', handler);
+      return () => ipcRenderer.removeListener('youtube-browser-state', handler);
+    },
+  },
   // 存储管理
   selectDirectory: () => ipcRenderer.invoke('select-directory'),
   getStoragePath: () => ipcRenderer.invoke('get-storage-path'),
