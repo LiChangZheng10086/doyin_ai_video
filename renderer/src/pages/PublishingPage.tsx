@@ -729,16 +729,19 @@ export function PublishingPage() {
 
 export function PackageRow({ detail, sourceJobId, role, expanded, busy, onToggle, onAction }: { detail: PublishingPackageDetail; sourceJobId: string; role: 'admin' | 'publisher'; expanded: boolean; busy: boolean; onToggle: () => void; onAction: (detail: PublishingPackageDetail, task: PublishTask, action: string) => Promise<void> }) {
   const pkg = detail.package;
-  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-elevated"><CoverThumbnail packageId={pkg.id} title={pkg.title} hasCover={Boolean(pkg.coverPath)} /><span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ai-soft text-sm font-bold text-ai">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-ink">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-elevated px-2 py-1 text-xs text-ink-muted">垃圾桶</span>}</div><p className="mt-1 text-xs text-ink-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p><p className="mt-1 text-xs font-medium text-accent">下一步：{publishingNextStep(detail)}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-line bg-canvas/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} busy={busy} onAction={onAction} />)}</div><details className="mt-4 border-t border-line pt-4"><summary className="cursor-pointer text-sm font-medium text-ink-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-ink-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-ink">{event.actor.displayName} · {event.action}{event.reason ? ` · ${stripAnsi(event.reason)}` : ''}</span></li>)}</ol></details>{sourceJobId && <p className="mt-3 text-xs text-ink-muted">{pkg.sourceKind === 'xhs_note' ? <Link className="text-accent" to={`/xhs-notes/${pkg.sourceNoteId}`}>来源小红书笔记 · 打开工作台</Link> : pkg.sourceKind === 'article' ? <Link className="text-accent" to={`/articles/${pkg.sourceArticleId}`}>来源文章 · 打开工作台</Link> : <>源任务 {sourceJobId}</>}</p>}</div>}</div>;
+  return <div><button type="button" onClick={onToggle} className="flex w-full items-center gap-4 px-5 py-4 text-left hover:bg-elevated"><CoverThumbnail packageId={pkg.id} title={pkg.title} hasCover={Boolean(pkg.coverPath)} isNote={pkg.contentType === 'note'} hasImage={Boolean(pkg.imagePaths?.length)} /><span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-ai-soft text-sm font-bold text-ai">v{pkg.version}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-ink">{pkg.title}</span><AssetBadge health={pkg.assetHealth} />{pkg.state === 'trashed' && <span className="rounded-full bg-elevated px-2 py-1 text-xs text-ink-muted">垃圾桶</span>}</div><p className="mt-1 text-xs text-ink-muted">{pkg.createdBy.displayName} · {new Date(pkg.createdAt).toLocaleString('zh-CN')}</p><p className="mt-1 text-xs font-medium text-accent">下一步：{publishingNextStep(detail)}</p></div><div className="hidden flex-wrap gap-2 sm:flex">{detail.tasks.map((task) => <StatusBadge key={task.id} task={task} />)}</div>{expanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}</button>{expanded && <div className="border-t border-line bg-canvas/60 px-5 py-4"><div className="space-y-3">{detail.tasks.map((task) => <TaskRow key={task.id} detail={detail} task={task} role={role} busy={busy} onAction={onAction} />)}</div><details className="mt-4 border-t border-line pt-4"><summary className="cursor-pointer text-sm font-medium text-ink-muted">审计记录（{detail.audit.length}）</summary><ol className="mt-3 space-y-2">{detail.audit.slice().reverse().map((event) => <li key={event.id} className="grid gap-1 text-xs sm:grid-cols-[10rem_1fr]"><time className="text-ink-muted">{new Date(event.createdAt).toLocaleString('zh-CN')}</time><span className="text-ink">{event.actor.displayName} · {event.action}{event.reason ? ` · ${stripAnsi(event.reason)}` : ''}</span></li>)}</ol></details>{sourceJobId && <p className="mt-3 text-xs text-ink-muted">{pkg.sourceKind === 'xhs_note' ? <Link className="text-accent" to={`/xhs-notes/${pkg.sourceNoteId}`}>来源小红书笔记 · 打开工作台</Link> : pkg.sourceKind === 'article' ? <Link className="text-accent" to={`/articles/${pkg.sourceArticleId}`}>来源文章 · 打开工作台</Link> : <>源任务 {sourceJobId}</>}</p>}</div>}</div>;
 }
 
-function CoverThumbnail({ packageId, title, hasCover }: { packageId: string; title: string; hasCover: boolean }) {
+function CoverThumbnail({ packageId, title, hasCover, isNote, hasImage }: { packageId: string; title: string; hasCover: boolean; isNote: boolean; hasImage: boolean }) {
   const [url, setUrl] = useState('');
+  const hasThumbnail = isNote ? hasImage : hasCover;
   useEffect(() => {
-    if (!hasCover) return;
+    setUrl('');
+    if (!hasThumbnail) return;
     let active = true;
     let objectUrl = '';
-    void apiClient.getPublishingCover(packageId).then((blob) => {
+    const image = isNote ? apiClient.getPublishingPackageImage(packageId, 0) : apiClient.getPublishingCover(packageId);
+    void image.then((blob) => {
       if (!active) return;
       objectUrl = URL.createObjectURL(blob);
       setUrl(objectUrl);
@@ -747,7 +750,7 @@ function CoverThumbnail({ packageId, title, hasCover }: { packageId: string; tit
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [hasCover, packageId]);
+  }, [hasThumbnail, isNote, packageId]);
   return <span className="flex h-16 w-11 shrink-0 items-center justify-center overflow-hidden rounded-md bg-canvas text-ink-muted">{url ? <img src={url} alt={`${title}封面`} className="h-full w-full object-cover" /> : <ImageIcon size={18} aria-hidden="true" />}</span>;
 }
 
