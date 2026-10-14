@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { pipeline } from 'node:stream/promises';
@@ -57,11 +57,15 @@ export class GalleryService {
       let recovered = false;
       for (const record of Object.values(records)) {
         if (record.operation && ['running', 'pausing', 'paused'].includes(record.operation.status)) {
-          record.operation.status = 'interrupted'; record.operation.error = '应用退出导致任务中断，请重新发起';
-          record.operation.updatedAt = new Date().toISOString(); record.version++; recovered = true;
+          record.operation.status = 'interrupted'; record.operation.error = record.operation.recovery ? '应用退出导致任务中断，可继续已保存的处理' : '应用退出导致任务中断，请重新发起';
+          record.operation.updatedAt = new Date().toISOString();
+          if (record.operation.recovery?.version === record.version) record.operation.recovery.version++;
+          record.version++; recovered = true;
         }
         if (record.status === 'running') {
-          record.status = 'failed'; record.error = '上次生成被中断，请重新生成'; record.version++; recovered = true;
+          record.status = 'failed'; record.error = '上次生成被中断，请继续或重新生成';
+          if (record.operation?.recovery?.version === record.version) record.operation.recovery.version++;
+          record.version++; recovered = true;
         }
       }
       if (recovered) await this.deps.storage.writeJsonAtomic(INDEX, records);
@@ -105,10 +109,13 @@ export class GalleryService {
     finally { this.busy.delete(id); }
   }
 
-  private commit(gallery: Gallery): Promise<Gallery> {
+  private commit(gallery: Gallery, finished = false): Promise<Gallery> {
     return this.serial(async () => {
       const current = await this.record(gallery.id);
-      return this.persist({ ...gallery, operation: current.operation });
+      const operation = current.operation;
+      const recovery = operation?.recovery;
+      return this.persist({ ...gallery, operation: recovery && this.operations.get(gallery.id)?.id === operation.id
+        ? { ...operation, recovery: { ...recovery, version: gallery.version, finished } } : operation });
     });
   }
 
@@ -163,8 +170,10 @@ export class GalleryService {
   }
 
   async startOperation(id: string, input: GalleryOperationInput, actorId?: string): Promise<Gallery> {
+    let previousOperation: string | undefined;
     const started = await this.serial(async () => {
       const current = await this.record(id); this.editable(current, input?.version);
+      previousOperation = current.operation?.id;
       if (!['content', 'candidates', 'render'].includes(input?.kind)) throw new GalleryError(422, '生成任务类型无效');
       if (input.kind === 'content') {
         await this.checkedContent(current, input.contentPlanId ?? '');
@@ -192,12 +201,27 @@ export class GalleryService {
       const operation: GalleryOperation = { id: randomUUID(), actorId, kind: input.kind, status: 'running',
         stage: input.kind === 'candidates' ? 'ocr' : input.kind, completed: 0, total, startedAt: now, updatedAt: now };
       const sourceFingerprint = await this.sourceFingerprint(current.sourceJobId);
+      operation.recovery = { input: structuredClone(input), version: current.version, sourceFingerprint,
+        ...(input.kind !== 'render' || input.planId || current.appliedPlanId ? { transcriptHash: (await this.transcript(current.sourceJobId)).hash } : {}) };
       const saved = await this.persist({ ...current, operation, error: undefined });
       this.busy.add(id); this.operations.set(id, { id: operation.id, sourceFingerprint }); return saved;
     });
-    // The detached closure retains completed units while its cooperative gate is paused.
-    void this.executeOperation(started, input).finally(() => { this.operations.delete(id); this.busy.delete(id); }).catch(error => console.error('[gallery operation]', error));
+    this.launchOperation(started, input);
+    if (previousOperation) {
+      safeId(previousOperation);
+      await rm(path.join(await this.outputRoot(), id, `operation-${previousOperation}`), { recursive: true, force: true }).catch(() => undefined);
+    }
     return started;
+  }
+
+  private launchOperation(started: Gallery, input: GalleryOperationInput): void {
+    const id = started.id;
+    void this.executeOperation(started, input).finally(async () => {
+      this.operations.delete(id); this.busy.delete(id);
+      if ((await this.record(id)).operation?.status === 'completed') {
+        await rm(path.join(await this.outputRoot(), id, `operation-${started.operation!.id}`), { recursive: true, force: true });
+      }
+    }).catch(error => console.error('[gallery operation]', error));
   }
 
   private async operationPatch(id: string, operationId: string, patch: Partial<GalleryOperation>): Promise<Gallery> {
@@ -212,6 +236,7 @@ export class GalleryService {
 
   private operationControl(id: string, operationId: string, stage: GalleryOperation['stage']): GalleryWorkControl {
     return {
+      unit: (key, work) => this.operationUnit(id, operationId, `${stage}:${key}`, work),
       checkpoint: async () => {
         const running = this.operations.get(id);
         if (running?.id !== operationId) throw new GalleryError(409, '生成任务已变化');
@@ -232,9 +257,53 @@ export class GalleryService {
     };
   }
 
+  private async operationDirectory(id: string, operationId: string): Promise<string> {
+    safeId(id); safeId(operationId);
+    const root = await this.outputRoot();
+    const dir = path.join(root, id, `operation-${operationId}`);
+    await mkdir(dir, { recursive: true });
+    if (!(await realpath(dir)).startsWith(root + path.sep)) throw new GalleryError(422, '恢复目录不安全');
+    return dir;
+  }
+
+  private async operationUnit<T>(id: string, operationId: string, key: string, work: () => Promise<T>): Promise<T> {
+    const dir = await this.operationDirectory(id, operationId);
+    const file = path.join(dir, `${hash(key)}.json`);
+    try {
+      const canonical = await realpath(file);
+      if (!canonical.startsWith(dir + path.sep)) throw new GalleryError(422, '恢复结果路径不安全');
+      const saved = JSON.parse(await readFile(canonical, 'utf8'));
+      if (!saved || saved.hash !== hash(JSON.stringify({ value: saved.value }))) throw new GalleryError(422, '已保存的处理结果损坏，请重新发起');
+      return saved.value as T;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const value = await work();
+    await this.deps.storage.writeJsonAtomic(path.join('output/galleries', id, `operation-${operationId}`, path.basename(file)), { value, hash: hash(JSON.stringify({ value })) });
+    return value;
+  }
+
+  private async renderOperationImage(gallery: Gallery, control: GalleryWorkControl, video: string, image: Gallery['images'][number], file: string, index: number): Promise<void> {
+    if (!control.unit || !gallery.operation) { await this.media.render(video, image, file); return; }
+    const key = `image:${index}:${JSON.stringify(image)}`;
+    const dir = await this.operationDirectory(gallery.id, gallery.operation.id);
+    const cached = path.join(dir, `${hash(key)}.png`);
+    const expected = await control.unit(key, async () => {
+      await rm(cached, { force: true });
+      await this.media.render(video, image, cached);
+      return hash(await readFile(cached));
+    });
+    const canonical = await realpath(cached);
+    if (!canonical.startsWith(dir + path.sep)) throw new GalleryError(422, '恢复图片路径不安全');
+    const bytes = await readFile(canonical);
+    if (hash(bytes) !== expected) throw new GalleryError(422, '已保存的图片损坏，请重新发起');
+    await writeFile(file, bytes);
+  }
+
   private async executeOperation(started: Gallery, input: GalleryOperationInput): Promise<void> {
     const operationId = started.operation!.id;
     try {
+      if (started.operation!.recovery?.finished) {
+        await this.operationPatch(started.id, operationId, { status: 'completed', error: undefined }); return;
+      }
       if (input.kind === 'content') {
         const content = started.contentPlan!;
         const control = this.operationControl(started.id, operationId, 'content');
@@ -242,7 +311,7 @@ export class GalleryService {
         await control.checkpoint?.();
         await this.checkedContent(started, content.id);
         const source = await this.inspectSource(started.id);
-        await this.commit({ ...started, contentPlan: { ...content, items, method: 'ai', confirmedAt: undefined, estimatedImages: estimateGalleryContent(items, content.targetLines, source, started.mode === 'translated') }, plan: undefined, appliedPlanId: undefined, version: started.version + 1 });
+        await this.commit({ ...started, contentPlan: { ...content, items, method: 'ai', confirmedAt: undefined, estimatedImages: estimateGalleryContent(items, content.targetLines, source, started.mode === 'translated') }, plan: undefined, appliedPlanId: undefined, version: started.version + 1 }, true);
       } else if (input.kind === 'candidates') {
         await this.planWork(started, { ...input, targetLines: started.contentPlan!.targetLines }, this.operationControl(started.id, operationId, 'ocr'), this.operationControl(started.id, operationId, 'candidates'), this.operationControl(started.id, operationId, 'copy'));
       } else {
@@ -258,7 +327,7 @@ export class GalleryService {
 
   private async controlOperation(id: string, operationId: string, actorId?: string): Promise<Gallery> {
     const current = await this.record(id);
-    if (typeof operationId !== 'string' || current.operation?.id !== operationId || this.operations.get(id)?.id !== operationId) throw new GalleryError(409, '生成任务不存在、已中断或已变化');
+    if (typeof operationId !== 'string' || current.operation?.id !== operationId) throw new GalleryError(409, '生成任务不存在、已中断或已变化');
     if (current.operation.actorId !== actorId) throw new GalleryError(403, '只有发起任务的操作者可以控制任务');
     return current;
   }
@@ -272,6 +341,33 @@ export class GalleryService {
 
   async resumeOperation(id: string, operationId: string, actorId?: string): Promise<Gallery> {
     const current = await this.controlOperation(id, operationId, actorId);
+    if (current.operation!.status === 'interrupted') {
+      const started = await this.serial(async () => {
+        const latest = await this.controlOperation(id, operationId, actorId);
+        const recovery = latest.operation!.recovery;
+        if (latest.operation!.status !== 'interrupted' || !recovery || this.busy.has(id)) throw new GalleryError(409, '中断任务缺少恢复记录或正在处理，请重新发起');
+        if (recovery.version !== latest.version) throw new GalleryError(409, '图集版本或确认内容已变化，请重新发起');
+        if (await this.sourceFingerprint(latest.sourceJobId) !== recovery.sourceFingerprint
+          || (recovery.transcriptHash && (await this.transcript(latest.sourceJobId)).hash !== recovery.transcriptHash)) throw new GalleryError(409, '原视频来源或转录已变化，请重新规划');
+        if (!recovery.finished) {
+          if (recovery.input.kind === 'render') {
+            if (recovery.input.planId) {
+              if (recovery.input.subtitlesConfirmed !== true) throw new GalleryError(409, '字幕确认记录缺失，请重新确认');
+              await this.checkedPlan(latest, recovery.input.planId);
+            }
+          } else {
+            const content = await this.checkedContent(latest, recovery.input.contentPlanId ?? '');
+            if (recovery.input.kind === 'candidates' && (!content.confirmedAt || recovery.input.contentConfirmed !== true)) throw new GalleryError(409, '文字确认记录缺失，请重新确认');
+          }
+        }
+        const saved = await this.persist({ ...latest, operation: { ...latest.operation!, status: 'running', error: undefined, updatedAt: new Date().toISOString() } });
+        this.busy.add(id); this.operations.set(id, { id: operationId, sourceFingerprint: recovery.sourceFingerprint });
+        return saved;
+      });
+      this.launchOperation(started, { ...started.operation!.recovery!.input, version: started.version });
+      return started;
+    }
+    if (this.operations.get(id)?.id !== operationId) throw new GalleryError(409, '生成任务已中断，请重新发起');
     if (current.operation!.status !== 'paused') throw new GalleryError(409, '任务尚未暂停或已经结束');
     const saved = await this.operationPatch(id, operationId, { status: 'running' });
     const running = this.operations.get(id)!; const resume = running.resume; running.resume = undefined; resume?.(); return saved;
@@ -509,11 +605,18 @@ export class GalleryService {
       const proposal = current.mode === 'translated'
         ? planTranslatedGallery({ ...current.translation!, cues: current.translation!.cues.filter(cue => selected.some(item => item.segmentIndex === cue.segmentIndex)) }, input.targetLines ?? 8, source.info.duration)
         : await planGallery(transcript.asset, source.info,
-          quote => this.media.suggestSubtitles
-            ? this.media.suggestSubtitles(source.path, { ...quote, text: transcript.asset.segments!
-              .filter(segment => typeof segment.end === 'number' && typeof segment.start === 'number'
-                && segment.end > quote.start && segment.start < quote.end).map(segment => segment.text).join('') }, input, ocrControl)
-            : this.media.suggestSubtitle!(source.path, quote, input), input, { ...ocrControl, quotes: selected });
+          quote => {
+            const segments = transcript.asset.segments!;
+            const overlapping = segments.filter(segment => typeof segment.end === 'number' && typeof segment.start === 'number'
+              && segment.end > quote.start && segment.start < quote.end);
+            const adjacent = segments.slice(Math.max(0, segments.indexOf(overlapping[0]!) - 1), segments.indexOf(overlapping.at(-1)!) + 2)
+              .filter(segment => segment.end! > quote.start - 4 && segment.start! < quote.end + 4);
+            const context = { ...quote, text: overlapping.map(segment => segment.text).join(''), targetText: quote.text, adjacentText: adjacent.map(segment => segment.text).join('') };
+            const detect = async () => this.media.suggestSubtitles
+              ? this.media.suggestSubtitles(source.path, context, input, ocrControl)
+              : this.media.suggestSubtitle!(source.path, context, input);
+            return ocrControl.unit ? ocrControl.unit(JSON.stringify(quote), detect) : detect();
+          }, input, { ...ocrControl, quotes: selected });
       this.imageLimit(proposal.images.length);
       const segments = transcript.asset.segments!.filter(segment => segment.text.trim());
       const quotes = proposal.images.flatMap(image => image.quotes);
@@ -522,7 +625,8 @@ export class GalleryService {
         end: scope === 'selection' ? Math.max(...selected.map(q => q.end)) : current.mode === 'translated' ? current.translation!.end : source.info.duration, duration: source.info.duration,
         totalSegments: content ? new Set(selected.map(item => item.segmentIndex)).size : segments.length,
         selectedSegments: new Set(quotes.map(q => q.segmentIndex)).size };
-      const plan = { id: randomUUID(), previewHashes: [] as string[], transcriptHash: transcript.hash, sourceFingerprint: source.fingerprint, ...proposal, scope, coverage };
+      const planId = imageControl.unit ? await imageControl.unit('plan-id', async () => randomUUID()) : randomUUID();
+      const plan = { id: planId, previewHashes: [] as string[], transcriptHash: transcript.hash, sourceFingerprint: source.fingerprint, ...proposal, scope, coverage };
       const dir = path.join(await this.outputRoot(), current.id, `plan-${plan.id}`);
       await mkdir(dir, { recursive: true });
       try {
@@ -530,9 +634,12 @@ export class GalleryService {
         await imageControl.progress?.(0, plan.images.length);
         for (const [i, image] of plan.images.entries()) {
           await imageControl.checkpoint?.();
-          if (current.mode !== 'translated' && this.media.suggestMainCrop) image.image.mainCrop = await this.media.suggestMainCrop(source.path, image.image);
+          if (current.mode !== 'translated' && this.media.suggestMainCrop) {
+            const crop = () => this.media.suggestMainCrop!(source.path, image.image);
+            image.image.mainCrop = imageControl.unit ? await imageControl.unit(`crop:${i}:${JSON.stringify(image.image)}`, crop) : await crop();
+          }
           const file = path.join(dir, `${i}.png`);
-          await this.media.render(source.path, image.image, file);
+          await this.renderOperationImage(current, imageControl, source.path, image.image, file, i);
           plan.previewHashes.push(hash(await readFile(file)));
           await imageControl.progress?.(i + 1, plan.images.length);
         }
@@ -540,14 +647,17 @@ export class GalleryService {
         if (!current.description.trim() && this.deps.copyWriter) {
           await copyControl.checkpoint?.();
           await copyControl.progress?.(0, 1);
-          try { copy = await this.writeCopy(current, source, transcript, quotes.filter(q => q.verification === 'ocr').map(q => q.text)); }
+          try {
+            const write = () => this.writeCopy(current, source, transcript, quotes.filter(q => q.verification === 'ocr').map(q => q.text));
+            copy = copyControl.unit ? await copyControl.unit('copy', write) : await write();
+          }
           catch (error) { copy = { copyError: error instanceof Error ? error.message : '图文文案生成失败，请单独重试' }; }
           await copyControl.progress?.(1, 1);
         }
         await imageControl.checkpoint?.();
         if (await this.sourceFingerprint(current.sourceJobId) !== source.fingerprint) throw new GalleryError(409, '原视频在规划期间发生变化，请重新规划');
         if ((await this.transcript(current.sourceJobId)).hash !== transcript.hash) throw new GalleryError(409, '转录在规划期间发生变化，请重新规划');
-        const saved = await this.commit({ ...current, ...copy, plan, version: current.version + 1, updatedAt: new Date().toISOString() });
+        const saved = await this.commit({ ...current, ...copy, plan, version: current.version + 1, updatedAt: new Date().toISOString() }, true);
         if (current.plan) { safeId(current.plan.id); await rm(path.join(await this.outputRoot(), current.id, `plan-${current.plan.id}`), { recursive: true, force: true }).catch(() => undefined); }
         return saved;
       } catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
@@ -666,7 +776,7 @@ export class GalleryService {
         await this.checkedPlan(current, current.appliedPlanId);
         if (source.fingerprint !== current.plan!.sourceFingerprint) throw new GalleryError(409, '原视频已变化，请重新规划');
       }
-      const generation = randomUUID();
+      const generation = control.unit ? await control.unit('generation', async () => randomUUID()) : randomUUID();
       generationDir = path.join(await this.outputRoot(), current.id, generation);
       await mkdir(generationDir, { recursive: true });
       if (!(await realpath(generationDir)).startsWith((await this.outputRoot()) + path.sep)) throw new GalleryError(422, '图集目录不安全');
@@ -675,7 +785,7 @@ export class GalleryService {
       for (const [i, image] of current.images.entries()) {
         await control.checkpoint?.();
         const file = path.join(generationDir, `${i}.png`);
-        await this.media.render(source.path, image, file);
+        await this.renderOperationImage(current, control, source.path, image, file, i);
         const renderedHash = hash(await readFile(file));
         if (current.appliedPlanId && renderedHash !== current.plan!.previewHashes?.[i]) throw new GalleryError(409, '生成图片与已确认的方案预览不一致，请重新规划');
         hashes.push(renderedHash);
@@ -685,7 +795,9 @@ export class GalleryService {
       if (await this.sourceFingerprint(current.sourceJobId) !== source.fingerprint) throw new GalleryError(409, '原视频在生成期间发生变化，请重新生成');
       const ready = await this.serial(async () => {
         if (current.appliedPlanId) await this.checkedPlan(current, current.appliedPlanId);
-        return this.persist({ ...current, operation: (await this.record(id)).operation, status: 'ready', version: current.version + 1,
+        const operation = (await this.record(id)).operation;
+        return this.persist({ ...current, operation: operation?.recovery && this.operations.get(id)?.id === operation.id
+          ? { ...operation, recovery: { ...operation.recovery, version: current.version + 1, finished: true } } : operation, status: 'ready', version: current.version + 1,
           generated: { id: generation, draftHash: imageHash(current), sourceFingerprint: source.fingerprint, hashes,
             ...(current.appliedPlanId ? { transcriptHash: current.plan!.transcriptHash } : {}) }, updatedAt: new Date().toISOString() });
       });

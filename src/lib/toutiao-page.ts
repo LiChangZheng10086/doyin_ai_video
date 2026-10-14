@@ -133,7 +133,7 @@ export const TOUTIAO_SELECTORS = {
   firstPublishTexts: ["头条首发"],
   /** 顺序有意义：**「发布得更多收益」才是那个勾选框的文案**（「同时发布微头条」是它旁边的说明）。 */
   weitoutiaoTexts: ["发布得更多收益", "同时发布微头条"],
-  successTexts: ["发布成功", "已发布", "提交成功", "审核中"],
+  successTexts: ["发布成功", "提交成功"],
 } as const;
 
 /**
@@ -841,21 +841,15 @@ export async function submitAndConfirm(
   await page.waitForTimeout?.(4_000);
   // 确认按钮**必须读回是否真的点到**：只点「预览并发布」而不确认，等于没发布；
   // 如果照样写「已点击发布」，操作者会以为发出去了（评审指出这正是旧实现的漏洞）。
+  const previousSignals = await readSuccessTexts(page);
   const confirmClicked = await clickByText(page, TOUTIAO_SELECTORS.confirmButtons, {
     tags: ["button", "[role='button']"],
   });
   await page.waitForTimeout?.(5_000);
 
-  const signal = await page.evaluate<string>(pageExpression(
-    `
-    const body = document.body ? document.body.innerText || "" : "";
-    for (const text of input) {
-      if (body.indexOf(text) >= 0) return text;
-    }
-    return "";
-    `,
-    [...TOUTIAO_SELECTORS.successTexts],
-  ));
+  const currentSignals = confirmClicked ? await readSuccessTexts(page) : [];
+  const signal = currentSignals.find(text => currentSignals.filter(item => item === text).length
+    > previousSignals.filter(item => item === text).length) ?? '';
 
   // 找不到确认按钮时，把**当时页面上所有可见按钮的文案**带回去：
   // 这一条的文案我们无法用只读侦察拿到（点进去就等于发布），所以让「失败信息本身」充当侦察 ——
@@ -896,16 +890,34 @@ export function hasLeftPublishPage(url: string): boolean {
  * 或弹窗里，只取前 N 个字符会正好把它截掉 —— 那样「带回证据」就白带了。
  */
 async function readVisibleText(page: ToutiaoPublishPageLike, head = 120, tail = 140): Promise<string> {
-  const text = await page.evaluate<string>(pageExpression(
-    `
-    const body = document.body ? document.body.innerText || "" : "";
-    return body.replace(/\s+/g, " ").trim().slice(0, input);
+  return page.evaluate<string>(pageExpression(
+    String.raw`
+    const text = (document.body ? document.body.innerText || "" : "").replace(/\s+/g, " ").trim();
+    return text.length <= input.head + input.tail ? text
+      : text.slice(0, input.head) + "…（中间省略）…" + text.slice(-input.tail);
     `,
-    head + tail + 260,
+    { head, tail },
   ));
-  const plain = (text ?? "").trim();
-  if (plain.length <= head + tail) return plain;
-  return `${plain.slice(0, head)}…（中间省略）…${plain.slice(-tail)}`;
+}
+
+// Generic content-list statuses and prose are not acknowledgements for this submission.
+async function readSuccessTexts(page: ToutiaoPublishPageLike): Promise<string[]> {
+  return page.evaluate<string[]>(pageExpression(
+    String.raw`
+    return Array.from(document.querySelectorAll("body *")).filter(function (item) {
+      if (item.closest("[contenteditable], .ProseMirror, textarea, input, select, article, nav, button, a, [role='button'], [role='tab'], [role='navigation'], [hidden], [aria-hidden='true']")) return false;
+      const rect = item.getBoundingClientRect();
+      const style = getComputedStyle(item);
+      if (!rect.width || !rect.height || style.visibility === "hidden" || style.display === "none") return false;
+      if (item.children.length) return false;
+      for (let ancestor = item; ancestor; ancestor = ancestor.parentElement) {
+        if (Number(getComputedStyle(ancestor).opacity) === 0) return false;
+      }
+      return input.includes((item.textContent || "").trim().replace(/[！!。]+$/u, ""));
+    }).map(function (item) { return (item.textContent || "").trim().replace(/[！!。]+$/u, ""); });
+    `,
+    [...TOUTIAO_SELECTORS.successTexts],
+  ));
 }
 
 /** 当前页面上的可见按钮文案（最多 12 个，用于失败诊断）。 */

@@ -79,8 +79,9 @@ export interface XhsNoteOptions {
 export interface DeliveryPackage {
   id: string;
   sourceJobId: string;
-  sourceKind?: "job" | "article";
+  sourceKind?: "job" | "article" | "xhs_note";
   sourceArticleId?: string;
+  sourceNoteId?: string;
   version: number;
   state: PublishPackageState;
   title: string;

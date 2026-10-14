@@ -258,6 +258,7 @@ export function GalleryWorkspace({ initial, source, sourceError = '', transcript
       </div>
       {customTarget && <p role={targetValid ? undefined : 'alert'} className={`mt-2 text-sm ${targetValid ? 'text-ink-muted' : 'text-danger'}`}>{targetValid ? '条数为每张目标；文字较长或字幕区域较高时会自动减少条数并增加图片，保留已选内容。调整后请重新规划。' : '请输入大于 0 的整数条数。'}</p>}
       {dirty && <p className="mt-2 text-sm text-warning">请先保存现有修改，再重新规划。新方案在确认前不会替换当前图片。</p>}
+      {!translated && <p className="mt-2 text-sm text-ink-muted">原生字幕自动识别目前仅支持已配置本地 OCR 的 macOS；Windows / Linux 请使用下方高级调整逐条核对原视频字幕。像素候选不代表已识别字幕，生成前仍需核对整套内容。</p>}
       {!segments.length && <p className="mt-2 text-sm text-ink-muted">自动规划需要带时间的转录，请先重新转录来源视频；已有手动草稿可在高级调整中继续编辑。</p>}
       {!translated && <details className="mt-4"><summary className="cursor-pointer text-sm text-ink-muted">整套字幕区域校准（可选）</summary>
         <label className="mt-3 flex gap-2 text-sm text-ink"><input type="checkbox" checked={calibrate} disabled={locked} onChange={e => { setCalibrate(e.target.checked); setPlanConfirmed(false); }} />用统一区域重新规划；关闭时自动建议区域。</label>

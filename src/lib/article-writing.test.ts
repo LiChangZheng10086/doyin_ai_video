@@ -217,3 +217,38 @@ for(const [name,content,reason,code] of [
  const service=new ArticleWritingService({resolveAiConfig:async()=>({apiKey:'fixture',model:'fixture'}),createClient:()=>({chat:{completions:{create:async()=>({choices:[{message:{content},finish_reason:reason}]})}}}) as any});
  await assert.rejects(service.run('evidence',article),(e:unknown)=>e instanceof ArticleWritingError&&e.code===code&&!/secret-body|private-source/.test(e.message));
 });
+
+test('draft and review retry out-of-range prose with measured feedback within the existing budget', async () => {
+  for (const step of ['draft', 'review'] as const) {
+    const original = { title:'原稿', sections:[{ heading:'小标题不计入字数', paragraphs:['原稿保留'], factIds:['f1'] }] };
+    const input = { ...article, requirements:{length:'1200～1600字'}, draft:original };
+    let calls = 0;
+    const writer = new ArticleWritingService({ resolveAiConfig:async()=>({apiKey:'fixture',model:'fixture'}), createClient:()=>({chat:{completions:{create:async(params:any)=>{
+      calls++;
+      if(calls===2) {
+        assert.match(params.messages.at(-1).content,/1664/);
+        assert.match(params.messages.at(-1).content,/1200.*1600/);
+        assert.match(params.messages.at(-1).content,/不.*截断/);
+      }
+      const prose={...original,sections:[{...original.sections[0],paragraphs:['字'.repeat(calls===1?1664:1500)]}]};
+      return {choices:[{finish_reason:'stop',message:{content:JSON.stringify(step==='draft'?prose:{revision:prose,notes:['已达到要求']})}}]};
+    }}}}) as any});
+    const result=await writer.run(step,input);
+    assert.equal(calls,2);
+    assert.equal((step==='draft'?result:result.revision).sections[0].paragraphs[0].length,1500);
+    assert.equal(input.draft,original);
+  }
+});
+
+test('persistent length violations stop after three without truncating or overwriting the original', async()=>{
+  let calls=0;
+  const original={title:'原稿',sections:[{heading:'',paragraphs:['保留的原文'],factIds:['f1']}]};
+  const input={...article,requirements:{length:'1200-1600字'},draft:original};
+  const writer=new ArticleWritingService({resolveAiConfig:async()=>({apiKey:'fixture',model:'fixture'}),createClient:()=>({chat:{completions:{create:async()=>{
+    calls++;
+    return {choices:[{finish_reason:'stop',message:{content:JSON.stringify({revision:{...original,sections:[{...original.sections[0],paragraphs:['字'.repeat(1664)]}]},notes:['自称已满足字数']})}}]};
+  }}}}) as any});
+  await assert.rejects(writer.run('review',input),(error:any)=>error.code==='ai_length_out_of_range'&&/1664/.test(error.message));
+  assert.equal(calls,3);
+  assert.deepEqual(input.draft,original);
+});

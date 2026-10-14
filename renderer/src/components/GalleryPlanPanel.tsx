@@ -22,15 +22,20 @@ export function GalleryPlanPanel({ plan, imageUrls, confirmed, disabled, onConfi
     <details open aria-label="候选图片与字幕" className="group mt-5">
     <summary className="cursor-pointer text-sm font-medium text-ink">候选图片与字幕（{plan.images.length} 张）<span className="ml-2 text-accent group-open:hidden">展开</span><span className="ml-2 hidden text-accent group-open:inline">收起</span></summary>
     <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-      {plan.images.map((item, i) => <article key={i} className="min-w-0 rounded-lg border border-line bg-canvas p-3">
-        <h3 className="font-medium text-ink">第 {i + 1} 张 · {item.quotes.length} 条</h3>
+      {plan.images.map((item, i) => {
+        const captions = item.image.translatedCaptions;
+        const originals = <ol className="mt-3 list-inside list-decimal space-y-2 text-sm text-ink">{item.quotes.map((quote, j) => <li key={j} className="break-words">{quote.text}{captions && <p className="mt-1 text-xs text-ink-muted">原字幕 {quote.segmentIndex + 1} · {quote.start.toFixed(1)}～{quote.end.toFixed(1)} 秒</p>}{quote.originalText && <p className="mt-1 text-xs text-ink-muted">原文：{quote.originalText}</p>}</li>)}</ol>;
+        return <article key={i} className="min-w-0 rounded-lg border border-line bg-canvas p-3">
+        <h3 className="font-medium text-ink">第 {i + 1} 张 · {captions ? `${captions.length} 条排版 / ${item.quotes.length} 条原字幕` : `${item.quotes.length} 条`}</h3>
         <p className="mt-1 break-words text-sm text-ink-muted">{item.title}</p>
         {imageUrls[i] ? <a href={imageUrls[i]} target="_blank" rel="noreferrer" className="mt-3 block">
           <img src={imageUrls[i]} alt={`第${i + 1}张候选字幕拼图`} className="aspect-[3/4] w-full rounded-lg bg-black object-contain"
             onLoad={() => setLoaded(items => items.includes(imageUrls[i]!) ? items : [...items, imageUrls[i]!])} onError={() => { setFailed(true); onConfirmChange(false); }} />
         </a> : <p role="status" className="my-4 text-sm text-ink-muted">正在准备候选预览…</p>}
-        <ol className="mt-3 list-inside list-decimal space-y-2 text-sm text-ink">{item.quotes.map((quote, j) => <li key={j} className="break-words">{quote.text}{quote.originalText && <p className="mt-1 text-xs text-ink-muted">原文：{quote.originalText}</p>}</li>)}</ol>
-      </article>)}
+        {captions && <ol aria-label="图片排版字幕" className="mt-3 list-inside list-decimal space-y-2 text-sm text-ink">{captions.map((text, j) => <li key={j} className="break-words">{text}</li>)}</ol>}
+        {captions ? <details className="mt-3 text-sm text-ink-muted"><summary className="cursor-pointer">查看 {item.quotes.length} 条原字幕与时间</summary>{originals}</details> : originals}
+      </article>;
+      })}
     </div>
     </details>
     {failed && <p role="alert" className="mt-4 text-sm text-danger">候选图片加载失败，请重新规划或刷新后重试。未能核对图片前不能确认生成。</p>}

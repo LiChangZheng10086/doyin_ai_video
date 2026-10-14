@@ -56,6 +56,31 @@ test("YouTube bypasses Douyin, uses explicit runtime/FFmpeg and reads authored J
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("YouTube Chinese caption ingestion passes the selected language and keeps only the aligned Chinese track", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "media-youtube-chinese-"));
+  const storage = new LocalStorage(root);
+  await storage.ensureBaseDirs();
+  const payload = { events: [
+    { tStartMs: 200, dDurationMs: 1000, segs: [{ utf8: "hello大家好" }] },
+    { tStartMs: 1500, dDurationMs: 1000, segs: [{ utf8: "今天分享我的故事" }] },
+    { tStartMs: 200, dDurationMs: 1000, segs: [{ utf8: "Hello everyone" }] },
+    { tStartMs: 1500, dDurationMs: 1000, segs: [{ utf8: "Today I share my story" }] }
+  ] };
+  try {
+    await storage.writeJson("raw/videos/chinese.info.json", { duration: 3, subtitles: { zh: [{ ext: "json3", url: "https://www.youtube.com/api/timedtext?lang=zh" }] } });
+    const media = new MediaService(storage, { commandRunner: { async run(_command, args) {
+      assert.ok(args.includes("--skip-download"));
+      await storage.writeJson("raw/transcripts/chinese.captions.zh.json3", payload);
+      return { stdout: "", stderr: "" };
+    } } });
+    const result = await media.readYouTubeCaptions("chinese", 3);
+    assert.equal(result?.language, "zh");
+    assert.equal(result?.text, "hello大家好\n今天分享我的故事");
+    assert.equal(result?.segments.length, 2);
+    assert.deepEqual(JSON.parse(await readFile(storage.resolve("raw/transcripts/chinese.captions.zh.json3"), "utf8")), payload);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("YouTube caption download error leaves original video intact and reports caption failure", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "media-youtube-caption-error-"));
   const storage = new LocalStorage(root);

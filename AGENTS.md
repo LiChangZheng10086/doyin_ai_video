@@ -228,11 +228,11 @@ type PipelineStepStatus = "pending" | "running" | "succeeded" | "failed";
 ```bash
 npm install
 npm run dev              # Vite + Electron（= dev:renderer + dev:electron）
-npm run dev:electron     # 只起桌面端（内含 build:electron 与 mark-cjs）
+npm run dev:electron     # 只起桌面端（先编译 backend、electron，再 mark-cjs）
 npm run dev:renderer     # 只起前端（Vite）
 npm start                # 独立后端：node dist/server.js（用**仓库内** storage/）
 npm test / test:hyperframes
-npm run check            # 三合一门禁；check:backend / check:renderer / check:secrets 可单跑
+npm run check            # backend / renderer / electron 类型检查及凭据扫描，可分项运行
 npm run build:backend / build:renderer / build:electron   # npm run build = 三者 + mark-cjs
 npm run prepare:whisper / check:whisper / prepare:package:mac / check:package-assets
 npm run package          # mac 打包（prepare:package:mac + build + check:package-assets + electron-builder）
@@ -246,7 +246,7 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 | `electron/`（主进程、配置 IPC、`electron/server.ts`） | `dist-electron/` | `build:electron` | 重启 Electron |
 | `renderer/` | Vite 内存 | 无需 | HMR 自动热更 |
 
-- **`build:backend` 不产出 `dist-electron/`，反之亦然**；`npm run dev` 的 `dev:electron` 内含 `build:electron`，
+- **`build:backend` 不产出 `dist-electron/`，反之亦然**；`npm run dev` 的 `dev:electron` 会依次编译 backend 与 electron，
   但**直接 `node_modules/.bin/electron .`（或 `electron .`）会绕过它**（此时 `dist-electron/` 仍是旧的）。
 - 典型事故（2026-09-17）：给 `electron/server.ts` 加了 `SAU_*` 透传，env 确实进了 Electron 进程，
   但 `dist-electron/server.js` 是旧的 → 无论怎么配都报「未配置」。
@@ -316,6 +316,16 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
   （优先复用已有 `isActive` 管理员，按 `createdAt`/`id` 升序确定性选取；不存在才建无 PIN 的「本机用户」；
   不删不改任何历史用户）。**管理员 PIN 的契约没放宽**：普通 `POST /api/local-sessions` 无 PIN 仍 401，
   无 PIN 分支只存在于 `openLocalOperator()` 这一条显式路径上。发布中心的权限与审计（`requireActor`/`actor` 快照）完全保留。
+
+### 小红书原文改写工作台（2026-10-14）
+
+- 独立 `/xhs-notes` 与 `/xhs-notes/:id`，输入外平台完整原文，输出标题／正文／话题与可编辑图卡；不依赖作品、视频或公众号文章。原文最多40000字符，超限保留完整输入并拒绝，不可用浏览器maxlength悄悄裁掉粘贴内容。
+- `XhsNoteService` / `XhsNoteWriter` / `xhs-note-routes` 共用app装配，索引 `cache/xhs-notes.json`；version、同草稿互斥与串行写入，损坏索引拒绝覆盖。两阶段AI（成稿→对照原文编辑），每阶段最多三次、原生fetch且正文读取有60秒取消信号，默认3600输出tokens并服从现有配置；失败保留原文、文案、图卡与图片。
+- 图片支持素材库／上传与本地Canvas文字图卡（1080×1440 PNG）。图卡先保存并捕获version，整套上传成功后以捕获的version原子绑定有序图片ID，上传中编辑须409；不能换用最新版本认证旧图。文字按实际测量排版，放不下须拆分，禁止裁字。部分上传失败保留原选图，成功入库的文件仍可在素材库选择。
+- 来源／语气／要求变化使 `contentSourceHash` 失效，只有当前来源成功改写能恢复，不能靠编辑标题放行旧稿。图卡修改使 `cardImageHash` 失效。两者由服务端维护，客户端不可写。
+- 预览与建包按小红书20／1000／10×20／18图限额校验，绑定版本、文案和有序图片哈希；改顺序、图片变更使旧previewRevision失效。使用权确认后仅建自包含包，不提交平台。
+- 包来源 `sourceKind:'xhs_note'` / `sourceNoteId`，内部版本键沿用 `sourceJobId:xhs-note-${id}`，绝不创建假Job。固定 `note×xiaohongshu`、`aiDeclaration:true`、`submit:false`，不放宽既有执行器风险、日限频或本地草稿核实约束。删除创作草稿不影响已建包，发布中心新版本入口返回小红书工作台。
+- `node --import tsx scripts/verify-xhs-note-workspace.ts` 用临时存储和真实Chromium/Canvas验收两种配图、重开、预览与建包；AI为确定性替身，不写用户真实数据、不提交平台。`RUN_XHS_NOTES_UI=1 node --import tsx --test renderer/src/pages/XhsNoteDetailPage.browser.test.tsx` 验收粘贴／错误保留／图卡捕获版本。
 
 ### 字幕图集创作（2026-10-10 更新）
 
@@ -727,3 +737,12 @@ npm run package          # mac 打包（prepare:package:mac + build + check:pack
 - `GET /api/assets?kind=image&q=短词` 返回 assets／total，按空格分词，所有词匹配；描述／标签优先。元数据编辑带 metadataVersion，直接改最终提示词解除草稿来源绑定。新写入沿用本机会话，文件与路径校验仍在 AssetStore。
 - 文章选图默认展示全部，筛选不取消封面和有序正文图，不改文章；头条仅封面，公众号封面及正文。未增加生图、语义检索或外部 Skills 运行时。
 - 隔离验收：构建后运行 `node scripts/verify-image-prompt-assets-ui.js`（系统 Chrome）或 `node --import tsx scripts/verify-image-prompt-assets.ts --serve`；不使用真实素材或账号。当前 DeepSeek 配置的生成／优化已于 2026-10-08 补验；外部生图效果尚未验收。
+
+### 可靠性修复（2026-10-13）
+
+- 任务与合集索引的完整读改写进入各自串行队列，合集也用原子保存。仅 ENOENT 初始化，JSON/结构损坏及其它读取错误保留原文件并报错；不得恢复为 catch 所有错误后写空索引。队列只保证同一服务实例，不支持多个进程共写一份存储。
+- 本机 API 经过 `local-access.ts` 校验连接、Host 与 Origin；独立入口只监听 localhost。Electron 在主进程仅向可信 renderer frame/top 发起的本机请求附加临时凭证，不向渲染层暴露凭证；任意 `Origin:null` 不能直接放行。更改此处须验证文件页面、开发页面、媒体与跨域预检。
+- 图集后台操作持久化恢复输入和已完成单元；重启后主动继续，复核操作者、版本、原确认、源指纹及转录。修改内容或来源后拒绝旧恢复；缓存及图片校验哈希，失败保留旧成品；旧无恢复元数据任务仍需重新发起。
+- 原生字幕 OCR 默认裁剪保留画面中线上沿，显式区域按实际裁剪还原坐标；相邻 ASR 仅限前后各一段且距离≤4秒，必须 OCR 完整包含当前目标（至少4字符）才可作补充佐证。不能降低覆盖守卫，候选命中不代表字幕语义或选帧已人工核实。
+- 文章初稿/审校以共享正文计数检查明确范围（如1200～1600字，计标点、不计空白与标题），不达标沿用最多三次总尝试；失败保留原稿，不截断。自由描述不推断硬限制，文风与事实继续人工核对。
+- 头条只把确认后新增的独立可见成功提示作为判据；正文、旧提示、隐藏及透明节点不算。小红书发送能力本轮已由用户确认，执行器未改；未重新执行任何真实平台提交。

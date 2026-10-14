@@ -7,6 +7,65 @@ const config = { apiKey: 'test-key', model: 'test', provider: 'openai' as const 
 const cue = (segmentIndex: number, text = ''): GalleryTranslationCue => ({ segmentIndex, original: `Source ${segmentIndex}`, text, start: segmentIndex, end: segmentIndex + 1 });
 const translation = (cues: GalleryTranslationCue[]) => ({ transcriptHash: 'transcript', sourceFingerprint: 'source', start: 0, end: cues.length, cues });
 
+test('translated layout combines adjacent short captions without changing any source cue or timestamp', () => {
+  const cues = [
+    { ...cue(0, '大家好'), start: .233, end: 1.266 },
+    { ...cue(1, '今天想跟大家聊一聊'), start: 1.3, end: 2.3 },
+    { ...cue(2, '关于人生目标这个话题'), start: 2.3, end: 2.666 }
+  ];
+  const input = { ...translation(cues), end: 4 };
+  const before = structuredClone(input);
+  const plan = planTranslatedGallery(input, 1, 4);
+  assert.equal(plan.images.length, 1);
+  assert.deepEqual(plan.images[0]!.image.translatedCaptions, ['大家好，今天想跟大家聊一聊，关于人生目标这个话题']);
+  assert.deepEqual(plan.images[0]!.image.times, [(.233 + 1.266) / 2]);
+  assert.deepEqual(plan.images[0]!.quotes.map(q => [q.segmentIndex, q.text, q.originalText, q.start, q.end]), cues.map(c => [c.segmentIndex, c.text, c.original, c.start, c.end]));
+  assert.deepEqual(input, before);
+});
+
+test('translated short-caption layout respects sentence, multiline, selection, pause, width and time-span boundaries', () => {
+  const cases: GalleryTranslationCue[][] = [
+    [cue(0, '完整句子。'), cue(1, '下一句')],
+    [cue(0, '完整句子.'), cue(1, '下一句')],
+    [cue(0, '他说："结束。"'), cue(1, '下一句')],
+    [cue(0, '他说：“结束。”）'), cue(1, '下一句')],
+    [cue(0, '第一行\n第二行'), cue(1, '下一条')],
+    [cue(0, '前一条'), cue(2, '后一条')],
+    [cue(0, '前一条'), { ...cue(1, '后一条'), start: 2.6, end: 3.6 }],
+    [cue(0, '中'.repeat(20)), cue(1, '文'.repeat(10))],
+    [{ ...cue(0, '前一条'), end: 5 }, { ...cue(1, '后一条'), start: 5, end: 6.1 }]
+  ];
+  for (const cues of cases) {
+    const plan = planTranslatedGallery({ ...translation(cues), end: 10 }, 8, 10);
+    assert.deepEqual(plan.images.flatMap(image => image.image.translatedCaptions!), cues.map(c => c.text));
+  }
+  const punctuation = [cue(0, '先说，'), cue(1, '再说')];
+  assert.deepEqual(planTranslatedGallery(translation(punctuation), 8, 2).images[0]!.image.translatedCaptions, ['先说，再说']);
+});
+
+test('default translator uses native fetch and retries interrupted response bodies without accepting partial translations', async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async (_url, options) => {
+    attempts++;
+    const request = JSON.parse(String(options?.body));
+    assert.equal(request.stream, undefined);
+    assert.ok(options?.signal);
+    if (attempts < 3) return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"choices":['));
+      controller.error(new Error('Premature close'));
+    } }), { headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ cues: [{ segmentIndex: 0, text: '完整中文。' }] }) } }] }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const input = [cue(0)];
+    const writer = new GalleryTranslator({ resolveAiConfig: async () => ({ ...config, baseURL: 'http://127.0.0.1:1' }) });
+    assert.deepEqual(await writer.translate(input), [{ ...cue(0), text: '完整中文。' }]);
+    assert.deepEqual(input, [cue(0)]);
+    assert.equal(attempts, 3);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test('custom translation targets retain all cues and reduce crowded pages without raising small targets', () => {
   for (const [target, count, sizes] of [[1, 3, [1, 1, 1]], [4, 10, [4, 3, 3]], [10, 20, [10, 10]], [12, 20, [10, 10]]] as const) {
     const cues = Array.from({ length: count }, (_, i) => cue(i, `完整中文第${i}句。`));

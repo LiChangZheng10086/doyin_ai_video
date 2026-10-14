@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import OpenAI, { type ClientOptions } from "openai";
 import type {
   PlatformCopy,
   PublishCopySource,
@@ -112,6 +112,7 @@ export class PublishingCopyService {
     this.createClient = deps.createClient ?? ((config) => new OpenAI({
       apiKey: config.apiKey,
       baseURL: config.baseURL,
+      fetch: globalThis.fetch as unknown as ClientOptions['fetch'],
     }));
   }
 

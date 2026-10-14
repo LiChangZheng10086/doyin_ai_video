@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { VideoAudioOptions, AssetRecord } from '../../types';
 import type { LocalSpeechCapabilities } from '../../../../src/lib/video-audio';
 import { apiClient } from '../../services/api';
@@ -26,7 +26,7 @@ export function VideoAudioOptionsPanel({ value, onChange, disabled, canRegenerat
     {error && <p role="alert" className="mt-2 text-sm text-danger">{error}</p>}
     <fieldset disabled={disabled} className="mt-4 grid gap-4 sm:grid-cols-2">
       <div className="space-y-3">
-        <label className="flex items-center gap-2 text-sm text-ink"><input type="checkbox" checked={value.voiceover} disabled={!capabilities?.available}
+        <label className="flex items-center gap-2 text-sm text-ink"><input type="checkbox" checked={value.voiceover} disabled={!capabilities?.available && !value.voiceover}
           onChange={event => onChange({ ...value, voiceover: event.target.checked })} />生成中文配音与同步字幕</label>
         {capabilities?.reason && <p className="text-sm text-ink-muted">{capabilities.reason}</p>}
         {value.voiceover && <>

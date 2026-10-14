@@ -4,6 +4,7 @@ import axios, { AxiosInstance, type AxiosRequestConfig } from 'axios';
 import type { ImagePromptInput, ImagePromptRecord } from '../../../src/lib/image-prompts';
 import type { ImageAssetMetadata } from '../../../src/lib/assets-store';
 import type { Gallery, GalleryDraft, GalleryPreview, GallerySource, GalleryTranslation, GalleryOperationInput } from '../../../src/lib/gallery-types';
+import type { XhsNote, XhsNoteDraft, XhsNotePreview } from '../../../src/lib/xhs-notes';
 import type { HotspotBoard, HotspotFavorite } from '../../../src/lib/hotspots';
 import type { HotspotItem } from '../../../src/lib/hotspots';
 import type { ResearchReadInput, ResearchReadResult, ResearchSearchResult, ResearchSelection, ResearchStatus } from '../../../src/lib/research-types';
@@ -119,6 +120,31 @@ export class ApiClient {
   private localSessionToken: string | null = null;
   /** 并发的 401 只触发一次重开会话（避免惊群）。 */
   private sessionRefresh: Promise<void> | null = null;
+
+  async getXhsNotes(): Promise<XhsNote[]> {
+    return (await this.publishingRequest<{ notes: XhsNote[] }>({ url: '/api/xhs-notes' })).notes;
+  }
+  async createXhsNote(draft: Partial<XhsNoteDraft>): Promise<XhsNote> {
+    return (await this.publishingRequest<{ note: XhsNote }>({ url: '/api/xhs-notes', method: 'POST', data: draft })).note;
+  }
+  async getXhsNote(id: string): Promise<XhsNote> {
+    return (await this.publishingRequest<{ note: XhsNote }>({ url: `/api/xhs-notes/${encodeURIComponent(id)}` })).note;
+  }
+  async saveXhsNote(id: string, draft: Partial<XhsNoteDraft> & { version: number }): Promise<XhsNote> {
+    return (await this.publishingRequest<{ note: XhsNote }>({ url: `/api/xhs-notes/${encodeURIComponent(id)}`, method: 'PATCH', data: draft })).note;
+  }
+  async deleteXhsNote(id: string, version: number): Promise<void> {
+    await this.publishingRequest({ url: `/api/xhs-notes/${encodeURIComponent(id)}`, method: 'DELETE', data: { version } });
+  }
+  async rewriteXhsNote(id: string, version: number): Promise<XhsNote> {
+    return (await this.publishingRequest<{ note: XhsNote }>({ url: `/api/xhs-notes/${encodeURIComponent(id)}/rewrite`, method: 'POST', data: { version }, timeout: 600000 })).note;
+  }
+  async previewXhsNote(id: string, version: number): Promise<XhsNotePreview> {
+    return (await this.publishingRequest<{ preview: XhsNotePreview }>({ url: `/api/xhs-notes/${encodeURIComponent(id)}/publishing/preview`, method: 'POST', data: { version } })).preview;
+  }
+  async createXhsNotePackage(id: string, version: number, previewRevision: string, rightsConfirmed: true): Promise<PublishingPackageDetail> {
+    return (await this.publishingRequest<{ detail: PublishingPackageDetail }>({ url: `/api/xhs-notes/${encodeURIComponent(id)}/publishing/packages`, method: 'POST', data: { version, previewRevision, rightsConfirmed }, timeout: 120000 })).detail;
+  }
 
   async getOnlineAudioCatalog(): Promise<{ sources: { id: AudioSource; name: string }[]; boards: { id: AudioBoardId; name: string }[] }> {
     return this.publishingRequest({ url: '/api/online-audio/catalog' });

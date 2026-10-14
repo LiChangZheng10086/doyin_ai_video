@@ -9,6 +9,20 @@ const config = { apiKey: 'test', model: 'test', provider: 'deepseek' as const, m
 const items = (count: number): GalleryContentItem[] => Array.from({ length: count }, (_, i) => ({ id: `q-${i}`, selected: true, reason: '', segmentIndex: i, text: `原句${i}。`, start: i * 2, end: i * 2 + 1 }));
 const response = (value: unknown, finish_reason = 'stop') => ({ choices: [{ finish_reason, message: { content: JSON.stringify(value) } }] });
 
+test('translated estimates and image plans share short-caption groups while editable content retains every cue', async () => {
+  const { galleryContentItems, estimateGalleryContent } = await import('./gallery-content.js');
+  const { planTranslatedGallery } = await import('./gallery-translation.js');
+  const cues = Array.from({ length: 30 }, (_, i) => ({ segmentIndex: i, original: `Source ${i}`, text: ['大家好', '今天聊一聊', '人生目标。'][i % 3]!, start: i, end: i + .9 }));
+  const t: GalleryTranslation = { transcriptHash: 't', sourceFingerprint: 's', start: 0, end: 30, cues };
+  const all = galleryContentItems(transcript(30), source, t);
+  assert.equal(all.length, 30);
+  assert.equal(estimateGalleryContent(all, 8, source, true), 2);
+  const plan = planTranslatedGallery(t, 8, source.duration);
+  assert.equal(plan.images.length, 2);
+  assert.equal(plan.images.flatMap(image => image.quotes).length, 30);
+  assert.equal(plan.images.flatMap(image => image.image.translatedCaptions!).length, 10);
+});
+
 test('content list retains complete native input and estimates the 35 image boundary without OCR', async () => {
   const { galleryContentItems, estimateGalleryContent } = await import('./gallery-content.js');
   const all = galleryContentItems(transcript(534), source);
@@ -108,4 +122,21 @@ test('AI batches report completed units, pause before next request and continue 
   assert.equal(calls, 3); assert.ok(checkpoints >= 3);
   assert.deepEqual(progress, [[30, 65], [60, 65], [65, 65]]);
   assert.deepEqual(result, input);
+});
+
+test('completed AI batches can be restored by a fresh planner without a repeated model request', async () => {
+  const { GalleryContentPlanner } = await import('./gallery-content.js');
+  const input = items(65); let calls = 0; const saved = new Map<string, unknown>();
+  const deps = { resolveAiConfig: async () => config, createClient: () => ({ chat: { completions: { create: async (request: any) => {
+    calls++; const batch = JSON.parse(request.messages.find((m: any) => m.role === 'user').content).items;
+    return response({ items: batch.map((item: any) => ({ id: item.id, selected: true, reason: '' })) });
+  } } } }) };
+  const unit = async <T>(key: string, work: () => Promise<T>): Promise<T> => {
+    if (saved.has(key)) return saved.get(key) as T;
+    const value = await work(); saved.set(key, value); return value;
+  };
+  await assert.rejects(new GalleryContentPlanner(deps).plan(input, { unit, checkpoint: async () => { if (calls === 1) throw new Error('process stopped'); } }), /process stopped/);
+  assert.equal(calls, 1); assert.equal(saved.size, 1);
+  assert.deepEqual(await new GalleryContentPlanner(deps).plan(input, { unit }), input);
+  assert.equal(calls, 3);
 });

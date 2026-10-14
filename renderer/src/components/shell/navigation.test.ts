@@ -8,6 +8,16 @@ import {
   isNavigationItemActive,
 } from './navigation.js';
 
+test('standalone Xhs notes appear on desktop and mobile more with a shared detail context', () => {
+  const item = PRIMARY_NAV_ITEMS.find(item => item.to === '/xhs-notes'); assert.ok(item);
+  assert.equal(item.label, '小红书创作');
+  assert.equal(isNavigationItemActive('/xhs-notes/note', item), true);
+  assert.equal(isNavigationItemActive('/galleries/note', item), false);
+  assert.equal(getPageContext('/xhs-notes/note').title, '小红书创作');
+  assert.ok(MOBILE_MORE_ITEMS.some(item => item.to === '/xhs-notes'));
+  assert.equal(MOBILE_NAV_ITEMS.length, 6);
+});
+
 test('YouTube browsing is reachable on desktop and mobile more without adding a bottom navigation slot',()=>{
   const item=PRIMARY_NAV_ITEMS.find(i=>i.to==='/youtube');assert.ok(item);
   assert.equal(item.label,'油管');assert.equal(isNavigationItemActive('/youtube',item),true);

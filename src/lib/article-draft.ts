@@ -16,7 +16,7 @@
  * `warning` —— 绝不静默产出一份看起来正常、其实是原始口播稿的东西。
  */
 
-import OpenAI from "openai";
+import OpenAI, { type ClientOptions } from "openai";
 import { extractAiMessageText } from "./ai-response.js";
 import { toSimplifiedChinese } from "./chinese.js";
 
@@ -268,7 +268,7 @@ export function buildArticleMessages(
 }
 
 function defaultCreateClient(config: ArticleAiConfig): ArticleChatClient {
-  return new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL }) as unknown as ArticleChatClient;
+  return new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, fetch: globalThis.fetch as unknown as ClientOptions['fetch'] }) as unknown as ArticleChatClient;
 }
 
 function isUsableAiConfig(config: ArticleAiConfig | null): config is ArticleAiConfig {

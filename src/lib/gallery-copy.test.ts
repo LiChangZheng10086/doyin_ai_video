@@ -6,6 +6,27 @@ const config = { apiKey: 'test-key', model: 'test', provider: 'openai' as const 
 const output = { title: '提高追更率的三个节奏', description: '读者需要持续获得新信息。\n1. 开头回应上章悬念。\n2. 章中制造相关问题。\n3. 章尾推动行动。\n你最想改哪一步？', hashtags: ['小说创作'], notes: ['收入数字识别不清，请核对。'] };
 const source = { topic: '未核实的日收300标题', transcript: '开场信息。'.repeat(70) + '末尾核心观点必须保留。', nativeSubtitles: ['原生字幕补充核对'] };
 
+test('default gallery writer uses native fetch and retries interrupted bodies without accepting partial copy', async () => {
+  const originalFetch = globalThis.fetch;
+  let attempts = 0;
+  globalThis.fetch = async (_url, options) => {
+    attempts++;
+    const request = JSON.parse(String(options?.body));
+    assert.equal(request.stream, undefined);
+    assert.ok(options?.signal);
+    if (attempts < 3) return new Response(new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"choices":['));
+      controller.error(new Error('Premature close'));
+    } }), { headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(output) } }] }), { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const writer = new GalleryCopyWriter({ resolveAiConfig: async () => ({ ...config, baseURL: 'http://127.0.0.1:1' }) });
+    assert.deepEqual(await writer.write(source), output);
+    assert.equal(attempts, 3);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test('gallery copy receives the complete source and native captions with attribution and factual limits', async () => {
   const requests: any[] = [];
   const writer = new GalleryCopyWriter({ resolveAiConfig: async () => config, createClient: () => ({ chat: { completions: { create: async (request: any) => {

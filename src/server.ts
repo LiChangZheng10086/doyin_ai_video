@@ -56,7 +56,7 @@ const app = await createExpressApp({
 
 const port = Number(process.env.PORT ?? 3100);
 
-const server = app.listen(port, () => {
+const server = app.listen(port, 'localhost', () => {
   console.log(`Server running at http://localhost:${port}`);
 });
 

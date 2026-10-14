@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI, { type ClientOptions } from 'openai';
 import type { AiRuntimeConfig } from '../app.js';
 import type { TranscriptAsset, TranscriptProofreading, TranscriptSegment } from '../types.js';
 import type { ArticleChatClient } from './article-draft.js';
@@ -26,7 +26,7 @@ export class TranscriptProofreader {
       signal?.throwIfAborted();
       if (!config?.apiKey || !config.model) return finish('skipped', '尚未配置可用 AI，原始音频转录已保留');
       if (!asset.segments.length) throw new Error('缺少转录分段');
-      const client = this.deps.createClient?.(config) ?? new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 60_000, maxRetries: 0 });
+      const client = this.deps.createClient?.(config) ?? new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 60_000, maxRetries: 0, fetch: globalThis.fetch as unknown as ClientOptions['fetch'] });
       const segments = asset.segments.map(s => ({ ...s }));
       const changes: TranscriptProofreading['changes'] = [];
       for (let index = 0; index < segments.length;) {

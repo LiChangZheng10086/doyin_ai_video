@@ -9,6 +9,7 @@ import { ResearchService } from './lib/research-service.js';
 import { registerResearchRoutes } from './lib/research-routes.js';
 import type { ResearchConfig, ResearchStatus } from './lib/research-types.js';
 import express, { Express, type Request, type Response } from "express";
+import type { ClientOptions } from 'openai';
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -19,6 +20,7 @@ import { inspectTranscriptQuality } from "./lib/transcript-quality.js";
 import { OpenAiScriptCleaner, RuntimeScriptCleaner } from "./lib/ai-cleaner.js";
 import { MediaService } from "./lib/media.js";
 import { LocalStorage } from "./lib/storage.js";
+import { localAccess } from './lib/local-access.js';
 import { LocalSessionStore } from "./lib/local-auth.js";
 import { registerLocalUserErrorBoundary, registerLocalUserRoutes } from "./lib/local-user-routes.js";
 import { LocalUserStore } from "./lib/local-users.js";
@@ -33,6 +35,8 @@ import { GalleryService } from "./lib/galleries.js";
 import { GalleryTranslator } from './lib/gallery-translation.js';
 import { GalleryCopyWriter } from './lib/gallery-copy.js';
 import { GalleryContentPlanner } from './lib/gallery-content.js';
+import { XhsNoteService, XhsNoteWriter } from './lib/xhs-notes.js';
+import { registerXhsNoteRoutes } from './lib/xhs-note-routes.js';
 import { GalleryMedia } from "./lib/gallery-media.js";
 import { registerGalleryRoutes } from "./lib/gallery-routes.js";
 import { HotspotService } from "./lib/hotspots.js";
@@ -69,6 +73,7 @@ import { createDefaultRuntimeStatusDeps } from "./lib/runtime-status.js";
 import type { AiProvider, CollectionRecord, DueNotification, PipelineStep, ScriptAsset, StreamablePipelineStep, TranscriptAsset } from "./types.js";
 
 export interface ServerConfig {
+  desktopAccessToken?: string;
   resolveResearchConfig?: () => Promise<ResearchConfig>;
   researchConfigurationSource?: ResearchStatus['configurationSource'];
   researchService?: ResearchService;
@@ -117,6 +122,7 @@ export interface ServerConfig {
   galleryTranslator?: Pick<GalleryTranslator, 'translate'>;
   galleryCopyWriter?: Pick<GalleryCopyWriter, 'write'>;
   galleryContentPlanner?: Pick<GalleryContentPlanner, 'plan'>;
+  xhsNoteWriter?: Pick<XhsNoteWriter, 'rewrite'>;
   transcriptProofreader?: Pick<TranscriptProofreader, 'proofread'>;
   articleWriter?: Pick<ArticleWritingService, 'run'>;
   articleIllustrator?:{generate:(a:ArticleRecord,signal:AbortSignal)=>Promise<Pick<ArticleRecord,'coverAssetId'|'bodyImageAssetIds'|'bodyImagePlacements'>>};
@@ -395,17 +401,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
   });
   await collections.init();
 
-  // CORS 中间件（开发环境）
-  app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Local-Session, Last-Event-ID');
-    if (req.method === 'OPTIONS') {
-      res.sendStatus(200);
-      return;
-    }
-    next();
-  });
+  app.use(localAccess(config.desktopAccessToken));
 
   app.use(express.json({ limit: "2mb" }));
   registerLocalUserRoutes(app, { users: localUsers, sessions: localSessions });
@@ -456,6 +452,11 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
       expectedImageHashes: gallery.generated!.hashes,
       bgm: gallery.bgm,
     }, actor),
+  }) });
+
+  registerXhsNoteRoutes(app, { sessions: localSessions, notes: new XhsNoteService({
+    storage, library: assetStore, publishing: publishingService,
+    writer: config.xhsNoteWriter ?? new XhsNoteWriter({ resolveAiConfig: resolvePublishingAiConfig }),
   }) });
 
   /*
@@ -1454,6 +1455,7 @@ export async function createExpressApp(config: ServerConfig): Promise<Express> {
         baseURL: aiConfig.baseURL || (aiConfig.provider === "deepseek" ? "https://api.deepseek.com" : undefined),
         timeout: 90_000,
         maxRetries: 0,
+        fetch: globalThis.fetch as unknown as ClientOptions['fetch'],
       });
 
       const model = aiConfig.model || "deepseek-chat";
@@ -2391,6 +2393,7 @@ ${aggregatedText}`;
   const client = new OpenAI({
     apiKey: aiConfig.apiKey,
     baseURL: aiConfig.baseURL || (aiConfig.provider === "deepseek" ? "https://api.deepseek.com" : undefined),
+    fetch: globalThis.fetch as unknown as ClientOptions['fetch'],
   });
 
   const completion = await client.chat.completions.create({

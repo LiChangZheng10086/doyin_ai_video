@@ -43,6 +43,49 @@ const ADMIN: ActorSnapshot = {
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
+test('independent XHS notes create a draft-only package without a video job and survive store reopening', async () => {
+  const f = await fixture();
+  try {
+    const noteId = '11111111-1111-4111-8111-111111111111';
+    const file = path.join(f.storageRoot, 'xhs-source.png');
+    await writeFile(file, 'xhs-image');
+    const input = { noteId, title: '小红书笔记', noteCopy: { title: '小红书笔记', description: '保留来源和条件。', hashtags: ['学习笔记'] }, sourceImagePaths: [file], expectedImageHashes: [createHash('sha256').update('xhs-image').digest('hex')] };
+    const beforeJobs = [...f.jobs.keys()];
+    const detail = await f.service.createXhsNote(input, ACTOR);
+    assert.equal(detail.package.sourceKind, 'xhs_note');
+    assert.equal(detail.package.sourceNoteId, noteId);
+    assert.equal(detail.package.sourceJobId, `xhs-note-${noteId}`);
+    assert.equal(detail.package.contentType, 'note');
+    assert.deepEqual(detail.package.xhsOptions, { aiDeclaration: true, submit: false });
+    assert.deepEqual(detail.tasks.map(task => task.platform), ['xiaohongshu']);
+    assert.deepEqual([...f.jobs.keys()], beforeJobs);
+    assert.deepEqual(await readFile(path.join(detail.package.packagePath, detail.package.imagePaths![0]!)), Buffer.from('xhs-image'));
+    const reopenedStorage = new LocalStorage(path.join(f.storageRoot, 'reopened'));
+    await reopenedStorage.ensureBaseDirs();
+    await reopenedStorage.writeJson('cache/publishing-index.json', await f.storage.readJson('cache/publishing-index.json'));
+    const reopened = new PublishingStore(reopenedStorage);
+    await reopened.init();
+    assert.equal((await reopened.getPackage(detail.package.id))?.package.sourceNoteId, noteId);
+    assert.deepEqual((await f.service.packagePreview(detail.package.id)).copyChecks?.map(check => check.platform), ['xiaohongshu']);
+    await assert.rejects(f.service.createVersion(detail.package.id, {}, ACTOR), /小红书.*工作台/);
+  } finally { await rm(f.storageRoot, { recursive: true, force: true }); }
+});
+
+test('independent XHS packaging enforces limits and rolls back images changed since preview', async () => {
+  const f = await fixture();
+  try {
+    const noteId = '22222222-2222-4222-8222-222222222222';
+    const file = path.join(f.storageRoot, 'xhs-change.png');
+    await writeFile(file, 'changed');
+    const input = { noteId, title: '小红书笔记', noteCopy: { title: '小红书笔记', description: '正文', hashtags: [] }, sourceImagePaths: [file], expectedImageHashes: [createHash('sha256').update('previewed').digest('hex')] };
+    await assert.rejects(f.service.createXhsNote(input, ACTOR), /图片已变化/);
+    assert.deepEqual(await readdir(path.join(f.storageRoot, 'output/publishing', `xhs-note-${noteId}`)), []);
+    await assert.rejects(f.service.createXhsNote({ ...input, sourceImagePaths: Array(19).fill(file), expectedImageHashes: Array(19).fill(input.expectedImageHashes[0]) }, ACTOR), /18/);
+    await assert.rejects(f.service.createXhsNote({ ...input, noteCopy: { ...input.noteCopy, title: '长'.repeat(21) } }, ACTOR), /20/);
+    assert.equal(Object.keys((await f.store.snapshot()).packages).length, 0);
+  } finally { await rm(f.storageRoot, { recursive: true, force: true }); }
+});
+
 test('gallery music survives packaging, preview and upload while old notes omit music', async () => {
   const f = await fixture();
   try {

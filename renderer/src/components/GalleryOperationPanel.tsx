@@ -13,9 +13,9 @@ export function GalleryOperationPanel({ operation, disabled, onPause, onResume }
     <progress aria-label={`${stageNames[operation.stage]}进度`} {...(operation.total > 0 ? { value: operation.completed, max: operation.total } : {})} className="mt-3 h-3 w-full accent-accent" />
     {operation.status === 'running' && <button disabled={disabled} onClick={onPause} className="mt-3 rounded-lg border border-line px-3 py-2 text-sm text-ink disabled:opacity-50">暂停</button>}
     {operation.status === 'pausing' && <p className="mt-3 text-sm text-ink-muted">正在等待当前处理单元安全结束，随后停止后续处理。</p>}
-    {operation.status === 'paused' && <button disabled={disabled} onClick={onResume} className="mt-3 rounded-lg bg-accent px-3 py-2 text-sm text-on-accent disabled:opacity-50">继续</button>}
-    {['running', 'pausing', 'paused'].includes(operation.status) && <p className="mt-3 text-xs text-ink-muted">可离开此页面并操作其他作品，返回后可查看进度。退出应用会中断本次处理。</p>}
-    {operation.status === 'interrupted' && <p role="alert" className="mt-3 text-sm text-warning">应用退出后处理已中断，请核对来源并重新发起。旧成品保留供参考。</p>}
+    {(operation.status === 'paused' || (operation.status === 'interrupted' && operation.recovery)) && <button disabled={disabled} onClick={onResume} className="mt-3 rounded-lg bg-accent px-3 py-2 text-sm text-on-accent disabled:opacity-50">继续</button>}
+    {['running', 'pausing', 'paused'].includes(operation.status) && <p className="mt-3 text-xs text-ink-muted">可离开此页面并操作其他作品，返回后可查看进度。退出应用后可继续已保存的处理。</p>}
+    {operation.status === 'interrupted' && <p role="alert" className="mt-3 text-sm text-warning">{operation.recovery ? '应用退出后处理已中断，点击继续将核对来源、转录与确认版本，再复用已保存的结果。' : '应用退出后处理已中断，请核对来源并重新发起。'}旧成品保留供参考。</p>}
     {operation.error && <p role="alert" className="mt-3 break-words text-sm text-danger">{operation.error}</p>}
   </section>;
 }

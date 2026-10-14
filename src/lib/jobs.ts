@@ -116,6 +116,7 @@ function isStreamableStep(step: PipelineStep): step is StreamablePipelineStep {
 }
 
 export class JobStore {
+  private mutationQueue: Promise<unknown> = Promise.resolve();
   private readonly runningSteps = new Set<string>();
   private readonly activeRuns = new Map<string, ActiveStepRun>();
   private readonly stepEvents = new JobStepEventHub();
@@ -131,17 +132,20 @@ export class JobStore {
 
   async init() {
     await this.storage.ensureBaseDirs();
-    let index: JobsIndex;
-    try {
-      index = await this.storage.readJson<JobsIndex>(JOBS_INDEX);
-    } catch {
-      index = {};
-      await this.storage.writeJsonAtomic(JOBS_INDEX, index);
-    }
-    await this.recoverRetranscriptTransactions(index);
-    if (this.recoverInterruptedSteps(index)) {
-      await this.storage.writeJsonAtomic(JOBS_INDEX, index);
-    }
+    await this.mutateIndex(async () => {
+      let index: JobsIndex;
+      try {
+        index = await this.readIndex();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        index = {};
+        await this.storage.writeJsonAtomic(JOBS_INDEX, index);
+      }
+      await this.recoverRetranscriptTransactions(index);
+      if (this.recoverInterruptedSteps(index)) {
+        await this.storage.writeJsonAtomic(JOBS_INDEX, index);
+      }
+    });
     await this.purgeExpiredTrash();
   }
 
@@ -275,12 +279,14 @@ export class JobStore {
       updatedAt: now,
       storagePath
     };
-    const index = await this.readIndex();
-    index[id] = record;
-    await this.writeIndex(index);
     if (parsed) {
-      await this.storage.writeJson(path.join("raw", "text", `${id}.json`), parsed);
+      await this.storage.writeJsonAtomic(path.join("raw", "text", `${id}.json`), parsed);
     }
+    await this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      index[id] = record;
+      await this.writeIndex(index);
+    });
 
     return record;
   }
@@ -739,36 +745,41 @@ export class JobStore {
       changed = true;
       for (const file of files.slice(1)) await rm(this.storage.resolve(file), { force: true });
       signal?.throwIfAborted();
-      const index = await this.readIndex();
-      const current = index[record.id];
-      if (!current) throw new Error("job not found");
-      const steps = this.ensurePipelineSteps(current.steps);
-      for (const step of PIPELINE_STEPS.slice(1)) steps[step] = { status: "pending", attempts: 0 };
-      steps.transcribe = { ...steps.transcribe, status: "succeeded", lastError: undefined, finishedAt: new Date().toISOString() };
-      const next: JobRecord = {
-        ...current, steps, status: "queued", stage: "transcribed", transcriptPath, transcriptModel: transcript.model,
-        transcriptErrorMessage: undefined, errorMessage: undefined, videoProjectPath: undefined, videoOutputPath: undefined, videoGeneratedAt: undefined,
-        ...(extracted ? { audioPath: extracted.audioPath, audioManifestPath: extracted.manifestPath, audioErrorMessage: undefined } : {}),
-        updatedAt: new Date().toISOString()
-      };
-      index[record.id] = next;
-      await this.storage.writeJsonAtomic(JOBS_INDEX, index);
+      const next = await this.mutateIndex(async () => {
+        const index = await this.readIndex();
+        const current = index[record.id];
+        if (!current) throw new Error("job not found");
+        const steps = this.ensurePipelineSteps(current.steps);
+        for (const step of PIPELINE_STEPS.slice(1)) steps[step] = { status: "pending", attempts: 0 };
+        steps.transcribe = { ...steps.transcribe, status: "succeeded", lastError: undefined, finishedAt: new Date().toISOString() };
+        const next: JobRecord = {
+          ...current, steps, status: "queued", stage: "transcribed", transcriptPath, transcriptModel: transcript.model,
+          transcriptErrorMessage: undefined, errorMessage: undefined, videoProjectPath: undefined, videoOutputPath: undefined, videoGeneratedAt: undefined,
+          ...(extracted ? { audioPath: extracted.audioPath, audioManifestPath: extracted.manifestPath, audioErrorMessage: undefined } : {}),
+          updatedAt: new Date().toISOString()
+        };
+        index[record.id] = next;
+        await this.storage.writeJsonAtomic(JOBS_INDEX, index);
+        return next;
+      });
       signal?.throwIfAborted();
       await rm(this.storage.resolve(journalPath));
       return next;
     } catch (error) {
       if (changed) {
         await this.restoreRetranscriptFiles(backups);
-        const index = await this.readIndex();
-        const paused = index[record.id];
-        const restored = { ...record, deletedAt: paused?.deletedAt, trashExpiresAt: paused?.trashExpiresAt };
-        index[record.id] = signal?.aborted
-          ? { ...restored, status: "queued", errorMessage: "用户已暂停当前步骤，可重新执行", steps: { ...record.steps!, transcribe:
-            paused?.steps?.transcribe.status === "paused" ? paused.steps.transcribe : {
-              ...record.steps!.transcribe, status: "paused", lastError: "用户已暂停当前步骤，可重新执行", finishedAt: new Date().toISOString()
-            } } }
-          : restored;
-        await this.storage.writeJsonAtomic(JOBS_INDEX, index);
+        await this.mutateIndex(async () => {
+          const index = await this.readIndex();
+          const paused = index[record.id];
+          const restored = { ...record, deletedAt: paused?.deletedAt, trashExpiresAt: paused?.trashExpiresAt };
+          index[record.id] = signal?.aborted
+            ? { ...restored, status: "queued", errorMessage: "用户已暂停当前步骤，可重新执行", steps: { ...record.steps!, transcribe:
+              paused?.steps?.transcribe.status === "paused" ? paused.steps.transcribe : {
+                ...record.steps!.transcribe, status: "paused", lastError: "用户已暂停当前步骤，可重新执行", finishedAt: new Date().toISOString()
+              } } }
+            : restored;
+          await this.storage.writeJsonAtomic(JOBS_INDEX, index);
+        });
       }
       await rm(this.storage.resolve(journalPath), { force: true });
       throw error;
@@ -965,27 +976,29 @@ export class JobStore {
     patch: Partial<PipelineStepState>,
     recordPatch: Partial<Omit<JobRecord, "id" | "createdAt" | "steps">> = {}
   ) {
-    const index = await this.readIndex();
-    const current = index[id];
-    if (!current) {
-      throw new JobStepError("job not found", 404);
-    }
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const current = index[id];
+      if (!current) {
+        throw new JobStepError("job not found", 404);
+      }
 
-    const steps = this.ensurePipelineSteps(current.steps);
-    steps[step] = {
-      ...steps[step],
-      ...patch
-    };
+      const steps = this.ensurePipelineSteps(current.steps);
+      steps[step] = {
+        ...steps[step],
+        ...patch
+      };
 
-    const next: JobRecord = {
-      ...current,
-      ...recordPatch,
-      steps,
-      updatedAt: new Date().toISOString()
-    };
-    index[id] = next;
-    await this.writeIndex(index);
-    return next;
+      const next: JobRecord = {
+        ...current,
+        ...recordPatch,
+        steps,
+        updatedAt: new Date().toISOString()
+      };
+      index[id] = next;
+      await this.writeIndex(index);
+      return next;
+    });
   }
 
   private async markStepRunning(record: JobRecord, step: PipelineStep) {
@@ -1244,80 +1257,88 @@ export class JobStore {
 
   async trash(id: string) {
     await this.purgeExpiredTrash();
-    const index = await this.readIndex();
-    const current = index[id];
-    if (!current) {
-      return null;
-    }
-    if (current.deletedAt) {
-      return current;
-    }
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const current = index[id];
+      if (!current) {
+        return null;
+      }
+      if (current.deletedAt) {
+        return current;
+      }
 
-    const deletedAt = new Date();
-    const next: JobRecord = {
-      ...current,
-      deletedAt: deletedAt.toISOString(),
-      trashExpiresAt: new Date(deletedAt.getTime() + TRASH_RETENTION_MS).toISOString(),
-      updatedAt: deletedAt.toISOString()
-    };
-    index[id] = next;
-    await this.writeIndex(index);
-    return next;
+      const deletedAt = new Date();
+      const next: JobRecord = {
+        ...current,
+        deletedAt: deletedAt.toISOString(),
+        trashExpiresAt: new Date(deletedAt.getTime() + TRASH_RETENTION_MS).toISOString(),
+        updatedAt: deletedAt.toISOString()
+      };
+      index[id] = next;
+      await this.writeIndex(index);
+      return next;
+    });
   }
 
   async restore(id: string) {
     await this.purgeExpiredTrash();
-    const index = await this.readIndex();
-    const current = index[id];
-    if (!current) {
-      return null;
-    }
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const current = index[id];
+      if (!current) {
+        return null;
+      }
 
-    const next: JobRecord = {
-      ...current,
-      deletedAt: undefined,
-      trashExpiresAt: undefined,
-      updatedAt: new Date().toISOString()
-    };
-    index[id] = next;
-    await this.writeIndex(index);
-    return next;
+      const next: JobRecord = {
+        ...current,
+        deletedAt: undefined,
+        trashExpiresAt: undefined,
+        updatedAt: new Date().toISOString()
+      };
+      index[id] = next;
+      await this.writeIndex(index);
+      return next;
+    });
   }
 
   async permanentlyDelete(id: string): Promise<PermanentDeleteResult> {
     await this.purgeExpiredTrash();
-    const index = await this.readIndex();
-    const current = index[id];
-    if (!current) {
-      return "not_found";
-    }
-    if (!current.deletedAt) {
-      return "not_in_trash";
-    }
-    if (this.isActive(current)) {
-      return "active";
-    }
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const current = index[id];
+      if (!current) {
+        return "not_found";
+      }
+      if (!current.deletedAt) {
+        return "not_in_trash";
+      }
+      if (this.isActive(current)) {
+        return "active";
+      }
 
-    await this.removeJobArtifacts(current);
-    delete index[id];
-    await this.writeIndex(index);
-    return "deleted";
+      await this.removeJobArtifacts(current);
+      delete index[id];
+      await this.writeIndex(index);
+      return "deleted";
+    });
   }
 
   async update(id: string, patch: Partial<Omit<JobRecord, "id" | "createdAt">>) {
-    const index = await this.readIndex();
-    const current = index[id];
-    if (!current) {
-      return null;
-    }
-    const next: JobRecord = {
-      ...current,
-      ...patch,
-      updatedAt: new Date().toISOString()
-    };
-    index[id] = next;
-    await this.writeIndex(index);
-    return next;
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const current = index[id];
+      if (!current) {
+        return null;
+      }
+      const next: JobRecord = {
+        ...current,
+        ...patch,
+        updatedAt: new Date().toISOString()
+      };
+      index[id] = next;
+      await this.writeIndex(index);
+      return next;
+    });
   }
 
   async setStage(id: string, stage: JobStage, status?: JobStatus) {
@@ -1335,8 +1356,19 @@ export class JobStore {
     });
   }
 
+  private mutateIndex<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(operation);
+    this.mutationQueue = result.catch(() => undefined);
+    return result;
+  }
+
   private async readIndex() {
-    return this.storage.readJson<JobsIndex>(JOBS_INDEX);
+    const index = await this.storage.readJson<JobsIndex>(JOBS_INDEX);
+    if (!index || typeof index !== "object" || Array.isArray(index) ||
+      Object.entries(index).some(([id, record]) => !record || typeof record !== "object" || Array.isArray(record) || record.id !== id)) {
+      throw new Error("任务索引损坏，请保留原文件并检查本地存储");
+    }
+    return index;
   }
 
   private async writeIndex(index: JobsIndex) {
@@ -1434,26 +1466,31 @@ export class JobStore {
   }
 
   private async purgeExpiredTrash() {
-    const index = await this.readIndex();
-    const now = Date.now();
-    let changed = false;
+    const snapshot = await this.readIndex();
+    if (!Object.values(snapshot).some((record) => record.deletedAt && record.trashExpiresAt &&
+      new Date(record.trashExpiresAt).getTime() <= Date.now() && !this.isActive(record))) return;
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const now = Date.now();
+      let changed = false;
 
-    for (const [id, record] of Object.entries(index)) {
-      if (!record.deletedAt || !record.trashExpiresAt || this.isActive(record)) {
-        continue;
+      for (const [id, record] of Object.entries(index)) {
+        if (!record.deletedAt || !record.trashExpiresAt || this.isActive(record)) {
+          continue;
+        }
+        if (new Date(record.trashExpiresAt).getTime() > now) {
+          continue;
+        }
+
+        await this.removeJobArtifacts(record);
+        delete index[id];
+        changed = true;
       }
-      if (new Date(record.trashExpiresAt).getTime() > now) {
-        continue;
+
+      if (changed) {
+        await this.writeIndex(index);
       }
-
-      await this.removeJobArtifacts(record);
-      delete index[id];
-      changed = true;
-    }
-
-    if (changed) {
-      await this.writeIndex(index);
-    }
+    });
   }
 
   private async removeJobArtifacts(record: JobRecord) {

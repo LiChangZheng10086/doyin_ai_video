@@ -38,3 +38,12 @@ test('legacy generic output failures allow correcting only the original misclass
  a.sources.push({id:'public-source',kind:'web',included:true,status:'readable',text:'完整公开资料'} as any);
  assert.ok(!render().includes('确认输入类型并继续'));
 });
+
+test('article preview shows measured prose length independently of AI review claims',()=>{
+ const a={id:'length',version:1,keyword:'写作',requirements:{length:'1200～1600字'},draft:{title:'初稿',sections:[{heading:'不计标题',paragraphs:['字'.repeat(1664)],factIds:[]}]},adopted:'draft',sources:[],illustrations:[],steps:{review:'succeeded'},issues:[],reviewNotes:['AI 自称字数符合'],bodyImageAssetIds:[],coverAssetId:''} as unknown as ArticleRecord;
+ const html=renderToStaticMarkup(<MemoryRouter><ArticleAutoWorkspace article={a} onUpdated={()=>{}} onAdvanced={()=>{}} onProtected={()=>{}} onBusyChange={()=>{}}/></MemoryRouter>);
+ assert.match(html,/正文1664字/);
+ assert.match(html,/尚未达到字数范围/);
+ assert.match(html,/字数检查不代表事实或文风已通过/);
+ assert.match(html,/我已核对当前文章、资料局限及图片使用权/);
+});

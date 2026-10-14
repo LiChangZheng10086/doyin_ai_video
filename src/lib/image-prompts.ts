@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI, { type ClientOptions } from 'openai';
 import { randomUUID } from 'node:crypto';
 import type { LocalStorage } from './storage.js';
 import type { AiRuntimeConfig } from '../app.js';
@@ -122,7 +122,7 @@ export class ImagePromptService {
     if (!config?.apiKey?.trim() || !config.model?.trim()) throw new ImagePromptError(422, 'image_prompt_ai_missing', '请先在设置中配置可用的 AI');
     let entries: Array<Pick<ImagePromptRecord, 'title' | 'tags' | 'prompt'>>;
     try {
-      const client = this.deps.createClient?.(config) ?? new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 60000, maxRetries: 0 });
+      const client = this.deps.createClient?.(config) ?? new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 60000, maxRetries: 0, fetch: globalThis.fetch as unknown as ClientOptions['fetch'] });
       const response = await client.chat.completions.create({ model: config.model,
         messages: [{ role: 'system', content: RULES }, { role: 'user', content: JSON.stringify(input) }],
         ...(config.maxOutputTokens === undefined ? {} : { max_tokens: config.maxOutputTokens }),

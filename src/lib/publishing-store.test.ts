@@ -10,6 +10,7 @@ import type {
   DeliveryPackage,
   PublishTask,
   PublishTaskStatus,
+  PublishPlatform,
   PublishingIndex,
 } from "../types.js";
 import { PublishingError, PublishingStore, packagePreviewRevision } from "./publishing-store.js";
@@ -73,6 +74,34 @@ function taskRecord(
     ...overrides,
   };
 }
+
+test('independent XHS source metadata rejects forged source bindings, submit modes and platform tasks', async () => {
+  const id = '11111111-1111-4111-8111-111111111111';
+  const valid = packageRecord({ sourceJobId: `xhs-note-${id}`, sourceKind: 'xhs_note', sourceNoteId: id,
+    contentType: 'note', imagePaths: ['images/01.png'], noteCopy: { title: '笔记', description: '正文', hashtags: [] },
+    xhsOptions: { aiDeclaration: true, submit: false } });
+  const cases = [
+    { package: valid, platform: 'xiaohongshu', ok: true },
+    { package: { ...valid, sourceNoteId: undefined }, platform: 'xiaohongshu', ok: false },
+    { package: { ...valid, sourceJobId: 'job-1' }, platform: 'xiaohongshu', ok: false },
+    { package: { ...valid, sourceKind: 'job' }, platform: 'xiaohongshu', ok: false },
+    { package: { ...valid, xhsOptions: { aiDeclaration: true, submit: true } }, platform: 'xiaohongshu', ok: false },
+    { package: valid, platform: 'douyin', ok: false },
+  ];
+  for (const input of cases) {
+    const root = await mkdtemp(path.join(tmpdir(), 'xhs-source-index-'));
+    try {
+      const storage = new LocalStorage(root); await storage.ensureBaseDirs();
+      await storage.writeJson('cache/publishing-index.json', seededIndex([input.package as DeliveryPackage], [taskRecord('ready', { platform: input.platform as PublishPlatform })]));
+      const store = new PublishingStore(storage); await store.init();
+      if (input.ok) assert.equal((await store.getPackage(valid.id))?.package.sourceNoteId, id);
+      else {
+        assert.deepEqual((await store.snapshot()).packages, {});
+        await assert.rejects(store.reserveVersion(valid.sourceJobId), { code: 'publish_index_corrupt' });
+      }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }
+});
 
 function seededIndex(
   packages: DeliveryPackage[],

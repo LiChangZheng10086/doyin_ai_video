@@ -13,14 +13,24 @@ async function fixture(count = 16, candidatesPerQuote = 1) {
   const videoPath = storage.resolve('raw/videos/job.mp4'); await writeFile(videoPath, 'source');
   const segments = Array.from({ length: count }, (_, i) => ({ start: i * 2, end: i * 2 + 1, text: `第${i}句。` }));
   await storage.writeJsonAtomic('raw/transcripts/job.json', { segments, transcript: segments.map(s => s.text).join(''), duration: count * 2 });
-  let renders = 0; let ocr = 0; const contexts: { start: number; end: number; text?: string }[] = [];
+  let renders = 0; let ocr = 0; const contexts: { start: number; end: number; text?: string; targetText?: string; adjacentText?: string }[] = [];
   let hook: (() => Promise<void>) | undefined;
-  const service = new GalleryService({ storage, jobs: { get: async () => ({ id: 'job', videoPath } as JobRecord) }, media: {
+  const deps: ConstructorParameters<typeof GalleryService>[0] = { storage, jobs: { get: async () => ({ id: 'job', videoPath } as JobRecord) }, media: {
     probe: async () => ({ width: 320, height: 480, duration: count * 2 }), frame: async () => Buffer.from('frame'),
     suggestSubtitles: async (_v, q, _r, control) => { await control?.checkpoint?.(); contexts.push(q); ocr++; await hook?.(); return Array.from({ length: candidatesPerQuote }, (_, i) => ({ time: q.start + .05 + i * .01, bandTop: .8, bandBottom: .85, verification: 'ocr' as const, recognizedText: `${q.text}${i}` })); },
     render: async (_v, image, out) => { renders++; await hook?.(); await writeFile(out, JSON.stringify(image)); },
-  }, contentPlanner: { plan: async items => items.map(i => ({ ...i, selected: i.segmentIndex < 8, reason: '保留重点' })) } });
-  return { service, storage, root, contexts, counts: () => ({ renders, ocr }), hook: (next?: () => Promise<void>) => { hook = next; }, cleanup: () => rm(root, { recursive: true, force: true }) };
+  }, contentPlanner: { plan: async items => items.map(i => ({ ...i, selected: i.segmentIndex < 8, reason: '保留重点' })) } };
+  const service = new GalleryService(deps);
+  const services = [service];
+  return { service, restart: () => { const next = new GalleryService(deps); services.push(next); return next; }, storage, root, contexts, counts: () => ({ renders, ocr }), hook: (next?: () => Promise<void>) => { hook = next; }, cleanup: async () => {
+    for (const service of services) {
+      const active = service as unknown as { operations: Map<string, { resume?: () => void }>; busy: Set<string> };
+      for (const operation of active.operations.values()) operation.resume?.();
+      active.operations.clear();
+    }
+    await until(async () => services.every(service => !(service as unknown as { busy: Set<string> }).busy.size));
+    await rm(root, { recursive: true, force: true });
+  } };
 }
 async function until(predicate: () => Promise<boolean>) {
   const end = Date.now() + 3000;
@@ -252,5 +262,137 @@ test('selected native windows retain full overlapping ASR context for caption bo
     await until(async () => (await f.service.get(g.id)).operation!.status === 'completed');
     assert.equal(f.contexts.length, 1); assert.equal(f.contexts[0]!.start, first.start); assert.equal(f.contexts[0]!.end, first.end);
     assert.equal(f.contexts[0]!.text, original);
+  } finally { await f.cleanup(); }
+});
+
+
+test('restart continues completed OCR and candidate images only after explicit resume', async () => {
+  const f = await fixture(16); let release!: () => void;
+  try {
+    const g = await f.service.create('job');
+    const c = await f.service.prepareContent(g.id, { version: g.version });
+    const confirmed = await f.service.updateContent(g.id, { version: c.version, contentPlanId: c.contentPlan!.id, selectedIds: c.contentPlan!.items.map(i => i.id) });
+    let entered!: () => void; const first = new Promise<void>(r => { entered = r; });
+    const gate = new Promise<void>(r => { release = r; });
+    f.hook(async () => { if (f.counts().renders === 1) { entered(); await gate; } });
+    const op = await f.service.startOperation(g.id, { kind: 'candidates', version: confirmed.version, contentPlanId: confirmed.contentPlan!.id, contentConfirmed: true }, 'owner');
+    await first; await f.service.pauseOperation(g.id, op.operation!.id, 'owner'); release();
+    await until(async () => (await f.service.get(g.id)).operation!.status === 'paused'); f.hook();
+    const recovered = f.restart(); const interrupted = await recovered.get(g.id);
+    assert.equal(interrupted.operation!.status, 'interrupted');
+    assert.deepEqual(f.counts(), { renders: 1, ocr: 16 });
+    await assert.rejects(recovered.resumeOperation(g.id, op.operation!.id, 'other'), /操作者/);
+    await recovered.resumeOperation(g.id, op.operation!.id, 'owner');
+    await until(async () => ['completed', 'failed'].includes((await recovered.get(g.id)).operation!.status));
+    const done = await recovered.get(g.id);
+    assert.equal(done.operation!.status, 'completed', done.operation!.error);
+    assert.deepEqual(f.counts(), { renders: done.plan!.images.length, ocr: 16 });
+    assert.equal(done.status, 'draft'); // Candidate recovery never implies final confirmation.
+  } finally { release?.(); f.hook(); await f.cleanup(); }
+});
+
+test('recovered manual render reuses verified first image and preserves old product on cache corruption', async () => {
+  for (const corrupt of [false, true]) {
+    const f = await fixture(4); let release!: () => void;
+    try {
+      const g = await f.service.create('job'); const old = await f.service.render(g.id, g.version);
+      const draft = await f.service.update(g.id, { ...old, images: [old.images[0]!, old.images[0]!] });
+      let entered!: () => void; const start = new Promise<void>(r => { entered = r; }); const gate = new Promise<void>(r => { release = r; }); let first = true;
+      f.hook(async () => { if (first) { first = false; entered(); await gate; } });
+      const op = await f.service.startOperation(g.id, { version: draft.version, kind: 'render' }); await start;
+      await f.service.pauseOperation(g.id, op.operation!.id); release();
+      await until(async () => (await f.service.get(g.id)).operation!.status === 'paused'); f.hook();
+      if (corrupt) {
+        const { readdir } = await import('node:fs/promises');
+        const dir = f.storage.resolve(`output/galleries/${g.id}/operation-${op.operation!.id}`);
+        const file = (await readdir(dir)).find(file => file.endsWith('.png'))!; await writeFile(path.join(dir, file), 'tampered');
+      }
+      const recovered = f.restart(); await recovered.get(g.id); await recovered.resumeOperation(g.id, op.operation!.id);
+      await until(async () => ['completed', 'failed'].includes((await recovered.get(g.id)).operation!.status));
+      const done = await recovered.get(g.id);
+      assert.equal(done.operation!.status, corrupt ? 'failed' : 'completed', done.operation!.error);
+      assert.equal(f.counts().renders, corrupt ? 2 : 3);
+      if (corrupt) {
+        assert.deepEqual(done.generated, old.generated);
+        assert.ok((await recovered.image(g.id, 0, old.generated!.id)).length);
+        assert.match(done.operation!.error!, /损坏/);
+      }
+    } finally { release?.(); f.hook(); await f.cleanup(); }
+  }
+});
+
+test('interrupted candidates reject changed source, transcript, or confirmation version without work', async () => {
+  for (const changed of ['source', 'transcript', 'version', 'confirmation']) {
+    const f = await fixture(4); let release!: () => void;
+    try {
+      const g = await f.service.create('job'); const c = await f.service.prepareContent(g.id, { version: g.version });
+      const confirmed = await f.service.updateContent(g.id, { version: c.version, contentPlanId: c.contentPlan!.id, selectedIds: c.contentPlan!.items.map(i => i.id) });
+      let entered!: () => void; const start = new Promise<void>(r => { entered = r; }); const gate = new Promise<void>(r => { release = r; }); let first = true;
+      f.hook(async () => { if (first) { first = false; entered(); await gate; } });
+      const op = await f.service.startOperation(g.id, { version: confirmed.version, kind: 'candidates', contentPlanId: confirmed.contentPlan!.id, contentConfirmed: true });
+      await start; await f.service.pauseOperation(g.id, op.operation!.id); release();
+      await until(async () => (await f.service.get(g.id)).operation!.status === 'paused'); f.hook();
+      if (changed === 'source') await writeFile(f.storage.resolve('raw/videos/job.mp4'), 'new source');
+      if (changed === 'transcript') await f.storage.writeJsonAtomic('raw/transcripts/job.json', { segments: [{ text: '新转录。', start: 0, end: 1 }] });
+      const recovered = f.restart(); const interrupted = await recovered.get(g.id);
+      if (changed === 'version') await recovered.update(g.id, { ...interrupted, title: 'edited after restart' });
+      if (changed === 'confirmation') {
+        const records = await f.storage.readJson<Record<string, any>>('cache/galleries.json');
+        records[g.id].contentPlan.confirmedAt = undefined;
+        await f.storage.writeJsonAtomic('cache/galleries.json', records);
+      }
+      const checker = changed === 'confirmation' ? f.restart() : recovered;
+      const before = f.counts();
+      await assert.rejects(checker.resumeOperation(g.id, op.operation!.id), /来源|转录|版本|确认/);
+      assert.deepEqual(f.counts(), before);
+    } finally { release?.(); f.hook(); await f.cleanup(); }
+  }
+});
+
+test('operation cache preserves optional undefined values without reevaluating them', async () => {
+  const f = await fixture();
+  try {
+    const g = await f.service.create('job');
+    const cache = f.service as unknown as { operationUnit<T>(id: string, operation: string, key: string, work: () => Promise<T>): Promise<T> };
+    let calls = 0;
+    for (let i = 0; i < 2; i++) assert.equal(await cache.operationUnit(g.id, 'operation', 'optional-result', async () => { calls++; return undefined; }), undefined);
+    assert.equal(calls, 1);
+  } finally { await f.cleanup(); }
+});
+
+test('native OCR gets only bounded adjacent context while sampling remains in the selected current window', async () => {
+  const f = await fixture(16);
+  try {
+    const segments = [
+      { start: 0, end: 2, text: '远处无关文字' },
+      { start: 14.4, end: 17.16, text: '你会感觉自己的思考缺乏深度' },
+      { start: 17.16, end: 19.64, text: '很难举一反三' },
+      { start: 19.64, end: 22.4, text: '花很多时间阅读和做笔记整理' },
+    ];
+    await f.storage.writeJsonAtomic('raw/transcripts/job.json', { segments });
+    const g = await f.service.create('job'); const c = await f.service.prepareContent(g.id, { version: g.version });
+    const item = c.contentPlan!.items.find(item => item.text === '很难举一反三')!;
+    const confirmed = await f.service.updateContent(g.id, { version: c.version, contentPlanId: c.contentPlan!.id, selectedIds: [item.id] });
+    await f.service.startOperation(g.id, { version: confirmed.version, kind: 'candidates', contentPlanId: confirmed.contentPlan!.id, contentConfirmed: true });
+    await until(async () => ['completed', 'failed'].includes((await f.service.get(g.id)).operation!.status));
+    assert.equal(f.contexts.length, 1);
+    const quote = f.contexts[0]!;
+    assert.equal(quote.start, 17.16); assert.equal(quote.end, 19.64);
+    assert.equal(quote.targetText, '很难举一反三'); assert.equal(quote.text, '很难举一反三');
+    assert.equal(quote.adjacentText, segments.slice(1).map(s => s.text).join(''));
+  } finally { await f.cleanup(); }
+});
+
+test('starting over removes abandoned operation cache only after saving the replacement', async () => {
+  const f = await fixture();
+  try {
+    const g = await f.service.create('job'); const ready = await f.service.render(g.id, g.version);
+    const operation = { id: 'abandoned', kind: 'render', status: 'paused', stage: 'render', completed: 0, total: 1, startedAt: '', updatedAt: '' };
+    await f.storage.writeJsonAtomic('cache/galleries.json', { [g.id]: { ...ready, operation } });
+    await f.storage.writeJsonAtomic(`output/galleries/${g.id}/operation-abandoned/unit.json`, { value: 'cached' });
+    const recovered = f.restart(); const interrupted = await recovered.get(g.id);
+    await recovered.startOperation(g.id, { version: interrupted.version, kind: 'render' });
+    await assert.rejects(f.storage.readJson(`output/galleries/${g.id}/operation-abandoned/unit.json`), { code: 'ENOENT' });
+    await until(async () => (await recovered.get(g.id)).operation!.status === 'completed');
   } finally { await f.cleanup(); }
 });

@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI, { type ClientOptions } from 'openai';
 import type { ArticleChatClient } from './article-draft.js';
 import type { AiRuntimeConfig } from '../app.js';
 import type { GalleryPlan, GalleryTranslation, GalleryTranslationCue } from './gallery-types.js';
@@ -29,7 +29,7 @@ export class GalleryTranslator {
     validateGalleryTranslationCues(cues, false);
     const config = await this.deps.resolveAiConfig();
     if (!config?.apiKey || !config.model) throw new GalleryError(422, '请先在设置中配置可用的 AI，再翻译字幕');
-    const client = this.deps.createClient?.(config) ?? new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 60_000, maxRetries: 0 });
+    const client = this.deps.createClient?.(config) ?? new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL, timeout: 60_000, maxRetries: 0, fetch: globalThis.fetch as unknown as ClientOptions['fetch'] });
     const translated: GalleryTranslationCue[] = [];
     for (let index = 0; index < cues.length;) {
       const batchStart = index;
@@ -90,28 +90,43 @@ export function planTranslatedGallery(translation: GalleryTranslation, targetLin
     || translation.start >= duration || translation.end > duration + .5
     || translation.cues.some(c => c.end <= translation.start || c.start >= translation.end)) throw new GalleryError(422, '译文时间范围无效，请重新选择范围');
   const images: GalleryPlan['images'] = [];
-  const cues = translation.cues;
-  for (let index = 0; index < cues.length;) {
-    const remaining = cues.length - index;
+  const rows: { text: string; cues: GalleryTranslationCue[]; end: number }[] = [];
+  for (const cue of translation.cues) {
+    const previous = rows.at(-1);
+    const separator = previous && /[，,、：:；;—…]$/u.test(previous.text) ? '' : '，';
+    const joined = previous ? previous.text + separator + cue.text : cue.text;
+    // Merge only layout rows; source cues and their exact timings remain intact.
+    if (previous && cue.segmentIndex === previous.cues.at(-1)!.segmentIndex + 1
+      && cue.start - previous.end <= 1.5 && Math.max(previous.end, cue.end) - previous.cues[0]!.start <= 6
+      && !/[。.!?！？][”’"'」』）)\]】〉》]*$/u.test(previous.text) && !/[\r\n]/u.test(joined) && Array.from(joined).length <= 26) {
+      previous.text = joined;
+      previous.cues.push(cue);
+      previous.end = Math.max(previous.end, cue.end);
+    } else rows.push({ text: cue.text, cues: [cue], end: cue.end });
+  }
+  for (let index = 0; index < rows.length;) {
+    const remaining = rows.length - index;
     let groups = Math.ceil(remaining / targetLines);
     while (targetLines >= 6 && targetLines <= 9 && groups > 1 && remaining / groups < 6 && Math.ceil(remaining / (groups - 1)) <= 9) groups--;
     const limit = Math.ceil(remaining / groups);
-    const group: GalleryTranslationCue[] = [];
+    const group: typeof rows = [];
     let height = 0;
-    while (index < cues.length && group.length < limit) {
-      const row = translatedCaptionHeight(cues[index]!.text);
+    while (index < rows.length && group.length < limit) {
+      const row = translatedCaptionHeight(rows[index]!.text);
       if (group.length && height + row > 1008) break;
       if (row > 1008) throw new GalleryError(422, '译文过长，无法清晰排版，请缩短该条译文或拆分转录');
-      group.push(cues[index++]!); height += row;
+      group.push(rows[index++]!); height += row;
     }
-    const times = group.map(c => {
+    const times = group.map(row => {
+      const c = row.cues[0]!;
       const middle = (c.start + Math.min(c.end, duration)) / 2;
       return middle < duration ? middle : c.start;
     });
-    images.push({ title: group[0]!.text.slice(0, 36), quotes: group.map(c => ({ segmentIndex: c.segmentIndex, originalText: c.original, text: c.text, start: c.start, end: c.end, verification: 'translation' })),
+    images.push({ title: group[0]!.text.slice(0, 36), quotes: group.flatMap(row => row.cues.map(c => ({ segmentIndex: c.segmentIndex, originalText: c.original, text: c.text, start: c.start, end: c.end, verification: 'translation' as const }))),
       image: { mainTime: times[0]!, times, translatedCaptions: group.map(c => c.text), bandTop: .75, bandBottom: .95, mainFraction: .48 } });
   }
   const warnings = ['中文译文为 AI 翻译，请逐条对照原文核对；图片使用对应时间画面与中文绘制字幕。'];
-  if (images.some(image => image.quotes.length < targetLines)) warnings.push('长译文或内容边界使部分图片少于建议条数，已保留完整文字并保证可读性。');
+  if (rows.length < translation.cues.length) warnings.push(`相邻短字幕已从 ${translation.cues.length} 条合并为 ${rows.length} 条排版；原字幕、译文和逐条时间均保留，请核对合并后的文字与代表画面。`);
+  if (images.some(image => image.image.times.length < targetLines)) warnings.push('长译文或内容边界使部分图片少于建议条数，已保留完整文字并保证可读性。');
   return { mode: 'translated', images, warnings, excluded: [] };
 }

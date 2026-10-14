@@ -151,7 +151,7 @@ export class MediaService {
         "--sub-format", "json3", "-o", output, ...this.buildCookieArgs()
       ], this.ytDlpRunOptions());
       const actualDuration = duration ?? (typeof metadata.duration === "number" ? metadata.duration : undefined);
-      const segments = parseYouTubeJson3(JSON.parse(await readFile(captionPath, "utf8")), actualDuration);
+      const segments = parseYouTubeJson3(JSON.parse(await readFile(captionPath, "utf8")), actualDuration, track.language);
       return { text: segments.map((segment) => segment.text).join("\n"), segments, duration: actualDuration,
         language: track.language.replace(/-orig$/, ""), model: "youtube-json3",
         provider: track.automatic ? "youtube-automatic-captions" : "youtube-authored-captions" };

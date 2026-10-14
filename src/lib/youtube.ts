@@ -28,23 +28,40 @@ export function selectYouTubeCaption(metadata: Record<string, unknown>): { langu
 
 type Json3Event = { tStartMs?: number; dDurationMs?: number; segs?: Array<{ utf8?: string }> };
 
-export function parseYouTubeJson3(payload: unknown, duration?: number): TranscriptSegment[] {
+export function parseYouTubeJson3(payload: unknown, duration?: number, language?: string): TranscriptSegment[] {
   const events = (payload as { events?: Json3Event[] })?.events;
   if (!Array.isArray(events)) throw new Error("YouTube 字幕 JSON3 缺少 events");
-  const cues: Array<{ start: number; end: number; text: string }> = [];
+  let timedCues: Array<{ start: number; end: number; text: string }> = [];
   for (const event of events) {
     if (!event || (event.segs !== undefined && (!Array.isArray(event.segs) || event.segs.some((segment) => !segment || (segment.utf8 !== undefined && typeof segment.utf8 !== "string"))))) {
       throw new Error("YouTube 字幕文字结构无效");
     }
-    let text = event.segs?.map((segment) => segment.utf8 ?? "").join("").replace(/\s+/gu, " ").trim();
+    const text = event.segs?.map((segment) => segment.utf8 ?? "").join("").replace(/\s+/gu, " ").trim();
     if (!text) continue;
     if (typeof event.tStartMs !== "number" || typeof event.dDurationMs !== "number") throw new Error("YouTube 字幕时间缺失或无效");
     const start = Number(event.tStartMs) / 1000;
-    let end = start + Number(event.dDurationMs) / 1000;
-    const previous = cues.at(-1);
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || (previous && start < previous.start) || (duration !== undefined && (start >= duration || end > duration + 0.5))) {
+    const end = start + Number(event.dDurationMs) / 1000;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || (duration !== undefined && (start >= duration || end > duration + 0.5))) {
       throw new Error("YouTube 字幕时间缺失、倒序或超出视频时长");
     }
+    timedCues.push({ start, end, text });
+  }
+  // Some Chinese tracks concatenate a full English translation with the same cue timings.
+  if (/^zh(?:-|$)/i.test(language ?? "") && timedCues.length >= 4 && timedCues.length % 2 === 0) {
+    const middle = timedCues.length / 2;
+    const first = timedCues.slice(0, middle), second = timedCues.slice(middle);
+    if (second[0].start < first.at(-1)!.start && first.every((cue, index) => cue.start === second[index].start && cue.end === second[index].end)) {
+      const firstIsChinese = first.filter(cue => /\p{Script=Han}/u.test(cue.text)).length >= middle / 2;
+      const secondIsChinese = second.filter(cue => /\p{Script=Han}/u.test(cue.text)).length >= middle / 2;
+      if (firstIsChinese !== secondIsChinese) timedCues = firstIsChinese ? first : second;
+    }
+  }
+  const cues: Array<{ start: number; end: number; text: string }> = [];
+  for (const cue of timedCues) {
+    let { end, text } = cue;
+    const { start } = cue;
+    const previous = cues.at(-1);
+    if (previous && start < previous.start) throw new Error("YouTube 字幕时间缺失、倒序或超出视频时长");
     if (duration !== undefined) end = Math.min(end, duration);
     if (previous && start < previous.end) {
       if (previous.text === text) { previous.end = Math.max(previous.end, end); continue; }

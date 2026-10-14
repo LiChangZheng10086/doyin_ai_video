@@ -1,7 +1,7 @@
 import type { BrowserWindow, WebContentsView, IpcMain, Rectangle } from 'electron';
 const HOME = 'https://www.youtube.com/';
 const VIDEO_HOSTS = ['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be'];
-const HOSTS = [...VIDEO_HOSTS, 'accounts.google.com', 'consent.youtube.com', 'consent.google.com'];
+const HOSTS = [...VIDEO_HOSTS, 'accounts.google.com', 'accounts.youtube.com', 'consent.youtube.com', 'consent.google.com'];
 export type YoutubeBrowserAction = 'search' | 'home' | 'back' | 'forward' | 'reload';
 export interface YoutubeBrowserState {
   url: string;

@@ -47,6 +47,7 @@ export interface CollectionOverview extends CollectionRecord {
 type CollectionsIndex = Record<string, CollectionRecord>;
 
 export class CollectionStore {
+  private mutationQueue: Promise<unknown> = Promise.resolve();
   constructor(
     private readonly storage: LocalStorage,
     private readonly jobStore: {
@@ -57,11 +58,14 @@ export class CollectionStore {
   ) {}
 
   async init(): Promise<void> {
-    try {
-      await this.storage.readJson<CollectionsIndex>(COLLECTIONS_INDEX);
-    } catch {
-      await this.storage.writeJson(COLLECTIONS_INDEX, {});
-    }
+    await this.mutateIndex(async () => {
+      try {
+        await this.readIndex();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        await this.writeIndex({});
+      }
+    });
   }
 
   /**
@@ -93,9 +97,11 @@ export class CollectionStore {
       updatedAt: now,
     };
 
-    const index = await this.readIndex();
-    index[id] = record;
-    await this.writeIndex(index);
+    await this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      index[id] = record;
+      await this.writeIndex(index);
+    });
 
     return { collection: record, crawlResult };
   }
@@ -116,24 +122,29 @@ export class CollectionStore {
     // 重新爬取（增量检测不需要太多，50 条足以覆盖新内容）
     const crawlResult = await crawlUserPage(pageUrl, 50, this.crawlerConfig);
 
-    // 用 awemeId 去重
-    const existingIds = new Set(existing.crawlResult.items.map((item) => item.awemeId));
-    const newItems = crawlResult.items.filter((item) => !existingIds.has(item.awemeId));
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const existing = index[collectionId];
+      if (!existing) throw new Error("collection not found");
 
-    if (newItems.length > 0) {
-      existing.crawlResult.items.push(...newItems);
-      existing.crawlResult.totalCollected = existing.crawlResult.items.length;
-      existing.crawlResult.hasMore = crawlResult.hasMore;
-      existing.crawlResult.nextCursor = crawlResult.nextCursor;
-    }
+      // 用 awemeId 去重
+      const existingIds = new Set(existing.crawlResult.items.map((item) => item.awemeId));
+      const newItems = crawlResult.items.filter((item) => !existingIds.has(item.awemeId));
 
-    existing.updatedAt = new Date().toISOString();
+      if (newItems.length > 0) {
+        existing.crawlResult.items.push(...newItems);
+        existing.crawlResult.totalCollected = existing.crawlResult.items.length;
+        existing.crawlResult.hasMore = crawlResult.hasMore;
+        existing.crawlResult.nextCursor = crawlResult.nextCursor;
+      }
 
-    const index = await this.readIndex();
-    index[collectionId] = existing;
-    await this.writeIndex(index);
+      existing.updatedAt = new Date().toISOString();
 
-    return { collection: existing, newItemsCount: newItems.length };
+      index[collectionId] = existing;
+      await this.writeIndex(index);
+
+      return { collection: existing, newItemsCount: newItems.length };
+    });
   }
 
   /**
@@ -144,63 +155,58 @@ export class CollectionStore {
     selectedAwemeIds: string[],
     topic: string = ""
   ): Promise<{ collection: CollectionRecord; createdJobs: JobRecord[] }> {
-    const collection = await this.get(collectionId);
-    if (!collection) {
-      throw new Error("collection not found");
-    }
-
-    const selectedSet = new Set(selectedAwemeIds);
-    const selectedItems = collection.crawlResult.items.filter((item) =>
-      selectedSet.has(item.awemeId)
-    );
-
-    if (selectedItems.length === 0) {
-      throw new Error("no matching videos found in collection");
-    }
-
-    // 去重：跳过已经创建过的
-    const existingIds = new Set(collection.childJobIds);
-    const toCreate = selectedItems.filter(
-      (_, idx) => !existingIds.has(`${collectionId}-${idx}`)
-    );
-
-    const createdJobs: JobRecord[] = [];
-    const newJobIds: string[] = [];
-    const newJobMap: Record<string, string> = {};
-
-    for (const item of toCreate) {
-      const videoShareUrl = `https://www.douyin.com/video/${item.awemeId}`;
-      const jobTopic = topic || item.desc.slice(0, 48) || collection.nickname;
-
-      try {
-        const job = await this.jobStore.create({
-          sourceUrl: videoShareUrl,
-          topic: jobTopic,
-          coverUrl: item.coverUrl,
-        });
-        createdJobs.push(job);
-        newJobIds.push(job.id);
-        newJobMap[item.awemeId] = job.id;
-      } catch (error) {
-        // 单个子任务创建失败不影响整体
-        console.warn(`Failed to create child job for aweme ${item.awemeId}:`, error);
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const collection = index[collectionId];
+      if (!collection) {
+        throw new Error("collection not found");
       }
-    }
 
-    const index = await this.readIndex();
-    const current = index[collectionId];
-    if (current) {
-      current.childJobIds = [...current.childJobIds, ...newJobIds];
-      current.childJobMap = { ...current.childJobMap, ...newJobMap };
-      current.updatedAt = new Date().toISOString();
-      index[collectionId] = current;
+      const selectedSet = new Set(selectedAwemeIds);
+      const selectedItems = collection.crawlResult.items.filter((item) =>
+        selectedSet.has(item.awemeId)
+      );
+
+      if (selectedItems.length === 0) {
+        throw new Error("no matching videos found in collection");
+      }
+
+      // 去重：跳过已经创建过的
+      const toCreate = selectedItems.filter((item) => !collection.childJobMap?.[item.awemeId]);
+
+      const createdJobs: JobRecord[] = [];
+      const newJobIds: string[] = [];
+      const newJobMap: Record<string, string> = {};
+
+      for (const item of toCreate) {
+        const videoShareUrl = `https://www.douyin.com/video/${item.awemeId}`;
+        const jobTopic = topic || item.desc.slice(0, 48) || collection.nickname;
+
+        try {
+          const job = await this.jobStore.create({
+            sourceUrl: videoShareUrl,
+            topic: jobTopic,
+            coverUrl: item.coverUrl,
+          });
+          createdJobs.push(job);
+          newJobIds.push(job.id);
+          newJobMap[item.awemeId] = job.id;
+        } catch (error) {
+          // 单个子任务创建失败不影响整体
+          console.warn(`Failed to create child job for aweme ${item.awemeId}:`, error);
+        }
+      }
+
+      collection.childJobIds = [...collection.childJobIds, ...newJobIds];
+      collection.childJobMap = { ...collection.childJobMap, ...newJobMap };
+      collection.updatedAt = new Date().toISOString();
       await this.writeIndex(index);
-    }
 
-    return {
-      collection: (await this.get(collectionId))!,
-      createdJobs,
-    };
+      return {
+        collection,
+        createdJobs,
+      };
+    });
   }
 
   /**
@@ -267,23 +273,25 @@ export class CollectionStore {
   }
 
   async delete(id: string): Promise<boolean> {
-    const index = await this.readIndex();
-    if (!index[id]) return false;
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      if (!index[id]) return false;
 
-    delete index[id];
-    await this.writeIndex(index);
+      delete index[id];
+      await this.writeIndex(index);
 
-    // 清理爬取缓存
-    try {
-      await this.storage.writeJson(
-        `cache/collections-${id}.json`,
-        null
-      );
-    } catch {
-      // 忽略清理错误
-    }
+      // 清理爬取缓存
+      try {
+        await this.storage.writeJson(
+          `cache/collections-${id}.json`,
+          null
+        );
+      } catch {
+        // 忽略清理错误
+      }
 
-    return true;
+      return true;
+    });
   }
 
   /**
@@ -309,39 +317,53 @@ export class CollectionStore {
     id: string,
     meta: { skillName: string; skillPath: string; skillGeneratedAt: string; autoSyncSkill?: boolean }
   ): Promise<CollectionRecord | null> {
-    const index = await this.readIndex();
-    const record = index[id];
-    if (!record) return null;
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const record = index[id];
+      if (!record) return null;
 
-    record.skillName = meta.skillName;
-    record.skillPath = meta.skillPath;
-    record.skillGeneratedAt = meta.skillGeneratedAt;
-    if (meta.autoSyncSkill !== undefined) {
-      record.autoSyncSkill = meta.autoSyncSkill;
-    }
-    record.updatedAt = new Date().toISOString();
-    index[id] = record;
-    await this.writeIndex(index);
-    return record;
+      record.skillName = meta.skillName;
+      record.skillPath = meta.skillPath;
+      record.skillGeneratedAt = meta.skillGeneratedAt;
+      if (meta.autoSyncSkill !== undefined) {
+        record.autoSyncSkill = meta.autoSyncSkill;
+      }
+      record.updatedAt = new Date().toISOString();
+      index[id] = record;
+      await this.writeIndex(index);
+      return record;
+    });
   }
 
   /**
    * 切换自动同步 Skill 开关
    */
   async toggleAutoSyncSkill(id: string, enabled: boolean): Promise<CollectionRecord | null> {
-    const index = await this.readIndex();
-    const record = index[id];
-    if (!record) return null;
+    return this.mutateIndex(async () => {
+      const index = await this.readIndex();
+      const record = index[id];
+      if (!record) return null;
 
-    record.autoSyncSkill = enabled;
-    record.updatedAt = new Date().toISOString();
-    index[id] = record;
-    await this.writeIndex(index);
-    return record;
+      record.autoSyncSkill = enabled;
+      record.updatedAt = new Date().toISOString();
+      index[id] = record;
+      await this.writeIndex(index);
+      return record;
+    });
+  }
+
+  private mutateIndex<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(operation);
+    this.mutationQueue = result.catch(() => undefined);
+    return result;
   }
 
   private async readIndex(): Promise<CollectionsIndex> {
     const index = await this.storage.readJson<CollectionsIndex>(COLLECTIONS_INDEX);
+    if (!index || typeof index !== "object" || Array.isArray(index) ||
+      Object.entries(index).some(([id, record]) => !record || typeof record !== "object" || Array.isArray(record) || record.id !== id)) {
+      throw new Error("合集索引损坏，请保留原文件并检查本地存储");
+    }
     // 归一化读取边界：历史数据里存过英文占位昵称 `Unknown User`，这里直接在内存里治掉，
     // 界面（合集 H1/列表）与 AI 提示词都走这条路径，无需改动用户已落盘的数据文件。
     for (const record of Object.values(index)) {
@@ -351,6 +373,6 @@ export class CollectionStore {
   }
 
   private async writeIndex(index: CollectionsIndex): Promise<void> {
-    await this.storage.writeJson(COLLECTIONS_INDEX, index);
+    await this.storage.writeJsonAtomic(COLLECTIONS_INDEX, index);
   }
 }

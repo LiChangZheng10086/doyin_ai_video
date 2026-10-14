@@ -1,6 +1,8 @@
 import { ArticlesPage } from './pages/ArticlesPage';
 import { WechatBenchmarksPage } from './pages/WechatBenchmarksPage';
 import { ArticleDetailPage } from './pages/ArticleDetailPage';
+import { XhsNotesPage } from './pages/XhsNotesPage';
+import { XhsNoteDetailPage } from './pages/XhsNoteDetailPage';
 import { useEffect, useRef } from 'react';
 import { RouterProvider, Outlet } from 'react-router-dom';
 import { createAppRouter } from './utils/appRouter';
@@ -28,6 +30,8 @@ const router = createAppRouter([{
     { path: '/articles', element: <ArticlesPage /> },
     { path: '/articles/benchmarks', element: <WechatBenchmarksPage /> },
     { path: '/articles/:id', element: <ArticleDetailPage /> },
+    { path: '/xhs-notes', element: <XhsNotesPage /> },
+    { path: '/xhs-notes/:id', element: <XhsNoteDetailPage /> },
     { path: '/youtube', element: <YoutubePage /> },
     { path: '/hotspots', element: <HotspotsPage /> },
     { path: '/jobs/:id', element: <JobDetailPage /> },

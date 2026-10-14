@@ -77,15 +77,15 @@ export class GalleryMedia {
     } finally { await rm(dir, { recursive: true, force: true }); }
   }
 
-  async suggestSubtitle(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number } = {}): Promise<SubtitleCandidate | null> {
+  async suggestSubtitle(video: string, quote: { start: number; end: number; text?: string; targetText?: string; adjacentText?: string }, region: { bandTop?: number; bandBottom?: number } = {}): Promise<SubtitleCandidate | null> {
     return (await this.detectSubtitles(video, quote, region, false))[0] ?? null;
   }
 
-  async suggestSubtitles(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number } = {}, control: GalleryWorkControl = {}): Promise<SubtitleCandidate[]> {
+  async suggestSubtitles(video: string, quote: { start: number; end: number; text?: string; targetText?: string; adjacentText?: string }, region: { bandTop?: number; bandBottom?: number } = {}, control: GalleryWorkControl = {}): Promise<SubtitleCandidate[]> {
     return this.detectSubtitles(video, quote, region, true, control);
   }
 
-  private async detectSubtitles(video: string, quote: { start: number; end: number; text?: string }, region: { bandTop?: number; bandBottom?: number }, collect: boolean, control: GalleryWorkControl = {}): Promise<SubtitleCandidate[]> {
+  private async detectSubtitles(video: string, quote: { start: number; end: number; text?: string; targetText?: string; adjacentText?: string }, region: { bandTop?: number; bandBottom?: number }, collect: boolean, control: GalleryWorkControl = {}): Promise<SubtitleCandidate[]> {
     const info = await this.probe(video);
     if (!Number.isFinite(quote.start) || !Number.isFinite(quote.end) || quote.start < 0 || quote.end <= quote.start || quote.start >= info.duration) {
       throw new GalleryError(422, '转录时间无法用于字幕候选');
@@ -96,6 +96,10 @@ export class GalleryMedia {
     const dir = await mkdtemp(path.join(tmpdir(), 'gallery-candidates-'));
     try {
       if (quote.text && (this.config.recognizeSubtitles || nativeSubtitleOcrAvailable())) {
+        // Include the whole glyph when a centered caption crosses the lower-half boundary.
+        const cropTop = Math.floor((region.bandTop ?? .38) * info.height / 2) * 2;
+        const cropBottom = Math.min(info.height, Math.ceil((region.bandBottom ?? .98) * info.height / 2) * 2);
+        const cropHeight = cropBottom - cropTop;
         let best: (SubtitleCandidate & { score: number }) | null = null;
         const found: SubtitleCandidate[] = [];
         const count = Math.max(7, Math.min(80, Math.ceil((quote.end - quote.start) / .5)));
@@ -105,12 +109,12 @@ export class GalleryMedia {
           const time = Math.min(info.duration - .001, quote.start + (Math.min(quote.end, info.duration) - quote.start) * fraction);
           const file = path.join(dir, `ocr-${fraction}.png`);
           // Keep the native fine glyphs; OCR handles camera motion outside the text.
-          await this.execute(['-ss', String(time), '-i', video, '-vf', 'crop=iw:ih*0.48:0:ih*0.5,scale=2560:1280:force_original_aspect_ratio=decrease', '-frames:v', '1', '-threads', '1', file]);
+          await this.execute(['-ss', String(time), '-i', video, '-vf', `crop=iw:${cropHeight}:0:${cropTop},scale=2560:1280:force_original_aspect_ratio=decrease`, '-frames:v', '1', '-threads', '1', file]);
           await control.checkpoint?.();
           let lines;
           try { lines = await (this.config.recognizeSubtitles ?? recognizeNativeText)(file); }
           catch (error) { throw new GalleryError(503, `原生字幕识别不可用：${error instanceof Error ? error.message : String(error)}`, 'gallery_ocr_unavailable'); }
-          const result = selectNativeSubtitle(lines.map(line => ({ ...line, top: .5 + line.top * .48, bottom: .5 + line.bottom * .48 })), quote.text, region);
+          const result = selectNativeSubtitle(lines.map(line => ({ ...line, top: (cropTop + line.top * cropHeight) / info.height, bottom: (cropTop + line.bottom * cropHeight) / info.height })), quote.text, region, quote);
           if (result && (!best || result.score > best.score)) best = { time, ...result };
           if (result && (!found.length || result.recognizedText.replace(/[^\p{L}\p{N}]/gu, '') !== found.at(-1)!.recognizedText!.replace(/[^\p{L}\p{N}]/gu, ''))) {
             found.push({ time, bandTop: result.bandTop, bandBottom: result.bandBottom, recognizedText: result.recognizedText, verification: 'ocr' });

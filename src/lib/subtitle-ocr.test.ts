@@ -58,3 +58,20 @@ test('OCR retains both native lines, long text and traditional glyphs inside cal
   assert.equal(selectNativeSubtitle(lines, '这是完整的第一行', { bandTop: .85, bandBottom: .96 }), null);
   assert.ok(selectNativeSubtitle([line('骗子')], '骗子'));
 });
+
+test('centered native captions crossing the half-frame boundary retain complete glyphs', () => {
+  const native = line('这些问题你有没有遇到', { top: .483, bottom: .53, left: .407, right: .574, confidence: .5 });
+  const selected = selectNativeSubtitle([native], '这些问题你有没有遇到');
+  assert.ok(selected && selected.bandTop < native.top && selected.bandBottom > native.bottom);
+  assert.equal(selectNativeSubtitle([native], '这些问题你有没有遇到', { bandTop: .5, bandBottom: .98 }), null, 'explicit crop remains strict');
+  assert.equal(selectNativeSubtitle([line(native.text, { top: .2, bottom: .25 })], native.text), null, 'upper titles remain excluded by default');
+});
+
+test('adjacent transcript context corroborates a continuing caption only when current target is visibly complete', () => {
+  const caption = line('你会感觉自己的思考缺乏深度，很难举一反三。', { top: .475, bottom: .534 });
+  const current = '很难举一反三';
+  const context = { targetText: current, adjacentText: '你会感觉自己的思考缺乏深度很难举一反三花很多时间阅读和做笔记整理' };
+  assert.ok(selectNativeSubtitle([caption], current, {}, context));
+  assert.equal(selectNativeSubtitle([line('你会感觉自己的思考缺乏深度', { top: .475, bottom: .534 })], current, {}, context), null, 'previous caption alone cannot verify the current target');
+  assert.equal(selectNativeSubtitle([line('无关前文很难举一反三完全无关的额外内容')], current, {}, context), null, 'exact target alone does not bypass full-caption corroboration');
+});

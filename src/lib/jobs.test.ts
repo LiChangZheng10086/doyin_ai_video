@@ -636,8 +636,14 @@ test("retranscription holds the same job mutex against repair, steps and reclean
   for (const action of [() => jobs.retranscribe(id), () => jobs.runStep(id, "clean"), () => jobs.reclean(id, "补充")]) {
     await assert.rejects(action(), (error) => error instanceof JobStepError && error.statusCode === 409);
   }
-  release();
+  try {
+    const other = await jobs.create({ sourceUrl: 'https://example.com/unrelated' });
+    await Promise.all([jobs.trash(id), jobs.update(other.id, { topic: 'unblocked' })]);
+    assert.equal(await jobs.permanentlyDelete(id), 'active');
+    assert.equal((await jobs.get(other.id))?.topic, 'unblocked');
+  } finally { release(); }
   await run;
+  assert.ok((await jobs.get(id))?.deletedAt);
 });
 
 test("historical abnormal transcript cannot reach cleaner even when transcribe says succeeded", async () => {
@@ -843,7 +849,11 @@ test("repair persists complete recovery journal before replacing active transcri
 });
 
 test("cancellation racing state commit restores old files and retains pause even if state write overtakes pause", async () => {
-  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
+  let cancelled!: () => void;
+  const cancellation = new Promise<void>((resolve) => { cancelled = resolve; });
+  const { jobs, storage, id } = await repairFixture(async () => repairedTranscript, undefined, {
+    async proofread(asset, signal) { signal?.addEventListener('abort', cancelled, { once: true }); return asset; }
+  });
   let entered!: () => void;
   let release!: () => void;
   const started = new Promise<void>((resolve) => { entered = resolve; });
@@ -856,7 +866,7 @@ test("cancellation racing state commit restores old files and retains pause even
   const run = jobs.retranscribe(id);
   await started;
   const pausing = jobs.pauseStep(id);
-  while ((await jobs.get(id))?.steps?.transcribe.status !== "paused") await new Promise((resolve) => setTimeout(resolve, 1));
+  await cancellation;
   release();
   await Promise.all([run, pausing]);
   assert.equal((await jobs.get(id))?.steps?.transcribe.status, "paused");
@@ -980,7 +990,7 @@ test("failed transaction rollback preserves a concurrent user deletion and unrel
   assert.equal((await storage.readJson<{ text: string }>("raw/transcripts/repair.json")).text, "旧转录");
 });
 
-test("permanent deletion stays blocked until repair releases its lock after final state commit", async () => {
+test("trash waits for an in-flight final state write and remains deleted after repair commits", async () => {
   const { jobs, storage, id } = await repairFixture(async () => repairedTranscript);
   let entered!: () => void;
   let release!: () => void;
@@ -999,10 +1009,10 @@ test("permanent deletion stays blocked until repair releases its lock after fina
   };
   const run = jobs.retranscribe(id);
   await started;
+  let trashRequest: ReturnType<JobStore['trash']> | undefined;
   try {
     assert.equal((await jobs.get(id))?.status, "queued");
-    await jobs.trash(id);
-    assert.equal(await jobs.permanentlyDelete(id), "active");
+    trashRequest = jobs.trash(id);
     assert.ok(await readFile(storage.resolve(`cache/retranscribe/${id}.json`)));
     const backups = (await readdir(storage.resolve("raw/transcripts"))).filter((file) => file.includes("before-retranscribe"));
     assert.equal(backups.length, 1);
@@ -1011,6 +1021,7 @@ test("permanent deletion stays blocked until repair releases its lock after fina
     release();
     await run.catch(() => undefined);
   }
+  assert.ok((await trashRequest)?.deletedAt);
   assert.equal((await jobs.get(id))?.steps?.transcribe.status, "succeeded");
   assert.equal(await jobs.permanentlyDelete(id), "deleted");
   await assert.rejects(readFile(storage.resolve("raw/transcripts/repair.json")));
@@ -1055,3 +1066,51 @@ test("video audio persists across retries, explicit regeneration preserves old a
   assert.equal(calls, 2);
   await rm(root, { recursive: true, force: true });
 });
+
+test('JobStore serializes concurrent index changes and releases the queue after a failed write', async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'jobs-concurrent-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const storage = new LocalStorage(root);
+  const jobs = new JobStore(storage, {} as ScriptCleaner, {} as MediaService, {} as AsrService);
+  await jobs.init();
+  const records = await Promise.all(Array.from({ length: 10 }, (_, i) => jobs.create({ sourceUrl: `https://example.com/${i}` })));
+  assert.equal((await jobs.list()).length, 10);
+  await Promise.all(records.map((record, i) => jobs.update(record.id, { topic: `edited-${i}` })));
+  assert.deepEqual(new Set((await jobs.list()).map((record) => record.topic)), new Set(records.map((_, i) => `edited-${i}`)));
+  await Promise.all([jobs.trash(records[0].id), jobs.update(records[1].id, { topic: 'retained' })]);
+  assert.ok((await jobs.get(records[0].id))?.deletedAt);
+  await Promise.all([jobs.restore(records[0].id), jobs.trash(records[2].id)]);
+  assert.equal((await jobs.get(records[0].id))?.deletedAt, undefined);
+  await Promise.all([jobs.permanentlyDelete(records[2].id), jobs.update(records[3].id, { topic: 'survived-delete' })]);
+  assert.equal(await jobs.get(records[2].id), null);
+  assert.equal((await jobs.get(records[3].id))?.topic, 'survived-delete');
+  await jobs.trash(records[4].id);
+  await jobs.update(records[4].id, { trashExpiresAt: '2000-01-01T00:00:00Z' });
+  await Promise.all([jobs.listTrash(), jobs.update(records[5].id, { topic: 'survived-purge' })]);
+  assert.equal(await jobs.get(records[4].id), null);
+  assert.equal((await jobs.get(records[5].id))?.topic, 'survived-purge');
+  const write = storage.writeJsonAtomic.bind(storage);
+  let fail = true;
+  storage.writeJsonAtomic = async (file, data) => {
+    if (fail && file === 'cache/jobs-index.json') { fail = false; throw new Error('disk full'); }
+    return write(file, data);
+  };
+  await assert.rejects(jobs.update(records[1].id, { topic: 'lost' }), /disk full/);
+  assert.equal((await jobs.get(records[1].id))?.topic, 'retained');
+  await jobs.update(records[1].id, { topic: 'recovered' });
+  assert.equal((await jobs.get(records[1].id))?.topic, 'recovered');
+});
+
+for (const content of ['{"broken":', '[]', 'null', '{"broken":null}', '{"broken":{"id":"other"}}']) {
+  test(`JobStore preserves a damaged index: ${content}`, async (t) => {
+    const root = await mkdtemp(path.join(tmpdir(), 'jobs-damaged-'));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const storage = new LocalStorage(root);
+    await storage.ensureBaseDirs();
+    await writeFile(storage.resolve('cache/jobs-index.json'), content);
+    const jobs = new JobStore(storage, {} as ScriptCleaner, {} as MediaService, {} as AsrService);
+    await assert.rejects(jobs.init());
+    await assert.rejects(jobs.create({ sourceUrl: 'https://example.com/video' }));
+    assert.equal(await readFile(storage.resolve('cache/jobs-index.json'), 'utf8'), content);
+  });
+}

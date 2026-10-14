@@ -137,6 +137,13 @@ export interface GalleryOperation {
   error?: string;
   startedAt: string;
   updatedAt: string;
+  recovery?: {
+    input: GalleryOperationInput;
+    version: number;
+    sourceFingerprint: string;
+    transcriptHash?: string;
+    finished?: boolean;
+  };
 }
 
 export interface GalleryOperationInput extends GalleryPlanInput {
@@ -146,6 +153,7 @@ export interface GalleryOperationInput extends GalleryPlanInput {
 }
 
 export interface GalleryWorkControl {
+  unit?: <T>(key: string, work: () => Promise<T>) => Promise<T>;
   checkpoint?: () => Promise<void>;
   progress?: (completed: number, total: number) => Promise<void>;
 }

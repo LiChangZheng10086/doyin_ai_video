@@ -23,6 +23,8 @@ test('gallery workspace exposes independent copy generation, source warnings and
   const render = (g: Gallery) => renderToStaticMarkup(<RouterProvider router={createMemoryRouter([{ path: '/', element: <GalleryWorkspace initial={g} source={source} transcript={{ segments: [{ start: 0, end: 2, text: '原句' }], transcript: '原句' }} /> }])} />);
   const html = render(gallery);
   assert.match(html, /自动创作整套图文/);
+  assert.match(html, /Windows.*Linux.*高级调整/);
+  assert.match(html, /像素候选不代表已识别字幕/);
   assert.match(html, /<option value="custom">自定义<\/option>/);
   assert.match(html, /重新生成文案/);
   assert.match(html, /3\s*\/\s*1000/);

@@ -29,3 +29,18 @@ test('legacy candidate plans over 35 remain viewable but cannot be confirmed or 
   assert.match(html, /第 36 张/);
   assert.match(html, /disabled=""[^>]*>按此方案生成整套图集/);
 });
+
+test('translated plan shows merged layout text separately from all original caption times', async () => {
+  const { GalleryPlanPanel } = await import('./GalleryPlanPanel.js');
+  const plan = { id: 'p', mode: 'translated' as const, transcriptHash: 't', sourceFingerprint: 's', warnings: [], excluded: [], images: [{ title: '开场',
+    image: { mainTime: .5, times: [.5], bandTop: .75, bandBottom: .95, mainFraction: .48, translatedCaptions: ['大家好，今天聊一聊'] },
+    quotes: [{ segmentIndex: 0, text: '大家好', originalText: 'Hello', start: 0, end: 1 }, { segmentIndex: 1, text: '今天聊一聊', originalText: 'Today', start: 1, end: 2 }] }] };
+  const html = renderToStaticMarkup(<GalleryPlanPanel plan={plan} imageUrls={[]} confirmed={false} disabled={false} onConfirmChange={() => {}} onGenerate={() => {}} />);
+  assert.match(html, /1 条排版/);
+  assert.match(html, /2 条原字幕/);
+  assert.match(html, /大家好，今天聊一聊/);
+  assert.match(html, /Hello/);
+  assert.match(html, /Today/);
+  assert.match(html, /0\.0～1\.0 秒/);
+  assert.match(html, /1\.0～2\.0 秒/);
+});

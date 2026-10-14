@@ -1180,7 +1180,10 @@ function isPublishingIndex(value: unknown): value is PublishingIndex {
   if (!Object.entries(index.tasks).every(([id, item]) => isPublishTask(item, id))) return false;
   if (!index.audit.every(isAuditEvent)) return false;
   if (!Object.entries(index.tombstones).every(([id, item]) => isTombstone(item, id))) return false;
-  return Object.values(index.tasks).every((task) => !!index.packages?.[task.packageId]);
+  return Object.values(index.tasks).every((task) => {
+    const pkg = index.packages?.[task.packageId];
+    return !!pkg && (pkg.sourceKind !== 'xhs_note' || task.platform === 'xiaohongshu');
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1213,9 +1216,13 @@ function isDeliveryPackage(value: unknown, key: string): value is DeliveryPackag
   return (
     value.id === key &&
     isString(value.sourceJobId) &&
-    (value.sourceKind === undefined || value.sourceKind === "job" || value.sourceKind === "article") &&
+    (value.sourceKind === undefined || value.sourceKind === "job" || value.sourceKind === "article" || value.sourceKind === "xhs_note") &&
     (value.sourceKind === "article" ? typeof value.sourceArticleId === "string" && /^[a-f0-9-]{36}$/.test(value.sourceArticleId)
       && value.sourceJobId === `article-${value.sourceArticleId}` && value.contentType === "article" : value.sourceArticleId === undefined) &&
+    (value.sourceKind === 'xhs_note' ? typeof value.sourceNoteId === 'string' && /^[a-f0-9-]{36}$/.test(value.sourceNoteId)
+      && value.sourceJobId === `xhs-note-${value.sourceNoteId}` && value.contentType === 'note'
+      && isRecord(value.xhsOptions) && value.xhsOptions.aiDeclaration === true && value.xhsOptions.submit === false
+      : value.sourceNoteId === undefined) &&
     isPositiveInteger(value.version) &&
     (value.state === "active" || value.state === "trashed" || value.state === "purged") &&
     isString(value.title) &&

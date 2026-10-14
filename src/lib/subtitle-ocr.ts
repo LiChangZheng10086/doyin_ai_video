@@ -57,7 +57,7 @@ function commonCharacters(a: string, b: string): number {
 }
 
 // OCR is corroborating evidence, never a replacement for the original subtitle pixels.
-export function selectNativeSubtitle(lines: NativeTextLine[], quote: string, region: { bandTop?: number; bandBottom?: number } = {}):
+export function selectNativeSubtitle(lines: NativeTextLine[], quote: string, region: { bandTop?: number; bandBottom?: number } = {}, context: { targetText?: string; adjacentText?: string } = {}):
   { bandTop: number; bandBottom: number; recognizedText: string; score: number } | null {
   const expected = normalize(quote);
   if (expected.length < 2) return null;
@@ -65,12 +65,15 @@ export function selectNativeSubtitle(lines: NativeTextLine[], quote: string, reg
   const matching = lines.filter(line => {
     const text = normalize(line.text);
     if (line.confidence < .5 || text.length < 2 || text.length > 60) return false;
-    if (line.top < (region.bandTop ?? .5) || line.bottom > (region.bandBottom ?? .98)) return false;
+    if ((region.bandTop === undefined ? (line.top + line.bottom) / 2 < .5 : line.top < region.bandTop) || line.bottom > (region.bandBottom ?? .98)) return false;
     if (line.bottom - line.top > .12 || Math.abs((line.left + line.right) / 2 - .5) > .12) return false;
     if (/相关搜索|新闻直播|直播间|关注|点赞|\d+月\d+日/u.test(line.text)) return false;
     if (newsLabels.some(label => line.top <= label.bottom + .03 && line.bottom >= label.top - .03)) return false;
-    const common = commonCharacters(text, expected);
-    const bigram = Array.from({ length: text.length - 1 }, (_, i) => text.slice(i, i + 2)).some(pair => expected.includes(pair));
+    const target = normalize(context.targetText ?? '');
+    // Neighboring ASR may complete one on-screen sentence, but cannot stand in for the current target.
+    const reference = target.length >= 4 && text.includes(target) && context.adjacentText ? normalize(context.adjacentText) : expected;
+    const common = commonCharacters(text, reference);
+    const bigram = Array.from({ length: text.length - 1 }, (_, i) => text.slice(i, i + 2)).some(pair => reference.includes(pair));
     if (text.length <= 4) return expected.includes(text);
     // Clear native glyphs can corroborate ASR word errors; short or weak matches still require the stricter ratio.
     return bigram && common >= 3 && (common / text.length >= .75

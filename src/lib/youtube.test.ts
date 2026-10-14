@@ -41,3 +41,32 @@ test("JSON3 rejects coercible timing and nonstring caption payloads", () => {
     { tStartMs: 0, dDurationMs: 1000, segs: [{ utf8: 42 }] }
   ]) assert.throws(() => parseYouTubeJson3({ events: [event] }, 10), /字幕/);
 });
+
+test("Chinese JSON3 selects the Chinese block from two exactly aligned language tracks", () => {
+  const chinese = [
+    { tStartMs: 200, dDurationMs: 1000, segs: [{ utf8: "hello大家好" }] },
+    { tStartMs: 1500, dDurationMs: 1000, segs: [{ utf8: "Thank you" }] }
+  ];
+  const english = [
+    { tStartMs: 200, dDurationMs: 1000, segs: [{ utf8: "Hello everyone" }] },
+    { tStartMs: 1500, dDurationMs: 1000, segs: [{ utf8: "Thank you" }] }
+  ];
+  for (const events of [[...chinese, ...english], [...english, ...chinese]]) {
+    assert.deepEqual(parseYouTubeJson3({ events }, 3, "zh-Hant"), [
+      { start: 0.2, end: 1.2, text: "hello大家好" },
+      { start: 1.5, end: 2.5, text: "Thank you" }
+    ]);
+    assert.throws(() => parseYouTubeJson3({ events }, 3, "en"), /倒序/);
+    assert.throws(() => parseYouTubeJson3({ events }, 3), /倒序/);
+  }
+  assert.throws(() => parseYouTubeJson3({ events: [...chinese, english[0], { ...english[1], tStartMs: 1600 }] }, 3, "zh"), /倒序/);
+  assert.throws(() => parseYouTubeJson3({ events: [...chinese, ...chinese] }, 3, "zh"), /倒序/);
+  assert.throws(() => parseYouTubeJson3({ events: [...chinese, english[0], { ...english[1], dDurationMs: -1 }] }, 3, "zh"), /字幕/);
+});
+
+test("Chinese track selection preserves English phrases and tolerates Chinese names in the English translation", () => {
+  const chinese = ["这是我的故事", "知行合一", "Thank you", "再见"];
+  const english = ["This is my story", "The path of知行合一", "Thank you", "Goodbye"];
+  const block = (texts: string[]) => texts.map((text, index) => ({ tStartMs: index * 1000, dDurationMs: 900, segs: [{ utf8: text }] }));
+  assert.deepEqual(parseYouTubeJson3({ events: [...block(chinese), ...block(english)] }, 4, "zh").map(cue => cue.text), chinese);
+});

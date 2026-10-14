@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import OpenAI, { type ClientOptions } from "openai";
 import { toSimplifiedChinese } from "./chinese.js";
 import { diagnoseAiError } from "./ai-errors.js";
 import { extractAiMessageText } from "./ai-response.js";
@@ -105,7 +105,7 @@ export class OpenAiScriptCleaner implements ScriptCleaner {
       throw new Error("自定义 AI 配置缺少 Base URL");
     }
     if (options.apiKey) {
-      this.client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL });
+      this.client = new OpenAI({ apiKey: options.apiKey, baseURL: options.baseURL, fetch: globalThis.fetch as unknown as ClientOptions['fetch'] });
     }
   }
 

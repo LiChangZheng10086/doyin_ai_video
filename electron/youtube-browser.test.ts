@@ -91,6 +91,24 @@ test('remote top-level navigation and popups cannot escape allowed sites', async
   assert.throws(() => f.browser.command('invented' as any));
   f.browser.dispose();
 });
+test('YouTube account redirects remain visible while lookalike domains are blocked', async () => {
+  const f = await fixture();
+  f.browser.setBounds({ x: 60, y: 140, width: 800, height: 500 });
+  let prevented = false;
+  const event = { preventDefault: () => { prevented = true; } };
+  const loginUrl = 'https://accounts.youtube.com/accounts/SetSID?continue=https%3A%2F%2Fwww.youtube.com%2F';
+  f.wc.emit('will-redirect', event, loginUrl, false, true);
+  assert.equal(prevented, false);
+  assert.equal(f.browser.getState().error, undefined);
+  assert.equal(f.view.visible, true);
+  f.wc.url = loginUrl;
+  assert.equal(f.browser.getState().url, 'https://accounts.youtube.com/accounts/SetSID');
+  assert.equal(f.browser.getState().videoUrl, undefined);
+  f.wc.emit('will-redirect', event, 'https://accounts.youtube.com.evil.example/accounts/SetSID', false, true);
+  assert.equal(prevented, true);
+  assert.equal(f.view.visible, false);
+  f.browser.dispose();
+});
 test('IPC only accepts the application window main frame and exact renderer origin; handlers are removed at disposal', async () => {
   const f = await fixture();
   const handlers = new Map<string, Function>();

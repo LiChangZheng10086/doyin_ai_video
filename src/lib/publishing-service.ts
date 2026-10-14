@@ -585,6 +585,7 @@ export class PublishingService {
       throw new PublishingServiceError(409, "publish_validation_failed", "垃圾桶中的发布包不能创建新版本");
     }
     if (previous.package.sourceKind === "article") throw new PublishingServiceError(409,"publish_validation_failed","请从文章工作台创建新版本");
+    if (previous.package.sourceKind === "xhs_note") throw new PublishingServiceError(409,"publish_validation_failed","请从小红书创作工作台创建新版本");
     const sourceVideo = await this.bindPackageVideo(previous.package);
     try {
       // 这与 createVersion 的输入一致性检查配套：能走到这里的包必然有可用成片
@@ -2304,6 +2305,7 @@ export class PublishingService {
    */
   private async createNotePackage(input: {
     sourceJobId: string;
+    sourceNoteId?: string;
     title: string;
     noteCopy: PlatformCopy;
     bgm?: string;
@@ -2349,6 +2351,7 @@ export class PublishingService {
             videoMethod: "copy",
             assetHealth: assets.assetHealth,
             contentType: "note",
+            ...(input.sourceNoteId ? { sourceKind: 'xhs_note' as const, sourceNoteId: input.sourceNoteId } : {}),
             imagePaths: [...assets.imagePaths],
             noteCopy: { ...input.noteCopy, hashtags: [...input.noteCopy.hashtags] },
             ...(input.bgm ? { bgm: input.bgm } : {}),
@@ -2385,6 +2388,27 @@ export class PublishingService {
     catch (error) { throw new PublishingServiceError(422, 'publish_validation_failed', error instanceof Error ? error.message : '配乐名称不合法'); }
     return this.createNotePackage({ ...input, bgm: bgm || undefined, noteCopy: copy, actor,
       drafts: validateDrafts([{ platform: "douyin", copy, copySource: "user_edited" }], this.now()),
+    });
+  }
+
+  /** Independent note paths and hashes are resolved by XhsNoteService, never accepted from HTTP. */
+  async createXhsNote(input: {
+    noteId: string; title: string; noteCopy: PlatformCopy; sourceImagePaths: string[]; expectedImageHashes: string[];
+  }, actor: ActorSnapshot): Promise<PublishingPackageDetail> {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(input.noteId)) {
+      throw new PublishingServiceError(422, 'publish_validation_failed', '小红书笔记来源无效');
+    }
+    const copy = normalizePlatformCopy(input.noteCopy);
+    const violations = validateNoteCopy('xiaohongshu', copy);
+    if (!copy.title || !copy.description || violations.length || input.sourceImagePaths.length < 1
+      || input.sourceImagePaths.length > XHS_MAX_IMAGES || input.expectedImageHashes.length !== input.sourceImagePaths.length) {
+      throw new PublishingServiceError(422, 'publish_validation_failed', violations[0]?.message ?? `小红书笔记需要完整文案和 1～${XHS_MAX_IMAGES} 张图片`);
+    }
+    return this.createNotePackage({
+      sourceJobId: `xhs-note-${input.noteId}`, sourceNoteId: input.noteId,
+      title: copy.title, noteCopy: copy, sourceImagePaths: input.sourceImagePaths, expectedImageHashes: input.expectedImageHashes,
+      actor, xhsOptions: { aiDeclaration: true, submit: false },
+      drafts: validateDrafts([{ platform: 'xiaohongshu', copy, copySource: 'user_edited' }], this.now()),
     });
   }
 

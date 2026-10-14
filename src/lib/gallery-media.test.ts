@@ -237,3 +237,27 @@ test('widescreen thin native captions survive bounded candidate sampling', async
     assert.ok(await new GalleryMedia().suggestSubtitle(moving, { start: 0, end: 3 }), 'stable glyphs remain usable while the surrounding scene changes brightness');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('OCR crop preserves center-crossing glyphs and honors explicitly calibrated upper regions', async () => {
+  const { GalleryMedia } = await import('./gallery-media.js');
+  const root = await mkdtemp(path.join(tmpdir(), 'gallery-ocr-region-'));
+  try {
+    const video = path.join(root, 'source.mp4');
+    await runCommand('ffmpeg', ['-y', '-f', 'lavfi', '-i', 'color=black:s=320x200:d=1:r=10', '-vf',
+      'drawbox=x=100:y=96:w=120:h=10:color=white:t=fill,drawbox=x=100:y=56:w=120:h=10:color=white:t=fill', '-c:v', 'libx264', video], { captureStderr: true });
+    const media = new GalleryMedia({ recognizeSubtitles: async file => {
+      const png = await readFile(file), width = png.readUInt32BE(16), height = png.readUInt32BE(20);
+      const raw = path.join(root, 'pixels.gray');
+      await runCommand('ffmpeg', ['-y', '-i', file, '-pix_fmt', 'gray', '-f', 'rawvideo', raw], { captureStderr: true });
+      const pixels = await readFile(raw);
+      const rows = Array.from({ length: height }, (_, y) => y).filter(y => pixels[y * width + Math.floor(width / 2)]! > 220);
+      assert.ok(rows[0]! > 0 && rows.at(-1)! < height - 1, 'OCR receives complete glyphs, including their top edge');
+      return [{ text: '完整原生字幕', confidence: 1, left: .3, right: .7, top: rows[0]! / height, bottom: (rows.at(-1)! + 1) / height }];
+    } });
+    const quote = { start: 0, end: .8, text: '完整原生字幕' };
+    const centered = await media.suggestSubtitle(video, quote);
+    assert.ok(centered && centered.bandTop < .48 && centered.bandBottom > .53);
+    const upper = await media.suggestSubtitle(video, quote, { bandTop: .2, bandBottom: .4 });
+    assert.ok(upper); assert.equal(upper.bandTop, .2); assert.equal(upper.bandBottom, .4);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

@@ -1,6 +1,9 @@
 import { AddressInfo } from 'net';
 import path from 'path';
-import { app as electronApp } from 'electron';
+import { app as electronApp, session } from 'electron';
+import { randomBytes } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import { desktopAccessHeaders } from './utils/local-access';
 import { getBinaryPaths } from './utils/binary-paths';
 import { loadConfig, saveConfig } from './handlers/config-handler';
 import { resolveSauConfig, rememberSauConfig } from './utils/sau-config';
@@ -38,8 +41,10 @@ export async function startServer(): Promise<number> {
       const appModule = await dynamicImport('file://' + appModulePath);
       const { createExpressApp } = appModule;
 
+      const desktopAccessToken = randomBytes(32).toString('hex');
       // 创建 Express 应用
       const expressApp = await createExpressApp({
+        desktopAccessToken,
         storagePath: config.storagePath,
         rootDir: isDev ? path.join(__dirname, '..') : electronApp.getAppPath(),
         aiProvider: activeKey?.provider || 'deepseek',
@@ -99,6 +104,12 @@ export async function startServer(): Promise<number> {
       serverInstance = expressApp.listen(PORT, 'localhost', () => {
         const address = serverInstance.address() as AddressInfo;
         const port = address.port;
+        const rendererUrl = process.env.NODE_ENV === 'development'
+          ? process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173'
+          : pathToFileURL(path.join(__dirname, '../dist-renderer/index.html')).href;
+        session.defaultSession.webRequest.onBeforeSendHeaders({ urls: [`http://localhost:${port}/*`] }, (details, callback) => {
+          callback({ requestHeaders: desktopAccessHeaders(details.requestHeaders, details.frame, rendererUrl, desktopAccessToken) });
+        });
         console.log(`Embedded Express server listening on http://localhost:${port}`);
         resolve(port);
       });
@@ -121,6 +132,7 @@ export function stopServer(): Promise<void> {
   return new Promise((resolve) => {
     if (serverInstance) {
       serverInstance.close(() => {
+        session.defaultSession.webRequest.onBeforeSendHeaders(null);
         console.log('Express server stopped');
         resolve();
       });

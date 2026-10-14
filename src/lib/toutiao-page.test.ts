@@ -678,3 +678,37 @@ test("「是否离开发布页」只看 URL：停在本页为 false、跳到内�
   assert.equal(hasLeftPublishPage("https://mp.toutiao.com/profile_v4/graphic/articles"), true);
   assert.equal(hasLeftPublishPage("https://mp.toutiao.com/auth/page/login"), true);
 });
+
+test('正文、页签和确认前已有成功文案均不能证明本次提交成功', { skip }, async()=>{
+  const {page}=await openFixture({confirm:true,silent:true});
+  await page.evaluate(`document.querySelector('.ProseMirror').innerHTML='<p>讲清发布成功与审核中状态</p>';document.body.insertAdjacentHTML('afterbegin','<nav>已发布</nav><div>提交成功</div>')`);
+  const result=await submitAndConfirm(page);
+  assert.equal(result.confirmClicked,true);
+  assert.equal(result.signal,'');
+});
+
+test('只有新增的独立提示可作判据，新增正文和隐藏提示仍不算成功', { skip }, async()=>{
+  const {page}=await openFixture({confirm:true,silent:true});
+  await page.evaluate(`document.addEventListener('click',function(e){if(e.target.id==='confirm-btn'){document.querySelector('.ProseMirror').innerHTML='<p>发布成功</p>';document.body.insertAdjacentHTML('beforeend','<div hidden>提交成功</div><textarea>提交成功</textarea>');}})`);
+  assert.equal((await submitAndConfirm(page)).signal,'');
+});
+
+test('长页面仍保留真正末尾的提交提示供人工核对', { skip }, async()=>{
+  const {page}=await openFixture({confirm:true});
+  await page.evaluate(`document.querySelector('.ProseMirror').textContent='正文'.repeat(1000)`);
+  const result=await submitAndConfirm(page);
+  assert.equal(result.signal,'发布成功');
+  assert.match(result.postConfirm.excerpt,/发布成功/);
+  assert.ok(result.postConfirm.excerpt.length<300);
+});
+
+for (const hiddenTip of [
+  { name: '本体透明', html: '<div style="opacity:0">发布成功</div>' },
+  { name: '祖先透明', html: '<div style="opacity:0"><span>发布成功</span></div>' },
+]) test(`确认后的${hiddenTip.name}提示不能作为成功判据`, { skip }, async () => {
+  const { page } = await openFixture({ confirm: true, silent: true });
+  await page.evaluate(`document.addEventListener('click', function(e) { if (e.target.id === 'confirm-btn') document.body.insertAdjacentHTML('beforeend', ${JSON.stringify(hiddenTip.html)}); })`);
+  const result = await submitAndConfirm(page);
+  assert.equal(result.confirmClicked, true);
+  assert.equal(result.signal, '');
+});

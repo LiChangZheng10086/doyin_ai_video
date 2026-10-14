@@ -1117,6 +1117,21 @@ test("identity responses never expose pin secrets and CORS allows identity reque
   }
 });
 
+test('untrusted sites cannot bootstrap the local operator through the assembled API', async () => {
+  const fixture = await appFixture();
+  try {
+    for (const origin of ['https://evil.example', 'null']) {
+      const response = await fetch(`${fixture.baseUrl}/api/local-sessions/auto`, { method: 'POST', headers: { Origin: origin } });
+      assert.equal(response.status, 403);
+    }
+    const users = await jsonFetch(fixture.baseUrl, '/api/local-users');
+    assert.deepEqual(users.body.users, []);
+    const own = await jsonFetch(fixture.baseUrl, '/api/local-sessions/auto', { method: 'POST' });
+    assert.equal(own.response.status, 201);
+    assert.equal(own.body.user.role, 'admin');
+  } finally { await fixture.close(); }
+});
+
 test("identity error boundary returns safe JSON for malformed request bodies", async () => {
   const fixture = await appFixture();
   try {

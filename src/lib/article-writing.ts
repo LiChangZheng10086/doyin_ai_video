@@ -1,5 +1,6 @@
 import OpenAI, { type ClientOptions } from 'openai';
 import { extractAiMessageText } from './ai-response.js';
+import { articleLengthFeedback } from './article-length.js';
 import { toSimplifiedChinese } from './chinese.js';
 import type { ArticleAiConfig, ArticleChatClient } from './article-draft.js';
 import type { ArticleRecord, ArticleStep, ResearchDraft } from './article-types.js';
@@ -105,7 +106,7 @@ export function validateWritingResult(step: ArticleStep, value: unknown, article
 // Project adaptation of Chinese editorial guidance; provenance in docs/specs/2026-10-10-article-editorial-quality.md.
 const editorialRules = `
 中文编辑要求：
-先确定这篇文章写给谁、读者正在解决什么问题、读完能作出什么判断或操作。requirements.audience/purpose/viewpoint/structure/length 有值时按其写作，无值时沿用选定 topic 的读者和问题，不能擅自把技术主题扩成泛泛的成长或时代议论。
+先确定这篇文章写给谁、读者正在解决什么问题、读完能作出什么判断或操作。requirements.audience/purpose/viewpoint/structure/length 有值时按其写作，无值时沿用选定 topic 的读者和问题，不能擅自把技术主题扩成泛泛的成长或时代议论。字数范围按正文字符统计，含标点，不含空白、标题与小标题；保留事实，不用重复或空话凑字数。
 全文沿一条问题主线推进。开头尽快给出具体问题、资料支持的细节或明确判断，让读者知道为何继续读；不用“你可能听过”“随着科技发展”“本文将深入探讨”这类无信息铺垫。假设示例必须明确是假设，不能写成真实经历。不要反复用“先看X而不是Y”“第一步不是X而是Y”强调写作安排，直接解释或给出动作；纠正实际概念混淆的否定仍要保留。
 每段承担一个推进任务：解释、证据、例子、转折或操作。重点充分展开，背景按需要交代；不同章节不要反复定义同一概念、重复预告下一节。章节数量和长度服从内容，不默认写成编号完整指南或每节同样长的三点清单；真正的操作步骤和对比列表应保留。
 默认像作者认真向读者讲清一件事：从事实摘录中选择与问题有关的具体动作、对象、条件或可观察细节，解释这些细节为什么影响判断。不要把事实概括成几句空泛结论再反复扩写，也不将每段都写成“观点—解释—升华”的同一模板。资料没有细节时把能确认的事情讲清，缺口留给审校，不补故事。小标题只在转入新问题时使用，初稿与修订稿的 heading 可为空，开头和收尾可直接写自然段，不强套编号或结论标题。
@@ -152,7 +153,7 @@ export class ArticleWritingService {
       try {
         const result = await client.chat.completions.create({ model: config.model, response_format: { type: 'json_object' }, temperature: 0.4, max_tokens: config.maxOutputTokens ?? 6200,
           ...(config.provider === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
-          messages: [...messages, ...(failure&&!['ai_connection_interrupted','ai_timeout','ai_upstream'].includes(failure.code) ? [{role:'system' as const,content:`上次输出未通过校验（${failure.code}）。请重新输出完整JSON，精简表达以适应输出预算；只使用已有来源、事实和摘录ID，不要编造引用。${step === 'evidence' ? 'quoteId 必须来自对应 sourceId 的 excerpts；无法找到原文支持的条目不要编造，资料缺口放入issues。' : ''}`}] : [])],
+          messages: [...messages, ...(failure&&!['ai_connection_interrupted','ai_timeout','ai_upstream'].includes(failure.code) ? [{role:'system' as const,content:`上次输出未通过校验（${failure.code}）。请重新输出完整JSON，${failure.code === 'ai_length_out_of_range' ? `${failure.message}。按要求重写完整正文：过长合并重复与空话，过短仅展开已提供事实；保留独立信息、数字、否定与限制，不机械截断，不编造内容凑字数` : '精简表达以适应输出预算'}；只使用已有来源、事实和摘录ID，不要编造引用。${step === 'evidence' ? 'quoteId 必须来自对应 sourceId 的 excerpts；无法找到原文支持的条目不要编造，资料缺口放入issues。' : ''}`}] : [])],
         }, {signal});
         signal?.throwIfAborted();
         const content = extractAiMessageText(result.choices?.[0]?.message);
@@ -169,12 +170,17 @@ export class ArticleWritingService {
               fact.quote = excerpt.text;
             }
           }
-          return validateWritingResult(step, parsed, article);
+          const validated = validateWritingResult(step, parsed, article);
+          if (step === 'draft' || step === 'review') {
+            const length = articleLengthFeedback(step === 'draft' ? validated : validated.revision, article.requirements.length);
+            if (length.withinRange === false) throw new ArticleWritingError('ai_length_out_of_range', `${length.message}；已有稿件已保留，请调整字数要求或重试当前步骤`);
+          }
+          return validated;
         } catch(error){throw writingValidationFailure(error);}
       } catch (error) {
         signal?.throwIfAborted();
         failure = articleWritingFailure(error);
-        if (!['ai_output_empty','ai_output_truncated','ai_json_invalid','ai_structure_invalid','ai_source_invalid','ai_quote_invalid','ai_connection_interrupted','ai_timeout','ai_upstream'].includes(failure.code)) throw failure;
+        if (!['ai_length_out_of_range','ai_output_empty','ai_output_truncated','ai_json_invalid','ai_structure_invalid','ai_source_invalid','ai_quote_invalid','ai_connection_interrupted','ai_timeout','ai_upstream'].includes(failure.code)) throw failure;
       }
     }
     throw failure;
